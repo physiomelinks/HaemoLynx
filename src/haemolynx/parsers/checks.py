@@ -15,7 +15,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
-from .schema import Schema, Setting, is_active
+from .schema import (
+    PREREQUISITE_EQUALS,
+    PREREQUISITE_NOT_EQUALS,
+    PREREQUISITE_OFF,
+    Schema,
+    Setting,
+    is_active,
+    parse_prerequisite,
+)
 
 #: Loaders accept a zipped file in place of the plain one, so a missing path is
 #: not missing if its `.zip` sibling is there.
@@ -79,7 +87,9 @@ def check_settings(
     """Check every active setting that declares ``must_exist``.
 
     A setting is active when its ``requires`` prerequisites are met, so a path
-    the run would generate for itself is not demanded up front.
+    the run would generate for itself is not demanded up front. One that
+    declares a ``placeholder`` is optional: unset, the run falls back to what
+    the placeholder names, so only a path that is set has to be there.
     """
     report = CheckReport()
     skipped = set(skip)
@@ -89,28 +99,44 @@ def check_settings(
         if not is_active(setting, values):
             continue
         value = values.get(setting.name)
+        if value is None and setting.optional_path:
+            report.add_pass(setting.name, f"not set: uses {setting.placeholder}")
+            continue
         if value is None:
             report.add_error(
                 f"{setting.help} — '{setting.name}' is not set but is required "
-                f"{_because(setting)}."
+                f"{_because(setting, schema)}."
             )
             continue
         exists, detail = resolve_existing_path(value)
         if exists:
             report.add_pass(setting.name, detail)
         else:
+            clear = (
+                f", or clear it to use {setting.placeholder}" if setting.optional_path else ""
+            )
             report.add_error(
                 f"{setting.name}: {detail}. Fix: point '{setting.name}' at an "
-                f"existing file ({setting.help.lower()})."
+                f"existing file ({setting.help.lower()}){clear}."
             )
     return report
 
 
-def _because(setting: Setting) -> str:
+def _because(setting: Setting, schema: Schema | None = None) -> str:
+    """Why *setting* is read: its prerequisites as they hold. A path gate
+    (see ``parsers.schema.PREREQUISITE_GATE_KINDS``) is set, not on."""
     if not setting.requires:
         return "for every run"
-    parts = [
-        f"'{name[1:]}' is off" if name.startswith("!") else f"'{name}' is on"
-        for name in setting.requires
-    ]
+    parts = []
+    for prerequisite in setting.requires:
+        name, test, expected = parse_prerequisite(prerequisite)
+        is_path = schema is not None and name in schema and schema[name].kind == "path"
+        if test == PREREQUISITE_EQUALS:
+            parts.append(f"'{name}' is '{expected}'")
+        elif test == PREREQUISITE_NOT_EQUALS:
+            parts.append(f"'{name}' is not '{expected}'")
+        elif test == PREREQUISITE_OFF:
+            parts.append(f"'{name}' is {'not set' if is_path else 'off'}")
+        else:
+            parts.append(f"'{name}' is {'set' if is_path else 'on'}")
     return "because " + " and ".join(parts)

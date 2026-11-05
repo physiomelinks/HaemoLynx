@@ -40,9 +40,17 @@ def test_a_3d_layer_is_accepted():
     assert rejection_reason(fake_layer()) is None
 
 
-def test_a_2d_layer_is_refused_by_name():
-    reason = rejection_reason(fake_layer(shape=(5, 6)))
-    assert "3D" in reason and "2D" in reason
+def test_a_2d_layer_is_accepted_as_a_2d_file_is():
+    """Regression: a 2D layer was refused, though a 2D file is read as a
+    stack of one."""
+    assert rejection_reason(fake_layer(shape=(5, 6))) is None
+    settings = input_for_layer(fake_layer(shape=(5, 6), scale=(0.5, 0.25))).settings
+    assert settings["voxel_size_override_xyz"] == [0.25, 0.5, 1.0]
+
+
+def test_a_4d_layer_is_refused_by_name():
+    reason = rejection_reason(fake_layer(shape=(2, 4, 5, 6)))
+    assert "3D" in reason and "4D" in reason
 
 
 def test_an_rgb_layer_is_refused():
@@ -55,7 +63,7 @@ def test_a_layer_with_no_data_is_refused():
 
 def test_input_for_layer_raises_the_same_reason():
     with pytest.raises(ValueError, match="3D"):
-        input_for_layer(fake_layer(shape=(5, 6)))
+        input_for_layer(fake_layer(shape=(2, 4, 5, 6)))
 
 
 # --- voxel size: (z, y, x) scale -> (x, y, z) metadata -----------------------
@@ -66,6 +74,34 @@ def test_the_layer_scale_is_reversed_into_image_metadata_order():
     assert voxel_size_xyz_from_scale((2.0, 0.5, 0.4)) == (0.4, 0.5, 2.0)
 
 
+def test_the_layer_scale_follows_the_runs_axis_order():
+    """Regression: a layer opened from a file keeps the file's axes, which
+    image_axis_order names; its scale was always read as (z, y, x), swapping
+    the z and x spacings of a stack whose pages step along x."""
+    assert voxel_size_xyz_from_scale((2.0, 0.5, 0.4), "xyz") == (2.0, 0.5, 0.4)
+    result = input_for_layer(
+        fake_layer(scale=(2.0, 0.5, 0.4), path=None), Path("/tmp"), "xyz"
+    )
+    assert result.settings["voxel_size_override_xyz"] == [2.0, 0.5, 0.4]
+
+
+def test_under_auto_the_layer_scale_follows_its_files_axis_labels(tmp_path):
+    """A layer opened from a file stored (x, y, z) that says so: under
+    image_axis_order="auto" its scale is read in that order; a layer with no
+    file behind it is read as (z, y, x)."""
+    import tifffile
+
+    path = tmp_path / "stored_xyz.tif"
+    tifffile.imwrite(path, np.zeros((7, 6, 5), dtype=np.uint8), metadata={"axes": "XYZ"})
+
+    from_file = input_for_layer(
+        fake_layer(shape=(7, 6, 5), scale=(2.0, 0.5, 0.4), path=path), tmp_path, "auto"
+    )
+    assert from_file.settings["voxel_size_override_xyz"] == [2.0, 0.5, 0.4]
+    in_memory = input_for_layer(fake_layer(scale=(2.0, 0.5, 0.4)), tmp_path, "auto")
+    assert in_memory.settings["voxel_size_override_xyz"] == [0.4, 0.5, 2.0]
+
+
 def test_an_all_ones_scale_carries_no_information():
     """Leave whatever the file says rather than overriding it with nothing."""
     assert voxel_size_xyz_from_scale((1.0, 1.0, 1.0)) is None
@@ -73,7 +109,8 @@ def test_an_all_ones_scale_carries_no_information():
 
 def test_a_missing_or_wrong_length_scale_is_ignored():
     assert voxel_size_xyz_from_scale(None) is None
-    assert voxel_size_xyz_from_scale((1.0, 2.0)) is None
+    assert voxel_size_xyz_from_scale((1.0, 2.0, 3.0, 4.0)) is None
+    assert voxel_size_xyz_from_scale((1.0, 1.0)) is None
 
 
 def test_an_anisotropic_layer_sets_the_override_and_the_policy():

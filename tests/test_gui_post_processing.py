@@ -1,0 +1,1597 @@
+"""What the "7. Post processing" tab draws and lists (pure, no napari)."""
+from __future__ import annotations
+
+import networkx as nx
+import numpy as np
+import pytest
+
+from haemolynx.graph import VesselEnd, edge_keys
+from haemolynx.graph._helpers import calculate_path_length
+from haemolynx.gui.post_processing import (
+    ADDED,
+    ADDED_NODES,
+    AT_JUNCTION,
+    CONNECTED,
+    HIGH_DEGREE_JUNCTIONS,
+    JUNCTION_TABLE_COLUMNS,
+    NEW_VESSEL_POINTS,
+    NEW_VESSEL_TRACE,
+    SELECTED,
+    STATUS_COLOURS,
+    VesselTrace,
+    added_nodes_layer,
+    added_vessel_ids,
+    branch_id_of,
+    camera_center_for,
+    default_connectivity_csv_path,
+    describe_vessels,
+    edits_lost_by_running_from,
+    junction_label,
+    junction_marker_layer,
+    junction_table_rows,
+    nearest_node,
+    parse_branch_ids,
+    point_on_path_under_click,
+    point_under_click,
+    scan_network,
+    status_colours,
+    trace_layers,
+    vessel_status,
+    zoom_for_canvas,
+)
+
+
+def _add(G, u, v, **attrs):
+    voxels = [tuple(map(float, G.nodes[u]["pos"])), tuple(map(float, G.nodes[v]["pos"]))]
+    G.add_edge(u, v, voxels=voxels, length=calculate_path_length(voxels), **attrs)
+
+
+def _network() -> nx.MultiGraph:
+    """0 -> 4-way junction 1 -> {2, 3} -> 4, and 1 -> 5."""
+    G = nx.MultiGraph()
+    positions = {
+        0: (0, 0, 0), 1: (0, 0, 10), 2: (0, 10, 20), 3: (0, -10, 20),
+        4: (0, 0, 30), 5: (0, 20, 10),
+    }
+    for node, pos in positions.items():
+        G.add_node(node, pos=np.asarray(pos, dtype=float))
+    for u, v in [(0, 1), (1, 2), (1, 3), (2, 4), (3, 4), (1, 5)]:
+        _add(G, u, v, branch_order="B01", diameter_um=5.0)
+    return G
+
+
+def test_scan_finds_the_four_way():
+    G = _network()
+    scan = scan_network(G)
+    assert scan.junctions == (1,)
+    assert scan.vessel_count == 6
+    assert scan.summary == "1 junction(s) where 4+ vessels meet, in 6 vessels."
+
+
+def test_vessel_status_orders_selected_over_junction():
+    # Segments of vessels 0, 0, 1, 2, 3 (vessel 0 drawn as two segments).
+    status = vessel_status([0, 0, 1, 2, 3], at_junction=[1, 2], selected=[2])
+    assert list(status) == [CONNECTED, CONNECTED, AT_JUNCTION, SELECTED, CONNECTED]
+    assert list(vessel_status([5, 6])) == [CONNECTED, CONNECTED]
+
+
+def test_status_colours_are_the_declared_rgba():
+    colours = status_colours([CONNECTED, AT_JUNCTION, SELECTED])
+    assert colours.shape == (3, 4)
+    for row, label in zip(colours, [CONNECTED, AT_JUNCTION, SELECTED]):
+        assert tuple(row) == STATUS_COLOURS[label]
+
+
+def test_junction_marker_layer_rings_the_four_way():
+    G = _network()
+    spec = junction_marker_layer(G, scan_network(G))
+    assert spec.name == HIGH_DEGREE_JUNCTIONS and spec.kind == "points"
+    assert np.allclose(spec.data, [[0, 0, 10]])
+    assert list(spec.features["node_id"]) == [1]
+    assert list(spec.features["degree"]) == [4.0]
+
+
+def test_junction_table_rows_match_the_vessels_listed():
+    G = _network()
+    vessels, rows = junction_table_rows(G, 1)
+    assert len(rows) == len(vessels) == 4
+    assert all(len(row) == len(JUNCTION_TABLE_COLUMNS) for row in rows)
+    keys = edge_keys(G)
+    for vessel, row in zip(vessels, rows):
+        assert row[0] == str(vessel.branch_id)
+        assert keys[vessel.branch_id] == vessel.edge
+        assert row[2] == "5" and row[3] == "B01"
+        assert row[4] == str(vessel.other_node)
+    assert rows[0][1] == "10"  # the 0-1 vessel is 10 um long
+
+
+def test_junction_label_names_the_node_and_the_decision():
+    G = _network()
+    assert junction_label(G, 1) == "Node 1 - 4 vessels"
+    assert junction_label(G, 1, "left as is") == "Node 1 - 4 vessels (left as is)"
+
+
+def test_camera_center_follows_the_displayed_dims():
+    position = (4.0, 50.0, 70.0)  # (z, y, x)
+    assert camera_center_for(position, (0, 1, 2)) == (4.0, 50.0, 70.0)
+    assert camera_center_for(position, (1, 2)) == (0.0, 50.0, 70.0)  # 2D, XY
+    assert camera_center_for(position, (0, 2)) == (0.0, 4.0, 70.0)   # 2D, XZ snap
+
+
+@pytest.mark.parametrize(
+    "canvas, box, expected",
+    [
+        ((600, 800), 60.0, 10.0),   # the shorter side fits the box
+        ((0, 0), 60.0, None),       # no canvas yet: keep the zoom
+        ((600, 800), 0.0, None),    # nonsense box: keep the zoom
+    ],
+)
+def test_zoom_for_canvas(canvas, box, expected):
+    result = zoom_for_canvas(canvas, box)
+    assert result == (pytest.approx(expected) if expected is not None else None)
+
+
+def test_nearest_node_picks_what_is_under_the_click():
+    G = _network()  # node 1 at (0, 0, 10), node 5 at (0, 20, 10)
+    assert nearest_node(G, (0.0, 0.5, 10.5)) == 1
+    assert nearest_node(G, (0.0, 19.0, 10.0)) == 5
+    assert nearest_node(G, (0.0, 40.0, 40.0)) is None  # nothing near
+    # 3D: a click ray looking down z through (y, x) = (0, 10) hits node 1
+    # whatever depth the click position sits at.
+    assert nearest_node(G, (50.0, 0.0, 10.0), view_direction=(1, 0, 0)) == 1
+    # 2D: only the displayed axes count.
+    assert nearest_node(G, (99.0, 20.0, 10.0), dims=(1, 2)) == 5
+
+
+def test_parse_branch_ids_reads_commas_spaces_and_semicolons_once_each():
+    assert parse_branch_ids("12, 40 3;12", 50) == [12, 40, 3]
+    assert parse_branch_ids("0", 1) == [0]
+
+
+@pytest.mark.parametrize(
+    "text, message",
+    [
+        ("", "Type one or more"),
+        ("  , ", "Type one or more"),
+        ("12, x", "'x' is not a branchID"),
+        ("1.5", "'1.5' is not a branchID"),
+        ("50", "branchID 50 is not in this network \\(0 to 49\\)"),
+        ("-1", "branchID -1 is not in this network"),
+    ],
+)
+def test_parse_branch_ids_says_what_is_wrong(text, message):
+    with pytest.raises(ValueError, match=message):
+        parse_branch_ids(text, 50)
+
+
+def test_a_run_from_before_post_processing_would_lose_the_edits_still_in_the_tab():
+    from haemolynx.graph import add_vessel_between
+
+    G = _network()
+    assert not edits_lost_by_running_from("assign_diameters", G, None)
+    add_vessel_between(G, 0, 4)
+    assert edits_lost_by_running_from("assign_diameters", G, None)
+    assert edits_lost_by_running_from("skeletonise", G, None)
+    # Post processing follows the solve: a run from Haemodynamics starts again
+    # from Diameters' network, which never had the edits.
+    assert edits_lost_by_running_from("build_haemodynamic_model", G, None)
+
+
+def test_a_run_from_before_post_processing_would_lose_edits_already_applied():
+    from haemolynx.graph.post_processing import APPLIED
+
+    applied = _network()
+    applied.graph[APPLIED] = True
+    assert edits_lost_by_running_from("assign_boundaries", None, applied)
+    assert not edits_lost_by_running_from("assign_boundaries", None, _network())
+
+
+def test_a_run_from_post_processing_or_later_loses_nothing():
+    from haemolynx.graph import add_vessel_between
+    from haemolynx.graph.post_processing import APPLIED
+
+    G = _network()
+    add_vessel_between(G, 0, 4)
+    applied = _network()
+    applied.graph[APPLIED] = True
+    for start in ("post_process", "run_perturbations", "export_results", None, "nope"):
+        assert not edits_lost_by_running_from(start, G, applied)
+
+
+def test_a_run_from_after_post_processing_leaves_the_tabs_edits_out():
+    """A run from Perturbations starts from the network Post processing last
+    took in: its results leave out what the tab edited since."""
+    from haemolynx.graph import add_vessel_between
+    from haemolynx.gui.post_processing import edits_left_out_by_running_from
+
+    G = _network()
+    for start in ("run_perturbations", "export_results"):
+        assert not edits_left_out_by_running_from(start, G), "nothing waiting"
+    add_vessel_between(G, 0, 4)
+    for start in ("run_perturbations", "export_results"):
+        assert edits_left_out_by_running_from(start, G)
+    for start in ("post_process", "build_haemodynamic_model", "assign_diameters", None, "nope"):
+        assert not edits_left_out_by_running_from(start, G), start
+    assert not edits_left_out_by_running_from("run_perturbations", None)
+
+
+def test_describe_vessels_names_branch_id_ends_length_and_diameter():
+    G = _network()
+    keys = edge_keys(G)
+    dead_end = next(i for i, k in enumerate(keys) if set(k[:2]) == {1, 5})
+    picked = [keys[dead_end], keys[0]]  # given out of order: listed by branchID
+    assert describe_vessels(G, picked) == (
+        f"branchID 0 (node 0-1, 10 µm, 5 µm); branchID {dead_end} (node 1-5, 20 µm, 5 µm)"
+    )
+    del G.edges[keys[0]]["diameter_um"]
+    assert describe_vessels(G, [keys[0]]) == "branchID 0 (node 0-1, 10 µm)"
+    assert describe_vessels(G, [(98, 99, 0)]) == ""  # not in the graph
+
+
+# --- Add vessel: tracing a new vessel -------------------------------------------
+
+
+def test_vessel_status_colours_added_vessels_under_the_junction_and_selection():
+    status = vessel_status([0, 1, 2, 3], added=[1, 2, 3], at_junction=[2], selected=[3])
+    assert list(status) == [CONNECTED, ADDED, AT_JUNCTION, SELECTED]
+    assert tuple(status_colours([ADDED])[0]) == STATUS_COLOURS[ADDED]
+
+
+def test_added_vessel_ids_are_the_branch_ids_add_vessel_drew():
+    G = _network()
+    _add(G, 5, 3, post_processing_added=True)
+    assert added_vessel_ids(G) == [branch_id_of(G, (5, 3, 0))]
+    assert added_vessel_ids(_network()) == []
+
+
+def test_branch_id_of_and_describe_vessels_take_an_edge_either_way_round():
+    G = _network()
+    _add(G, 5, 3)  # listed by G.edges as (3, 5, 0): node 3 comes first
+    assert (3, 5, 0) in edge_keys(G)
+    branch_id = edge_keys(G).index((3, 5, 0))
+    assert branch_id_of(G, (5, 3, 0)) == branch_id_of(G, (3, 5, 0)) == branch_id
+    assert branch_id_of(G, (5, 3, 9)) is None
+    assert describe_vessels(G, [(5, 3, 0)]).startswith(f"branchID {branch_id} (node 5-3")
+
+
+def test_point_on_path_under_click_lands_between_path_points():
+    path = [(0.0, 0.0, 0.0), (0.0, 0.0, 20.0)]
+    # 2D, looking down z: the click's own z (the slice) does not matter.
+    point = point_on_path_under_click(path, (7.0, 3.0, 12.0), dims=(1, 2))
+    assert np.allclose(point, (0, 0, 12))
+    # 3D: whatever lies under the cursor along the view ray.
+    point = point_on_path_under_click(
+        path, (50.0, 0.0, 5.0), view_direction=(1.0, 0.0, 0.0), dims=(0, 1, 2)
+    )
+    assert np.allclose(point, (0, 0, 5))
+
+
+def test_point_under_click_in_2d_is_the_click_itself():
+    assert np.allclose(point_under_click((4.0, 5.0, 6.0), dims=(1, 2)), (4, 5, 6))
+
+
+def _two_vessels_along_z() -> np.ndarray:
+    """A mask with two vessels on one line of sight down z: one at z 2..4,
+    one at z 7..8, both at (y, x) = (5, 5)."""
+    mask = np.zeros((10, 10, 10), dtype=bool)
+    mask[2:5, 5, 5] = True
+    mask[7:9, 5, 5] = True
+    return mask
+
+
+def test_point_under_click_in_3d_picks_the_middle_of_the_first_vessel_hit():
+    mask = _two_vessels_along_z()
+    point = point_under_click(
+        (0.0, 5.0, 5.0), view_direction=(1.0, 0.0, 0.0), dims=(0, 1, 2),
+        volume=mask, pick="first",
+    )
+    assert np.allclose(point[1:], (5, 5)) and 2.5 <= point[0] <= 3.5
+    # Looking the other way, the vessel at z 7..8 is in front.
+    point = point_under_click(
+        (0.0, 5.0, 5.0), view_direction=(-1.0, 0.0, 0.0), dims=(0, 1, 2),
+        volume=mask, pick="first",
+    )
+    assert 7.0 <= point[0] <= 8.0
+
+
+def test_point_under_click_in_3d_picks_the_brightest_voxel_of_raw_data():
+    raw = np.ones((10, 10, 10), dtype=np.float32)
+    raw[3, 5, 5], raw[7, 5, 5] = 50.0, 90.0
+    point = point_under_click(
+        (0.0, 5.0, 5.0), view_direction=(1.0, 0.0, 0.0), dims=(0, 1, 2),
+        volume=raw, pick="brightest",
+    )
+    assert np.allclose(point, (7, 5, 5), atol=0.5)
+    # Anisotropic voxels: 2 um apart in z, so voxel 7 sits at 14 um.
+    point = point_under_click(
+        (0.0, 5.0, 5.0), view_direction=(1.0, 0.0, 0.0), dims=(0, 1, 2),
+        volume=raw, voxel_size_zyx=(2.0, 1.0, 1.0), pick="brightest",
+    )
+    assert np.allclose(point, (14, 5, 5), atol=1.0)
+
+
+def test_point_under_click_missing_every_vessel_keeps_the_trace_depth():
+    empty = np.zeros((10, 10, 10), dtype=bool)
+    point = point_under_click(
+        (0.0, 2.0, 3.0), view_direction=(1.0, 0.0, 0.0), dims=(0, 1, 2),
+        volume=empty, near_um=(6.0, 9.0, 9.0),
+    )
+    assert np.allclose(point, (6, 2, 3))
+    # With no volume at all, the same.
+    point = point_under_click(
+        (0.0, 2.0, 3.0), view_direction=(1.0, 0.0, 0.0), dims=(0, 1, 2), near_um=(6.0, 9.0, 9.0)
+    )
+    assert np.allclose(point, (6, 2, 3))
+
+
+def test_vessel_trace_grows_one_leg_per_click():
+    G = _network()
+    trace = VesselTrace.starting_at(VesselEnd.on_vessel((1, 5, 0), (0.0, 12.0, 10.0)), G)
+    assert trace.points_um == [(0.0, 12.0, 10.0)] and trace.last_point == (0.0, 12.0, 10.0)
+    trace.extend([(0.0, 12.0, 10.0), (0.0, 13.0, 11.0), (0.0, 14.0, 12.0)], (0.0, 14.0, 12.0), "through the segmented mask")
+    trace.extend([(0.0, 14.0, 12.0), (0.0, 14.0, 15.0)], (0.0, 14.0, 15.0), "through the raw data")
+    assert trace.points_um == [
+        (0.0, 12.0, 10.0), (0.0, 13.0, 11.0), (0.0, 14.0, 12.0), (0.0, 14.0, 15.0),
+    ]
+    assert trace.waypoints_um == [(0.0, 14.0, 12.0), (0.0, 14.0, 15.0)]
+    assert trace.routes == ["through the segmented mask", "through the raw data"]
+    # extended() previews a leg without taking it.
+    assert trace.extended([(0.0, 14.0, 15.0), (0.0, 20.0, 15.0)])[-1] == (0.0, 20.0, 15.0)
+    assert len(trace.points_um) == 4
+
+
+def test_trace_layers_draw_the_path_so_far_and_every_click():
+    G = _network()
+    trace = VesselTrace.starting_at(VesselEnd.at_node(5), G)
+    (points,) = trace_layers(trace)  # one click: just the start, no path yet
+    assert points.name == NEW_VESSEL_POINTS
+    assert list(points.features["role"]) == ["start node"]
+
+    trace.extend([(0.0, 20.0, 10.0), (0.0, 20.0, 15.0), (0.0, 25.0, 15.0)], (0.0, 25.0, 15.0), "x")
+    path, points = trace_layers(trace)
+    assert path.name == NEW_VESSEL_TRACE and path.kind == "vectors"
+    assert path.data.shape == (2, 2, 3)  # two segments, 1 -> 2 then 2 -> 3
+    assert np.allclose(path.data[0, 0] + path.data[0, 1], (0, 20, 15))
+    assert list(points.features["role"]) == ["start node", "waypoint"]
+    assert np.allclose(points.data, [(0, 20, 10), (0, 25, 15)])
+
+    on_vessel = VesselTrace.starting_at(VesselEnd.on_vessel((1, 5, 0), (0.0, 12.0, 10.0)), G)
+    (points,) = trace_layers(on_vessel)
+    assert list(points.features["role"]) == ["new node"]
+    assert tuple(points.options["face_color"][0]) == STATUS_COLOURS[ADDED]
+
+
+def test_added_nodes_layer_marks_the_new_nodes_still_in_the_graph():
+    G = _network()
+    spec = added_nodes_layer(G, [5, 99, 5])
+    assert spec.name == ADDED_NODES
+    assert list(spec.features["node_id"]) == [5]
+    assert np.allclose(spec.data, [(0, 20, 10)])
+    assert len(added_nodes_layer(G, []).data) == 0
+
+
+def test_default_connectivity_csv_path_sits_in_the_output_folder(tmp_path):
+    """Named after the analysed image, as every other output of the run."""
+    values = {"input_path": tmp_path / "stack.tif", "output_dir": tmp_path}
+    assert default_connectivity_csv_path(values) == str(tmp_path / "stack_connectivity.csv")
+    # A run from another machine names a folder that is not here: just the name.
+    elsewhere = {"input_path": tmp_path / "stack.tif", "output_dir": tmp_path / "missing"}
+    assert default_connectivity_csv_path(elsewhere) == "stack_connectivity.csv"
+    assert default_connectivity_csv_path(None) == "haemolynx_connectivity.csv"
+    assert default_connectivity_csv_path({"output_dir": tmp_path}) == str(
+        tmp_path / "haemolynx_connectivity.csv"
+    )
+
+
+# --- Manual loop review -----------------------------------------------------------
+
+import csv  # noqa: E402
+from dataclasses import replace  # noqa: E402
+
+from haemolynx.graph import short_loops  # noqa: E402
+from haemolynx.gui.post_processing import (  # noqa: E402
+    KEPT,
+    LOOP_MATCH_UM,
+    LOOP_REVIEW_COLUMNS,
+    LOOP_TABLE_COLUMNS,
+    LOOP_ZOOM_MARGIN,
+    LOOP_ZOOM_MIN_BOX_UM,
+    SIDE_DELETED,
+    LoopReview,
+    append_loop_review,
+    loop_branch_ids,
+    loop_label,
+    loop_review_csv_path,
+    loop_review_row,
+    loop_side_rows,
+    loop_view,
+    loops_to_review,
+)
+
+
+def _loop_network() -> nx.MultiGraph:
+    """The 1-{2,3}-4 loop of :func:`_network`, met at 1 and at 4 (a vessel
+    on to node 6), with a 7 um vessel on one side."""
+    G = _network()
+    G.add_node(6, pos=np.asarray((0.0, 0.0, 40.0)))
+    _add(G, 4, 6, branch_order="B01", diameter_um=5.0)
+    for u, v, k in edge_keys(G):
+        if {u, v} == {2, 4}:
+            G.edges[u, v, k]["diameter_um"] = 7.0
+    return G
+
+
+def _the_loop(G):
+    (loop,) = short_loops(G)
+    return loop
+
+
+def _ids(G, pairs) -> list[int]:
+    return sorted(i for i, k in enumerate(edge_keys(G)) if set(k[:2]) in [set(p) for p in pairs])
+
+
+def test_a_loop_is_listed_by_its_place_length_and_sides():
+    loop = _the_loop(_loop_network())
+    assert loop_label(loop, 3) == f"Loop 3: {loop.length_um:.3g} µm round, 2 side(s)"
+
+
+def test_the_loop_table_lists_each_side_with_its_vessels_length_and_diameter():
+    G = _loop_network()
+    loop = _the_loop(G)
+
+    rows = loop_side_rows(G, loop)
+
+    assert len(rows) == 2 and all(len(row) == len(LOOP_TABLE_COLUMNS) for row in rows)
+    assert [row[0] for row in rows] == ["1", "2"]
+    by_side = {frozenset(n for e in side for n in e[:2]): row for side, row in zip(loop.sides, rows)}
+    upper = by_side[frozenset({1, 2, 4})]
+    assert sorted(int(i) for i in upper[1].split(", ")) == _ids(G, [(1, 2), (2, 4)])
+    assert float(upper[2]) == pytest.approx(2 * np.hypot(10, 10), rel=1e-2)
+    assert float(upper[3]) == pytest.approx(6.0, rel=1e-2), "length-weighted mean of 5 and 7"
+    assert {upper[4], upper[5]} == {"1", "4"}
+
+
+def test_loop_branch_ids_name_the_loop_or_one_side_and_skip_what_has_gone():
+    G = _loop_network()
+    loop = _the_loop(G)
+    loop_ids = _ids(G, [(1, 2), (2, 4), (1, 3), (3, 4)])
+
+    assert sorted(loop_branch_ids(G, loop)) == loop_ids
+    assert sorted(loop_branch_ids(G, loop, 0) + loop_branch_ids(G, loop, 1)) == loop_ids
+    assert loop_branch_ids(G, loop, 5) == []
+    G.remove_edge(*loop.edges[0])
+    assert len(loop_branch_ids(G, loop)) == 3
+
+
+def test_a_review_matches_its_loop_by_position_and_length_not_node_ids():
+    loop = _the_loop(_loop_network())
+    review = LoopReview.of(loop, KEPT, time="2026-10-09T15:00:00")
+    centre = np.asarray(loop.centre_um)
+
+    assert review.matches(loop)
+    assert review.matches(replace(loop, centre_um=tuple(centre + [0, 0.5 * LOOP_MATCH_UM, 0])))
+    assert not review.matches(replace(loop, centre_um=tuple(centre + [0, 2 * LOOP_MATCH_UM, 0])))
+    assert review.matches(replace(loop, length_um=loop.length_um * 1.03))
+    assert not review.matches(replace(loop, length_um=loop.length_um * 1.2))
+    renumbered = replace(loop, edges=(), sides=())
+    assert renumbered != loop and review.matches(renumbered)
+
+
+def test_a_review_survives_a_round_trip_through_plain_values():
+    loop = _the_loop(_loop_network())
+    review = LoopReview.of(loop, SIDE_DELETED, side=2, time="2026-10-09T15:00:00")
+
+    assert LoopReview.from_dict(review.as_dict()) == review
+    assert LoopReview.from_dict({"decision": KEPT}) is None
+    assert LoopReview.from_dict("not a review") is None
+    assert LoopReview.from_dict({**review.as_dict(), "centre_um": [1.0, 2.0]}) is None
+
+
+def test_kept_loops_are_not_listed_again_but_an_opened_one_that_came_back_is():
+    loop = _the_loop(_loop_network())
+
+    assert loops_to_review([loop], []) == [loop]
+    assert loops_to_review([loop], [LoopReview.of(loop, KEPT)]) == []
+    assert loops_to_review([loop], [LoopReview.of(loop, SIDE_DELETED, side=1)]) == [loop]
+
+
+def _tilted_circle(radius=10.0, centre=(5.0, 20.0, 30.0)):
+    t = np.linspace(0.0, 2 * np.pi, 361)
+    e1 = np.array([0.0, 1.0, 0.0])
+    e2 = np.array([1.0, 0.0, 1.0]) / np.sqrt(2)
+    normal = np.cross(e1, e2)
+    points = np.asarray(centre) + radius * (np.cos(t)[:, None] * e1 + np.sin(t)[:, None] * e2)
+    return points, normal
+
+
+def test_the_loop_view_centres_fits_and_looks_along_the_loops_normal():
+    points, normal = _tilted_circle()
+
+    view = loop_view(points, towards=normal)
+
+    assert view.centre_um == pytest.approx((5.0, 20.0, 30.0), abs=1e-6)
+    assert view.box_um == pytest.approx(LOOP_ZOOM_MARGIN * 20.0, rel=1e-3)
+    assert np.dot(view.view_direction, normal) == pytest.approx(1.0, abs=1e-6)
+    assert np.dot(view.up_direction, normal) == pytest.approx(0.0, abs=1e-6)
+    assert np.linalg.norm(view.up_direction) == pytest.approx(1.0)
+    flipped = loop_view(points, towards=-normal)
+    assert np.dot(flipped.view_direction, normal) == pytest.approx(-1.0, abs=1e-6)
+
+
+def test_the_loop_view_keeps_the_cameras_up_laid_into_the_loops_plane():
+    points, normal = _tilted_circle()
+    wanted = np.array([0.0, -1.0, 0.0])  # already in the plane
+
+    view = loop_view(points, towards=normal, up=wanted)
+
+    assert view.up_direction == pytest.approx(tuple(wanted), abs=1e-6)
+    along_normal = loop_view(points, towards=normal, up=normal)
+    assert np.dot(along_normal.up_direction, normal) == pytest.approx(0.0, abs=1e-6)
+
+
+def test_a_small_loop_is_zoomed_to_no_tighter_than_the_smallest_box():
+    points, _normal = _tilted_circle(radius=2.0)
+    assert loop_view(points).box_um == LOOP_ZOOM_MIN_BOX_UM
+
+
+def test_a_review_row_has_every_column_with_the_loop_its_sides_and_the_decision():
+    G = _loop_network()
+    loop = _the_loop(G)
+    review = LoopReview.of(loop, SIDE_DELETED, side=1, time="2026-10-09T15:00:00")
+
+    row = loop_review_row(G, loop, review)
+
+    assert list(row) == list(LOOP_REVIEW_COLUMNS)
+    assert row["decision"] == SIDE_DELETED and row["side_deleted"] == "1"
+    assert row["time"] == "2026-10-09T15:00:00"
+    assert float(row["loop_length_um"]) == pytest.approx(loop.length_um, rel=1e-3)
+    assert row["sides"] == "2"
+    assert sorted(int(i) for i in row["loop_branch_ids"].split(";")) == sorted(loop_branch_ids(G, loop))
+    assert row["centre_zyx_vox"] == "0 0 20"
+    assert row["zero_resistance_bridges"] == "0"
+    # Without a mask, what the mask would say is left blank.
+    assert row["path_in"] == "" and row["wall_side"] == "" and row["inside_one_lumen"] == ""
+    assert float(row["out_of_plane"]) == pytest.approx(0.0, abs=1e-6)
+
+
+def test_a_review_row_counts_the_recovered_and_bridged_share_of_a_merged_side():
+    """A loop's side merged from a recovered or bridged stretch and a vessel
+    counts that stretch only: once merged, the whole-edge marks are gone and
+    the edge carries the share (``graph.degree2.carry_merged_provenance``)."""
+    from haemolynx.graph.degree2 import BRIDGED_FRACTION, RECOVERED_FRACTION
+
+    G = _loop_network()
+    loop = _the_loop(G)
+    (first, second) = [G.edges[tuple(e)] for e in loop.edges][:2]
+    first[RECOVERED_FRACTION] = 0.25
+    second["recovered"] = True
+    second["bridge_kind"] = "gap"
+    first[BRIDGED_FRACTION] = 0.5
+
+    row = loop_review_row(G, loop, LoopReview.of(loop, KEPT))
+
+    expected_recovered = 0.25 * first["length"] + second["length"]
+    expected_bridged = 0.5 * first["length"] + second["length"]
+    assert float(row["recovered_um"]) == pytest.approx(expected_recovered, rel=1e-3)
+    assert float(row["bridged_um"]) == pytest.approx(expected_bridged, rel=1e-3)
+
+
+def _shifted(G, offset):
+    """*G* moved by *offset* microns, so all of it sits inside a mask."""
+    H = G.copy()
+    for node in H.nodes:
+        H.nodes[node]["pos"] = np.asarray(H.nodes[node]["pos"], dtype=float) + offset
+    for _u, _v, _k, data in H.edges(keys=True, data=True):
+        data["voxels"] = [tuple(np.asarray(p, dtype=float) + offset) for p in data["voxels"]]
+    return H
+
+
+def _tube_round(G, edges, shape, radius=2.0) -> np.ndarray:
+    """A mask of tubes *radius* microns round *edges* of *G*, on 1 um voxels."""
+    points = np.indices(shape).reshape(3, -1).T.astype(float)
+    inside = np.zeros(len(points), dtype=bool)
+    for a, b, _k in edges:
+        pa, pb = (np.asarray(G.nodes[n]["pos"], dtype=float) for n in (a, b))
+        t = np.clip((points - pa) @ (pb - pa) / np.dot(pb - pa, pb - pa), 0.0, 1.0)
+        inside |= np.linalg.norm(points - (pa + t[:, None] * (pb - pa)), axis=1) <= radius
+    return inside.reshape(shape)
+
+
+def test_a_review_row_reads_the_mask_round_the_loop_when_given_one():
+    H = _shifted(_loop_network(), np.array([4.0, 15.0, 5.0]))
+    loop = _the_loop(H)
+    mask = _tube_round(H, loop.edges, (9, 31, 40))
+
+    row = loop_review_row(H, loop, LoopReview.of(loop, KEPT), mask=mask)
+
+    assert float(row["path_in"]) == pytest.approx(1.0)
+    assert row["inside_one_lumen"] == "False", "a loop round tissue"
+    assert float(row["chords_in_lumen"]) < 0.5
+    assert row["wall_side"] in {"1", "2"}
+    assert len(row["side_lumen_r_um"].split(";")) == 2
+
+
+def test_the_loop_review_csv_sits_in_the_output_folder(tmp_path):
+    """Named after the analysed image, as every other output of the run."""
+    image = str(tmp_path / "run1.tif")
+    expected = tmp_path / "run1_loop_review.csv"
+    assert loop_review_csv_path({"input_path": image, "output_dir": str(tmp_path)}) == expected
+    assert loop_review_csv_path({"input_path": image, "output_dir": str(tmp_path / "missing")}) is None
+    assert loop_review_csv_path({"input_path": image}) is None
+    assert loop_review_csv_path({}) is None and loop_review_csv_path(None) is None
+
+
+def test_decisions_collect_in_one_csv_under_one_header(tmp_path):
+    G = _loop_network()
+    loop = _the_loop(G)
+    first = loop_review_row(G, loop, LoopReview.of(loop, KEPT, time="t1"))
+    second = loop_review_row(G, loop, LoopReview.of(loop, SIDE_DELETED, side=2, time="t2"))
+    path = tmp_path / "run_loop_review.csv"
+
+    append_loop_review(path, [first])
+    append_loop_review(path, [second])
+
+    with path.open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+    assert [r["decision"] for r in rows] == [KEPT, SIDE_DELETED]
+    assert rows[0] == first and rows[1] == second
+    assert path.read_text(encoding="utf-8").count("loop_length_um") == 1
+
+
+# --- Review lists ------------------------------------------------------------------
+
+from haemolynx.graph import network_review as nr  # noqa: E402
+from haemolynx.gui.chrome_tooltips import POST_PROCESSING_TOOLTIPS  # noqa: E402
+from haemolynx.gui.post_processing import (  # noqa: E402
+    ACTION_LABELS,
+    NEEDS_BOUNDARIES,
+    NEEDS_FLOW,
+    NEEDS_MASK,
+    REVIEW_CSV_COLUMNS,
+    REVIEW_JUNCTIONS,
+    REVIEW_LIST_BY_KEY,
+    REVIEW_LISTS,
+    REVIEW_LOOPS,
+    REVIEW_MARKERS,
+    REVIEW_NONE,
+    REVIEW_REGION,
+    POST_PROCESSING_LAYERS,
+    ReviewDecision,
+    append_review_record,
+    find_review_items,
+    item_still_there,
+    items_to_review,
+    network_summary,
+    review_box_um,
+    review_csv_path,
+    review_label,
+    review_marker_layer,
+    review_needs_missing,
+    review_record,
+    review_region_layer,
+    review_table_rows,
+    summary_change,
+    view_centre_zyx,
+)
+
+
+def _item(kind=nr.DEAD_ENDS, centre=(0.0, 0.0, 10.0), edges=((1, 5, 0),), nodes=(5, 1), **measures):
+    points = np.asarray([[0.0, 0.0, 10.0], [0.0, 20.0, 10.0]])
+    return nr.ReviewItem(kind, tuple(nodes), tuple(edges), tuple(centre), "Why it is listed.", measures, points)
+
+
+def test_the_dropdown_lists_none_first_then_junctions_loops_and_every_check_once():
+    keys = [entry.key for entry in REVIEW_LISTS]
+    assert keys[:3] == [REVIEW_NONE, REVIEW_JUNCTIONS, REVIEW_LOOPS]
+    assert keys[3:] == list(nr.REVIEW_KINDS)
+    assert len({entry.label for entry in REVIEW_LISTS}) == len(REVIEW_LISTS)
+    assert all(not entry.actions for entry in REVIEW_LISTS[:3])
+    for entry in REVIEW_LISTS[3:]:
+        assert set(entry.actions) <= set(ACTION_LABELS)
+        if entry.key == nr.RESISTANCE_NODES:
+            # A choice of two nodes, not a check: no verdict to keep or record.
+            assert entry.actions == ("resistance_start", "resistance_end")
+            continue
+        assert entry.actions[-1] == "keep", entry.key
+    for action in ACTION_LABELS:
+        assert POST_PROCESSING_TOOLTIPS[f"review_{action}"].strip()
+    mask_lists = {entry.key for entry in REVIEW_LISTS if entry.uses_mask}
+    assert mask_lists == {
+        nr.DEAD_ENDS, nr.THICK_WALL_ENDS, nr.TWO_IN_ONE_LUMEN, nr.DOUBLED_STRETCHES, nr.FACING_ENDS,
+        nr.UNCOVERED_MASK, nr.LOST_SKELETON,
+    }
+    assert REVIEW_MARKERS in POST_PROCESSING_LAYERS and REVIEW_REGION in POST_PROCESSING_LAYERS
+
+
+def test_a_doubled_stretch_reads_as_its_length_and_the_side_that_sees_it():
+    assert review_label(
+        _item(nr.DOUBLED_STRETCHES, run_um=12.0, seen_from=nr.SEEN_FROM_WIDER), 2
+    ) == "2. 12 µm beside another vessel, seen from the wider"
+    assert review_label(
+        _item(nr.DOUBLED_STRETCHES, run_um=3.5, seen_from=nr.SEEN_FROM_BOTH), 1
+    ) == "1. 3.5 µm beside another vessel"
+
+
+def test_each_kind_of_item_reads_as_one_short_line():
+    assert review_label(_item(kinds="off_mask;short", length_um=12.0), 3) == "3. Node 5: off mask, short, 12 µm"
+    assert review_label(_item(kinds="", length_um=20.0), 1) == "1. Node 5: none of the artefact kinds, 20 µm"
+    assert review_label(
+        _item(nr.CLOSE_JUNCTIONS, nodes=(1, 2), connector_um=1.0, vessels=4), 1
+    ) == "1. Nodes 1, 2: 1 µm apart, 4 vessels"
+    assert review_label(
+        _item(nr.UNSOLVED_PIECES, nodes=(), vessels=2, length_um=30.0, attached_at=""), 2
+    ) == "2. 2 vessel(s), 30 µm, on its own"
+    assert review_label(
+        _item(nr.UNMEASURED_DIAMETERS, diameter_source="table", flow_share=0.25), 1
+    ) == "1. table width, 25.0% of the flow"
+    assert review_label(
+        _item(nr.FLOW_OUTLIERS, velocity_mm_s=5.0, robust_z=-float("inf"), **{"class": "capillary"}), 1
+    ) == "1. 5 mm/s in a capillary"
+    for kind in nr.REVIEW_KINDS:
+        assert review_label(_item(kind), 1).startswith("1. ")
+
+
+def test_an_items_table_lists_its_vessels_still_there_with_their_share_of_the_flow():
+    G = _network()
+    G.edges[1, 5, 0].update(flow_abs=2.0, diameter_source="table")
+    item = _item(edges=((1, 5, 0), (5, 9, 0)))
+
+    edges, rows = review_table_rows(G, item, flow_reference=8.0)
+
+    assert edges == [(1, 5, 0)]
+    (row,) = rows
+    assert row[0] == str(branch_id_of(G, (1, 5, 0)))
+    assert row[2:] == ("5", "table", "B01", "25.00%")
+    assert review_table_rows(G, item)[1][0][5] == ""
+
+
+def test_a_decision_matches_its_item_by_kind_and_place_and_keep_hides_it():
+    item = _item()
+    kept = ReviewDecision.of(item, KEPT, time="t")
+    assert kept.matches(item)
+    assert kept.matches(_item(centre=(0.0, 0.5, 10.0)))
+    assert not kept.matches(_item(centre=(0.0, 5.0, 10.0)))
+    assert not kept.matches(_item(nr.HAIRPINS))
+    assert ReviewDecision.from_dict(kept.as_dict()) == kept
+    assert ReviewDecision.from_dict({"kind": "x"}) is None
+    assert ReviewDecision.from_dict("nonsense") is None
+
+    other = _item(centre=(0.0, 50.0, 10.0))
+    assert items_to_review([item, other], [kept]) == [other]
+    assert items_to_review([item, other], [ReviewDecision.of(item, "deleted")]) == [item, other]
+
+
+def test_an_item_whose_vessels_or_nodes_an_edit_took_away_is_gone():
+    G = _network()
+    assert item_still_there(G, _item())
+    G.remove_edge(1, 5)
+    assert not item_still_there(G, _item())
+    assert not item_still_there(G, _item(edges=(), nodes=(99,)))
+
+
+def test_a_decision_is_a_csv_row_beside_the_run_with_the_items_measures(tmp_path):
+    G = _network()
+    item = _item(kinds="short", length_um=12.0)
+    decision = ReviewDecision.of(item, KEPT, time="2026-10-09T16:00:00")
+
+    row = review_record(G, item, decision, voxel_size_zyx=(2.0, 1.0, 1.0))
+
+    assert list(row)[: len(REVIEW_CSV_COLUMNS)] == list(REVIEW_CSV_COLUMNS)
+    assert row["centre_zyx_vox"] == "0 0 10"
+    assert row["branch_ids"] == str(branch_id_of(G, (1, 5, 0)))
+    assert row["kinds"] == "short" and row["length_um"] == "12"
+    image = str(tmp_path / "run.tif")
+    path = review_csv_path({"input_path": image, "output_dir": str(tmp_path)}, item.kind)
+    assert path == tmp_path / "run_dead_ends_review.csv"
+    assert review_csv_path({"input_path": image, "output_dir": str(tmp_path / "missing")}, item.kind) is None
+    append_review_record(path, row)
+    append_review_record(path, {**row, "decision": "deleted", "extra": "kept"})
+    import csv
+
+    with path.open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+    assert [r["decision"] for r in rows] == [KEPT, "deleted"]
+    # A measure only the later item has is kept, the earlier row blank there.
+    assert rows[1]["extra"] == "kept" and rows[0]["extra"] == ""
+    assert path.read_text(encoding="utf-8").count("centre_zyx_vox") == 1
+
+
+def test_the_review_lists_read_the_segmentation_as_the_low_ram_option_says(tmp_path):
+    """The lists, the raw panel and the drawn-vessel note binarised the whole
+    segmentation in RAM whatever the low-RAM option said."""
+    from haemolynx.gui.post_processing import review_mask_support
+
+    image = np.zeros((6, 20, 30), dtype=np.uint8)
+    image[2:4, 8:12, 3:27] = 255
+    points = np.asarray([[2.5, 9.0, 10.0], [2.5, 2.0, 10.0], [3.0, 10.0, 26.0]])
+    plain = review_mask_support(image, (2.0, 1.0, 1.0), {})
+    low = review_mask_support(
+        image, (2.0, 1.0, 1.0), {"use_memmap_loading": True, "memmap_directory": str(tmp_path)}
+    )
+
+    assert not isinstance(plain.mask, np.memmap) and not plain.low_memory
+    assert isinstance(low.mask, np.memmap) and low.low_memory
+    assert np.array_equal(low.inside(points), plain.inside(points))
+    assert np.allclose(low.radius(points), plain.radius(points))
+
+
+def test_a_decision_undone_is_taken_back_out_of_its_csv(tmp_path):
+    import csv
+
+    from haemolynx.gui.post_processing import withdraw_csv_row
+
+    path = tmp_path / "run_dead_ends_review.csv"
+    first = {"time": "t1", "decision": KEPT, "why": "Its width, 3 um, is odd."}
+    second = {**first, "decision": "deleted", "extra": "1;5;0"}
+    for row in (first, second, first):
+        append_review_record(path, row)
+
+    assert withdraw_csv_row(path, first) is True
+    with path.open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+    assert [r["decision"] for r in rows] == [KEPT, "deleted"], "the last such row goes, the earlier stays"
+    assert withdraw_csv_row(path, {**first, "time": "t9"}) is False
+    assert withdraw_csv_row(tmp_path / "missing.csv", first) is False
+    assert withdraw_csv_row(path, second) and withdraw_csv_row(path, first)
+    assert path.read_text(encoding="utf-8").startswith("time,decision,why,extra")
+    assert not withdraw_csv_row(path, first)
+
+
+def test_a_review_csv_begun_by_a_list_that_measured_less_gains_the_new_measures(tmp_path):
+    """A dead end has ahead_edge only when a vessel lies ahead of it, and the
+    lists gained measures after their CSVs were begun (kind, in_mask_fraction
+    ...): the file's first header used to drop them from every later row."""
+    import csv
+
+    path = tmp_path / "run_dead_ends_review.csv"
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        handle.write("time,decision,kind,length_um\r\n2026-10-09T10:00:00,kept,dead_ends,12\r\n")
+
+    append_review_record(path, {"time": "2026-11-03T10:00:00", "decision": "deleted", "kind": "dead_ends",
+                                "length_um": "30", "in_mask_fraction": "0.25", "ahead_edge": "1;5;0"})
+    append_review_record(path, {"time": "2026-11-03T10:01:00", "decision": KEPT, "kind": "dead_ends",
+                                "length_um": "8"})
+
+    with path.open(newline="", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle)
+        rows = list(reader)
+    assert reader.fieldnames == ["time", "decision", "kind", "length_um", "in_mask_fraction", "ahead_edge"]
+    assert [r["decision"] for r in rows] == [KEPT, "deleted", KEPT]
+    assert rows[0]["length_um"] == "12" and rows[0]["in_mask_fraction"] == ""
+    assert rows[1]["in_mask_fraction"] == "0.25" and rows[1]["ahead_edge"] == "1;5;0"
+    assert rows[2]["ahead_edge"] == ""
+    assert not (tmp_path / "run_dead_ends_review.csv.part").exists()
+
+
+def test_a_loop_review_csv_with_fewer_columns_is_extended_not_misaligned(tmp_path):
+    import csv
+
+    path = tmp_path / "run_loop_review.csv"
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        handle.write("time,decision,loop_length_um\r\n2026-10-09T10:00:00,kept,40\r\n")
+
+    append_loop_review(path, [{"time": "2026-11-03T10:00:00", "decision": SIDE_DELETED, "loop_length_um": "25",
+                               "bridged_um": "3"}])
+
+    with path.open(newline="", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle)
+        rows = list(reader)
+    assert reader.fieldnames[:3] == ["time", "decision", "loop_length_um"]
+    assert set(reader.fieldnames) == {"time", "decision", "loop_length_um", *LOOP_REVIEW_COLUMNS}
+    assert rows[0]["loop_length_um"] == "40" and rows[0]["bridged_um"] == ""
+    assert rows[1]["loop_length_um"] == "25" and rows[1]["bridged_um"] == "3"
+
+
+def test_an_item_is_zoomed_to_with_room_round_it_and_marked_with_a_ring():
+    item = _item()
+    assert review_box_um(item) == pytest.approx(1.6 * 40.0)
+    assert review_box_um(_item(centre=(0.0, 10.0, 10.0))) == pytest.approx(32.0)
+    layer = review_marker_layer([item, _item(centre=(1.0, 2.0, 3.0))])
+    assert layer.name == REVIEW_MARKERS and np.allclose(layer.data, [[0, 0, 10], [1, 2, 3]])
+    region = review_region_layer(item)
+    assert region.name == REVIEW_REGION and len(region.data) == 2
+
+
+def test_the_view_centre_reads_back_what_camera_center_for_wrote():
+    for displayed in ((1, 2), (0, 2), (0, 1, 2), (2, 0, 1)):
+        centre = camera_center_for((5.0, 6.0, 7.0), displayed)
+        point = [5.0, 6.0, 7.0] if len(displayed) == 3 else [5.0 if 0 not in displayed else 0.0,
+                                                               6.0 if 1 not in displayed else 0.0,
+                                                               7.0 if 2 not in displayed else 0.0]
+        assert view_centre_zyx(centre, displayed, point) == pytest.approx((5.0, 6.0, 7.0))
+
+
+def test_a_list_says_what_it_needs_that_the_run_lacks():
+    G = _network()
+    dead_ends, unsolved, outliers = (REVIEW_LIST_BY_KEY[k] for k in (nr.DEAD_ENDS, nr.UNSOLVED_PIECES, nr.FLOW_OUTLIERS))
+    assert review_needs_missing(dead_ends, G, has_mask=False, inlets=(0,), outlets=(4,)) == NEEDS_MASK
+    assert review_needs_missing(dead_ends, G, has_mask=True, inlets=(), outlets=()) is None
+    assert review_needs_missing(unsolved, G, has_mask=False, inlets=(0,), outlets=()) == NEEDS_BOUNDARIES
+    assert review_needs_missing(unsolved, G, has_mask=False, inlets=(0,), outlets=(4,)) is None
+    assert review_needs_missing(outliers, G, has_mask=True, inlets=(0,), outlets=(4,)) == NEEDS_FLOW
+    G.edges[0, 1, 0]["flow_abs"] = 1.0
+    assert review_needs_missing(outliers, G, has_mask=True, inlets=(0,), outlets=(4,)) is None
+
+
+def test_every_list_without_a_mask_is_made_from_the_graph_alone():
+    G = _network()
+    G.add_node(9, pos=np.asarray((0.0, 40.0, 10.0)))
+    _add(G, 5, 9, branch_order="B01", diameter_um=5.0)
+    roles = {"inlet": (0,), "outlet": (4,)}
+    for entry in REVIEW_LISTS[3:]:
+        if entry.uses_mask:
+            continue
+        items = find_review_items(entry.key, G, roles=roles, extent_um=(0.0, 40.0, 30.0))
+        assert all(item.kind == entry.key for item in items), entry.key
+    (piece,) = find_review_items(nr.UNSOLVED_PIECES, G, roles=roles)
+    assert piece.nodes == (1,)
+    with pytest.raises(ValueError, match="not a review list"):
+        find_review_items(REVIEW_JUNCTIONS, G)
+
+
+def _solved_chain(scale: float = 1.0) -> nx.MultiGraph:
+    G = nx.MultiGraph()
+    for n in range(3):
+        G.add_node(n, pos=np.asarray((0.0, 0.0, 10.0 * n)), pressure=100.0 - 50.0 * n)
+    for n in range(2):
+        _add(G, n, n + 1, flow_abs=2.0 * scale)
+    return G
+
+
+def test_a_regenerate_is_summed_up_before_and_after():
+    before = network_summary(_solved_chain(), [0], [2])
+    assert (before.vessels, before.length_um, before.unsolved) == (2, 20.0, 0)
+    assert before.inflow == pytest.approx(2.0)
+    assert before.resistance == pytest.approx(50.0)
+    G = _solved_chain(scale=1.25)
+    G.add_node(7, pos=np.asarray((0.0, 10.0, 10.0)))  # 10 um off node 1
+    _add(G, 1, 7)
+    after = network_summary(G, [0], [2])
+    assert after.unsolved == 1
+
+    line = summary_change(before, after)
+
+    assert line.startswith("vessels 2 → 3; length 20 → 30 µm; unsolved 0 → 1; inflow 2 → 2.5 m³/s (+25.0%)")
+    assert "network resistance 50 → 40 Pa·s/m³ (−20.0%)" in line
+    unsolved_only = network_summary(_network(), [], [])
+    assert unsolved_only.unsolved is None and unsolved_only.inflow is None
+    assert "unsolved" not in summary_change(unsolved_only, unsolved_only)
+
+
+# --- which of a dead end's buttons can do anything -----------------------------
+
+
+def test_a_dead_end_button_is_usable_only_where_it_can_do_something():
+    """Join needs a vessel found ahead; a mark is not offered for what the
+    dead end already is; every other action applies to any item."""
+    from types import SimpleNamespace
+
+    from haemolynx.gui.post_processing import (
+        ACTION_DELETE_ITEM,
+        ACTION_JOIN_AHEAD,
+        ACTION_MARK_BLIND,
+        ACTION_MARK_OPEN,
+        action_applies,
+    )
+
+    nothing_ahead = SimpleNamespace(measures={"kind": "unknown"})
+    ahead = SimpleNamespace(measures={"kind": "broken", "ahead_edge": (4, 5, 0), "ahead_point_um": (1.0, 2.0, 3.0)})
+    assert not action_applies(nothing_ahead, ACTION_JOIN_AHEAD)
+    assert action_applies(ahead, ACTION_JOIN_AHEAD)
+    assert action_applies(nothing_ahead, ACTION_MARK_BLIND) and action_applies(nothing_ahead, ACTION_MARK_OPEN)
+    assert not action_applies(SimpleNamespace(measures={"kind": "blind"}), ACTION_MARK_BLIND)
+    assert not action_applies(SimpleNamespace(measures={"kind": "leaves_image"}), ACTION_MARK_OPEN)
+    assert action_applies(SimpleNamespace(measures=None), ACTION_DELETE_ITEM)
+
+
+# --- Rings: what they ring is coloured, and a click on one chooses it ----------------
+
+from haemolynx.gui.post_processing import (  # noqa: E402
+    LISTED,
+    MARKER_PICK_PX,
+    MARKER_PICK_UM,
+    MARKER_SIZE_UM,
+    branch_ids_of,
+    junction_under_click,
+    marker_colours,
+    marker_pick_um,
+    marker_under_click,
+)
+
+
+def test_a_ringed_vessel_is_listed_unless_chosen_or_selected_and_over_an_added_one():
+    # Vessels 0 .. 4: 1 added, 1-3 ringed, 2 of the chosen item, 3 selected.
+    status = vessel_status([0, 1, 2, 3, 4], added=[1, 4], listed=[1, 2, 3], at_junction=[2, 3], selected=[3])
+    assert list(status) == [CONNECTED, LISTED, AT_JUNCTION, SELECTED, ADDED]
+    assert tuple(status_colours([LISTED])[0]) == STATUS_COLOURS[LISTED]
+    assert len({STATUS_COLOURS[s] for s in (CONNECTED, ADDED, LISTED, AT_JUNCTION, SELECTED)}) == 5
+
+
+def test_rings_are_the_colour_of_what_they_ring_and_the_chosen_one_cyan():
+    colours = marker_colours(3, 1)
+    assert colours.shape == (3, 4)
+    assert [tuple(row) for row in colours] == [STATUS_COLOURS[LISTED], STATUS_COLOURS[AT_JUNCTION], STATUS_COLOURS[LISTED]]
+    assert all(tuple(row) == STATUS_COLOURS[LISTED] for row in marker_colours(2))
+    assert all(tuple(row) == STATUS_COLOURS[LISTED] for row in marker_colours(2, 5)), "no such ring"
+    assert marker_colours(0).shape == (0, 4)
+
+
+def test_the_chosen_junction_and_item_get_a_cyan_ring():
+    G = _network_with_two_junctions()
+    scan = scan_network(G)
+    assert scan.junctions == (1, 4)
+    for chosen, cyan in ((None, None), (1, 0), (4, 1), (99, None)):
+        border = np.asarray(junction_marker_layer(G, scan, chosen).options["border_color"])
+        expected = marker_colours(2, cyan)
+        assert np.allclose(border, expected), chosen
+    assert junction_marker_layer(G, scan).options["size"] == MARKER_SIZE_UM
+
+    first, second = _item(), _item(centre=(1.0, 2.0, 3.0))
+    border = np.asarray(review_marker_layer([first, second], second).options["border_color"])
+    assert np.allclose(border, marker_colours(2, 1))
+    # An equal item that is not the one listed is not the one chosen.
+    border = np.asarray(review_marker_layer([first, second], _item()).options["border_color"])
+    assert np.allclose(border, marker_colours(2))
+
+
+def _network_with_two_junctions() -> nx.MultiGraph:
+    """:func:`_network`, with node 4 a second 4+ junction: 4 -> 6 and 4 -> 7."""
+    G = _network()
+    G.add_node(6, pos=np.asarray((0.0, 0.0, 40.0)))
+    G.add_node(7, pos=np.asarray((0.0, 10.0, 30.0)))
+    _add(G, 4, 6)
+    _add(G, 4, 7)
+    return G
+
+
+def test_a_click_in_or_on_a_ring_chooses_it_and_the_nearest_wins():
+    centres = [(0.0, 0.0, 10.0), (0.0, 20.0, 10.0)]
+    assert marker_under_click(centres, (0.0, 1.0, 11.0)) == 0
+    assert marker_under_click(centres, (0.0, 20.0, 10.0 + 0.99 * MARKER_PICK_UM)) == 1, "on the border"
+    assert marker_under_click(centres, (0.0, 20.0, 10.0 + 1.01 * MARKER_PICK_UM)) is None
+    assert marker_under_click(centres, (0.0, 10.0, 10.0)) is None, "between them, in neither"
+    assert marker_under_click(centres, (0.0, 12.0, 10.0), max_distance=20.0) == 1
+    assert marker_under_click([], (0.0, 0.0, 0.0)) is None
+    # 3D: along the line of sight, whatever depth the ring sits at.
+    assert marker_under_click(centres, (90.0, 19.0, 10.0), view_direction=(1, 0, 0), dims=(0, 1, 2)) == 1
+    # 2D: only the axes on screen count.
+    assert marker_under_click(centres, (55.0, 0.5, 10.0), dims=(1, 2)) == 0
+    assert MARKER_PICK_UM >= MARKER_SIZE_UM / 2
+
+
+def test_a_click_on_a_junctions_ring_names_the_junction():
+    G = _network_with_two_junctions()  # junction 1 at (0, 0, 10), 4 at (0, 0, 30)
+    junctions = scan_network(G).junctions
+    assert junction_under_click(G, junctions, (0.0, 1.0, 29.0)) == 4
+    assert junction_under_click(G, junctions, (0.0, 0.5, 10.0)) == 1
+    assert junction_under_click(G, junctions, (0.0, 0.0, 20.0)) is None
+    # Node 5 is no junction: a click on it chooses nothing.
+    assert junction_under_click(G, junctions, (0.0, 20.0, 10.0)) is None
+
+
+def test_zoomed_out_a_click_a_few_pixels_off_a_ring_still_chooses_it():
+    assert marker_pick_um(None) == MARKER_PICK_UM
+    assert marker_pick_um(0.0) == MARKER_PICK_UM
+    assert marker_pick_um(float("nan")) == MARKER_PICK_UM
+    assert marker_pick_um(100.0) == MARKER_PICK_UM, "zoomed in: the ring itself"
+    assert marker_pick_um(0.5) == pytest.approx(MARKER_PICK_PX / 0.5), "zoomed out: pixels on screen"
+
+
+def test_the_branch_ids_of_vessels_named_either_way_round_once_each():
+    G = _network()
+    ids = branch_ids_of(G, [(5, 1, 0), (1, 5, 0), (1, 2, 0), (8, 9, 0)])
+    assert ids == sorted({branch_id_of(G, (1, 5, 0)), branch_id_of(G, (1, 2, 0))})
+    assert branch_ids_of(G, []) == []
+
+
+# --- Dead ends: the Show filter and removing every listed piece with no junction ------
+
+def _island_items():
+    """dead_end_fixtures' island case and its dead-end review items: a short
+    spur off the trunk (an artefact) and a two-edge piece of its own."""
+    from dead_end_fixtures import VOXEL_SIZE, island
+
+    from haemolynx.graph import network_review as nr
+    from haemolynx.preprocessing import MaskSupport
+
+    case = island()
+    return case, nr.find_dead_ends(case.graph, MaskSupport(case.mask, VOXEL_SIZE))
+
+
+def test_the_dead_end_list_shows_one_kind_or_all_and_only_islands_get_the_remove_button():
+    from haemolynx.graph import network_review as nr
+    from haemolynx.gui.post_processing import (
+        DEAD_END_SHOW,
+        DEAD_END_SHOW_ALL,
+        DEAD_END_SHOW_BY_LABEL,
+        dead_ends_shown,
+        remove_pieces_label,
+        removes_listed_pieces,
+    )
+
+    _case, items = _island_items()
+    assert sorted(i.measures["kind"] for i in items) == ["artefact", "island_end"]
+    assert dead_ends_shown(items, DEAD_END_SHOW_ALL) == items
+    assert [i.measures["kind"] for i in dead_ends_shown(items, "island_end")] == ["island_end"]
+    assert dead_ends_shown(items, "broken") == []
+    assert DEAD_END_SHOW_BY_LABEL["Pieces with no junction"] == "island_end"
+    assert {key for key, _label in DEAD_END_SHOW} == {DEAD_END_SHOW_ALL, *nr.DEAD_END_WORDS}
+    assert removes_listed_pieces(nr.DEAD_ENDS, "island_end")
+    assert not removes_listed_pieces(nr.DEAD_ENDS, DEAD_END_SHOW_ALL)
+    assert not removes_listed_pieces(nr.UNSOLVED_PIECES, "island_end")
+    assert remove_pieces_label(1) == "Remove all 1 listed piece with no junction"
+    assert remove_pieces_label(2270) == "Remove all 2270 listed pieces with no junction"
+
+
+def test_a_dead_end_marked_blind_is_listed_under_its_own_kind_not_all_kinds():
+    """A person's verdict is a decision made: it came back under All kinds on
+    every scan, as no kept item does."""
+    from dataclasses import replace
+
+    from haemolynx.gui.post_processing import DEAD_END_SHOW_ALL, dead_ends_shown
+
+    _case, items = _island_items()
+    marked = replace(items[0], measures={**items[0].measures, "kind": "blind"})
+    listed = [marked, *items[1:]]
+    assert dead_ends_shown(listed, DEAD_END_SHOW_ALL) == items[1:]
+    assert dead_ends_shown(listed, "blind") == [marked]
+
+
+def test_removing_listed_pieces_deletes_each_island_and_records_it_and_nothing_else():
+    from haemolynx.graph.post_processing import has_pending_edits
+    from haemolynx.gui.post_processing import branch_id_of, remove_listed_pieces
+
+    case, items = _island_items()
+    G = case.graph
+    island = next(i for i in items if i.measures["kind"] == "island_end")
+    ids = sorted(branch_id_of(G, e) for e in island.edges)
+    trunk_and_spur = {n for n in G if abs(G.nodes[n]["pos"][1] - 50.0) > 1e-6}
+
+    done = remove_listed_pieces(G, items, time="t0")
+
+    assert set(G.nodes) == trunk_and_spur, "the island's three nodes go, the trunk and its spur stay"
+    assert (done.pieces, done.vessels, done.skipped, done.refused) == (1, 2, 1, [])
+    assert done.length_um == pytest.approx(20.0)
+    assert [d.decision for d in done.decisions] == ["deleted"]
+    row = done.rows[0]
+    assert row["decision"] == "deleted" and row["kind"] == "dead_ends" and row["time"] == "t0"
+    assert row["branch_ids"] == ";".join(str(i) for i in ids), "branchIDs as the list showed them"
+    assert has_pending_edits(G), "the deletions are hand edits post processing brings in line"
+
+
+def test_a_listed_piece_that_holds_a_boundary_node_or_got_a_junction_stays():
+    from haemolynx.gui.post_processing import remove_listed_pieces
+
+    case, items = _island_items()
+    G = case.graph
+    island = next(i for i in items if i.measures["kind"] == "island_end")
+    tip = island.nodes[0]
+
+    held = remove_listed_pieces(G, [island], protected={tip})
+    assert held.pieces == 0 and len(held.refused) == 1 and tip in G
+
+    # A vessel drawn from the middle of the piece to the trunk since the scan
+    # gives it a junction: it is no longer a piece with no junction.
+    middle = (10.0, 50.0, 20.0)
+    G.add_edge(middle, (10.0, 30.0, 40.0), voxels=[list(middle), [10.0, 30.0, 40.0]], length=28.3)
+    joined = remove_listed_pieces(G, [island])
+    assert joined.pieces == 0 and joined.skipped == 1 and tip in G
+
+
+# --- Dead ends: removing every listed interior dead end and merging its junction ------
+
+
+def test_every_dead_end_list_but_pieces_and_blind_ends_gets_the_interior_removal():
+    from haemolynx.graph import network_review as nr
+    from haemolynx.gui.post_processing import (
+        DEAD_END_SHOW,
+        DEAD_END_SHOW_ALL,
+        listed_interior_dead_ends,
+        remove_interior_dead_ends_label,
+        removes_listed_interior_dead_ends,
+    )
+
+    _case, items = _island_items()
+    assert [i.measures["kind"] for i in listed_interior_dead_ends(items)] == ["artefact"], "not the island"
+    offered = {key for key, _label in DEAD_END_SHOW if removes_listed_interior_dead_ends(nr.DEAD_ENDS, key)}
+    assert offered == {DEAD_END_SHOW_ALL, "artefact", "thick_wall", "stops_short", "broken", "unknown"}
+    assert not removes_listed_interior_dead_ends(nr.THICK_WALL_ENDS, DEAD_END_SHOW_ALL)
+    assert remove_interior_dead_ends_label(1) == "Remove all 1 listed interior dead end and merge their junctions"
+    assert remove_interior_dead_ends_label(12) == "Remove all 12 listed interior dead ends and merge their junctions"
+
+
+def test_removing_listed_interior_dead_ends_merges_the_junction_and_leaves_the_island():
+    from haemolynx.graph.post_processing import has_pending_edits
+    from haemolynx.gui.post_processing import branch_id_of, remove_listed_interior_dead_ends
+
+    case, items = _island_items()
+    G = case.graph
+    spur = next(i for i in items if i.measures["kind"] == "artefact")
+    tip, junction = spur.nodes
+    ids = sorted(branch_id_of(G, e) for e in spur.edges)
+    island = {n for n in G if abs(G.nodes[n]["pos"][1] - 50.0) < 1e-6}
+    trunk_length = sum(float(d["length"]) for _u, _v, d in G.edges(junction, data=True) if tip not in (_u, _v))
+
+    done = remove_listed_interior_dead_ends(G, items, time="t0")
+
+    assert tip not in G and junction not in G, "the spur goes and its junction is merged away"
+    assert island <= set(G), "a piece with no junction is not an interior dead end"
+    trunk = [d for u, v, d in G.edges(data=True) if not {u, v} <= island]
+    assert len(trunk) == 1 and float(trunk[0]["length"]) == pytest.approx(trunk_length)
+    assert (done.dead_ends, done.vessels, done.merged, done.left_degree_2) == (1, 1, 1, 0)
+    assert (done.skipped, done.held, done.bridged) == (0, 0, 0)
+    assert done.length_um == pytest.approx(5.0)
+    row = done.rows[0]
+    assert row["decision"] == "deleted" and row["kind"] == "dead_ends" and row["time"] == "t0"
+    assert row["branch_ids"] == ";".join(str(i) for i in ids), "branchIDs as the list showed them"
+    assert has_pending_edits(G), "hand edits post processing brings in line"
+
+
+def test_a_listed_dead_end_held_by_a_boundary_node_bridged_or_changed_stays():
+    from haemolynx.graph.thick_vessel_junctions import IS_ZERO_RESISTANCE
+    from haemolynx.gui.post_processing import remove_listed_interior_dead_ends
+
+    case, items = _island_items()
+    G = case.graph
+    spur = next(i for i in items if i.measures["kind"] == "artefact")
+    tip, junction = spur.nodes
+
+    held = remove_listed_interior_dead_ends(G, [spur], protected={tip})
+    assert (held.dead_ends, held.held) == (0, 1) and tip in G
+
+    G.edges[tuple(spur.edges[0])][IS_ZERO_RESISTANCE] = True
+    bridged = remove_listed_interior_dead_ends(G, [spur])
+    assert (bridged.dead_ends, bridged.bridged) == (0, 1) and tip in G
+    G.edges[tuple(spur.edges[0])][IS_ZERO_RESISTANCE] = False
+
+    # A vessel drawn on from the tip since the scan: no longer a dead end.
+    G.add_edge(tip, (10.0, 30.0, 40.0), voxels=[list(tip), [10.0, 30.0, 40.0]], length=5.0)
+    changed = remove_listed_interior_dead_ends(G, [spur])
+    assert (changed.dead_ends, changed.skipped) == (0, 1) and junction in G
+
+
+def test_two_listed_dead_ends_off_one_junction_are_judged_together():
+    """As the Graph tab's removal judges them: the junction they hung from is
+    left with one vessel, a dead end, not merged into either of them."""
+    from types import SimpleNamespace
+
+    from lumen_artefact_fixtures import polyline_graph
+
+    from haemolynx.gui.post_processing import remove_listed_interior_dead_ends
+
+    hub = (0.0, 0.0, 0.0)
+    G = polyline_graph([[hub, (0, 0, 30)], [hub, (0, 10, 0)], [hub, (0, -10, 0)]])
+
+    def dead_end(tip):
+        (edge,) = list(G.edges(tip, keys=True))
+        return SimpleNamespace(kind="dead_ends", nodes=(tip, hub), edges=(edge,), why="",
+                               centre_um=tip, measures={"kind": "stops_short"})
+
+    done = remove_listed_interior_dead_ends(G, [dead_end((0.0, 10.0, 0.0)), dead_end((0.0, -10.0, 0.0))])
+
+    assert done.dead_ends == 2 and (done.merged, done.left_degree_2) == (0, 0)
+    assert set(G.nodes) == {hub, (0.0, 0.0, 30.0)} and G.degree(hub) == 1
+
+
+# --- Terminal nodes: make an inlet or an outlet, or take the role away ----------------
+
+
+def test_a_terminal_node_is_offered_only_the_roles_it_does_not_have():
+    from types import SimpleNamespace
+
+    from haemolynx.gui.post_processing import (
+        ACTION_KEEP,
+        ACTION_MAKE_INLET,
+        ACTION_MAKE_OUTLET,
+        ACTION_REMOVE_TERMINAL,
+        REVIEW_LIST_BY_KEY,
+        action_applies,
+    )
+
+    entry = REVIEW_LIST_BY_KEY[nr.TERMINAL_NODES]
+    assert entry.actions == (ACTION_MAKE_INLET, ACTION_MAKE_OUTLET, ACTION_REMOVE_TERMINAL, ACTION_KEEP)
+    assert entry.needs == () and not entry.uses_mask
+
+    inlet, outlet, dead_end = (SimpleNamespace(measures={"role": role}) for role in ("inlet", "outlet", ""))
+    offered = {
+        name: [a for a in entry.actions if action_applies(item, a)]
+        for name, item in (("inlet", inlet), ("outlet", outlet), ("dead end", dead_end))
+    }
+    assert offered == {
+        "inlet": [ACTION_MAKE_OUTLET, ACTION_REMOVE_TERMINAL, ACTION_KEEP],
+        "outlet": [ACTION_MAKE_INLET, ACTION_REMOVE_TERMINAL, ACTION_KEEP],
+        "dead end": [ACTION_MAKE_INLET, ACTION_MAKE_OUTLET, ACTION_KEEP],
+    }
+
+
+def test_a_terminal_node_reads_as_its_role_where_it_is_and_how_wide():
+    assert review_label(
+        _item(nr.TERMINAL_NODES, nodes=(7,), role="inlet", leaves_image=True, diameter_um=12.0), 1
+    ) == "1. Node 7 (inlet): leaves the image, 12 µm wide"
+    assert review_label(
+        _item(nr.TERMINAL_NODES, nodes=(4,), role="", leaves_image=False, depth_um=20.0), 2
+    ) == "2. Node 4 (dead end): 20 µm inside"
+
+
+def test_the_terminal_node_list_is_made_from_the_roles_and_the_image_size():
+    G = nx.MultiGraph()
+    for node, pos in {0: (5, 5, 0), 1: (5, 5, 5), 2: (5, 5, 9), 3: (5, 0, 5)}.items():
+        G.add_node(node, pos=np.asarray(pos, dtype=float))
+    for u, v in ((0, 1), (1, 2), (1, 3)):
+        G.add_edge(u, v, voxels=[G.nodes[u]["pos"].tolist(), G.nodes[v]["pos"].tolist()], length=5.0)
+
+    items = find_review_items(
+        nr.TERMINAL_NODES, G, roles={"inlet": (0,), "outlet": (2,)}, extent_um=(10.0, 10.0, 10.0)
+    )
+
+    assert [(item.nodes[0], item.measures["role"]) for item in items] == [(0, "inlet"), (2, "outlet"), (3, "")]
+
+
+def test_broken_vessels_offer_the_join_each_item_can_make():
+    """PLAN_dead_ends.md Phase 6: the list renamed "Broken vessels" (its key
+    still facing_ends, so saved decisions load) joins two facing ends to
+    each other and a dead end pointing at a vessel's side to that side."""
+    from types import SimpleNamespace
+
+    from haemolynx.gui.post_processing import (
+        ACTION_JOIN,
+        ACTION_JOIN_AHEAD,
+        ACTION_KEEP,
+        REVIEW_LIST_BY_KEY,
+        REVIEW_LIST_BY_LABEL,
+        action_applies,
+    )
+
+    entry = REVIEW_LIST_BY_KEY[nr.BROKEN_VESSELS]
+    assert entry is REVIEW_LIST_BY_LABEL["Broken vessels"] and entry.key == "facing_ends"
+    assert entry.actions == (ACTION_JOIN, ACTION_JOIN_AHEAD, ACTION_KEEP)
+    pair = SimpleNamespace(measures={"join": nr.JOIN_ENDS, "ahead_edge": None, "ahead_point_um": None})
+    side = SimpleNamespace(measures={"join": nr.JOIN_SIDE, "ahead_edge": (4, 5, 0), "ahead_point_um": (1.0, 2.0, 3.0)})
+    assert [a for a in entry.actions if action_applies(pair, a)] == [ACTION_JOIN, ACTION_KEEP]
+    assert [a for a in entry.actions if action_applies(side, a)] == [ACTION_JOIN_AHEAD, ACTION_KEEP]
+
+
+def test_a_broken_vessel_reads_as_a_pair_or_a_side_join():
+    assert review_label(
+        _item(nr.BROKEN_VESSELS, nodes=(3, 4), join=nr.JOIN_ENDS, gap_um=6.0, refused=""), 1
+    ) == "1. Nodes 3, 4: 6 µm apart, joinable"
+    assert review_label(
+        _item(nr.BROKEN_VESSELS, nodes=(3, 9), join=nr.JOIN_SIDE, gap_um=9.0, turn_deg=12.0), 2
+    ) == "2. Node 3: 9 µm to a vessel's side, turning 12°"
+
+
+def test_dead_ends_at_thick_vessels_have_their_list_label_and_join():
+    """PLAN_bridging.md 0.2: the list after Dead ends, read by how far each
+    tip stopped from the thick lumen; "Join to the vessel ahead" applies
+    where the thick centreline was found beside it."""
+    from haemolynx.gui.post_processing import (
+        ACTION_DELETE_ITEM,
+        ACTION_JOIN_AHEAD,
+        ACTION_KEEP,
+        ACTION_MARK_BLIND,
+        ACTION_TRACE_ON,
+        REVIEW_LIST_BY_KEY,
+        REVIEW_LIST_BY_LABEL,
+        action_applies,
+    )
+
+    entry = REVIEW_LIST_BY_KEY[nr.THICK_WALL_ENDS]
+    assert entry is REVIEW_LIST_BY_LABEL["Dead ends at thick vessels"]
+    assert entry.actions == (ACTION_TRACE_ON, ACTION_JOIN_AHEAD, ACTION_DELETE_ITEM, ACTION_MARK_BLIND, ACTION_KEEP)
+    keys = [e.key for e in REVIEW_LISTS]
+    assert keys.index(nr.THICK_WALL_ENDS) == keys.index(nr.DEAD_ENDS) + 1
+    outside = _item(nr.THICK_WALL_ENDS, thick_lumen_um=6.0, length_um=11.0,
+                    ahead_edge=(4, 5, 0), ahead_point_um=(1.0, 2.0, 3.0))
+    inside = _item(nr.THICK_WALL_ENDS, thick_lumen_um=-2.5, length_um=11.0,
+                   ahead_edge=None, ahead_point_um=None)
+    assert review_label(outside, 1) == "1. Node 5: 6 µm from the lumen, 11 µm"
+    assert review_label(inside, 2) == "2. Node 5: 2.5 µm inside the lumen, 11 µm"
+    assert action_applies(outside, ACTION_JOIN_AHEAD) and not action_applies(inside, ACTION_JOIN_AHEAD)
+    assert all(action_applies(outside, a) for a in (ACTION_TRACE_ON, ACTION_DELETE_ITEM, ACTION_MARK_BLIND))
+
+
+# --- Skeleton the graph does not follow (PLAN_surface_coverage.md) -------------------
+
+
+def test_skeleton_the_graph_does_not_follow_needs_the_mask_and_the_skeleton_and_reads_as_its_length():
+    from types import SimpleNamespace
+
+    from haemolynx.gui.post_processing import (
+        ACTION_DRAW_ALONG, ACTION_KEEP, NEEDS_SKELETON, REVIEW_LIST_BY_LABEL, action_applies,
+    )
+
+    entry = REVIEW_LIST_BY_LABEL["Skeleton the graph does not follow"]
+    assert entry.key == nr.LOST_SKELETON
+    assert entry.needs == (NEEDS_MASK, NEEDS_SKELETON) and entry.uses_mask
+    assert entry.actions == (ACTION_DRAW_ALONG, ACTION_KEEP)
+    G = _network()
+    assert review_needs_missing(entry, G, has_mask=True, inlets=(), outlets=()) == NEEDS_SKELETON
+    assert review_needs_missing(entry, G, has_mask=False, inlets=(), outlets=(), has_skeleton=True) == NEEDS_MASK
+    assert review_needs_missing(entry, G, has_mask=True, inlets=(), outlets=(), has_skeleton=True) is None
+    item = _item(nr.LOST_SKELETON, nodes=(), edges=(), length_um=32.4, reason=nr.LOST_SKELETON_WHY[None])
+    assert review_label(item, 4) == "4. 32.4 µm of skeleton: the re-trace would draw it"
+    route = SimpleNamespace(measures={}, path_um=np.zeros((3, 3)))
+    branch = SimpleNamespace(measures={}, path_um=None)
+    assert action_applies(route, ACTION_DRAW_ALONG) and not action_applies(branch, ACTION_DRAW_ALONG)
+    assert action_applies(branch, ACTION_KEEP)
+    assert review_region_layer(item).data.shape == (2, 3)  # its voxels, as uncovered mask's
+
+
+def test_the_lost_skeleton_list_is_made_with_the_runs_hole_limit_or_the_rules_own():
+    from test_skeleton_retrace import _ring
+
+    scene = _ring()
+    support = scene.support()
+
+    def reasons(settings):
+        items = find_review_items(nr.LOST_SKELETON, scene.G, support=support, settings=settings,
+                                  skeleton=scene.skeleton)
+        return [item.measures["reason"] for item in items]
+
+    from haemolynx.graph.skeleton_retrace import REFUSED_SMALL_HOLE
+
+    assert reasons({"short_loop_keep_hole_over_um": 1000.0}) == [nr.LOST_SKELETON_WHY[REFUSED_SMALL_HOLE]]
+    # 0 keeps no loop for its hole and the re-trace draws nothing: judged at the rule's own 10 um.
+    assert reasons({"short_loop_keep_hole_over_um": 0.0}) == reasons({}) == [nr.LOST_SKELETON_WHY[None]]
+
+
+def test_the_vessel_end_nearest_a_point_skips_bridges_and_far_vessels():
+    from haemolynx.graph.thick_vessel_junctions import IS_ZERO_RESISTANCE
+    from haemolynx.gui.post_processing import vessel_end_nearest
+
+    G = _network()
+    end = vessel_end_nearest(G, (0.0, 1.0, 5.0))  # beside vessel 0-1, half way
+    assert end.edge == (0, 1, 0) and end.point_um == pytest.approx((0.0, 1.0, 5.0))
+    assert vessel_end_nearest(G, (0.0, 1.0, 5.0), max_distance=0.5) is None
+    G.edges[0, 1, 0][IS_ZERO_RESISTANCE] = True
+    assert vessel_end_nearest(G, (0.0, 1.0, 5.0)) is None  # the bridge is never joined
+
+
+def test_drawing_along_the_skeleton_closes_the_ring_the_clean_up_opened():
+    """What Draw along the skeleton does with a listed piece: the route the
+    re-trace would draw, its ends split into the vessels they meet."""
+    from test_skeleton_retrace import _ring
+
+    from haemolynx.graph.post_processing import add_traced_vessel
+    from haemolynx.gui.post_processing import vessel_end_nearest
+
+    scene = _ring()
+    (item,) = nr.find_lost_skeleton(scene.G, scene.skeleton, scene.support())
+    ends = [vessel_end_nearest(scene.G, p) for p in (item.path_um[0], item.path_um[-1])]
+
+    added = add_traced_vessel(scene.G, ends[0], ends[1], item.path_um)
+
+    assert {added.edge[0], added.edge[1]} == {"A", "D"}
+    assert scene.G.edges[added.edge]["length"] == pytest.approx(40.0, abs=2.0)
+    assert nx.cycle_basis(nx.Graph(scene.G))
+    assert nr.find_lost_skeleton(scene.G, scene.skeleton, scene.support()) == []
+
+
+# --- Two-point resistance nodes: the list that finds and changes the pair ----------
+
+from haemolynx.graph import set_resistance_node  # noqa: E402
+from haemolynx.gui.post_processing import (  # noqa: E402
+    ACTION_RESISTANCE_END,
+    ACTION_RESISTANCE_START,
+    action_applies,
+    resistance_pair_shown,
+)
+from haemolynx.pipeline.stages import Solution, _stamp_solution, solved_resistance_node_pair  # noqa: E402
+
+
+def test_the_pair_shown_is_the_one_chosen_else_the_last_solves_else_the_first_inlet_and_outlet():
+    G = _network()
+    assert resistance_pair_shown(G, (0, 5), (4,)) == (0, 4)
+    assert resistance_pair_shown(G, (77, 5), (4,)) == (5, 4), "an inlet no longer in the network is skipped"
+    assert resistance_pair_shown(G, (), (4,)) is None
+
+    _stamp_solution(G, Solution(equivalent_resistance_nodes=(5, 4)))
+    assert solved_resistance_node_pair(G) == (5, 4)
+    assert resistance_pair_shown(G, (0, 5), (4,)) == (5, 4)
+    # As the stage re-picks it: not once its start has stopped being an inlet.
+    assert resistance_pair_shown(G, (0,), (4,)) == (0, 4)
+
+    set_resistance_node(G, (5, 4), 2, "end")
+    assert resistance_pair_shown(G, (0,), (4,)) == (5, 2)
+
+
+def test_the_two_point_list_is_made_from_the_pair_shown_and_says_which_end_each_is():
+    G = _network()
+    roles = {"inlet": (0,), "outlet": (4,)}
+    entry = REVIEW_LIST_BY_KEY[nr.RESISTANCE_NODES]
+    assert entry.needs == (NEEDS_BOUNDARIES,) and not entry.uses_mask
+
+    items = find_review_items(nr.RESISTANCE_NODES, G, roles=roles)
+    assert [(item.nodes[0], item.measures["two_point"]) for item in items] == [(0, "start"), (4, "end"), (5, "")]
+    assert review_label(items[0], 1).startswith("1. Node 0 (two-point start, inlet): ")
+    assert review_label(items[2], 3).startswith("3. Node 5 (dead end): ")
+
+    set_resistance_node(G, (0, 4), 1, "end")
+    items = find_review_items(nr.RESISTANCE_NODES, G, roles=roles)
+    assert [(item.nodes[0], item.measures["two_point"]) for item in items] == [
+        (0, "start"), (1, "end"), (4, ""), (5, ""),
+    ]
+    assert review_label(items[1], 2).startswith("2. Node 1 (two-point end, junction): ")
+
+
+def test_a_node_is_not_made_the_end_of_the_pair_it_already_is():
+    from types import SimpleNamespace
+
+    start = SimpleNamespace(measures={"two_point": "start"})
+    other = SimpleNamespace(measures={"two_point": ""})
+    assert not action_applies(start, ACTION_RESISTANCE_START) and action_applies(start, ACTION_RESISTANCE_END)
+    assert action_applies(other, ACTION_RESISTANCE_START) and action_applies(other, ACTION_RESISTANCE_END)
+    for action in (ACTION_RESISTANCE_START, ACTION_RESISTANCE_END):
+        assert ACTION_LABELS[action] and POST_PROCESSING_TOOLTIPS[f"review_{action}"]
+
+
+# --- Bridging vessels: the list, Add bridge and Remove bridge -----------------------
+
+
+def test_bridging_vessels_is_a_graph_list_of_bridges_made_vessels_or_kept():
+    from haemolynx.gui.post_processing import ACTION_KEEP, ACTION_UNBRIDGE, REVIEW_LIST_BY_LABEL, action_applies
+
+    entry = REVIEW_LIST_BY_LABEL["Bridging vessels"]
+    assert entry.key == nr.BRIDGES and entry.needs == () and not entry.uses_mask
+    assert entry.actions == (ACTION_UNBRIDGE, ACTION_KEEP)
+    assert ACTION_LABELS[ACTION_UNBRIDGE] == "Make a normal vessel"
+    assert POST_PROCESSING_TOOLTIPS["review_unbridge"]
+    item = _item(nr.BRIDGES, nodes=(3, 8), length_um=4.25, made_by="thick_vessel")
+    assert review_label(item, 2) == "2. Nodes 3, 8: 4.25 µm, into a thick vessel"
+    assert action_applies(item, ACTION_UNBRIDGE)
+
+    G = _network()
+    G.edges[1, 5, 0]["is_zero_resistance"] = True
+    (found,) = find_review_items(nr.BRIDGES, G)
+    assert found.edges == ((1, 5, 0),)
+
+
+def _vessels_layer(G):
+    """Two segments per vessel, as the vessels layer draws them, with each one's vessel."""
+    data, us, vs, keys, index = [], [], [], [], []
+    for i, (u, v, k) in enumerate(G.edges(keys=True)):
+        a, b = np.asarray(G.nodes[u]["pos"], float), np.asarray(G.nodes[v]["pos"], float)
+        middle = (a + b) / 2
+        for start, end in ((a, middle), (middle, b)):
+            data.append([start, end - start])
+            us.append(np.int64(u))
+            vs.append(np.int64(v))
+            keys.append(np.int64(k))
+            index.append(i)
+    features = {"u": np.asarray(us), "v": np.asarray(vs), "key": np.asarray(keys), "edge_index": np.asarray(index)}
+    return np.asarray(data), features
+
+
+def test_segments_where_keeps_the_segments_of_the_vessels_a_click_may_pick():
+    from haemolynx.gui.post_processing import segments_where
+
+    G = _network()
+    G.edges[1, 5, 0]["is_zero_resistance"] = True
+    data, features = _vessels_layer(G)
+
+    bridges, bridge_features = segments_where(G, data, features, lambda _e, d: bool(d.get("is_zero_resistance")))
+    assert len(bridges) == 2
+    assert set(zip(bridge_features["u"].tolist(), bridge_features["v"].tolist())) == {(1, 5)}
+    assert np.array_equal(bridges, data[features["edge_index"] == list(G.edges(keys=True)).index((1, 5, 0))])
+
+    vessels, vessel_features = segments_where(G, data, features, lambda _e, d: not d.get("is_zero_resistance"))
+    assert len(vessels) == 10 and (1, 5) not in set(zip(vessel_features["u"].tolist(), vessel_features["v"].tolist()))
+
+    # A vessel an edit took away since the layer was drawn is no target.
+    G.remove_edge(0, 1)
+    left, left_features = segments_where(G, data, features, lambda _e, _d: True)
+    assert len(left) == 10 and 0 not in left_features["u"].tolist()
+    # A layer without its vessels' ids gives nothing to pick.
+    nothing, _ = segments_where(G, data, {"edge_index": features["edge_index"]}, lambda _e, _d: True)
+    assert len(nothing) == 0
+
+
+def test_the_bridge_cut_is_one_green_point_or_none():
+    from haemolynx.gui.post_processing import BRIDGE_CUT, NEW_NODE_COLOUR, bridge_cut_layer
+
+    assert BRIDGE_CUT in POST_PROCESSING_LAYERS
+    spec = bridge_cut_layer((1.0, 2.0, 3.0))
+    assert spec.name == BRIDGE_CUT and spec.kind == "points"
+    assert spec.data.tolist() == [[1.0, 2.0, 3.0]]
+    assert spec.options["face_color"] == list(NEW_NODE_COLOUR)
+    assert bridge_cut_layer(None).data.shape == (0, 3)

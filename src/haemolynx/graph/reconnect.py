@@ -1,13 +1,24 @@
 """Reconnect secondary loop edges with alternative paths."""
 import logging
+import os
+import pickle
+import queue
+import subprocess
+import sys
 import threading
+from contextlib import contextmanager, nullcontext
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import numpy as np
 import networkx as nx
 from scipy.ndimage import distance_transform_edt, gaussian_filter
 from scipy.spatial.distance import directed_hausdorff
-from skimage.graph import route_through_array
+
+from haemolynx.preprocessing.bridge_mask_support import BridgeMaskSupport, MaskSupport
+from haemolynx.preprocessing.memmap_support import LOW_MEMORY_BLOCK_VOXELS
+
+from ._helpers import EdgeSampleIndex, duplicates_existing_vessel
+from ._platform import nested_native_thread_limit
 
 logger = logging.getLogger(__name__)
 
@@ -15,6 +26,12 @@ logger = logging.getLogger(__name__)
 #: built. Distances up to this are exact; beyond it the field only has to stay
 #: large, which it does.
 COST_WINDOW_PAD = 32
+
+#: Padded routing-window voxels all threads together may hold at once under
+#: the low-RAM option, and the largest single window it routes. A window costs
+#: about 80 bytes per voxel between its distance transform and the router's own
+#: arrays, so this keeps routing to roughly 5 GB however many threads run.
+LOW_MEMORY_ROUTING_VOXELS = 60_000_000
 
 #: A single padded window this much of the volume or more is not worth doing as
 #: a window: at that size it costs about what the whole volume costs, and a
@@ -47,6 +64,362 @@ def _path_length_3d(points) -> float:
     return float(np.sum(np.linalg.norm(np.diff(arr, axis=0), axis=1)))
 
 
+def _relative_spacing(voxel_size) -> np.ndarray:
+    """Per-axis spacing in voxels of the finest axis (1 there, more along a
+    coarser axis). The thresholds below are counted in these units: the same
+    numbers as before on cube voxels, and physical on any other -- where a
+    voxel count made a loop four times longer along a 2 um z than in-plane,
+    and an alternative path four z-voxels (8 um) away "too similar"."""
+    spacing = np.asarray(voxel_size, dtype=float)
+    return spacing / float(spacing.min())
+
+
+def _voxel_path_length(path: np.ndarray, relative_spacing: np.ndarray) -> float:
+    """A voxel path's length in voxels of the finest axis: its first voxel
+    plus each step weighted by how much longer it is, physically, than the
+    same step on cube voxels -- on cube voxels, its voxel count."""
+    steps = np.diff(np.asarray(path, dtype=float), axis=0)
+    if steps.size == 0:
+        return float(len(path))
+    voxel_steps = np.sqrt(np.sum(steps * steps, axis=1))
+    physical = np.sqrt(np.sum((steps * relative_spacing) ** 2, axis=1))
+    return 1.0 + float(np.sum(physical / voxel_steps))
+
+
+def _route(cost, start, end, sampling):
+    """The minimum-cost 26-connected path through *cost*, steps weighted by
+    their physical length (*sampling*): ``(path, total cost)``, as
+    ``skimage.graph.route_through_array`` returns -- which this is, on cube
+    voxels."""
+    from skimage.graph import MCP_Geometric
+
+    router = MCP_Geometric(cost, fully_connected=True, sampling=tuple(sampling))
+    costs, _ = router.find_costs([tuple(start)], [tuple(end)])
+    return router.traceback(tuple(end)), float(costs[tuple(end)])
+
+
+#: Voxels of the finest axis searched round a bridge's own two ends when it is
+#: routed through the mask: room to follow a bend, not to wander off along
+#: the next vessel over.
+MASK_BRIDGE_WINDOW_PAD = 3
+
+
+def route_through_mask(
+    mask: np.ndarray,
+    start_um,
+    end_um,
+    voxel_size,
+    *,
+    pad: int = MASK_BRIDGE_WINDOW_PAD,
+):
+    """The cheapest path from *start_um* to *end_um* through cost
+    ``1 + d^2``, ``d`` the distance to the mask in voxels of the finest axis
+    (the skeleton router's cost, built from the mask), over the two ends'
+    bounding box padded by *pad*: an ``(N, 3)`` physical path from exactly
+    *start_um* to exactly *end_um*, or ``None`` when the window holds no
+    mask or routing fails.
+    """
+    spacing = np.asarray(voxel_size, dtype=float)
+    relative = _relative_spacing(spacing)
+    start, end = np.asarray(start_um, dtype=float), np.asarray(end_um, dtype=float)
+    shape = np.asarray(mask.shape)
+    a = np.clip(np.rint(start / spacing), 0, shape - 1).astype(int)
+    b = np.clip(np.rint(end / spacing), 0, shape - 1).astype(int)
+    reach = np.ceil(pad / relative - 1e-9).astype(int)
+    lo = np.maximum(np.minimum(a, b) - reach, 0)
+    hi = np.minimum(np.maximum(a, b) + reach + 1, shape)
+    window = np.asarray(mask[tuple(slice(int(l), int(h)) for l, h in zip(lo, hi))], dtype=bool)
+    if not window.any():
+        return None
+    distance = (
+        np.zeros(window.shape) if window.all()
+        else distance_transform_edt(~window, sampling=tuple(relative))
+    )
+    try:
+        path, _cost = _route(1.0 + distance**2, a - lo, b - lo, relative)
+    except Exception:
+        logger.debug("Routing a bridge through the mask failed", exc_info=True)
+        return None
+    interior = (np.asarray(path, dtype=float)[1:-1] + lo) * spacing
+    return np.vstack([start, interior.reshape(-1, 3), end])
+
+
+class MaskBridges:
+    """The test one graph reconnect pass runs on each bridge it would draw.
+
+    A bridge is the path the caller hands over, else the route through the
+    mask (:func:`route_through_mask`), else the straight line -- the first
+    that passes the mask-support test (``MaskSupport.accepts``) and, given
+    the two nodes it joins and a turn limit, continues each end the way its
+    vessel was heading (``build.gap_bridge_continues_terminal``, read along
+    the path's first ``GAP_BRIDGE_TANGENT_LENGTH_UM``: the path drawn, not the
+    chord) -- and it is kept when that path does not run beside an existing
+    edge in the same lumen (``_helpers.duplicates_existing_vessel``). The
+    optimise and orphan reconnects hand over ``validate_skeleton_connection``'s
+    line, which is the straight line where the skeleton runs along it; the
+    chord is then not measured again. *kind* is what the edges it accepts are
+    tagged with (``bridge_kind``), alongside their longest run through
+    background (``bridge_background_um``).
+    """
+
+    def __init__(self, G: nx.MultiGraph, support: MaskSupport, kind: str):
+        self.G = G
+        self.support = support
+        self.kind = kind
+        self._index = None
+        self.accepted = 0
+        self.refused_background = 0
+        self.refused_turn = 0
+        self.refused_duplicate = 0
+
+    def bridge(self, start_um, end_um, preferred=None, *, ends=None, max_turn_deg=None):
+        """``(path, support)`` for an acceptable bridge, else ``None``.
+        *preferred*, a physical path the caller already has, is tried before
+        the mask route. With *ends*, the ``(start node, end node)`` the bridge
+        joins, and *max_turn_deg*, a path leaving either end more than that
+        off its vessel's heading is passed over."""
+        start = np.asarray(start_um, float)
+        stop = np.asarray(end_um, float)
+        chord_measured: list = []
+
+        def candidates():
+            if preferred is not None and len(preferred) >= 2:
+                handed = np.asarray(preferred, dtype=float).reshape(-1, 3)
+                if _along_chord(handed, start, stop):
+                    chord_measured.append(True)
+                yield handed
+            routed = route_through_mask(
+                self.support.mask, start_um, end_um, self.support.voxel_size_zyx
+            )
+            if routed is not None:
+                yield routed
+            if not chord_measured:
+                yield np.vstack([start, stop])
+
+        turned = False
+        for path in candidates():
+            measured = self.support.support(path)
+            if not self.support.accepts_support(measured):
+                continue
+            if not self._continues_ends(path, ends, max_turn_deg):
+                turned = True
+                continue
+            break
+        else:
+            if turned:
+                self.refused_turn += 1
+            else:
+                self.refused_background += 1
+            return None
+        if self._index is None:
+            self._index = EdgeSampleIndex(self.G)
+        if duplicates_existing_vessel(
+            path, self.G, self.support.inside, self.support.radius, index=self._index,
+            judge_short_at_middle=True,
+        ):
+            self.refused_duplicate += 1
+            return None
+        self._index.add(path)
+        self.accepted += 1
+        return path, measured
+
+    def _continues_ends(self, path, ends, max_turn_deg) -> bool:
+        """Whether *path* leaves each of *ends* within *max_turn_deg* of the
+        way its vessel was heading (always, without both)."""
+        if ends is None or max_turn_deg is None:
+            return True
+        return path_continues_ends(self.G, path, ends, max_turn_deg)
+
+    def attributes(self, measured: BridgeMaskSupport) -> dict:
+        return {
+            "bridge_kind": self.kind,
+            "bridge_background_um": float(measured.longest_background_um),
+        }
+
+    def log_summary(self) -> None:
+        if self.accepted or self.refused_background or self.refused_turn or self.refused_duplicate:
+            logger.info(
+                "%s bridges: %d drawn through the mask; refused %d crossing background, "
+                "%d whose only way through the mask turned back on an end, and %d running "
+                "beside a vessel in the same lumen",
+                self.kind.capitalize(),
+                self.accepted,
+                self.refused_background,
+                self.refused_turn,
+                self.refused_duplicate,
+            )
+
+
+def path_continues_ends(G: nx.MultiGraph, path, ends, max_turn_deg: float) -> bool:
+    """Whether *path* leaves each of *ends* -- the ``(node at its start, node
+    at its end)``, either None or not in *G* for none -- within
+    *max_turn_deg* of the way that node's vessel was heading
+    (``build.gap_bridge_continues_terminal``, read along the path's first
+    ``GAP_BRIDGE_TANGENT_LENGTH_UM``): the path drawn, not the chord. A route
+    round background can leave an end sideways or back where the straight
+    line does not."""
+    from .build import GAP_BRIDGE_TANGENT_LENGTH_UM, gap_bridge_continues_terminal
+    from .cartwheel_guard import _point_along_polyline
+
+    path = np.asarray(path, dtype=float)
+    for node, walk in ((ends[0], path), (ends[1], path[::-1])):
+        if node is None or node not in G:
+            continue
+        ahead = _point_along_polyline(walk, GAP_BRIDGE_TANGENT_LENGTH_UM)
+        if not gap_bridge_continues_terminal(G, node, ahead, max_turn_deg=max_turn_deg):
+            return False
+    return True
+
+
+def _along_chord(path: np.ndarray, start: np.ndarray, stop: np.ndarray, tolerance_um: float = 1.0) -> bool:
+    """Whether every point of *path* lies within *tolerance_um* of the
+    straight segment from *start* to *stop*: the straight line, up to the
+    rounding of a line drawn through voxels."""
+    d = stop - start
+    length2 = float(d @ d)
+    if length2 <= 0.0:
+        return bool(np.all(np.linalg.norm(path - start, axis=1) <= tolerance_um))
+    t = np.clip((path - start) @ d / length2, 0.0, 1.0)
+    return bool(np.all(np.linalg.norm(path - (start + t[:, None] * d), axis=1) <= tolerance_um))
+
+
+#: Candidate pairs from which routing is handed to worker processes. skimage's
+#: router holds the GIL, so the worker threads otherwise take turns at it; the
+#: workers cost a second or two to start, worth it only for a real run.
+ROUTING_PROCESS_MIN_PAIRS = 32
+
+
+def _routing_environment() -> dict[str, str]:
+    """This process's environment with one OpenMP/BLAS thread per routing
+    worker. The workers already fill the cores, and threadpoolctl's limit
+    (:func:`nested_native_thread_limit`) holds only in the process that sets
+    it: a worker's numpy otherwise starts OpenBLAS with a thread per core and
+    commits ~659 MB doing it, against ~19 MB with one -- 13 GB for 20 workers,
+    which ran a Stack A build out of paging file. Routing does no BLAS, so the
+    paths are the same."""
+    from haemolynx.preprocessing.shared_volume_tasks import _NATIVE_THREAD_VARIABLES
+
+    return {**os.environ, **{name: "1" for name in _NATIVE_THREAD_VARIABLES}}
+
+
+#: What a routing worker process runs: it imports skimage and nothing else --
+#: never this package, and never the caller's own script (multiprocessing's
+#: spawn re-imports ``__main__``, which re-runs any script without an
+#: ``if __name__ == "__main__"`` guard in every worker).
+_ROUTE_WORKER_CODE = """
+import pickle, sys
+from skimage.graph import MCP_Geometric
+read, write = sys.stdin.buffer, sys.stdout.buffer
+while True:
+    try:
+        cost, start, end, sampling = pickle.load(read)
+    except EOFError:
+        break
+    try:
+        router = MCP_Geometric(cost, fully_connected=True, sampling=tuple(sampling))
+        costs, _ = router.find_costs([tuple(start)], [tuple(end)])
+        reply = (True, (router.traceback(tuple(end)), float(costs[tuple(end)])))
+    except BaseException as exc:
+        reply = (False, exc)
+    pickle.dump(reply, write, protocol=pickle.HIGHEST_PROTOCOL)
+    write.flush()
+"""
+
+
+class _Router:
+    """:func:`_route` (``route_through_array(cost, start, end,
+    fully_connected=True)`` on cube voxels), in worker processes when there
+    are any.
+
+    Each call hands its cost array to a free worker over a pipe and waits for
+    the path -- the same call on the same array, so the same path, or the same
+    exception -- while the calling thread releases the GIL, letting the other
+    threads build their windows and the workers route in parallel. If a
+    worker cannot start or stops answering, routing carries on in-thread, as
+    it did before workers existed.
+    """
+
+    def __init__(self, processes: int):
+        self._idle: queue.SimpleQueue = queue.SimpleQueue()
+        self._workers: list[subprocess.Popen] = []
+        self._broken = False
+        if processes <= 1 or getattr(sys, "frozen", False):
+            return
+        try:
+            environment = _routing_environment()
+            for _ in range(int(processes)):
+                worker = subprocess.Popen(
+                    [sys.executable, "-c", _ROUTE_WORKER_CODE],
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    env=environment,
+                )
+                self._workers.append(worker)
+                self._idle.put(worker)
+        except OSError:
+            logger.warning("[reconnect] no routing processes; routing in-thread", exc_info=True)
+            self.close()
+
+    def __call__(self, cost, start, end, sampling=(1.0, 1.0, 1.0)):
+        sampling = tuple(float(s) for s in sampling)
+        if self._workers and not self._broken:
+            worker = self._idle.get()
+            try:
+                if not self._broken:
+                    pickle.dump(
+                        (np.ascontiguousarray(cost), start, end, sampling),
+                        worker.stdin,
+                        protocol=pickle.HIGHEST_PROTOCOL,
+                    )
+                    worker.stdin.flush()
+                    ok, value = pickle.load(worker.stdout)
+                    if ok:
+                        return value
+                    raise value
+            except (OSError, EOFError, pickle.UnpicklingError):
+                if not self._broken:
+                    self._broken = True
+                    logger.warning("[reconnect] a routing process stopped; routing in-thread")
+            finally:
+                # Always handed back, dead or alive: a thread waiting for a
+                # worker must never wait for one that is not coming.
+                self._idle.put(worker)
+        return _route(cost, start, end, sampling)
+
+    def close(self) -> None:
+        for worker in self._workers:
+            try:
+                worker.stdin.close()
+                worker.wait(timeout=10)
+            except Exception:
+                worker.kill()
+        self._workers = []
+
+
+def _gaussian_of_sparse(mask, sigma):
+    """``gaussian_filter(mask, sigma)`` for a *mask* that is zero outside a
+    small region, computed on that region only. *sigma* may be one per axis.
+
+    The filter reaches ``int(4 * sigma + 0.5)`` voxels, so outside the
+    nonzero bounding box grown by that (plus one) the result is exactly zero,
+    and inside it every value reads only the region: its edges are either the
+    window's own -- reflected exactly as the whole window would be -- or so
+    far from anything nonzero that what they reflect is zero too. The same
+    values, from a region the size of one edge's neighbourhood rather than
+    the whole routing window.
+    """
+    nonzero = np.argwhere(mask)
+    if not len(nonzero):
+        return gaussian_filter(mask, sigma=sigma)
+    reach = (4.0 * np.broadcast_to(np.asarray(sigma, dtype=float), (mask.ndim,)) + 0.5).astype(int) + 1
+    lo = np.maximum(nonzero.min(axis=0) - reach, 0)
+    hi = np.minimum(nonzero.max(axis=0) + reach + 1, mask.shape)
+    region = tuple(slice(int(a), int(b)) for a, b in zip(lo, hi))
+    out = np.zeros(mask.shape, dtype=np.result_type(mask.dtype, np.float64))
+    out[region] = gaussian_filter(mask[region], sigma=sigma)
+    return out
+
+
 def reconnect_secondary_loop_edges(
     G,
     skeleton,
@@ -61,9 +434,42 @@ def reconnect_secondary_loop_edges(
     repulsion_sigma=2.0,
     max_workers=None,
     debug=True,
-    max_cache_size=1000,
+    max_cache_size=None,
+    use_memmap=False,
+    low_memory_window_voxels=LOW_MEMORY_ROUTING_VOXELS,
+    routing_processes=None,
 ):
-    """Find alternative paths for degree-2 pairs and add as secondary edges."""
+    """Find alternative paths for degree-2 pairs and add as secondary edges.
+
+    *use_memmap* is the low-RAM option: *skeleton* is read in place instead of
+    copied and the whole-volume cost field is never built. A window's distance
+    transform runs one padded block at a time once it is bigger than one
+    block (the same values; see ``pointwise_distance``), and the windows the
+    threads hold at once are capped at *low_memory_window_voxels* padded
+    voxels between them -- a thread waits for room rather than adding to RAM.
+    A single window bigger than that is skipped, and counted in the closing
+    summary.
+
+    *max_workers* is how many threads prepare and route windows: by default
+    one per CPU core (never more than there are candidate pairs).
+    *routing_processes* is how many worker processes route (see
+    :class:`_Router`): by default one per worker thread, at most
+    :func:`~haemolynx.preprocessing.shared_volume_tasks.default_worker_count`
+    (eight, leaving a core), once there are :data:`ROUTING_PROCESS_MIN_PAIRS`
+    candidate pairs; 0 or 1 routes in-thread. The same paths either way. Under the low-RAM
+    option the threads' windows still share one voxel budget, however many
+    there are.
+
+    *max_cache_size* is accepted for compatibility and ignored: each pair
+    routes through its own windows only once, and a cost field (which carries
+    that pair's own repulsion term) is never valid for another pair.
+
+    Lengths (*min_length_voxels*, *max_length_voxels*), distances
+    (*min_geom_dev*, *margin*, *repulsion_sigma*) and the routing itself are
+    in voxels of the finest axis of *voxel_size* and measured physically (see
+    :func:`_relative_spacing`), so whether a loop edge is added does not
+    depend on which way the loop runs.
+    """
     if not isinstance(G, (nx.Graph, nx.MultiGraph)):
         raise ValueError("G must be a NetworkX Graph or MultiGraph")
     if skeleton is None or skeleton.size == 0:
@@ -80,7 +486,12 @@ def reconnect_secondary_loop_edges(
         return G
 
     deg = dict(G.degree())
-    skeleton_copy = skeleton.astype(bool)
+    relative = _relative_spacing(voxel_size)
+    sampling = tuple(float(s) for s in relative)
+    # Read-only either way; under use_memmap a bool memmap is used as is.
+    skeleton_copy = (
+        np.asanyarray(skeleton, dtype=bool) if use_memmap else skeleton.astype(bool)
+    )
 
     # Windowing is only a saving while the windows stay small: one whole-volume
     # transform costs a fixed amount, and enough window area eventually exceeds
@@ -108,6 +519,41 @@ def reconnect_secondary_loop_edges(
         phi = np.minimum(maxc + COST_WINDOW_PAD, skeleton_copy.shape)
         padded_voxels = int(np.prod(np.maximum(phi - plo, 0)))
 
+        if use_memmap:
+            if padded_voxels > low_memory_window_voxels:
+                return None
+            global_field = None
+        else:
+            global_field = _global_field_or_none(padded_voxels)
+
+        if global_field is not None:
+            return global_field[
+                minc[0]:maxc[0], minc[1]:maxc[1], minc[2]:maxc[2]
+            ].copy()
+
+        crop = skeleton_copy[plo[0]:phi[0], plo[1]:phi[1], plo[2]:phi[2]]
+        dist = None
+        if use_memmap and padded_voxels > LOW_MEMORY_BLOCK_VOXELS:
+            from haemolynx.preprocessing.pointwise_distance import (
+                distance_transform_edt_blockwise,
+            )
+
+            dist = np.empty(crop.shape, dtype=np.float64)
+            try:
+                distance_transform_edt_blockwise(
+                    crop, dist, feature_value=True, sampling=sampling
+                )
+            except ValueError:
+                dist = None  # no skeleton in the window: scipy's own answer
+        if dist is None:
+            dist = distance_transform_edt(~np.asarray(crop), sampling=sampling)
+        inner = tuple(
+            slice(int(minc[d] - plo[d]), int(minc[d] - plo[d] + maxc[d] - minc[d]))
+            for d in range(3)
+        )
+        return 1 + dist[inner] ** 2
+
+    def _global_field_or_none(padded_voxels):
         with cost_lock:
             if cost_budget["global_field"] is None:
                 spent = cost_budget["transformed_voxels"] + padded_voxels
@@ -122,49 +568,53 @@ def reconnect_secondary_loop_edges(
                         f"{spent / max(volume_voxels, 1):.1f}x the volume",
                     )
                     cost_budget["global_field"] = (
-                        1 + distance_transform_edt(~skeleton_copy) ** 2
+                        1 + distance_transform_edt(~skeleton_copy, sampling=sampling) ** 2
                     )
             global_field = cost_budget["global_field"]
             if global_field is None:
                 cost_budget["transformed_voxels"] += padded_voxels
+            return global_field
 
-        if global_field is not None:
-            return global_field[
-                minc[0]:maxc[0], minc[1]:maxc[1], minc[2]:maxc[2]
-            ].copy()
+    # Each category is only ever logged per-occurrence behind `debug` --
+    # normally off, tied to verbose_logging -- so a run where every single
+    # candidate pair hit the same exception looked identical to a run that
+    # found nothing to reconnect. Counted here so a summary can say so
+    # regardless of `debug`, the same way set_poiseuille_resistances reports
+    # its own skipped-edge counts.
+    failure_counts = {
+        "subvolume creation failed": 0,
+        "pathfinding failed": 0,
+        "metric calculation failed": 0,
+        "candidate pair raised unexpectedly": 0,
+        "result processing raised unexpectedly": 0,
+        "routing window skipped: too large for the low-RAM option": 0,
+    }
+    failure_counts_lock = threading.Lock()
 
-        dist = distance_transform_edt(
-            ~skeleton_copy[plo[0]:phi[0], plo[1]:phi[1], plo[2]:phi[2]]
-        )
-        inner = tuple(
-            slice(int(minc[d] - plo[d]), int(minc[d] - plo[d] + maxc[d] - minc[d]))
-            for d in range(3)
-        )
-        return 1 + dist[inner] ** 2
+    def record_failure(category: str) -> None:
+        with failure_counts_lock:
+            failure_counts[category] += 1
 
-    cache_lock = threading.Lock()
-    sub_cache = {}
-    cache_access_order = []
+    routing_room = threading.Condition()
+    routing_in_flight = [0]
 
-    def manage_cache(key, value=None):
-        with cache_lock:
-            if value is not None:
-                if key in sub_cache:
-                    cache_access_order.remove(key)
-                    cache_access_order.append(key)
-                else:
-                    if len(sub_cache) >= max_cache_size:
-                        oldest = cache_access_order.pop(0)
-                        del sub_cache[oldest]
-                    sub_cache[key] = value
-                    cache_access_order.append(key)
-                return value
-            else:
-                if key in sub_cache:
-                    cache_access_order.remove(key)
-                    cache_access_order.append(key)
-                    return sub_cache[key]
-                return None
+    @contextmanager
+    def routing_memory(minc, maxc):
+        """Hold room for one window's padded voxels while it is built and
+        routed (the low-RAM option only)."""
+        plo = np.maximum(minc - COST_WINDOW_PAD, 0)
+        phi = np.minimum(maxc + COST_WINDOW_PAD, skeleton_copy.shape)
+        need = min(int(np.prod(np.maximum(phi - plo, 0))), int(low_memory_window_voxels))
+        with routing_room:
+            while routing_in_flight[0] and routing_in_flight[0] + need > low_memory_window_voxels:
+                routing_room.wait()
+            routing_in_flight[0] += need
+        try:
+            yield
+        finally:
+            with routing_room:
+                routing_in_flight[0] -= need
+                routing_room.notify_all()
 
     def make_repulsion_safe(orig_voxels, sub_shape):
         if not orig_voxels or not sub_shape or any(s <= 0 for s in sub_shape):
@@ -180,7 +630,7 @@ def reconnect_secondary_loop_edges(
         if valid_count == 0:
             return np.zeros(sub_shape, dtype=float)
         try:
-            repulsion_field = gaussian_filter(mask, sigma=repulsion_sigma)
+            repulsion_field = _gaussian_of_sparse(mask, float(repulsion_sigma) / relative)
             max_repulsion = np.max(repulsion_field)
             if max_repulsion > 0:
                 repulsion_field = (repulsion_field / max_repulsion) * 50.0
@@ -251,107 +701,114 @@ def reconnect_secondary_loop_edges(
                 return None
             best_paths = []
             for expansion in [0, 10, 25, 50]:
-                ext = margin + expansion
+                # The same physical reach on every axis.
+                ext = np.ceil((margin + expansion) / relative - 1e-9).astype(int)
                 minc = np.maximum(np.minimum(u_vox, v_vox) - ext, 0)
                 maxc = np.minimum(np.maximum(u_vox, v_vox) + ext + 1, skeleton_copy.shape)
                 if np.any(minc >= maxc):
                     continue
-                cache_key = (*minc, *maxc)
-                cached_result = manage_cache(cache_key)
-                if cached_result is None:
+                # Held from the cost field through routing: under the low-RAM
+                # option the threads' windows share one voxel budget.
+                with (routing_memory(minc, maxc) if use_memmap else nullcontext()):
                     try:
                         sub_cost = window_cost(minc, maxc)
+                        if sub_cost is None:
+                            record_failure(
+                                "routing window skipped: too large for the low-RAM option"
+                            )
+                            break
                         if sub_cost.size == 0:
                             continue
                         orig_rel = [vox - minc for vox in orig_voxels]
                         repulsion = make_repulsion_safe(orig_rel, sub_cost.shape)
                         sub_cost = sub_cost + repulsion
-                        cached_result = (sub_cost, minc)
-                        manage_cache(cache_key, cached_result)
                     except Exception as e:
+                        record_failure("subvolume creation failed")
                         if debug:
                             logger.warning("Subvolume creation failed for %s-%s: %s", u, v, e)
                         continue
-                sub_cost, minc = cached_result
-                ru = u_vox - minc
-                rv = v_vox - minc
-                if (
-                    np.any(ru < 0)
-                    or np.any(rv < 0)
-                    or np.any(ru >= sub_cost.shape)
-                    or np.any(rv >= sub_cost.shape)
-                ):
-                    continue
-                try:
-                    path_coords, cost = route_through_array(
-                        sub_cost, tuple(ru), tuple(rv), fully_connected=True
-                    )
-                    if path_coords is None or len(path_coords) < min_length_voxels:
-                        continue
-                    path_coords = np.array(path_coords)
-                    path_length = len(path_coords)
-                    if path_length > max_length_voxels:
-                        continue
-                    abs_coords = path_coords + minc
-                    if np.any(abs_coords < 0) or np.any(abs_coords >= skeleton.shape):
+                    ru = u_vox - minc
+                    rv = v_vox - minc
+                    if (
+                        np.any(ru < 0)
+                        or np.any(rv < 0)
+                        or np.any(ru >= sub_cost.shape)
+                        or np.any(rv >= sub_cost.shape)
+                    ):
                         continue
                     try:
-                        x, y, z = abs_coords.T
-                        skeleton_hits = skeleton[x, y, z]
-                        overlap = np.sum(skeleton_hits) / path_length
-                        if overlap < min_overlap:
+                        path_coords, cost = router(sub_cost, tuple(ru), tuple(rv), sampling)
+                        if path_coords is None or len(path_coords) == 0:
                             continue
-                        orig_coords = np.array(orig_voxels)
-                        hausdorff_dist = max(
-                            directed_hausdorff(orig_coords, abs_coords)[0],
-                            directed_hausdorff(abs_coords, orig_coords)[0],
-                        )
-                        if hausdorff_dist < min_geom_dev:
+                        path_coords = np.array(path_coords)
+                        path_length = len(path_coords)
+                        physical_length = _voxel_path_length(path_coords, relative)
+                        if physical_length < min_length_voxels:
+                            continue
+                        if physical_length > max_length_voxels:
+                            continue
+                        abs_coords = path_coords + minc
+                        if np.any(abs_coords < 0) or np.any(abs_coords >= skeleton.shape):
+                            continue
+                        try:
+                            x, y, z = abs_coords.T
+                            skeleton_hits = skeleton[x, y, z]
+                            overlap = np.sum(skeleton_hits) / path_length
+                            if overlap < min_overlap:
+                                continue
+                            orig_coords = np.array(orig_voxels)
+                            hausdorff_dist = max(
+                                directed_hausdorff(orig_coords * relative, abs_coords * relative)[0],
+                                directed_hausdorff(abs_coords * relative, orig_coords * relative)[0],
+                            )
+                            if hausdorff_dist < min_geom_dev:
+                                if debug:
+                                    logger.debug(
+                                        "Path too similar (dev=%.1f < %.1f)",
+                                        hausdorff_dist,
+                                        min_geom_dev,
+                                    )
+                                continue
+                            orig_set = set(tuple(coord) for coord in orig_coords)
+                            new_set = set(tuple(coord) for coord in abs_coords)
+                            overlap_voxels = len(orig_set.intersection(new_set))
+                            path_similarity = overlap_voxels / min(
+                                len(orig_set), len(new_set)
+                            )
+                            if path_similarity > 0.7:
+                                if debug:
+                                    logger.debug(
+                                        "Path too similar (voxel overlap=%.2f)",
+                                        path_similarity,
+                                    )
+                                continue
+                            vox3d = (abs_coords * np.array(voxel_size)).tolist()
+                            path_length_3d = _path_length_3d(vox3d)
+                            unique_voxels = len(new_set - orig_set)
+                            path_novelty = unique_voxels / len(new_set)
+                            best_paths.append(
+                                {
+                                    "voxels": vox3d,
+                                    "overlap": overlap,
+                                    "deviation": hausdorff_dist,
+                                    "length": path_length_3d if path_length_3d > 0 else float(path_length),
+                                    "cost": cost,
+                                    "novelty": path_novelty,
+                                    "voxel_similarity": path_similarity,
+                                }
+                            )
+                            if len(best_paths) >= k_paths:
+                                break
+                        except Exception as e:
+                            record_failure("metric calculation failed")
                             if debug:
-                                logger.debug(
-                                    "Path too similar (dev=%.1f < %.1f)",
-                                    hausdorff_dist,
-                                    min_geom_dev,
-                                )
+                                logger.warning("Metric calculation failed: %s", e)
                             continue
-                        orig_set = set(tuple(coord) for coord in orig_coords)
-                        new_set = set(tuple(coord) for coord in abs_coords)
-                        overlap_voxels = len(orig_set.intersection(new_set))
-                        path_similarity = overlap_voxels / min(
-                            len(orig_set), len(new_set)
-                        )
-                        if path_similarity > 0.7:
-                            if debug:
-                                logger.debug(
-                                    "Path too similar (voxel overlap=%.2f)",
-                                    path_similarity,
-                                )
-                            continue
-                        vox3d = (abs_coords * np.array(voxel_size)).tolist()
-                        path_length_3d = _path_length_3d(vox3d)
-                        unique_voxels = len(new_set - orig_set)
-                        path_novelty = unique_voxels / len(new_set)
-                        best_paths.append(
-                            {
-                                "voxels": vox3d,
-                                "overlap": overlap,
-                                "deviation": hausdorff_dist,
-                                "length": path_length_3d if path_length_3d > 0 else float(path_length),
-                                "cost": cost,
-                                "novelty": path_novelty,
-                                "voxel_similarity": path_similarity,
-                            }
-                        )
-                        if len(best_paths) >= k_paths:
-                            break
                     except Exception as e:
+                        record_failure("pathfinding failed")
                         if debug:
-                            logger.warning("Metric calculation failed: %s", e)
+                            logger.warning("Pathfinding failed for %s-%s: %s", u, v, e)
                         continue
-                except Exception as e:
-                    if debug:
-                        logger.warning("Pathfinding failed for %s-%s: %s", u, v, e)
-                    continue
                 if best_paths:
                     break
             if not best_paths:
@@ -361,70 +818,95 @@ def reconnect_secondary_loop_edges(
             )
             return u, v, best_paths[:k_paths]
         except Exception as e:
+            record_failure("candidate pair raised unexpectedly")
             if debug:
                 logger.error("Attempt failed for %s-%s: %s", u, v, e)
             return None
 
     added = 0
     edge_lock = threading.Lock()
-    max_workers = max_workers or min(4, len(pairs))
+    # One thread per CPU core by default: each thread prepares windows while
+    # the routing workers (one per thread) route them.
+    max_workers = max_workers or max(1, min(os.cpu_count() or 1, len(pairs)))
+    if routing_processes is None:
+        from haemolynx.preprocessing.shared_volume_tasks import default_worker_count
+
+        routing_processes = (
+            min(max_workers, default_worker_count())
+            if len(pairs) >= ROUTING_PROCESS_MIN_PAIRS
+            else 0
+        )
+    router = _Router(routing_processes)
     try:
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            pair_data_list = [(u, v, pos) for u, v in pairs]
-            future_to_pair = {
-                executor.submit(attempt_reconnect, pd): (pd[0], pd[1])
-                for pd in pair_data_list
-            }
-            for future in as_completed(future_to_pair):
-                u, v = future_to_pair[future]
-                try:
-                    result = future.result()
-                    if not result:
-                        continue
-                    u, v, candidates_list = result
-                    if debug:
-                        logger.info("%s-%s -> %d candidates", u, v, len(candidates_list))
-                    with edge_lock:
-                        has_secondary = False
-                        if G.has_edge(u, v):
-                            for key, edge_data in G[u][v].items():
-                                if edge_data.get("secondary", False):
-                                    has_secondary = True
-                                    break
-                        if has_secondary:
-                            if debug:
-                                logger.info("%s-%s already has secondary edge", u, v)
+        with nested_native_thread_limit():
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                pair_data_list = [(u, v, pos) for u, v in pairs]
+                future_to_pair = {
+                    executor.submit(attempt_reconnect, pd): (pd[0], pd[1])
+                    for pd in pair_data_list
+                }
+                for future in as_completed(future_to_pair):
+                    u, v = future_to_pair[future]
+                    try:
+                        result = future.result()
+                        if not result:
                             continue
-                        best = candidates_list[0]
-                        G.add_edge(
-                            u,
-                            v,
-                            voxels=best["voxels"],
-                            length=best["length"],
-                            overlap=best["overlap"],
-                            deviation=best["deviation"],
-                            novelty=best["novelty"],
-                            secondary=True,
-                        )
-                        added += 1
+                        u, v, candidates_list = result
                         if debug:
-                            logger.info(
-                                "Added secondary edge %s-%s: novelty=%.2f",
+                            logger.info("%s-%s -> %d candidates", u, v, len(candidates_list))
+                        with edge_lock:
+                            has_secondary = False
+                            if G.has_edge(u, v):
+                                for key, edge_data in G[u][v].items():
+                                    if edge_data.get("secondary", False):
+                                        has_secondary = True
+                                        break
+                            if has_secondary:
+                                if debug:
+                                    logger.info("%s-%s already has secondary edge", u, v)
+                                continue
+                            best = candidates_list[0]
+                            G.add_edge(
                                 u,
                                 v,
-                                best["novelty"],
+                                voxels=best["voxels"],
+                                length=best["length"],
+                                overlap=best["overlap"],
+                                deviation=best["deviation"],
+                                novelty=best["novelty"],
+                                secondary=True,
                             )
-                except Exception as e:
-                    if debug:
-                        logger.error("Processing failed for %s-%s: %s", u, v, e)
-                    continue
+                            added += 1
+                            if debug:
+                                logger.info(
+                                    "Added secondary edge %s-%s: novelty=%.2f",
+                                    u,
+                                    v,
+                                    best["novelty"],
+                                )
+                    except Exception as e:
+                        record_failure("result processing raised unexpectedly")
+                        if debug:
+                            logger.error("Processing failed for %s-%s: %s", u, v, e)
+                        continue
     except Exception as e:
         logger.error("Threading failed: %s", e)
         return G
+    finally:
+        router.close()
 
-    with cache_lock:
-        sub_cache.clear()
-        cache_access_order.clear()
+    # Always reported, unlike the per-occurrence messages above: a run where
+    # every candidate pair failed the same way must not look identical to a
+    # run that cleanly found nothing to reconnect.
+    for category, count in failure_counts.items():
+        if count:
+            logger.warning(
+                "reconnect_secondary_loop_edges: %s (%d occurrence%s; "
+                "enable verbose_logging for per-pair detail)",
+                category,
+                count,
+                "" if count == 1 else "s",
+            )
 
     if debug:
         logger.info("Done: added %d secondary edges", added)

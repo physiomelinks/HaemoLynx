@@ -18,6 +18,8 @@ from typing import Any, Iterable, Mapping, Sequence
 
 import networkx as nx
 
+from haemolynx.statistics import glossary
+
 #: Two runs of the same code are bit-identical, so anything above pure float
 #: repr noise is a real difference worth showing a reviewer.
 DEFAULT_REL_TOL = 1e-12
@@ -441,15 +443,20 @@ def read_statistics_csv(
         header = next(reader, None)
         if header is None:
             return rows
-        for row in reader:
-            if len(row) < 3:
-                continue
-            section, metric, value = row[0], row[1], row[2]
-            if metric in ignored_metrics:
-                continue
-            unit = row[3] if len(row) > 3 else ""
-            key = f"{section} / {metric}" + (f" [{unit}]" if unit else "")
-            rows[key] = value
+        table = [row for row in reader if len(row) >= 3]
+    # Units read through the glossary, so a reference run from before every
+    # row had its unit compares row for row with this branch's.
+    by_name = {}
+    for row in table:
+        name, _metric, _unit = glossary.csv_metric_and_unit(row[1], row[3] if len(row) > 3 else "")
+        by_name[name] = row[2]
+    for row in table:
+        section, metric, value = row[0], row[1], row[2]
+        if metric in ignored_metrics:
+            continue
+        _name, metric, unit = glossary.csv_metric_and_unit(metric, row[3] if len(row) > 3 else "", by_name)
+        key = f"{section} / {metric}" + (f" [{unit}]" if unit else "")
+        rows[key] = value
     return rows
 
 

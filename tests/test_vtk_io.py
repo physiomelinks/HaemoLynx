@@ -307,6 +307,179 @@ def test_flow_arrays_appear_once_any_edge_carries_a_flow(tmp_path):
     assert int(np.isnan(flow).sum()) == 1
 
 
+def test_each_vessel_says_whether_its_flow_is_an_answer_and_why(tmp_path):
+    """PLAN_dead_ends.md Phase 8 (and PLAN_dale_review_fixes.md item 5): the
+    flow state, solved flag, length, diameter, its source and bridges go out
+    with every vessel; flows are NaN only where they are no answer at all
+    (no inlet and outlet reach), while a blind end's zero flow is kept; the
+    nodes carry their dead-end kind; the run's blood model is in field data."""
+    from haemolynx.graph import FLOW_SOLVED, FLOW_STATE, IS_ZERO_RESISTANCE
+
+    G = nx.MultiGraph(viscosity_law="pries", diameter_basis="plasma_column", haematocrit=0.45,
+                      open_end_conditions={"model": "terminal_resistance"})
+    pos = {0: (0.0, 0.0, 0.0), 1: (10.0, 0.0, 0.0), 2: (10.0, 10.0, 0.0), 3: (50.0, 0.0, 0.0), 4: (60.0, 0.0, 0.0)}
+    for n, p in pos.items():
+        G.add_node(n, pos=np.asarray(p), pressure=100.0 if n < 3 else 0.0)
+    G.nodes[2]["dead_end_kind"] = "unknown"
+    for (u, v), state, flow in (((0, 1), "solved", 2e-15), ((1, 2), "blind_end", 0.0), ((3, 4), "no_boundary", 0.0)):
+        G.add_edge(u, v, voxels=[pos[u], pos[v]], length=float(np.linalg.norm(np.subtract(pos[u], pos[v]))),
+                   diameter_um=5.0, diameter_source="fwhm", flow_abs=flow, flow_signed=flow, pressure_drop=0.0,
+                   **{FLOW_SOLVED: state == "solved", FLOW_STATE: state})
+    G.edges[0, 1, 0][IS_ZERO_RESISTANCE] = True
+
+    out = graph_to_vtk(G, tmp_path / "states")
+    vessels, nodes = pv.read(out["vessels_path"]), pv.read(out["nodes_path"])
+
+    assert list(vessels.cell_data["flow_state"]) == ["solved", "blind_end", "no_boundary"]
+    assert list(vessels.cell_data["flow_solved"]) == [1, 0, 0]
+    assert vessels.cell_data["flow_solved"].dtype == np.uint8
+    assert list(vessels.cell_data["is_zero_resistance"]) == [1, 0, 0]
+    assert vessels.cell_data["length_um"] == pytest.approx([10.0, 10.0, 10.0])
+    assert vessels.cell_data["diameter_um"] == pytest.approx([5.0, 5.0, 5.0])
+    assert list(vessels.cell_data["diameter_source"]) == ["fwhm", "fwhm", "fwhm"]
+    flow = vessels.cell_data["flow_abs"]
+    assert flow[0] == pytest.approx(2e-15) and flow[1] == 0.0 and np.isnan(flow[2])
+    assert list(nodes.point_data["dead_end_kind"]) == ["", "", "unknown", "", ""]
+    pressure = nodes.point_data["pressure"]
+    assert pressure[2] == 100.0 and np.isnan(pressure[3]) and np.isnan(pressure[4])
+    assert str(vessels.field_data["viscosity_law"][0]) == "pries"
+    assert str(vessels.field_data["open_end_model"][0]) == "terminal_resistance"
+    assert "haemolynx_version" in vessels.field_data
+
+
+def _open_end_network() -> nx.MultiGraph:
+    """Inlet 0 (100 Pa) -> 1 (60 Pa) -> outlet 2 (0 Pa), and three open ends
+    leaving the image off node 1, each given a condition: 3 feeds the network
+    (80 Pa), 4 drains it (20 Pa), 5 carries no flow (60 Pa)."""
+    G = nx.MultiGraph(open_end_conditions={
+        "model": "estimated", "to_inlet": [[3, 1e-17]], "to_outlet": [[4, 1e-17], [5, 1e-17]],
+        "as_outlets": [], "info": {},
+    })
+    pos = {0: (0.0, 0.0, 0.0), 1: (10.0, 0.0, 0.0), 2: (20.0, 0.0, 0.0), 3: (10.0, 10.0, 0.0),
+           4: (10.0, -10.0, 0.0), 5: (10.0, 0.0, 10.0)}
+    pressure = {0: 100.0, 1: 60.0, 2: 0.0, 3: 80.0, 4: 20.0, 5: 60.0}
+    for n, p in pos.items():
+        G.add_node(n, pos=np.asarray(p), pressure=pressure[n])
+    for n in (3, 4, 5):
+        G.nodes[n]["dead_end_kind"] = "leaves_image"
+    for (u, v), flow in (((0, 1), 4e-15), ((1, 2), 6e-15), ((1, 3), 3e-15), ((1, 4), 1e-15), ((1, 5), 0.0)):
+        G.add_edge(u, v, voxels=[pos[u], pos[v]], length=10.0, diameter_um=5.0, flow_abs=flow,
+                   flow_signed=flow if pressure[u] >= pressure[v] else -flow, flow_state="solved")
+    return G
+
+
+def test_each_node_names_its_boundary_role_and_each_vessel_whether_the_faces_cut_it(tmp_path):
+    """PLAN_dead_ends.md Phase 8: the nodes file says which node is an inlet,
+    an outlet, or an open end the solve gave a condition -- feeding the
+    network or draining it, by its solved flow -- and the vessels file which
+    vessels the image faces cut short (decision D5)."""
+    G = _open_end_network()
+
+    out = graph_to_vtk(G, tmp_path / "roles", inlet_nodes=[0], outlet_nodes=[2])
+    vessels, nodes = pv.read(out["vessels_path"]), pv.read(out["nodes_path"])
+
+    assert list(nodes.point_data["node_id"]) == [0, 1, 2, 3, 4, 5]
+    assert list(nodes.point_data["boundary_role"]) == [
+        "inlet", "", "outlet", "open_end_feeds", "open_end_drains", "open_end",
+    ]
+    assert list(vessels.cell_data["cut_by_image_face"]) == [0, 0, 1, 1, 1]
+    assert vessels.cell_data["cut_by_image_face"].dtype == np.uint8
+    assert str(nodes.field_data["boundary_role_unit"][0]) == "-"
+
+
+def test_without_boundaries_given_no_node_has_a_role(tmp_path, simple_graph):
+    out = graph_to_vtk(simple_graph, tmp_path / "plain")
+    nodes = pv.read(out["nodes_path"])
+    assert set(nodes.point_data["boundary_role"]) == {""}
+
+
+def _run_field_data(vessels) -> dict:
+    """The vessels file's field data beyond the units."""
+    return {
+        name: vessels.field_data[name][0]
+        for name in vessels.field_data.keys()
+        if not name.endswith("_unit") and not name.startswith("points_")
+    }
+
+
+def test_the_field_data_names_the_blood_model_and_boundaries_that_made_the_numbers(tmp_path):
+    """PLAN_dale_review_fixes.md item 5, step 2: every field of
+    ``RUN_FIELD_DATA`` reads back as the graph recorded it -- the law, the
+    diameter basis, the haematocrit, the haematocrit model and the open-end
+    model -- with the version, and nothing else beside the units."""
+    from haemolynx import __version__
+    from haemolynx.visualization.vtk_io import RUN_FIELD_DATA
+
+    from haemolynx.graph import tag_vessels_by_size
+
+    G = _straight_edge_graph(10.0)
+    G.graph.update(
+        viscosity_law="pries_in_vivo_1994", diameter_basis="endothelial", haematocrit=0.4,
+        haematocrit_model="distributed_iterative", open_end_conditions={"model": "estimated"},
+    )
+    tag_vessels_by_size(G, 6.0, 15.0)
+
+    fields = _run_field_data(pv.read(graph_to_vtk(G, tmp_path / "model")["vessels_path"]))
+
+    assert set(fields) == set(RUN_FIELD_DATA)
+    assert float(fields["vessel_size_mid_min_um"]) == 6.0
+    assert float(fields["vessel_size_wide_min_um"]) == 15.0
+    assert str(fields["haemolynx_version"]) == str(__version__)
+    assert str(fields["viscosity_law"]) == "pries_in_vivo_1994"
+    assert str(fields["diameter_basis"]) == "endothelial"
+    assert float(fields["haematocrit"]) == 0.4
+    assert str(fields["haematocrit_model"]) == "distributed_iterative"
+    assert str(fields["open_end_model"]) == "estimated"
+
+
+def test_discharge_haematocrit_follows_its_own_vessel_and_is_blank_where_the_flow_is_no_answer(tmp_path):
+    """Item 5: each vessel's own discharge haematocrit, as float64; NaN on a
+    vessel that has none and on one no inlet and outlet reach, where it is no
+    more an answer than the flows are."""
+    from haemolynx.graph import FLOW_SOLVED, FLOW_STATE
+
+    G = nx.MultiGraph()
+    pos = {0: (0.0, 0.0, 0.0), 1: (10.0, 0.0, 0.0), 2: (20.0, 5.0, 0.0), 3: (20.0, -5.0, 0.0),
+           4: (50.0, 0.0, 0.0), 5: (60.0, 0.0, 0.0)}
+    for n, p in pos.items():
+        G.add_node(n, pos=np.asarray(p))
+    for (u, v), state, haematocrit in (
+        ((0, 1), "solved", 0.45), ((1, 2), "solved", 0.3), ((1, 3), "solved", None),
+        ((4, 5), "no_boundary", 0.45),
+    ):
+        extra = {} if haematocrit is None else {"discharge_haematocrit": haematocrit}
+        G.add_edge(u, v, voxels=[pos[u], pos[v]], flow_abs=1e-15,
+                   **extra, **{FLOW_SOLVED: state == "solved", FLOW_STATE: state})
+
+    vessels = pv.read(graph_to_vtk(G, tmp_path / "haematocrit")["vessels_path"])
+
+    by_edge = {
+        (int(u), int(v)): index
+        for index, (u, v) in enumerate(zip(vessels.cell_data["edge_u"], vessels.cell_data["edge_v"]))
+    }
+    haematocrit = vessels.cell_data["discharge_haematocrit"]
+    assert haematocrit.dtype == np.float64
+    assert haematocrit[by_edge[(0, 1)]] == 0.45
+    assert haematocrit[by_edge[(1, 2)]] == 0.3
+    assert np.isnan(haematocrit[by_edge[(1, 3)]])
+    assert np.isnan(haematocrit[by_edge[(4, 5)]])
+    assert str(vessels.field_data["discharge_haematocrit_unit"][0]) == "fraction"
+
+
+def test_a_graph_with_no_diameters_haematocrit_or_blood_model_still_writes(tmp_path):
+    """Item 5: nothing measured or solved yet -- the diameters are NaN, the
+    source empty, no haematocrit array, and the field data says only which
+    version wrote it."""
+    vessels = pv.read(graph_to_vtk(_straight_edge_graph(10.0), tmp_path / "bare")["vessels_path"])
+
+    assert vessels.n_lines == 1
+    assert np.isnan(vessels.cell_data["diameter_um"]).all()
+    assert vessels.cell_data["length_um"] == pytest.approx([10.0])
+    assert [str(s) for s in vessels.cell_data["diameter_source"]] == [""]
+    assert "discharge_haematocrit" not in vessels.cell_data
+    assert set(_run_field_data(vessels)) == {"haemolynx_version"}
+
+
 # --- degenerate inputs are dropped, not exported as broken cells ------------
 
 
@@ -436,3 +609,33 @@ def test_pericyte_count_in_the_summary_matches_the_written_file(tmp_path):
     assert out["pericyte_count"] == 3
     assert pericytes.n_points == 3
     assert np.allclose(np.sort(pericytes.points[:, 0]), [20.0, 50.0, 80.0])
+
+
+def test_the_vtk_viewer_is_not_opened_off_the_main_thread(simple_graph, tmp_path, monkeypatch, caplog):
+    """A VTK window opened on the napari panel's worker thread hangs the run or
+    takes the process down; the files are written and the viewer is skipped."""
+    import logging
+    import threading
+
+    out = graph_to_vtk(simple_graph, tmp_path / "threaded")
+
+    def refuse(*_args, **_kwargs):
+        raise AssertionError("the VTK viewer was opened off the main thread")
+
+    monkeypatch.setattr(pv.Plotter, "show", refuse)
+    seen: dict[str, object] = {}
+
+    def run() -> None:
+        try:
+            seen["plotter"] = visualize_vtk_network(out["vessels_path"], show=True)
+        except BaseException as error:  # noqa: BLE001 - reported below
+            seen["error"] = error
+
+    with caplog.at_level(logging.WARNING, logger="haemolynx.visualization.vtk_io"):
+        worker = threading.Thread(target=run)
+        worker.start()
+        worker.join(timeout=60)
+
+    assert "error" not in seen, seen.get("error")
+    assert seen["plotter"] is not None
+    assert "not on the main thread" in caplog.text

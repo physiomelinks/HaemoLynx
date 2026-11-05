@@ -1,0 +1,722 @@
+"""Branch-hover tooltip helpers: availability, formatting, polyline hit-testing.
+
+Pure logic for the napari Vectors hover path that shows branchID (always) plus
+user-selected metrics. No napari / Qt imports -- those live in the widget tests.
+"""
+from __future__ import annotations
+
+import networkx as nx
+import numpy as np
+import pytest
+
+from haemolynx.gui.branch_hover import (
+    BRANCH_HOVER_LABELS,
+    BRANCH_HOVER_MAX_DISTANCE,
+    BRANCH_HOVER_METRICS,
+    available_branch_hover_metrics,
+    available_metrics_from_features,
+    branch_hover_rows,
+    default_selected_metrics,
+    edge_tortuosity,
+    filter_selected_metrics,
+    format_branch_tooltip,
+    format_metric_value,
+    hover_features_for_segments,
+    nearest_vector_index,
+    panel_metric_options,
+    tooltips_from_feature_table,
+)
+from test_gui_results import a_graph, built, network, spec_named
+from haemolynx.graph import tag_vessels_by_size
+from haemolynx.gui.results import (
+    BRANCH_HOVER,
+    FLOW_DIRECTION,
+    VESSEL_LABELS,
+    VESSELS,
+    edge_polylines,
+    polylines_to_vectors,
+)
+
+
+def graph_with(**attrs) -> nx.MultiGraph:
+    """``a_graph`` plus per-edge attributes (flow, order, resistance, ...)."""
+    return a_graph(**attrs)
+
+
+def test_branch_id_is_edge_index_even_when_segment_ids_collide():
+    """Tooltip identity is the graph-edge enumeration, not ``segment_id``.
+
+    Every simple MultiGraph edge has key 0, and later topology steps often
+    leave several edges sharing ``segment_id=0``. Those used to make every
+    tooltip read ``branchID: 0``.
+    """
+    graph = a_graph()
+    for _u, _v, _key, data in graph.edges(keys=True, data=True):
+        data["segment_id"] = 0
+    ids, features = branch_hover_rows(graph, selected=())
+    assert ids == ["0", "1", "2"]
+    assert list(features["branch_id"]) == ["0", "1", "2"]
+    assert list(features["tooltip"]) == ["branchID: 0", "branchID: 1", "branchID: 2"]
+
+
+def test_branch_id_matches_identity_edge_index_when_an_edge_cannot_be_drawn():
+    """Skipped polylines keep the same numbering as the layer ``edge_index``."""
+    graph = nx.MultiGraph()
+    graph.add_node(0)
+    graph.add_node(1)
+    graph.add_edge(0, 1, length=1.0, segment_id=99)
+    for node_id, z in enumerate((0.0, 10.0, 20.0), start=2):
+        graph.add_node(node_id, pos=np.array([z, 0.0, 0.0]))
+    for u, v in ((2, 3), (3, 4)):
+        graph.add_edge(
+            u, v, key=0,
+            voxels=[graph.nodes[u]["pos"].tolist(), graph.nodes[v]["pos"].tolist()],
+            length=10.0, segment_id=0,
+        )
+    paths, identity = edge_polylines(graph)
+    ids, features = branch_hover_rows(graph, selected=())
+    assert len(paths) == 2
+    assert list(identity["edge_index"]) == [1, 2]
+    assert ids == ["1", "2"]
+    assert list(features["branch_id"]) == ["1", "2"]
+    assert list(features["tooltip"]) == ["branchID: 1", "branchID: 2"]
+
+
+def test_available_metrics_on_geometry_only_graph():
+    """After build_network: length and tortuosity, nothing haemodynamic."""
+    graph = a_graph()
+    assert available_branch_hover_metrics(graph) == ("tortuosity", "length")
+
+
+def test_available_metrics_include_order_when_branch_order_present():
+    graph = a_graph(branch_order="A1")
+    assert available_branch_hover_metrics(graph) == (
+        "order",
+        "tortuosity",
+        "length",
+    )
+
+
+def test_available_metrics_include_resistance_when_present():
+    graph = a_graph(resistance=1e15)
+    assert available_branch_hover_metrics(graph) == (
+        "resistance",
+        "tortuosity",
+        "length",
+    )
+
+
+def test_available_metrics_include_flow_when_present():
+    graph = a_graph(flow_abs=1.5e-12)
+    assert available_branch_hover_metrics(graph) == (
+        "flow",
+        "tortuosity",
+        "length",
+    )
+
+
+def test_available_metrics_full_solved_graph():
+    graph = a_graph(
+        branch_order="C0",
+        resistance=2e14,
+        flow_abs=3e-13,
+        flow_solved=True,
+        diameter_um=5.0,
+        diameter_source="measured",
+        fwhm_status="measured",
+        drawn_mask_fraction=1.0,
+        drawn_background_run_um=0.0,
+    )
+    tag_vessels_by_size(graph, 6.0, 15.0)
+    assert available_branch_hover_metrics(graph) == BRANCH_HOVER_METRICS
+
+
+def test_a_size_class_is_offered_with_the_widths_it_holds_only_under_the_convention():
+    graph = a_graph(diameter_um=7.5)
+    assert "size_class" not in available_branch_hover_metrics(graph)
+    # A class left on a vessel with no convention recorded says nothing.
+    for _u, _v, data in graph.edges(data=True):
+        data["vessel_size_class"] = "mid"
+    assert "size_class" not in available_branch_hover_metrics(graph)
+
+    tag_vessels_by_size(graph, 6.0, 15.0)
+    _ids, features = branch_hover_rows(graph, selected=("size_class",))
+    assert set(features["size_class"]) == {"mid, 6-15 µm"}
+    assert {tip.splitlines()[1] for tip in features["tooltip"]} == {"size class: mid, 6-15 µm"}
+
+
+def test_a_drawn_vessels_segmentation_reading_is_one_hover_line():
+    """What the post_process stage wrote on a vessel drawn by hand, in
+    the words of its log line; a vessel nobody drew offers no such line."""
+    graph = a_graph()
+    assert "drawn_support" not in available_branch_hover_metrics(graph)
+    graph.edges[1, 2, 0].update(
+        drawn_mask_fraction=0.62, drawn_background_run_um=4.1, drawn_beside_vessel=True
+    )
+    assert "drawn_support" in available_branch_hover_metrics(graph)
+    _ids, features = branch_hover_rows(graph, selected=("drawn_support",))
+    assert list(features["tooltip"]) == [
+        "branchID: 0",
+        "branchID: 1\ndrawn vessel: 62% of it in the segmentation, 4.1 µm of background "
+        "in one run at most, beside a vessel in the same lumen",
+        "branchID: 2",
+    ]
+    assert list(features["drawn_support"]) == ["", features["tooltip"][1].split(": ", 2)[2], ""]
+
+
+def test_flow_solution_is_available_once_the_solve_has_marked_the_vessels():
+    assert "flow_solution" not in available_branch_hover_metrics(a_graph(flow_abs=1e-12))
+    assert "flow_solution" in available_branch_hover_metrics(
+        a_graph(flow_abs=1e-12, flow_solved=False)
+    )
+
+
+def _one_unsolved() -> nx.MultiGraph:
+    """``a_graph``'s three vessels solved, then the middle one marked unsolved."""
+    graph = a_graph(flow_abs=2e-12, flow_solved=True)
+    edges = list(graph.edges(keys=True, data=True))
+    edges[1][3]["flow_solved"] = False
+    return graph
+
+
+def test_hover_names_each_vessel_solved_or_unsolved_and_hides_an_unsolved_flow():
+    """An unsolved vessel's flow is rounding, not a result, so it gets no
+    flow line -- only the label saying why."""
+    _ids, features = branch_hover_rows(_one_unsolved(), selected=("flow_solution", "flow"))
+    solved_flow = f"branch flow: {format_metric_value('flow', 2e-12)}"
+
+    assert list(features["tooltip"]) == [
+        f"branchID: 0\nflow solution: Solved\n{solved_flow}",
+        "branchID: 1\nflow solution: Unsolved",
+        f"branchID: 2\nflow solution: Solved\n{solved_flow}",
+    ]
+    assert list(features["flow_solution"]) == ["Solved", "Unsolved", "Solved"]
+    assert np.isnan(features["flow"][1]) and features["flow"][0] == pytest.approx(2e-12)
+
+
+def test_rebuilt_tooltips_keep_the_solved_and_unsolved_lines():
+    selected = ("flow_solution", "flow")
+    _ids, features = branch_hover_rows(_one_unsolved(), selected=selected)
+
+    assert list(tooltips_from_feature_table(features, selected)) == list(features["tooltip"])
+    assert list(tooltips_from_feature_table(features, ("flow",)))[1] == "branchID: 1"
+
+
+def _middle_a_bridge() -> nx.MultiGraph:
+    """``a_graph``'s three vessels, the middle one a zero-resistance bridge."""
+    from haemolynx.graph import IS_ZERO_RESISTANCE
+
+    graph = a_graph()
+    list(graph.edges(keys=True, data=True))[1][3][IS_ZERO_RESISTANCE] = True
+    return graph
+
+
+def test_hover_says_a_bridge_is_artificial_whatever_metrics_are_chosen():
+    """Under its branch ID, chosen metrics or none: what the dashes are."""
+    from haemolynx.gui.branch_hover import BRIDGE_LINE
+
+    for selected in ((), ("length",)):
+        _ids, features = branch_hover_rows(_middle_a_bridge(), selected=selected)
+        tips = [tip.splitlines() for tip in features["tooltip"]]
+        assert tips[1][:2] == ["branchID: 1", BRIDGE_LINE]
+        assert BRIDGE_LINE not in tips[0] + tips[2]
+        assert len(tips[1]) == len(tips[0]) + 1
+
+
+def test_rebuilt_tooltips_keep_the_bridge_line():
+    """Ticking a metric rebuilds the tooltips from the layer's own table,
+    which carries the bridge flag; NaN or a missing column is no bridge."""
+    from haemolynx.graph import IS_ZERO_RESISTANCE
+    from haemolynx.gui.branch_hover import BRIDGE_LINE
+
+    _ids, features = branch_hover_rows(_middle_a_bridge(), selected=())
+    assert list(tooltips_from_feature_table(features, ())) == list(features["tooltip"])
+    rebuilt = tooltips_from_feature_table(features, ("length",))
+    assert [BRIDGE_LINE in tip for tip in rebuilt] == [False, True, False]
+
+    table = {"branch_id": np.asarray(["0", "1"], dtype=object), "length": np.asarray([1.0, 2.0])}
+    assert BRIDGE_LINE not in "".join(tooltips_from_feature_table(table, ("length",)))
+    table[IS_ZERO_RESISTANCE] = np.asarray([np.nan, True], dtype=object)
+    assert [BRIDGE_LINE in tip for tip in tooltips_from_feature_table(table, ())] == [False, True]
+
+
+def test_hovering_a_dash_of_a_bridge_says_what_it_is():
+    """The vessels layer's rows are dashes along a bridge; every one of them
+    carries the line, and no other vessel's row does."""
+    from haemolynx.graph import IS_ZERO_RESISTANCE
+    from haemolynx.gui.branch_hover import BRIDGE_LINE
+
+    graph = _middle_a_bridge()
+    vessels = spec_named(built(graph).stage_finished("build_network", network(graph)), VESSELS)
+    edge = np.asarray(vessels.features["edge_index"])
+    said = np.asarray([BRIDGE_LINE in tip for tip in vessels.features["tooltip"]])
+    np.testing.assert_array_equal(said, edge == 1)
+    np.testing.assert_array_equal(np.asarray(vessels.features[IS_ZERO_RESISTANCE]), edge == 1)
+
+
+def test_empty_branch_order_does_not_count_as_available():
+    graph = a_graph(branch_order="")
+    assert "order" not in available_branch_hover_metrics(graph)
+
+
+def test_fwhm_status_is_available_once_set_and_shown_as_text():
+    graph = a_graph(fwhm_status="failed:fwhm_failed")
+    assert "fwhm_status" in available_branch_hover_metrics(graph)
+    u, v, _key, data = next(iter(graph.edges(keys=True, data=True)))
+    text = format_branch_tooltip(
+        "0", {"fwhm_status": data["fwhm_status"]}, selected=("fwhm_status",)
+    )
+    assert "FWHM status: failed:fwhm_failed" in text
+
+
+def test_fwhm_status_absent_does_not_count_as_available():
+    graph = a_graph()
+    assert "fwhm_status" not in available_branch_hover_metrics(graph)
+
+
+def test_nan_flow_does_not_count_as_available():
+    graph = a_graph(flow_abs=float("nan"))
+    assert "flow" not in available_branch_hover_metrics(graph)
+
+
+def test_tortuosity_is_path_over_straight():
+    graph = a_graph()
+    u, v, key, data = next(iter(graph.edges(keys=True, data=True)))
+    # Straight vessels of length 10 along z -> tortuosity 1.0
+    assert edge_tortuosity(graph, u, v, data) == pytest.approx(1.0)
+    data["length"] = 20.0
+    assert edge_tortuosity(graph, u, v, data) == pytest.approx(2.0)
+
+
+def test_tortuosity_none_without_length_or_positions():
+    graph = nx.MultiGraph()
+    graph.add_node(0)
+    graph.add_node(1)
+    graph.add_edge(0, 1, key=0, length=5.0)
+    assert edge_tortuosity(graph, 0, 1, graph[0][1][0]) is None
+    graph.nodes[0]["pos"] = np.array([0.0, 0.0, 0.0])
+    graph.nodes[1]["pos"] = np.array([0.0, 0.0, 0.0])  # zero distance
+    assert edge_tortuosity(graph, 0, 1, graph[0][1][0]) is None
+
+
+def test_format_branch_tooltip_always_includes_branch_id():
+    text = format_branch_tooltip("12", {}, selected=())
+    assert text == "branchID: 12"
+
+
+def test_format_branch_tooltip_includes_only_selected_available_metrics():
+    values = {
+        "flow": 1.5e-12,
+        "order": "A1",
+        "resistance": 1e15,
+        "tortuosity": 1.25,
+        "length": 10.0,
+    }
+    text = format_branch_tooltip(
+        "3",
+        values,
+        selected=("flow", "length"),
+    )
+    assert text == (
+        "branchID: 3\n"
+        f"branch flow: {format_metric_value('flow', 1.5e-12)}\n"
+        f"branch length: {format_metric_value('length', 10.0)}"
+    )
+
+
+def test_format_branch_tooltip_excludes_unselected_and_missing():
+    values = {"flow": 1.0, "length": 10.0, "order": None}
+    text = format_branch_tooltip(
+        "0",
+        values,
+        selected=("flow", "order", "resistance"),
+    )
+    assert text == (
+        "branchID: 0\n"
+        f"branch flow: {format_metric_value('flow', 1.0)}"
+    )
+    assert "branch order" not in text
+    assert "branch resistance" not in text
+    assert "branch length" not in text
+
+
+def test_format_branch_tooltip_metric_order_is_declared_order():
+    values = {
+        m: ("X" if m in {"order", "diameter_source"} else 1.0)
+        for m in BRANCH_HOVER_METRICS
+    }
+    text = format_branch_tooltip("1", values, selected=BRANCH_HOVER_METRICS)
+    lines = text.split("\n")
+    assert lines[0] == "branchID: 1"
+    assert [line.split(":")[0] for line in lines[1:]] == [
+        BRANCH_HOVER_LABELS[m] for m in BRANCH_HOVER_METRICS
+    ]
+
+
+def test_panel_metric_options_hide_unavailable():
+    assert panel_metric_options(("length", "flow")) == (
+        ("flow", "branch flow"),
+        ("length", "branch length"),
+    )
+    assert panel_metric_options(()) == ()
+
+
+def test_filter_selected_metrics_drops_unavailable_and_unknown():
+    assert filter_selected_metrics(
+        ("flow", "length", "nope", "order"),
+        available=("length", "order"),
+    ) == ("order", "length")
+
+
+def test_default_selected_metrics_is_all_available_in_declared_order():
+    assert default_selected_metrics(("length", "flow")) == ("flow", "length")
+
+
+def test_branch_hover_rows_tooltips_match_formatter():
+    graph = a_graph(flow_abs=2e-12, resistance=5e14, branch_order="B2")
+    selected = ("flow", "order", "resistance", "tortuosity", "length")
+    ids, features = branch_hover_rows(graph, selected)
+    assert ids == ["0", "1", "2"]
+    assert list(features["branch_id"]) == ["0", "1", "2"]
+    first = format_branch_tooltip(
+        "0",
+        {
+            "flow": 2e-12,
+            "order": "B2",
+            "resistance": 5e14,
+            "tortuosity": 1.0,
+            "length": 10.0,
+        },
+        selected,
+    )
+    assert features["tooltip"][0] == first
+
+
+def test_tooltips_from_feature_table_respects_selection():
+    graph = a_graph(flow_abs=1e-12)
+    _ids, features = branch_hover_rows(graph, selected=("flow", "length"))
+    only_id = tooltips_from_feature_table(features, selected=())
+    assert only_id[0] == "branchID: 0"
+    length_only = tooltips_from_feature_table(features, selected=("length",))
+    assert length_only[0] == (
+        "branchID: 0\n"
+        f"branch length: {format_metric_value('length', 10.0)}"
+    )
+
+
+def test_tooltips_from_a_layers_pandas_table_match_the_per_row_formatter():
+    """What a napari layer actually hands over: a pandas DataFrame, with each
+    vessel's row repeated once per centreline segment, and missing values."""
+    pd = pytest.importorskip("pandas")
+    selected = ("flow", "order", "diameter", "length")
+    table = pd.DataFrame(
+        {
+            "branch_id": ["0", "0", "0", "1", "1", "2"],
+            "flow": [2e-12, 2e-12, 2e-12, np.nan, np.nan, 5e-13],
+            "order": ["B2", "B2", "B2", "", "", "A1"],
+            "diameter": [6.0, 6.0, 6.0, 4.5, 4.5, np.nan],
+            "length": [10.0, 10.0, 10.0, 12.5, 12.5, 3.0],
+        }
+    )
+
+    tooltips = tooltips_from_feature_table(table, selected)
+
+    expected = []
+    for _index, row in table.iterrows():
+        values = {
+            "flow": None if np.isnan(row["flow"]) else row["flow"],
+            "order": row["order"] or None,
+            "diameter": None if np.isnan(row["diameter"]) else row["diameter"],
+            "length": row["length"],
+        }
+        expected.append(format_branch_tooltip(row["branch_id"], values, selected))
+    assert list(tooltips) == expected
+
+
+def test_each_distinct_vessel_row_is_composed_once(monkeypatch):
+    """A Vectors layer repeats a vessel's row for every segment of its
+    centreline; composing each copy again is what made a Z-depth change take
+    tens of seconds on a network of a few thousand vessels."""
+    from haemolynx.gui import branch_hover
+
+    calls = []
+    real = branch_hover.format_branch_tooltip
+
+    def counting(branch_id, values, selected, **options):
+        calls.append(branch_id)
+        return real(branch_id, values, selected, **options)
+
+    monkeypatch.setattr(branch_hover, "format_branch_tooltip", counting)
+    segments_per_vessel = 50
+    features = {
+        "branch_id": np.repeat(np.array(["0", "1", "2"], dtype=object), segments_per_vessel),
+        "length": np.repeat([10.0, 20.0, 30.0], segments_per_vessel),
+    }
+
+    tooltips = tooltips_from_feature_table(features, ("length",))
+
+    assert len(tooltips) == 3 * segments_per_vessel
+    assert sorted(calls) == ["0", "1", "2"]
+    assert tooltips[0] == tooltips[segments_per_vessel - 1] != tooltips[segments_per_vessel]
+
+
+def test_available_metrics_from_features_matches_graph_detection():
+    graph = a_graph(branch_order="A0", flow_abs=1e-12)
+    _ids, features = branch_hover_rows(graph, selected=BRANCH_HOVER_METRICS)
+    assert available_metrics_from_features(features) == (
+        "flow",
+        "order",
+        "tortuosity",
+        "length",
+    )
+
+
+def test_result_layers_put_tooltip_features_on_the_vessel_vectors():
+    """Hover lives on the drawn branch, not a midpoint circle beside it."""
+    group = built().stage_finished("build_network", network(a_graph()))
+    names = [spec.name for spec in group.layers]
+    assert BRANCH_HOVER not in names
+    vessels = spec_named(group, VESSELS)
+    assert vessels.kind == "vectors"
+    assert set(vessels.features) >= {"branch_id", "tooltip", "length", "tortuosity"}
+    assert vessels.features["tooltip"][0].startswith("branchID: ")
+    assert vessels.options["branch_hover_available"] == ("tortuosity", "length")
+    assert vessels.options["branch_hover_selected"] == ("tortuosity", "length")
+    assert "size" not in vessels.options
+    assert "face_color" not in vessels.options
+
+
+def test_branch_hover_hides_flow_until_attrs_exist_on_graph():
+    """Flow is offered only once edges carry ``flow_abs`` (after a solve)."""
+    from types import SimpleNamespace
+
+    graph = a_graph()
+    results = built(graph)
+    before = spec_named(
+        results.stage_finished("build_network", network(graph)),
+        VESSELS,
+    )
+    assert before.options["branch_hover_available"] == ("tortuosity", "length")
+
+    for _u, _v, _key, data in graph.edges(keys=True, data=True):
+        data["flow_abs"] = 1e-12
+        data["flow_solved"] = True
+        data["resistance"] = 1e15
+        data["branch_order"] = "C0"
+        data["diameter_um"] = 5.0
+        data["diameter_source"] = "measured"
+        data["fwhm_status"] = "measured"
+    # One vessel drawn by hand, read against the segmentation by post_process.
+    graph.edges[1, 2, 0].update(drawn_mask_fraction=1.0, drawn_background_run_um=0.0)
+    tag_vessels_by_size(graph, 6.0, 15.0)
+
+    group = results.stage_finished(
+        "solve",
+        SimpleNamespace(
+            pressure=np.zeros(4),
+            node_list=[0, 1, 2, 3],
+            equivalent_resistance=1.0,
+        ),
+    )
+    vessels = spec_named(group, VESSELS)
+    assert vessels.options["branch_hover_available"] == BRANCH_HOVER_METRICS
+
+
+def test_vessel_labels_layer_still_emitted_without_a_hover_circle():
+    group = built().stage_finished("build_network", network(a_graph()))
+    names = [spec.name for spec in group.layers]
+    assert names.count(VESSELS) == 1
+    assert names.count(VESSEL_LABELS) == 1
+    assert BRANCH_HOVER not in names
+
+
+def test_hover_features_repeat_across_polyline_segments():
+    graph = a_graph()
+    paths, identity = edge_polylines(graph)
+    _vectors, owner = polylines_to_vectors(paths)
+    features, available, selected = hover_features_for_segments(graph, owner)
+    assert available == ("tortuosity", "length")
+    assert selected == ("tortuosity", "length")
+    assert len(features["tooltip"]) == len(owner)
+    expected = [str(int(i)) for i in np.asarray(identity["edge_index"])[owner]]
+    assert list(features["branch_id"]) == expected
+
+
+def test_vessel_tooltip_branch_id_matches_edge_index_column():
+    """Hover ``branchID`` is the same number colour-by ``edge_index`` uses."""
+    graph = a_graph()
+    for _u, _v, _key, data in graph.edges(keys=True, data=True):
+        data["segment_id"] = 0
+    vessels = spec_named(
+        built(graph).stage_finished("build_network", network(graph)),
+        VESSELS,
+    )
+    branch_ids = [str(v) for v in vessels.features["branch_id"]]
+    edge_ids = [str(int(v)) for v in vessels.features["edge_index"]]
+    assert branch_ids == edge_ids
+    assert set(branch_ids) == {"0", "1", "2"}
+
+
+def test_nearest_vector_index_hits_along_the_polyline_not_only_the_midpoint():
+    """A point on the centreline far from the old midpoint circle still hits."""
+    paths, _ = edge_polylines(a_graph())
+    vectors, owner = polylines_to_vectors(paths)
+    # First vessel runs (0,0,0) -> (10,0,0); midpoint was (5,0,0).
+    near_end = nearest_vector_index(
+        (1.0, 0.0, 0.0), vectors, max_distance=BRANCH_HOVER_MAX_DISTANCE
+    )
+    assert near_end is not None
+    assert int(owner[near_end]) == 0
+    midpoint = nearest_vector_index(
+        (5.0, 0.0, 0.0), vectors, max_distance=BRANCH_HOVER_MAX_DISTANCE
+    )
+    assert midpoint is not None
+    assert int(owner[midpoint]) == 0
+    second = nearest_vector_index(
+        (15.0, 0.0, 0.0), vectors, max_distance=BRANCH_HOVER_MAX_DISTANCE
+    )
+    assert second is not None
+    assert int(owner[second]) == 1
+
+
+def test_nearest_vector_index_misses_off_the_branch():
+    paths, _ = edge_polylines(a_graph())
+    vectors, _owner = polylines_to_vectors(paths)
+    assert nearest_vector_index(
+        (5.0, 50.0, 0.0), vectors, max_distance=BRANCH_HOVER_MAX_DISTANCE
+    ) is None
+    assert nearest_vector_index(
+        (5.0, 0.0, 0.0), vectors, max_distance=0.1
+    ) is not None
+    assert nearest_vector_index(
+        (0.0, 0.0, 0.0), np.empty((0, 2, 3))
+    ) is None
+
+
+def test_nearest_vector_index_projects_to_the_view_plane():
+    """A 3D camera offset along the view ray still hits the centreline."""
+    vectors = np.array([[[0.0, 0.0, 0.0], [10.0, 0.0, 0.0]]], dtype=float)
+    # Cursor is 8 µm "in front" of the vessel along +y; same on-screen location.
+    index = nearest_vector_index(
+        (5.0, 8.0, 0.0),
+        vectors,
+        max_distance=BRANCH_HOVER_MAX_DISTANCE,
+        view_direction=(0.0, 1.0, 0.0),
+    )
+    assert index == 0
+    miss = nearest_vector_index(
+        (5.0, 8.0, 20.0),
+        vectors,
+        max_distance=BRANCH_HOVER_MAX_DISTANCE,
+        view_direction=(0.0, 1.0, 0.0),
+    )
+    assert miss is None
+
+
+def test_flow_direction_layer_carries_the_same_tooltip_table():
+    """Flow-direction arrows get the same hover strings as the vessel polylines."""
+    from types import SimpleNamespace
+
+    graph = a_graph(flow_signed=1.0, flow_abs=1.5e-12)
+    results = built(graph)
+    group = results.stage_finished("export_results", SimpleNamespace())
+    flow = spec_named(group, FLOW_DIRECTION)
+    assert "tooltip" in flow.features
+    assert "branch_id" in flow.features
+    assert str(flow.features["tooltip"][0]).startswith("branchID: ")
+    assert len(flow.features["tooltip"]) == len(flow.data)
+    origin = np.asarray(flow.data[0, 0], dtype=float)
+    hit = nearest_vector_index(
+        origin, flow.data, max_distance=BRANCH_HOVER_MAX_DISTANCE
+    )
+    assert hit == 0
+
+
+def test_a_node_tooltip_leads_with_its_id():
+    from haemolynx.gui.branch_hover import format_node_tooltip
+
+    assert format_node_tooltip(
+        3316, (214.0, 5.26, 2.94), degree=1.0, end="open end: leaves the image"
+    ).splitlines() == [
+        "Node ID: 3316", "Vessels: 1 (open end: leaves the image)", "z, y, x: 214.0, 5.3, 2.9 um",
+    ]
+    assert format_node_tooltip("7", (1, 2, 3), degree=3, pressure=float("nan")).splitlines() == [
+        "Node ID: 7", "Vessels: 3", "z, y, x: 1.0, 2.0, 3.0 um",
+    ]
+    assert format_node_tooltip(7, (1, 2, 3), pressure=1234.5).splitlines()[-1].startswith("Pressure: ")
+
+
+# --- open ends and dead ends -----------------------------------------------------
+
+
+def _network_with_an_open_end_and_a_blind_end(tip_pressure: float) -> nx.MultiGraph:
+    """Inlet 0 and outlet 2 meet at 1; an open end 4 (leaving the image, given
+    a condition) hangs off 1 through 3, and a blind end 5 too."""
+    from haemolynx.graph.dead_ends import DEAD_END_KIND
+    from haemolynx.graph.prune import FLOW_SOLVED, FLOW_STATE
+    from haemolynx.haemodynamics.open_ends import GRAPH_RECORD, OpenEndConditions
+
+    pos = {0: (0, 0, 0), 1: (0, 0, 10), 2: (0, 0, 20), 3: (0, 5, 10), 4: (0, 10, 10), 5: (0, -5, 10)}
+    pressure = {0: 4500.0, 1: 3000.0, 2: 1000.0, 3: (3000.0 + tip_pressure) / 2, 4: tip_pressure, 5: 3000.0}
+    G = nx.MultiGraph()
+    for node, p in pos.items():
+        G.add_node(node, pos=tuple(float(c) for c in p), pressure=pressure[node])
+    for u, v in [(0, 1), (1, 2), (1, 3), (3, 4), (1, 5)]:
+        blind = v == 5
+        G.add_edge(
+            u, v, voxels=[G.nodes[u]["pos"], G.nodes[v]["pos"]], length=5.0,
+            flow_abs=0.0 if blind else 1e-12, flow_signed=0.0 if blind else 1e-12,
+            **{FLOW_SOLVED: not blind, FLOW_STATE: "blind_end" if blind else "solved"},
+        )
+    G.nodes[4][DEAD_END_KIND] = "leaves_image"
+    G.nodes[5][DEAD_END_KIND] = "stops_short"
+    G.graph[GRAPH_RECORD] = OpenEndConditions(model="estimated", to_outlet={4: 1e-15}).to_record()
+    return G
+
+
+@pytest.mark.parametrize(
+    "tip_pressure, side", [(2000.0, "drains"), (3500.0, "fed")], ids=["draining", "feeding"]
+)
+def test_the_vessels_to_an_open_end_say_their_flow_is_set_there(tip_pressure, side):
+    """Harvey (2026-10-21): arrows on dead-end vessels read as a fault. Those
+    vessels end at an open end the solve gave a pressure, and their hover
+    said only "Solved"."""
+    from haemolynx.gui.branch_hover import branch_hover_rows
+
+    G = _network_with_an_open_end_and_a_blind_end(tip_pressure)
+
+    _ids, features = branch_hover_rows(G, ["flow_solution"])
+
+    text = dict(zip([(u, v) for u, v, _k in G.edges(keys=True)], features["flow_solution"]))
+    through = f"Solved: {side} through an open end (estimated)"
+    assert text[(1, 3)] == text[(3, 4)] == through
+    assert text[(0, 1)] == text[(1, 2)] == "Solved"
+    assert text[(1, 5)] == "Unsolved: behind a dead end"
+
+
+def test_a_graph_without_open_end_conditions_keeps_solved():
+    from haemolynx.gui.branch_hover import branch_hover_rows
+    from haemolynx.haemodynamics.open_ends import GRAPH_RECORD
+
+    G = _network_with_an_open_end_and_a_blind_end(2000.0)
+    del G.graph[GRAPH_RECORD]
+
+    _ids, features = branch_hover_rows(G, ["flow_solution"])
+
+    assert sorted(set(features["flow_solution"])) == ["Solved", "Unsolved: behind a dead end"]
+
+
+def test_only_a_dead_end_leaving_the_image_is_called_an_open_end():
+    """Every degree-1 node's hover said "(open end)", blind ends included."""
+    from haemolynx.gui.branch_hover import format_node_tooltip, node_end_text
+    from haemolynx.gui.results import node_end_texts
+
+    G = _network_with_an_open_end_and_a_blind_end(2000.0)
+
+    assert list(node_end_texts(G, [1, 4, 5])) == [
+        "", "open end: leaves the image", "dead end: stops short",
+    ]
+    assert format_node_tooltip(5, (0, -5, 10), degree=1, end=node_end_text(G, 5)).splitlines()[1] == (
+        "Vessels: 1 (dead end: stops short)"
+    )
+    assert format_node_tooltip(5, (0, -5, 10), degree=1).splitlines()[1] == "Vessels: 1 (dead end)"

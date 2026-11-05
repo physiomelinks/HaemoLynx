@@ -1,0 +1,387 @@
+"""Interactive graph edits: split, delete+collapse, and mask-preferred A*.
+
+Pure primitives that graph building's steps and the Post processing tab's
+Add vessel routing use -- no Qt, no napari, just graph/array operations, so
+the rules are pinned independently of the UI.
+"""
+from __future__ import annotations
+
+import networkx as nx
+import numpy as np
+import pytest
+
+from haemolynx.graph import (
+    EdgeDraft,
+    astar_path,
+    commit_new_edge,
+    delete_edge_and_collapse,
+    insert_node_on_edge,
+    mask_cost_field,
+    voxel_path_to_microns,
+)
+
+
+# --- insert_node_on_edge -----------------------------------------------------
+
+
+def _chain_graph() -> nx.MultiGraph:
+    """0 --(voxels 0,1,2,3)-- 1, a single straight edge with 4 vertices."""
+    G = nx.MultiGraph()
+    G.add_node(0, pos=(0.0, 0.0, 0.0))
+    G.add_node(1, pos=(3.0, 0.0, 0.0))
+    G.add_edge(
+        0,
+        1,
+        key=0,
+        voxels=[(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (2.0, 0.0, 0.0), (3.0, 0.0, 0.0)],
+        length=3.0,
+        branch_order="B01",
+    )
+    return G
+
+
+def test_insert_node_on_edge_splits_at_the_closest_existing_vertex():
+    G = _chain_graph()
+    new_node = insert_node_on_edge(G, 0, 1, 0, point_um=(2.1, 0.0, 0.0))
+
+    assert new_node not in (0, 1)
+    assert G.nodes[new_node]["pos"] == (2.0, 0.0, 0.0)
+    assert not G.has_edge(0, 1)
+    assert G.has_edge(0, new_node)
+    assert G.has_edge(new_node, 1)
+    # branch_order (and any other non-geometry attribute) carries over.
+    assert G[0][new_node][0]["branch_order"] == "B01"
+    assert G[new_node][1][0]["voxels"] == [(2.0, 0.0, 0.0), (3.0, 0.0, 0.0)]
+    assert G[0][new_node][0]["voxels"] == [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (2.0, 0.0, 0.0)]
+    assert G[0][new_node][0]["length"] == pytest.approx(2.0)
+    assert G[new_node][1][0]["length"] == pytest.approx(1.0)
+
+
+def test_insert_node_on_edge_takes_the_id_it_is_given():
+    """A caller adding many nodes counts its own ids: the default scans the
+    whole graph for a free one, once per split."""
+    G = _chain_graph()
+
+    assert insert_node_on_edge(G, 0, 1, 0, point_um=(2.1, 0.0, 0.0), node_id=42) == 42
+    assert G.nodes[42]["pos"] == (2.0, 0.0, 0.0)
+    assert G.has_edge(0, 42) and G.has_edge(42, 1)
+    assert insert_node_on_edge(G, 42, 1, 0, point_um=(3.0, 0.0, 0.0), node_id=43) == 1
+    assert not G.has_node(43)
+
+
+def test_insert_node_on_edge_near_an_end_reuses_the_existing_node():
+    G = _chain_graph()
+    assert insert_node_on_edge(G, 0, 1, 0, point_um=(0.1, 0.0, 0.0)) == 0
+    assert insert_node_on_edge(G, 0, 1, 0, point_um=(2.9, 0.0, 0.0)) == 1
+    # Neither call should have mutated the untouched edge.
+    assert G.has_edge(0, 1)
+    assert G.number_of_nodes() == 2
+
+
+def test_insert_node_on_edge_falls_back_to_a_straight_line_with_no_voxels():
+    G = nx.MultiGraph()
+    G.add_node(0, pos=(0.0, 0.0, 0.0))
+    G.add_node(1, pos=(10.0, 0.0, 0.0))
+    G.add_edge(0, 1, key=0, length=10.0)
+
+    # (6, 0, 0) is closer to node 1's end (10, 0, 0) than node 0's (0, 0, 0):
+    # a 2-point line only ever has its two endpoints to snap to.
+    new_node = insert_node_on_edge(G, 0, 1, 0, point_um=(6.0, 0.0, 0.0))
+    assert new_node == 1
+    assert G.has_edge(0, 1)
+
+
+# --- delete_edge_and_collapse -------------------------------------------------
+
+
+def _star_graph() -> nx.MultiGraph:
+    """A (deg 1) -- C (deg 3) -- B (deg 1), plus C -- D (deg 1)."""
+    G = nx.MultiGraph()
+    for node, x in (("A", 0.0), ("C", 1.0), ("B", 2.0), ("D", 1.0)):
+        y = 0.0 if node != "D" else 1.0
+        G.add_node(node, pos=(x, y, 0.0))
+    G.add_edge("A", "C", key=0, voxels=[(0.0, 0.0, 0.0), (1.0, 0.0, 0.0)], length=1.0)
+    G.add_edge("C", "B", key=0, voxels=[(1.0, 0.0, 0.0), (2.0, 0.0, 0.0)], length=1.0)
+    G.add_edge("C", "D", key=0, voxels=[(1.0, 0.0, 0.0), (1.0, 1.0, 0.0)], length=1.0)
+    return G
+
+
+def test_delete_edge_collapses_the_endpoint_that_drops_to_degree_two():
+    G = _star_graph()
+    changed = delete_edge_and_collapse(G, "C", "D", 0)
+
+    # D had no other edge: gone. C dropped from degree 3 to degree 2 (A, B
+    # only): collapsed into one continuous A-B edge, C gone too.
+    assert "D" not in G
+    assert "C" not in G
+    assert G.has_edge("A", "B")
+    assert G["A"]["B"][0]["voxels"] == [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (2.0, 0.0, 0.0)]
+    assert G["A"]["B"][0]["length"] == pytest.approx(2.0)
+    assert changed == {"C", "D", "A", "B"}
+
+
+def test_delete_edge_leaves_an_unrelated_degree_two_node_untouched():
+    """Regression: the whole-graph degree2.py sweeps would also merge this;
+
+    a scoped single-edge delete must not.
+    """
+    G = _star_graph()
+    # An unrelated degree-2 chain, X - Y - Z, elsewhere in the same graph.
+    G.add_node("X", pos=(5.0, 0.0, 0.0))
+    G.add_node("Y", pos=(6.0, 0.0, 0.0))
+    G.add_node("Z", pos=(7.0, 0.0, 0.0))
+    G.add_edge("X", "Y", key=0, voxels=[(5.0, 0.0, 0.0), (6.0, 0.0, 0.0)], length=1.0)
+    G.add_edge("Y", "Z", key=0, voxels=[(6.0, 0.0, 0.0), (7.0, 0.0, 0.0)], length=1.0)
+
+    delete_edge_and_collapse(G, "C", "D", 0)
+
+    assert "Y" in G
+    assert G.degree("Y") == 2
+    assert G.has_edge("X", "Y")
+    assert G.has_edge("Y", "Z")
+
+
+def test_delete_edge_leaves_a_degree_one_terminal_alone():
+    G = _chain_graph()
+    changed = delete_edge_and_collapse(G, 0, 1, 0)
+    # Both endpoints drop straight to degree 0 (their only edge was this one).
+    assert 0 not in G
+    assert 1 not in G
+    assert changed == {0, 1}
+
+
+def test_delete_edge_does_not_collapse_two_parallel_edges_into_a_self_loop():
+    """A degree-2 node whose two remaining edges both go to the same
+
+    neighbour is a loop, not a pass-through -- must be left alone.
+    """
+    G = nx.MultiGraph()
+    G.add_node("A", pos=(0.0, 0.0, 0.0))
+    G.add_node("mid", pos=(1.0, 0.0, 0.0))
+    G.add_node("B", pos=(2.0, 0.0, 0.0))
+    G.add_edge("A", "mid", key=0, voxels=[(0.0, 0.0, 0.0), (1.0, 0.0, 0.0)], length=1.0)
+    G.add_edge("A", "mid", key=1, voxels=[(0.0, 0.0, 0.0), (0.5, 1.0, 0.0), (1.0, 0.0, 0.0)], length=2.0)
+    G.add_edge("mid", "B", key=0, voxels=[(1.0, 0.0, 0.0), (2.0, 0.0, 0.0)], length=1.0)
+
+    delete_edge_and_collapse(G, "mid", "B", 0)
+
+    assert "mid" in G
+    assert G.degree("mid") == 2
+    assert G.number_of_edges("A", "mid") == 2
+
+
+def test_delete_edge_rejects_an_edge_that_does_not_exist():
+    G = _chain_graph()
+    with pytest.raises(ValueError, match="No edge"):
+        delete_edge_and_collapse(G, 0, 1, key=99)
+
+
+# --- mask-preferred A* --------------------------------------------------------
+
+
+def test_astar_prefers_the_segmented_mask_over_a_shorter_background_shortcut():
+    """An L-shaped mask corridor vs. the much shorter straight-line diagonal
+
+    that leaves it: the quadratic off-mask penalty must make the corridor
+    route cheaper overall, even though it is the longer path in raw voxels.
+    """
+    mask = np.zeros((5, 20, 20), dtype=bool)
+    mask[2, 0:15, 0] = True  # vertical arm
+    mask[2, 14, 0:15] = True  # horizontal arm, meeting the vertical arm's end
+
+    cost = mask_cost_field(mask)
+    start = (2, 0, 0)
+    end = (2, 14, 14)
+    path = astar_path(cost, start, end)
+
+    on_mask = mask[tuple(path.astype(int).T)]
+    assert on_mask.mean() > 0.9, "path should hug the segmented corridor, not cut the corner"
+
+
+def test_astar_can_bridge_a_gap_in_the_mask():
+    """A short break in an otherwise straight corridor must not block the
+
+    path -- mask-preferred, not mask-restricted.
+    """
+    mask = np.zeros((5, 3, 20), dtype=bool)
+    mask[2, 1, 0:8] = True
+    mask[2, 1, 11:20] = True  # voxels 8, 9, 10 are a gap
+
+    cost = mask_cost_field(mask)
+    start = (2, 1, 0)
+    end = (2, 1, 19)
+    path = astar_path(cost, start, end)
+
+    assert tuple(path[0].astype(int)) == start
+    assert tuple(path[-1].astype(int)) == end
+    # A straight corridor's cheapest path is a straight line; anything much
+    # longer would mean the gap forced a detour instead of a direct crossing.
+    assert len(path) <= 25
+
+
+def test_astar_path_windows_around_the_two_points_instead_of_the_whole_volume():
+    """Regression: every "Add branch" click re-routed through the *entire*
+    cost field -- on a real stack, seconds to tens of seconds per click,
+    synchronously on the GUI thread (confirmed: 200**3 voxels took ~26s
+    against route_through_array directly). A short local move on a large
+    volume must stay fast regardless of the volume's own size."""
+    import time
+
+    big = np.ones((220, 220, 220), dtype=float)
+    start = time.perf_counter()
+    path = astar_path(big, (10, 10, 10), (15, 15, 15))
+    elapsed = time.perf_counter() - start
+
+    assert tuple(path[0].astype(int)) == (10, 10, 10)
+    assert tuple(path[-1].astype(int)) == (15, 15, 15)
+    assert elapsed < 2.0, f"a short local move took {elapsed:.2f}s -- window not applied?"
+
+
+def test_astar_path_clamps_an_out_of_bounds_point_instead_of_raising():
+    """Regression: a click just outside the segmented volume's bounds (a
+    stray ray in 3D view, an edge case near the boundary) used to raise
+    straight out of route_through_array, crashing the click handler that
+    has no try/except of its own."""
+    cost = np.ones((10, 10, 10), dtype=float)
+    path = astar_path(cost, (5, 5, 5), (500, 500, 500))
+    assert tuple(path[0].astype(int)) == (5, 5, 5)
+    # The out-of-bounds end is clamped to the nearest in-bounds voxel.
+    assert tuple(path[-1].astype(int)) == (9, 9, 9)
+    assert np.all(path >= 0) and np.all(path < 10)
+
+
+def test_astar_path_falls_back_to_a_straight_line_if_routing_itself_fails(monkeypatch):
+    """A routing failure inside the (now-windowed) search must still produce
+    something to draw, not propagate -- matches
+    connect_skeleton_components's own mask-preferred-not-required fallback."""
+    import skimage.graph
+
+    def _boom(*_args, **_kwargs):
+        raise ValueError("simulated routing failure")
+
+    monkeypatch.setattr(skimage.graph, "MCP_Geometric", _boom)
+    cost = np.ones((10, 10, 10), dtype=float)
+    path = astar_path(cost, (0, 0, 0), (5, 0, 0))
+    assert tuple(path[0].astype(int)) == (0, 0, 0)
+    assert tuple(path[-1].astype(int)) == (5, 0, 0)
+
+
+def test_voxel_path_to_microns_scales_per_axis():
+    path = np.array([[0.0, 0.0, 0.0], [1.0, 2.0, 3.0]])
+    points = voxel_path_to_microns(path, voxel_size_zyx=(2.0, 0.5, 4.0))
+    assert points == [(0.0, 0.0, 0.0), (2.0, 1.0, 12.0)]
+
+
+# --- EdgeDraft / commit_new_edge ----------------------------------------------
+
+
+def test_edge_draft_extend_does_not_duplicate_the_shared_vertex():
+    draft = EdgeDraft(start_node=0, points_um=[(0.0, 0.0, 0.0)])
+    draft.extend([(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (2.0, 0.0, 0.0)])
+    draft.extend([(2.0, 0.0, 0.0), (3.0, 0.0, 0.0)])
+
+    assert draft.points_um == [
+        (0.0, 0.0, 0.0),
+        (1.0, 0.0, 0.0),
+        (2.0, 0.0, 0.0),
+        (3.0, 0.0, 0.0),
+    ]
+    assert draft.last_point == (3.0, 0.0, 0.0)
+
+
+def test_commit_new_edge_to_an_existing_node():
+    G = nx.MultiGraph()
+    G.add_node(0, pos=(0.0, 0.0, 0.0))
+    G.add_node(1, pos=(2.0, 0.0, 0.0))
+    draft = EdgeDraft(start_node=0, points_um=[(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (2.0, 0.0, 0.0)])
+
+    start, end, key = commit_new_edge(G, draft, end_node=1)
+
+    assert (start, end) == (0, 1)
+    assert G.has_edge(0, 1, key)
+    assert G[0][1][key]["length"] == pytest.approx(2.0)
+
+
+def test_commit_new_edge_creates_a_dangling_terminal_when_no_target_was_hit():
+    G = nx.MultiGraph()
+    G.add_node(0, pos=(0.0, 0.0, 0.0))
+    draft = EdgeDraft(start_node=0, points_um=[(0.0, 0.0, 0.0), (5.0, 0.0, 0.0)])
+
+    start, end, key = commit_new_edge(G, draft, end_node=None)
+
+    assert start == 0
+    assert end not in (0,)
+    assert G.nodes[end]["pos"] == (5.0, 0.0, 0.0)
+    assert G.has_edge(0, end, key)
+
+
+def test_delete_edge_does_not_merge_a_thick_vessel_bridge_with_an_ordinary_vessel():
+    """The Edit window's delete keeps a bridge apart, like the Post processing tab's:
+    merged, one resistance rule would cover both."""
+    from haemolynx.graph import IS_ZERO_RESISTANCE
+
+    G = _star_graph()
+    G.edges["A", "C", 0][IS_ZERO_RESISTANCE] = True
+
+    delete_edge_and_collapse(G, "C", "D", 0)
+
+    assert "C" in G and G.degree("C") == 2
+    assert G.edges["A", "C", 0][IS_ZERO_RESISTANCE] is True
+    assert not G.edges["C", "B", 0].get(IS_ZERO_RESISTANCE)
+
+
+def test_a_drawn_branch_is_routed_by_physical_step_length():
+    """Regression (audit): routed per voxel through a voxel distance field, a
+    branch drawn on 2 x 0.5 x 0.5 um voxels went over an obstacle through the
+    next z slice (fewer voxel steps) rather than round it in-plane (shorter)."""
+    from haemolynx.graph.edit import mask_cost_field
+
+    spacing = (2.0, 0.5, 0.5)
+    mask = np.zeros((3, 9, 13), dtype=bool)
+    mask[0, 1:8, :] = True
+    mask[0, 2:7, 6] = False  # the obstacle, in the branch's own slice
+    mask[1, 1:8, :] = True
+
+    physical = astar_path(
+        mask_cost_field(mask, voxel_size_zyx=spacing), (0, 4, 2), (0, 4, 10), voxel_size_zyx=spacing
+    )
+    per_voxel = astar_path(mask_cost_field(mask), (0, 4, 2), (0, 4, 10))
+
+    assert set(physical[:, 0].astype(int).tolist()) == {0}
+    assert 1 in set(per_voxel[:, 0].astype(int).tolist())
+
+
+def test_the_windowed_cost_field_matches_the_whole_one_on_anisotropic_voxels():
+    from haemolynx.graph.edit import WindowedMaskCostField, mask_cost_field
+
+    spacing = (2.0, 0.5, 0.5)
+    rng = np.random.default_rng(4)
+    mask = rng.random((20, 90, 90)) > 0.995
+    whole = mask_cost_field(mask, voxel_size_zyx=spacing)
+    windowed = WindowedMaskCostField(mask, voxel_size_zyx=spacing)
+
+    window = (slice(4, 16), slice(30, 70), slice(10, 80))
+    np.testing.assert_allclose(windowed[window], whole[window])
+
+
+
+@pytest.mark.parametrize("named", ["as stored", "the other way round"])
+def test_insert_node_on_edge_splits_a_path_stored_from_its_other_end(named):
+    """Regression (Stack A, 2026-10-13): an edge's points may run from either of
+    its nodes. Split as if they ran from the first node named, each piece got
+    the other piece's points, and the next degree-2 merge joined them with a
+    35 um straight jump across the gap."""
+    G = nx.MultiGraph()
+    G.add_node("A", pos=(0.0, 0.0, 0.0))
+    G.add_node("B", pos=(0.0, 0.0, 20.0))
+    # Points run B -> A.
+    G.add_edge("A", "B", voxels=[(0.0, 0.0, float(x)) for x in range(20, -1, -1)], length=20.0)
+    u, v = ("A", "B") if named == "as stored" else ("B", "A")
+
+    node = insert_node_on_edge(G, u, v, 0, (0.0, 0.0, 5.0))
+
+    assert G.nodes[node]["pos"] == pytest.approx((0.0, 0.0, 5.0))
+    for a, b, d in G.edges(data=True):
+        ends = {tuple(d["voxels"][0]), tuple(d["voxels"][-1])}
+        assert ends == {tuple(map(float, G.nodes[a]["pos"])), tuple(map(float, G.nodes[b]["pos"]))}
+    assert sorted(round(d["length"], 6) for *_e, d in G.edges(data=True)) == [5.0, 15.0]

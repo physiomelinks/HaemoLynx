@@ -1,0 +1,573 @@
+"""The graph-artefact comparison tool (``scripts/graph_artefacts.py``): its
+measuring and tables, the build script each code version runs, and the one
+settings-to-arguments mapping it shares with the pipeline. The full
+comparison is not a test and never runs in CI."""
+from __future__ import annotations
+
+import inspect
+import json
+import pickle
+from pathlib import Path
+
+import numpy as np
+import pytest
+
+from graph_artefacts import build_side
+from graph_artefacts.report import (
+    COLUMNS, bridge_shapes, bridge_shapes_table, comparison_table, measure, raw_cost_table, steps_table,
+)
+from haemolynx.graph import build_graph_from_skeleton
+from haemolynx.pipeline import default_schema
+from haemolynx.pipeline.stages import graph_build_arguments, thick_junction_bridge_arguments
+from haemolynx.preprocessing import MaskSupport
+
+from lumen_artefact_fixtures import VOXEL_SIZE, loop_round_tissue, two_strands_in_one_lumen
+
+REPO = Path(__file__).resolve().parent.parent
+
+
+def test_every_setting_mapped_to_graph_building_is_one_it_takes():
+    arguments = graph_build_arguments(default_schema().defaults())
+    taken = inspect.signature(build_graph_from_skeleton).parameters
+    assert set(arguments) <= set(taken)
+    assert arguments["min_stub_length_radius_multiple"] == default_schema()["min_stub_length_radius_multiple"].default
+
+
+def test_an_older_version_is_built_without_the_settings_it_lacks():
+    def old(skeleton, voxel_size=(1, 1, 1), min_stub_length=10.0):
+        return None
+
+    taken, dropped = build_side.accepted_arguments(old, {"min_stub_length": 5.0, "facing_dead_end_max_gap_um": 10.0})
+    assert taken == {"min_stub_length": 5.0}
+    assert dropped == ["facing_dead_end_max_gap_um"]
+    taken, dropped = build_side.accepted_arguments(lambda **kw: None, {"anything": 1})
+    assert taken == {"anything": 1} and dropped == []
+
+
+def test_a_row_counts_what_the_report_finds():
+    mask, G = two_strands_in_one_lumen()
+    row = measure(G, MaskSupport(mask, VOXEL_SIZE), coverage=True)
+    assert row["pairs"] == 1 and row["forks"] == 0
+    assert row["edges"] == 2 and row["components"] == 2
+    assert 0.0 < row["mask_covered"] <= 1.0
+    # Two full-length strands: two long runs, all of the doubling mid-edge.
+    assert row["doubled_long_runs"] == 2
+    assert row["doubled_mid_um"] == pytest.approx(row["doubled_um"], rel=0.05)
+    assert row["doubled_chain_um"] == row["doubled_fork_um"] == row["doubled_bridge_um"] == 0
+    mask, G = loop_round_tissue()
+    row = measure(G, MaskSupport(mask, VOXEL_SIZE))
+    assert (row["loops"], row["loops_in_lumen"]) == (1, 0)
+    assert (row["loops_doubled_side"], row["loops_through_bridge"], row["loops_triangle"]) == (0, 0, 0)
+    assert "mask_covered" not in row
+
+
+def test_the_tables_have_a_column_per_measure_and_the_change_between_two_sides():
+    first = {key: 10 for key, _ in COLUMNS} | {"mask_covered": 0.647}
+    second = {key: 4 for key, _ in COLUMNS} | {"mask_covered": 0.628}
+    table = comparison_table({"5fab427": first, "working tree": second})
+    lines = table.splitlines()
+    assert lines[0] == "| measure | 5fab427 | working tree | change |"
+    assert "| pairs in one lumen | 10 | 4 | -6 |" in lines
+    assert "| mask covered | 64.7% | 62.8% | -1.9 points |" in lines
+    steps = steps_table([("a", {"edges": 3, "pairs": 1}), ("b", {"edges": 2, "pairs": 0})]).splitlines()
+    assert steps[0] == "| step | edges | pairs in one lumen |"
+    assert steps[2:] == ["| a | 3 | 1 |", "| b | 2 | 0 |"]
+
+
+@pytest.mark.slow
+def test_a_side_builds_with_its_own_code_and_leaves_every_step(tmp_path):
+    """The script each version runs, on a small T with its mask, importing
+    this checkout's src as a ref's would be."""
+    skeleton = np.zeros((40, 40, 40), dtype=bool)
+    skeleton[2:38, 20, 20] = True
+    skeleton[20, 21:38, 20] = True
+    from scipy import ndimage
+
+    mask = ndimage.binary_dilation(skeleton, iterations=2)
+    np.save(tmp_path / "skeleton.npy", skeleton)
+    np.save(tmp_path / "mask.npy", mask)
+    arguments = graph_build_arguments(default_schema().defaults())
+    job = {
+        "src": str(REPO / "src"), "out": str(tmp_path / "side"),
+        "skeleton": str(tmp_path / "skeleton.npy"), "mask": str(tmp_path / "mask.npy"),
+        "voxel_size_zyx": [1.0, 1.0, 1.0],
+        "build": arguments | {"a_setting_from_the_future": 1},
+        "smoothing": {"method": "taubin", "iterations": 10, "max_deviation": 1.0},
+    }
+    (tmp_path / "job.json").write_text(json.dumps(job))
+    build_side.main(str(tmp_path / "job.json"))
+    info = json.loads((tmp_path / "side" / "side.json").read_text())
+    from haemolynx.graph import STEP_LABELS
+
+    assert info["steps"] == list(STEP_LABELS)
+    assert info["arguments_not_taken"] == ["a_setting_from_the_future"]
+    for label in STEP_LABELS:
+        assert (tmp_path / "side" / "steps" / f"{label}.pkl").exists()
+    with open(tmp_path / "side" / "final.pkl", "rb") as f:
+        G = pickle.load(f)
+    assert G.number_of_edges() == 3
+
+
+def test_a_side_given_a_thick_vessel_region_splits_the_graph_as_build_network_saves_it(tmp_path):
+    """With the thick-vessel region in the job, the graph measured is the
+    graph saved: the branch opening into the fat trunk is split at the
+    region's edge, its part inside a zero-resistance bridge. Before the split
+    is kept too."""
+    from scipy import ndimage
+
+    from haemolynx.graph import IS_ZERO_RESISTANCE
+
+    skeleton = np.zeros((40, 40, 40), dtype=bool)
+    skeleton[2:38, 20, 20] = True
+    skeleton[20, 21:38, 20] = True
+    mask = ndimage.binary_dilation(skeleton, iterations=2)
+    trunk = np.zeros_like(skeleton)
+    trunk[2:38, 20, 20] = True
+    thick = ndimage.binary_dilation(trunk, iterations=4)
+    for name, volume in (("skeleton", skeleton), ("mask", mask), ("thick", thick)):
+        np.save(tmp_path / f"{name}.npy", volume)
+    job = {
+        "src": str(REPO / "src"), "out": str(tmp_path / "side"),
+        "skeleton": str(tmp_path / "skeleton.npy"), "mask": str(tmp_path / "mask.npy"),
+        "voxel_size_zyx": [1.0, 1.0, 1.0],
+        "build": graph_build_arguments(default_schema().defaults()),
+        "smoothing": None,
+        "thick_vessel_mask": str(tmp_path / "thick.npy"),
+        "split": thick_junction_bridge_arguments(default_schema().defaults()) | {"a_setting_from_the_future": 1},
+    }
+    (tmp_path / "job.json").write_text(json.dumps(job))
+
+    build_side.main(str(tmp_path / "job.json"))
+
+    side = tmp_path / "side"
+    assert json.loads((side / "side.json").read_text())["thick_split"] is True
+    with open(side / "before_thick_split.pkl", "rb") as f:
+        before = pickle.load(f)
+    with open(side / "final.pkl", "rb") as f:
+        saved = pickle.load(f)
+    bridges = [d for *_, d in saved.edges(data=True) if d.get(IS_ZERO_RESISTANCE)]
+    assert len(bridges) == 1
+    assert not any(d.get(IS_ZERO_RESISTANCE) for *_, d in before.edges(data=True))
+    assert saved.number_of_edges() == before.number_of_edges() + 1
+    # Its shape, measured by this checkout against the region's tree.
+    report = bridge_shapes(saved, thick, mask, (1.0, 1.0, 1.0))
+    assert report["bridge_count"] == 1
+    assert report["counts"]["radius_shaped"] + report["counts"]["longer_than_radius"] == 1
+
+
+def test_a_side_splits_with_the_runs_thick_junction_choices(tmp_path, monkeypatch):
+    """The split takes the run's settings (``thick_junction_bridge_arguments``),
+    as build_network does, not the function's defaults: those this version
+    takes."""
+    from haemolynx import graph
+
+    seen = {}
+
+    def split(G, thick, *, voxel_size_zyx, segmentation=None, extend_thick_ends=False, bridge_forks=True):
+        seen.update(extend_thick_ends=extend_thick_ends, bridge_forks=bridge_forks)
+        return G
+
+    monkeypatch.setattr(graph, "insert_thick_vessel_junction_nodes", split)
+    skeleton = np.zeros((20, 20, 20), dtype=bool)
+    skeleton[2:18, 10, 10] = True
+    from scipy import ndimage
+
+    for name, volume in (("skeleton", skeleton), ("mask", ndimage.binary_dilation(skeleton, iterations=2))):
+        np.save(tmp_path / f"{name}.npy", volume)
+    np.save(tmp_path / "thick.npy", np.zeros_like(skeleton))
+    job = {
+        "src": str(REPO / "src"), "out": str(tmp_path / "side"),
+        "skeleton": str(tmp_path / "skeleton.npy"), "mask": str(tmp_path / "mask.npy"),
+        "voxel_size_zyx": [1.0, 1.0, 1.0],
+        "build": graph_build_arguments(default_schema().defaults()),
+        "smoothing": None,
+        "thick_vessel_mask": str(tmp_path / "thick.npy"),
+        "split": {"extend_thick_ends": True, "bridge_forks": False, "fill_tree_gaps": True},
+    }
+    (tmp_path / "job.json").write_text(json.dumps(job))
+
+    build_side.main(str(tmp_path / "job.json"))
+
+    assert seen == {"extend_thick_ends": True, "bridge_forks": False}
+
+
+def test_the_bridge_shape_table_has_a_row_per_shape_and_a_column_per_side():
+    from haemolynx.graph.thick_vessel_bridge_shapes import BRIDGE_SHAPES
+
+    empty = {shape: 0 for shape in BRIDGE_SHAPES}
+    none = {shape: None for shape in BRIDGE_SHAPES}
+    before = {"bridge_count": 3, "counts": empty | {"wall_to_wall": 3}, "median_length_um": none | {"wall_to_wall": 5.2},
+              "length_over_radius": {"median": 0.9, "p90": 1.4, "max": 2.0}, "drawn_path_count": 0}
+    after = {"bridge_count": 2, "counts": empty | {"radius_shaped": 2}, "median_length_um": none | {"radius_shaped": 7.24},
+             "length_over_radius": {"median": None, "p90": None, "max": None}, "drawn_path_count": 1}
+
+    lines = bridge_shapes_table({"5fab427": before, "working tree": after}).splitlines()
+
+    assert lines[0] == "| bridge shape (count, median length) | 5fab427 | working tree |"
+    assert "| radius-shaped | 0 | 2 (7.2 um) |" in lines
+    assert "| wall to wall through the margin | 3 (5.2 um) | 0 |" in lines
+    assert "| all bridges | 3 | 2 |" in lines
+    assert "| length / lumen radius, median (90th pct) | 0.90 (1.40) |  |" in lines
+    assert lines[-1] == "| drawn along their path | 0 | 1 |"
+    assert len(lines) == 2 + len(BRIDGE_SHAPES) + 3
+
+
+def test_a_row_counts_the_pairs_a_thick_vessel_bridge_is_in():
+    from haemolynx.graph import IS_ZERO_RESISTANCE
+
+    mask, G = two_strands_in_one_lumen()
+    assert measure(G, MaskSupport(mask, VOXEL_SIZE))["bridge_pairs"] == 0
+    u, v, key = next(iter(G.edges(keys=True)))
+    G.edges[u, v, key][IS_ZERO_RESISTANCE] = True
+
+    row = measure(G, MaskSupport(mask, VOXEL_SIZE))
+
+    assert (row["pairs"], row["bridge_pairs"], row["bridges"]) == (1, 1, 1)
+
+
+# --- the dead-end census (PLAN_dead_ends.md, Phase 0) ------------------------------
+
+
+def test_the_census_counts_each_fixture_by_kind_place_and_what_lies_ahead():
+    from dead_end_fixtures import CASES, SHAPE
+    from graph_artefacts.dead_end_census import census, census_markdown
+    from haemolynx.graph.dead_ends import DEAD_END_KINDS, image_extent_um
+
+    extent = image_extent_um(SHAPE, VOXEL_SIZE)
+    for make in CASES:
+        case = make()
+        row = census(case.graph, support=MaskSupport(case.mask, VOXEL_SIZE), extent_um=extent)
+        assert row["dead_ends"] == sum(row["by_kind"].values())
+        assert tuple(row["by_kind"]) == DEAD_END_KINDS
+        assert row["by_kind"][case.kind] >= 1, case.name
+        assert sum(sum(c.values()) for c in row["by_face_band"].values()) == row["dead_ends"]
+    broken = CASES[4]()
+    row = census(broken.graph, support=MaskSupport(broken.mask, VOXEL_SIZE), extent_um=extent)
+    assert row["interior_with_a_vessel_ahead"] == {"within 5 um": 0, "within 10 um": 1, "within 15 um": 1}
+    # What lies ahead of the broken tip: the far vessel's side, 9 um out.
+    assert row["interior_first_thing_ahead"]["within 10 um"] == {
+        "a vessel's side": 1, "another dead end's tip": 0, "an image face": 0,
+    }
+    assert row["interior_first_thing_ahead"]["within 5 um"] == {
+        "a vessel's side": 0, "another dead end's tip": 0, "an image face": 0,
+    }
+    # Its chain, 11 um, in radii of the vessel it leaves (read at the junction).
+    end = row["ends"][broken.tip]
+    assert end.chain_length_um == pytest.approx(11.0)
+    assert row["interior_chain_length_radii"]["p50"] == pytest.approx(end.chain_length_um / end.junction_radius_um)
+    assert 3.0 < row["interior_chain_length_radii"]["p50"] < 4.5
+    # The stopped-short tip reaches the face through the mask, 5-10 um out.
+    face = CASES[1]()
+    row = census(face.graph, support=MaskSupport(face.mask, VOXEL_SIZE), extent_um=extent)
+    assert row["by_face_band"]["5-10"] == {"reaches face": 1}
+    assert "| leaves_image | 3 | 3 |" in census_markdown({"a": row, "b": row})
+
+
+def test_a_facing_tip_and_a_face_are_told_apart_from_a_vessels_side():
+    """PLAN_dead_ends.md Phase 0: what lies straight ahead of each interior
+    tip within 5 / 10 / 15 um -- another dead end's tip for the facing pair
+    (6 um), the image face for a tip heading out 8 um short of it."""
+    from dead_end_fixtures import SHAPE, facing_pair, interior_near_face
+    from graph_artefacts.dead_end_census import census
+    from haemolynx.graph.dead_ends import image_extent_um
+
+    extent = image_extent_um(SHAPE, VOXEL_SIZE)
+    pair = facing_pair()
+    row = census(pair.graph, support=MaskSupport(pair.mask, VOXEL_SIZE), extent_um=extent)
+    assert row["interior_first_thing_ahead"]["within 10 um"]["another dead end's tip"] == 2
+    assert row["interior_first_thing_ahead"]["within 5 um"]["another dead end's tip"] == 0
+    near = interior_near_face()
+    row = census(near.graph, support=MaskSupport(near.mask, VOXEL_SIZE), extent_um=extent)
+    assert row["interior_first_thing_ahead"]["within 10 um"]["an image face"] == 1
+    assert row["interior_first_thing_ahead"]["within 5 um"]["an image face"] == 0
+
+
+def test_collapse_changes_says_which_dead_ends_it_kept_joined_or_removed():
+    """Inconsistency 8: cluster collapse merges every node within 5 um with
+    no mask, face or direction rule. A 4 um stub goes into its own junction
+    (removed); a tip 3 um from another vessel's node is joined to it; a long
+    branch is kept."""
+    import networkx as nx
+    from graph_artefacts.dead_end_census import collapse_changes
+    from haemolynx.graph.collapse import collapse_node_clusters
+
+    G = nx.MultiGraph()
+    pos = {"a": (0.0, 0.0, 0.0), "j": (0.0, 0.0, 30.0), "b": (0.0, 0.0, 60.0), "stub": (0.0, 4.0, 30.0),
+           "long": (0.0, -30.0, 30.0), "far": (0.0, 20.0, 50.0), "other": (0.0, 20.0, 80.0),
+           "near": (0.0, 20.0, 47.0), "k": (0.0, 40.0, 47.0)}
+    for n, p in pos.items():
+        G.add_node(n, pos=np.asarray(p))
+    for u, v in (("a", "j"), ("j", "b"), ("j", "stub"), ("j", "long"), ("far", "other"), ("near", "k")):
+        G.add_edge(u, v, voxels=[list(pos[u]), list(pos[v])], length=float(np.linalg.norm(np.subtract(pos[u], pos[v]))))
+
+    after = collapse_node_clusters(G.copy(), distance_threshold=5.0)
+    changes = collapse_changes(G, after)
+
+    # a, b, long, other and k stay; stub goes into j; far and near merge.
+    assert changes == {"kept": 5, "joined": 2, "removed": 1}
+
+
+def test_each_final_dead_end_is_traced_to_the_step_that_first_left_it():
+    import networkx as nx
+    from graph_artefacts.dead_end_census import made_by_step
+
+    def chain(*points):
+        G = nx.MultiGraph()
+        for p in points:
+            G.add_node(p, pos=np.asarray(p, dtype=float))
+        for a, b in zip(points[:-1], points[1:]):
+            G.add_edge(a, b, length=float(np.linalg.norm(np.subtract(b, a))))
+        return G
+
+    first = chain((0, 0, 0), (0, 0, 10))
+    second = chain((0, 0, 0), (0, 0, 10), (0, 0, 29.5))
+    final = chain((0, 0, 0), (0, 0, 10), (0, 0, 20), (0, 0, 30))
+    # (0, 0, 0) was a dead end from the first step on, (0, 0, 30) from the
+    # second (within a micron of 29.5).
+    assert made_by_step(final, [("first", first), ("second", second)]) == {
+        "first": 1, "second": 1, "after the steps": 0,
+    }
+    assert made_by_step(final, [("first", first)]) == {"first": 1, "after the steps": 1}
+
+
+def test_flow_coverage_says_why_each_unsolved_piece_has_no_flow():
+    import networkx as nx
+    from graph_artefacts.dead_end_census import flow_coverage
+    from haemolynx.graph import FLOW_SOLVED
+    from haemolynx.graph.dead_ends import DEAD_END_KIND, LEAVES_IMAGE, UNKNOWN
+
+    G = nx.MultiGraph()
+    pos = {0: (5, 5, 0), 1: (5, 5, 10), 2: (5, 5, 20), 3: (5, 0, 10), 4: (5, 9, 20), 5: (5, 5, 50), 6: (5, 5, 60)}
+    for n, p in pos.items():
+        G.add_node(n, pos=np.asarray(p, dtype=float))
+    for u, v, solved in ((0, 1, True), (1, 2, True), (1, 3, False), (2, 4, False), (5, 6, False)):
+        G.add_edge(u, v, length=10.0, **{FLOW_SOLVED: solved})
+    G.nodes[3][DEAD_END_KIND] = LEAVES_IMAGE   # node 3 on the y = 0 face
+    G.nodes[4][DEAD_END_KIND] = UNKNOWN
+    G.graph["image_extent_um"] = (10.0, 10.0, 100.0)
+    report = flow_coverage(G, inlets=[0], outlets=[2])
+    assert report["solved_share"] == pytest.approx(0.4)
+    assert report["unsolved_um_by_reason"] == {
+        "behind a closed face end": 10.0, "behind interior dead ends": 10.0, "no boundary": 10.0,
+    }
+    # Opening node 3 as a boundary puts 0-1-3 on a path: 1-3 joins the flow.
+    assert report["through_designated_um"] == pytest.approx(20.0)
+    assert report["through_with_open_ends_um"] == pytest.approx(30.0)
+    assert report["boundary_face_distance_um"] == {0: 0.0, 2: pytest.approx(5.0)}
+
+
+def _rod(tmp_path):
+    """A 7 x 7 voxel rod along x, lumen-bright (a plasma label), its skeleton
+    and its raw image as a uint16 TIFF: wide enough for the calibration to
+    find a lumen core."""
+    import tifffile
+
+    mask = np.zeros((16, 30, 60), dtype=bool)
+    mask[4:11, 11:18, 5:55] = True
+    skeleton = np.zeros_like(mask)
+    skeleton[7, 14, 7:53] = True
+    raw = np.where(mask, 1000, 50).astype(np.uint16)
+    tifffile.imwrite(tmp_path / "raw.tif", raw)
+    return mask, skeleton, raw
+
+
+def test_the_raw_cost_is_the_channel_loaded_and_calibrated_and_nothing_read(tmp_path):
+    """What build_network pays for the raw image after the graph: the
+    channel held in RAM, calibrated, and -- no rule reading it -- no window."""
+    mask, _skeleton, raw = _rod(tmp_path)
+    cost = build_side.raw_cost({"raw_image_path": str(tmp_path / "raw.tif"), "raw_image_stain": "plasma_column"},
+                               mask, (1.0, 1.0, 1.0))
+    assert cost["stain"] == "plasma_column"
+    assert cost["held_mb"] == pytest.approx(raw.nbytes / 2**20)
+    assert (cost["queries"], cost["voxels_read"], cost["read_seconds"]) == (0, 0, 0.0)
+    assert cost["seconds"] > 0.0
+    # A raw image with nothing to read (no lumen stands above the background)
+    # costs its reading and gives no evidence.
+    import tifffile
+
+    tifffile.imwrite(tmp_path / "flat.tif", np.full(mask.shape, 50, dtype=np.uint16))
+    cost = build_side.raw_cost({"raw_image_path": str(tmp_path / "flat.tif"), "raw_image_stain": "plasma_column"},
+                               mask, (1.0, 1.0, 1.0))
+    assert cost["stain"] is None and "queries" not in cost
+
+
+def test_the_raw_cost_table_has_each_build_and_the_change_the_raw_image_made():
+    without = {"seconds": 200.0, "peak_rss_mb": 4000.0}
+    with_raw = {"seconds": 204.0, "peak_rss_mb": 4030.0,
+                "raw": {"seconds": 1.25, "held_mb": 150.0, "queries": 0, "voxels_read": 0, "read_seconds": 0.0}}
+    lines = raw_cost_table({"working tree": {"without": without, "with": with_raw}}).splitlines()
+    assert lines[0] == "| measure | working tree without | working tree with | change |"
+    assert "| build s | 200.0 | 204.0 | +4.0 (+2.0%) |" in lines
+    assert "| peak resident MB | 4,000 | 4,030 | +30 |" in lines
+    # A build without the raw image has no raw columns, so no change either.
+    assert "| raw image loaded and calibrated, s |  | 1.25 |  |" in lines
+    assert "| raw windows the rules read |  | 0 |  |" in lines
+
+
+@pytest.mark.slow
+def test_a_side_given_the_raw_image_reads_it_after_the_graph_and_says_what_it_cost(tmp_path):
+    mask, skeleton, raw = _rod(tmp_path)
+    np.save(tmp_path / "skeleton.npy", skeleton)
+    np.save(tmp_path / "mask.npy", mask)
+    job = {
+        "src": str(REPO / "src"), "out": str(tmp_path / "side"),
+        "skeleton": str(tmp_path / "skeleton.npy"), "mask": str(tmp_path / "mask.npy"),
+        "voxel_size_zyx": [1.0, 1.0, 1.0], "build": graph_build_arguments(default_schema().defaults()),
+        "smoothing": None, "keep_steps": False,
+        "raw": {"raw_image_path": str(tmp_path / "raw.tif"), "raw_image_stain": "plasma_column"},
+    }
+    (tmp_path / "job.json").write_text(json.dumps(job))
+    build_side.main(str(tmp_path / "job.json"))
+    info = json.loads((tmp_path / "side" / "side.json").read_text())
+    assert info["raw"]["stain"] == "plasma_column"
+    assert info["raw"]["held_mb"] == pytest.approx(raw.nbytes / 2**20)
+    assert info["peak_rss_mb"] > 0
+    assert info["seconds"] >= info["raw"]["seconds"]
+    # The steps are timed, not saved.
+    from haemolynx.graph import STEP_LABELS
+
+    assert info["steps"] == list(STEP_LABELS)
+    assert not any((tmp_path / "side" / "steps").iterdir())
+
+
+# --- the skeleton re-trace and reach by place (PLAN_surface_coverage.md, Phase 0) ---
+
+
+def _rod_job(tmp_path, **extra):
+    skeleton = np.zeros((20, 20, 30), dtype=bool)
+    skeleton[10, 10, 3:27] = True
+    from scipy import ndimage
+
+    for name, volume in (("skeleton", skeleton), ("mask", ndimage.binary_dilation(skeleton, iterations=2))):
+        np.save(tmp_path / f"{name}.npy", volume)
+    job = {
+        "src": str(REPO / "src"), "out": str(tmp_path / "side"),
+        "skeleton": str(tmp_path / "skeleton.npy"), "mask": str(tmp_path / "mask.npy"),
+        "voxel_size_zyx": [1.0, 1.0, 1.0], "build": graph_build_arguments(default_schema().defaults()),
+        "smoothing": {"method": "taubin", "iterations": 10, "max_deviation": 1.0}, "keep_steps": False,
+    } | extra
+    (tmp_path / "job.json").write_text(json.dumps(job))
+    return tmp_path / "job.json"
+
+
+def test_a_side_runs_the_skeleton_retrace_after_the_last_clean_up_and_keeps_the_graph_without_it(
+    tmp_path, monkeypatch,
+):
+    """As build_network does: the re-trace on the cleaned graph, with the
+    run's hole limit and the clean-up's mask; the graph before it kept."""
+    from haemolynx import graph
+    from haemolynx.graph import skeleton_retrace
+
+    seen = {}
+
+    def retrace(G, skeleton, support, *, keep_hole_over_um):
+        seen.update(keep_hole_over_um=keep_hole_over_um, support=support, edges=G.number_of_edges())
+        u, v = list(G.nodes)[:2]
+        G.add_edge(u, v, voxels=[G.nodes[u]["pos"], G.nodes[v]["pos"]], length=1.0, **{skeleton_retrace.RETRACED: True})
+        return G
+
+    monkeypatch.setattr(graph.skeleton_retrace, "retrace_lost_skeleton", retrace)
+
+    build_side.main(str(_rod_job(tmp_path, retrace={"keep_hole_over_um": 7.5})))
+
+    side = tmp_path / "side"
+    assert seen["keep_hole_over_um"] == 7.5
+    assert seen["support"] is not None
+    with open(side / "final.pkl", "rb") as f:
+        final = pickle.load(f)
+    with open(side / "without_retrace.pkl", "rb") as f:
+        without = pickle.load(f)
+    assert without.number_of_edges() == seen["edges"]
+    assert final.number_of_edges() == seen["edges"] + 1
+    assert len(skeleton_retrace.retraced_edges(final)) == 1
+    assert not skeleton_retrace.retraced_edges(without)
+    assert json.loads((side / "side.json").read_text())["retrace_seconds"] >= 0
+
+
+def test_a_side_without_the_retrace_in_its_job_runs_none(tmp_path, monkeypatch):
+    from haemolynx import graph
+
+    def retrace(*_a, **_k):
+        raise AssertionError("not asked for")
+
+    monkeypatch.setattr(graph.skeleton_retrace, "retrace_lost_skeleton", retrace)
+
+    build_side.main(str(_rod_job(tmp_path)))
+
+    assert not (tmp_path / "side" / "without_retrace.pkl").exists()
+    assert json.loads((tmp_path / "side" / "side.json").read_text())["retrace_seconds"] is None
+
+
+def test_places_split_the_surface_slab_in_microns_and_beside_the_large_masks():
+    from graph_artefacts.by_place import places_of, row_order
+
+    large = np.zeros((40, 10, 30), dtype=bool)
+    large[:, :, :5] = True
+    voxels = np.array([[0, 5, 6], [19, 5, 20], [20, 5, 6], [39, 5, 20]])
+
+    places = places_of(voxels, (2.0, 1.0, 1.0), surface_depth_um=40.0, large_mask=large, near_large_um=2.0)
+
+    assert list(places) == ["surface, beside the large vessels", "surface, other",
+                            "deep, beside the large vessels", "deep, other"]
+    assert row_order(True) == list(places)
+    assert list(places_of(voxels, (2.0, 1.0, 1.0), surface_depth_um=40.0)) == ["surface", "surface", "deep", "deep"]
+
+
+def test_reach_by_place_counts_the_lost_side_of_a_ring_and_why_it_is_left():
+    from graph_artefacts.by_place import reach_by_place, reach_comparison, reach_table
+    from test_skeleton_retrace import _ring
+
+    from haemolynx.graph import skeleton_retrace
+
+    scene = _ring()
+    support = scene.support()
+    total = int(scene.skeleton.sum())
+
+    wide = reach_by_place(scene.G, scene.skeleton, support, keep_hole_over_um=10.0)
+    narrow = reach_by_place(scene.G, scene.skeleton, support, keep_hole_over_um=1000.0)
+
+    row = wide["rows"]["surface"]
+    assert row["skeleton_voxels"] == total
+    assert 30 <= row["lost"] < total // 4  # the fourth side, less what lies within 3 um of the corners
+    assert row["reached"] == pytest.approx(1 - row["lost"] / total)
+    assert row["drawn"] == row["lost"]  # round a ~35 um hole: the re-trace would draw it
+    assert narrow["rows"]["surface"]["small_hole"] == row["lost"]
+    assert wide["rows"]["all"]["lost"] == row["lost"] and wide["rows"]["deep"]["skeleton_voxels"] == 0
+    (piece,) = wide["pieces"]
+    assert piece["why"] == "drawn" and piece["hole_um"] > 20.0
+    # Once drawn back, nothing is lost.
+    skeleton_retrace.retrace_lost_skeleton(scene.G, scene.skeleton, support)
+    after = reach_by_place(scene.G, scene.skeleton, support)
+    assert after["rows"]["all"]["lost"] == 0
+
+    table = reach_table(wide).splitlines()
+    assert table[0].startswith("| place | skeleton voxels | reached | lost | pieces under 20 um |")
+    assert table[2].startswith(f"| surface | {total:,} | {100 * row['reached']:.1f}% | {row['lost']:,} |")
+    comparison = reach_comparison({"off": wide, "on": after}).splitlines()
+    assert comparison[0] == "| place | off | on |"
+    assert comparison[-1] == f"| all | {100 * row['reached']:.1f}% | 100.0% |"
+
+
+def test_the_by_place_section_adds_the_thick_gates_drop_with_a_thick_region():
+    from graph_artefacts.by_place import by_place_section
+    from test_skeleton_retrace import _ring
+
+    scene = _ring()
+    support = scene.support()
+    thick = np.zeros_like(scene.skeleton)
+    thick[:, :20, :20] = True
+
+    text, pieces, dropped = by_place_section(
+        {"working tree": scene.G}, scene.skeleton, support, large=None, thick=thick,
+        settings={"short_loop_keep_hole_over_um": 10.0, "skeleton_thick_vessel_flake_filter_um": 3.0},
+    )
+    plain, _, none = by_place_section(
+        {"working tree": scene.G}, scene.skeleton, support, large=None, thick=None, settings={},
+    )
+
+    assert "## Skeleton reached, by place" in text and "### working tree" in text
+    assert "## Centreline the thick gate drops" in text
+    assert [p["why"] for p in pieces] == ["drawn"]
+    assert dropped == []  # the ring's skeleton is its mask's own Lee line
+    assert "Centreline the thick gate drops: 0 um of plain-Lee centreline in 0 piece(s)" in text
+    assert "thick gate" not in plain and none == []

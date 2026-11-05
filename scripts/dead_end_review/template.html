@@ -1,0 +1,316 @@
+<title>__TITLE__</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+/* Layout: a working sheet. One header with the question and progress, then a wrapping grid of
+   example cards, each a square canvas of segmentation with its controls underneath. */
+:root {
+  --bg: #f3f5f6;
+  --surface: #ffffff;
+  --ink: #1b2328;
+  --muted: #5b6870;
+  --line: #d5dcdf;
+  --accent: #1f6f8b;
+  --good: #23864f;
+  --bad: #c23b2f;
+  --unsure: #a06a12;
+  --font-body: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #12171a; --surface: #1a2125; --ink: #e3e8ea; --muted: #97a4ab; --line: #2c363b;
+    --accent: #5cb3d1; --good: #4fc282; --bad: #ef6a5c; --unsure: #d9a441;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #12171a; --surface: #1a2125; --ink: #e3e8ea; --muted: #97a4ab; --line: #2c363b;
+  --accent: #5cb3d1; --good: #4fc282; --bad: #ef6a5c; --unsure: #d9a441;
+  color-scheme: dark;
+}
+body { background: var(--bg); color: var(--ink); font-family: var(--font-body); font-size: 15px; line-height: 1.45; }
+.wrap { padding-inline: 16px; padding-block: 20px 48px; max-width: 1400px; margin: 0 auto; display: grid; gap: 18px; }
+header { display: grid; gap: 10px; }
+h1 { margin: 0; font-size: 1.5rem; font-weight: 600; text-wrap: balance; }
+.lede { margin: 0; max-width: 75ch; color: var(--muted); }
+.steps { margin: 0; padding-left: 1.2em; max-width: 80ch; display: grid; gap: 2px; }
+.bar { display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center; padding: 10px 12px; background: var(--surface);
+       border: 1px solid var(--line); border-radius: 8px; position: sticky; top: env(safe-area-inset-top, 0px); z-index: 2; }
+.progress { font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-weight: 600; }
+.bar label { display: inline-flex; gap: 6px; align-items: center; color: var(--muted); }
+.status { color: var(--muted); font-size: 0.9rem; }
+.status.warn { color: var(--bad); }
+button { font: inherit; cursor: pointer; border-radius: 6px; border: 1px solid var(--line); background: var(--surface); color: var(--ink);
+         padding: 5px 10px; }
+button:hover { border-color: var(--accent); }
+button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 10px; display: grid; gap: 8px; min-width: 0; }
+.card.done { border-color: var(--accent); }
+.card-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.id { font-family: var(--font-mono); font-size: 1.25rem; font-weight: 600; }
+.saved { font-size: 0.8rem; color: var(--muted); }
+.saved.warn { color: var(--bad); }
+canvas { width: 100%; max-width: 100%; aspect-ratio: 1; display: block; border-radius: 4px; background: #000; touch-action: none; cursor: crosshair; }
+.verdict { display: grid; grid-template-columns: repeat(auto-fit, minmax(80px, 1fr)); gap: 6px; }
+.verdict button { font-size: 0.88rem; line-height: 1.2; }
+.verdict button[aria-pressed="true"].good { background: var(--good); border-color: var(--good); color: #fff; }
+.verdict button[aria-pressed="true"].bad { background: var(--bad); border-color: var(--bad); color: #fff; }
+.verdict button[aria-pressed="true"].unsure { background: var(--unsure); border-color: var(--unsure); color: #fff; }
+.tools { display: flex; gap: 6px; align-items: center; justify-content: space-between; }
+.tools .count { font-size: 0.85rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+.note { width: 100%; box-sizing: border-box; font: inherit; font-size: 0.9rem; padding: 6px 8px; border-radius: 6px;
+        border: 1px solid var(--line); background: var(--bg); color: var(--ink); }
+.legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 0.85rem; color: var(--muted); }
+.sw { display: inline-block; width: 18px; height: 3px; vertical-align: middle; margin-right: 5px; border-radius: 2px; }
+@media (prefers-reduced-motion: no-preference) { .card { transition: border-color 0.15s; } }
+</style>
+
+<div class="wrap">
+  <header>
+    <h1 id="title"></h1>
+    <p class="lede" id="lede"></p>
+    <ol class="steps" id="steps"></ol>
+    <div class="legend" id="legend"></div>
+  </header>
+  <div class="bar" role="region" aria-label="Progress and display">
+    <span class="progress" id="progress">0 / 0 marked</span>
+    <label><input type="checkbox" id="showGraph" checked> Graph lines</label>
+    <label><input type="checkbox" id="showContext" checked> Other centrelines</label>
+    <label><input type="checkbox" id="showSection"> __SECOND_PANEL__</label>
+    <button type="button" id="copy">Copy marks as text</button>
+    <span class="status" id="status">Connecting to storage…</span>
+  </div>
+  <main class="grid" id="grid"></main>
+</div>
+
+<script id="examples" type="application/json">__EXAMPLES_JSON__</script>
+<script>
+(function () {
+  const DATA = JSON.parse(document.getElementById("examples").textContent);
+  const BATCH = DATA.batch, EX = DATA.examples, VERDICTS = DATA.verdicts;
+  document.getElementById("title").textContent = DATA.title;
+  document.getElementById("lede").textContent = DATA.lede;
+  DATA.steps.forEach(text => {
+    const li = document.createElement("li");
+    li.textContent = text;
+    document.getElementById("steps").appendChild(li);
+  });
+  DATA.legend.forEach(item => {
+    const span = document.createElement("span"), sw = document.createElement("span");
+    sw.className = "sw";
+    sw.style.background = item.color;
+    span.appendChild(sw);
+    span.appendChild(document.createTextNode(item.label));
+    document.getElementById("legend").appendChild(span);
+  });
+  const state = {}, cards = {};
+  let db = null;
+  const view = { graph: true, context: true, section: false };
+  EX.forEach(ex => { state[ex.id] = { verdict: null, strokes: [], note: "" }; });
+
+  function setStatus(text, warn) {
+    const el = document.getElementById("status");
+    el.textContent = text;
+    el.classList.toggle("warn", !!warn);
+  }
+  function progress() {
+    const n = EX.filter(ex => state[ex.id].verdict).length;
+    document.getElementById("progress").textContent = n + " / " + EX.length + " marked";
+  }
+  function toPx(ex, c, u, v) {
+    const W = c.canvas.width;
+    return [(u + ex.R) / (2 * ex.R) * W, (ex.R - v) / (2 * ex.R) * W];
+  }
+  function polyline(ex, c, ctx, points) {
+    ctx.beginPath();
+    let pen = false;
+    for (const p of points) {
+      if (p === null) { pen = false; continue; }
+      const [x, y] = toPx(ex, c, p[0], p[1]);
+      pen ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+      pen = true;
+    }
+    ctx.stroke();
+  }
+  function draw(id) {
+    const ex = EX.find(e => e.id === id), c = cards[id], ctx = c.ctx, W = c.canvas.width;
+    ctx.imageSmoothingEnabled = false;
+    ctx.fillStyle = "#000";
+    ctx.fillRect(0, 0, W, W);
+    const img = view.section ? c.imgMid : c.imgSlab;
+    if (img.complete) ctx.drawImage(img, 0, 0, W, W);
+    const s = W / 320;
+    for (const layer of ex.overlays) {
+      if ((layer.group === "context" && !view.context) || (layer.group !== "context" && !view.graph)) continue;
+      if (layer.kind === "dots") {
+        ctx.fillStyle = layer.color;
+        for (const [u, v] of layer.points) { const [x, y] = toPx(ex, c, u, v); ctx.fillRect(x - s, y - s, 2 * s, 2 * s); }
+      } else {
+        ctx.strokeStyle = layer.color; ctx.lineWidth = (layer.width || 2) * s; ctx.lineCap = "round"; ctx.lineJoin = "round";
+        polyline(ex, c, ctx, layer.points);
+      }
+    }
+    ctx.strokeStyle = "#ffd60a"; ctx.lineWidth = 3 * s; ctx.lineCap = "round"; ctx.lineJoin = "round";
+    for (const stroke of state[id].strokes.concat(c.live ? [c.live] : [])) {
+      polyline(ex, c, ctx, stroke.length === 1 ? [stroke[0], [stroke[0][0] + 0.05, stroke[0][1]]] : stroke);
+    }
+    const [x0, y0] = toPx(ex, c, -ex.R + 1.5, -ex.R + 1.5), [x1] = toPx(ex, c, -ex.R + 6.5, 0);
+    ctx.strokeStyle = "#ff9f0a"; ctx.lineWidth = 4 * s; ctx.lineCap = "butt";
+    ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y0); ctx.stroke();
+    c.count.textContent = state[id].strokes.length + (state[id].strokes.length === 1 ? " stroke" : " strokes");
+    c.card.classList.toggle("done", !!state[id].verdict);
+    c.buttons.forEach(b => b.setAttribute("aria-pressed", String(b.dataset.v === state[id].verdict)));
+  }
+
+  // One write at a time per example, coalescing changes made while one is in flight.
+  const pending = new Map(), inflight = new Set();
+  function payload(id) {
+    const s = state[id];
+    return { id, batch: BATCH, verdict: s.verdict, note: s.note,
+             strokes: s.strokes.map(st => ({ points: st.map(([u, v]) => [Math.round(u * 10) / 10, Math.round(v * 10) / 10]) })),
+             updated: new Date().toISOString() };
+  }
+  async function save(id) {
+    const c = cards[id];
+    if (!db) { c.saved.textContent = "Not saved"; c.saved.classList.add("warn"); return; }
+    pending.set(id, payload(id));
+    if (inflight.has(id)) return;
+    inflight.add(id);
+    c.saved.textContent = "Saving…"; c.saved.classList.remove("warn");
+    while (pending.has(id)) {
+      const body = pending.get(id); pending.delete(id);
+      try {
+        await db.collection("annotations").doc(id).set(body);
+        c.saved.textContent = "Saved";
+      } catch (e) {
+        c.saved.textContent = "Not saved (" + (e && e.code || "error") + ")";
+        c.saved.classList.add("warn");
+        pending.delete(id);
+        break;
+      }
+    }
+    inflight.delete(id);
+  }
+
+  function makeCard(ex) {
+    const card = document.createElement("article");
+    card.className = "card";
+    card.innerHTML =
+      '<div class="card-head"><span class="id"></span><span class="saved"></span></div>' +
+      '<canvas width="640" height="640"></canvas>' +
+      '<div class="verdict" role="group"></div>' +
+      '<div class="tools"><span class="count"></span><span><button type="button" class="undo">Undo</button> ' +
+      '<button type="button" class="clear">Clear</button></span></div>' +
+      '<input class="note" type="text" maxlength="300" placeholder="Note (optional): what decided it?">';
+    card.querySelector(".id").textContent = ex.id;
+    const group = card.querySelector(".verdict");
+    group.setAttribute("aria-label", DATA.question + " (" + ex.id + ")");
+    VERDICTS.forEach(v => {
+      const b = document.createElement("button");
+      b.type = "button"; b.dataset.v = v.value; b.className = v.tone; b.textContent = v.label;
+      group.appendChild(b);
+    });
+    const canvas = card.querySelector("canvas");
+    canvas.setAttribute("aria-label", "Segmentation for " + ex.id + "; draw on it with a mouse, pen or finger");
+    const note = card.querySelector(".note");
+    note.id = "note-" + ex.id;
+    const c = { card, canvas, ctx: canvas.getContext("2d"), saved: card.querySelector(".saved"),
+                count: card.querySelector(".count"), buttons: [...group.querySelectorAll("button")],
+                imgSlab: new Image(), imgMid: new Image(), live: null };
+    cards[ex.id] = c;
+    c.imgSlab.onload = () => draw(ex.id);
+    c.imgMid.onload = () => draw(ex.id);
+    c.imgSlab.src = ex.slab;
+    c.imgMid.src = ex.mid;
+    function plane(evt) {
+      const r = canvas.getBoundingClientRect();
+      const fx = (evt.clientX - r.left) / r.width, fy = (evt.clientY - r.top) / r.height;
+      return [-ex.R + fx * 2 * ex.R, ex.R - fy * 2 * ex.R];
+    }
+    canvas.addEventListener("pointerdown", e => {
+      e.preventDefault();
+      canvas.setPointerCapture(e.pointerId);
+      c.live = [plane(e)];
+      draw(ex.id);
+    });
+    canvas.addEventListener("pointermove", e => {
+      if (!c.live) return;
+      const p = plane(e), last = c.live[c.live.length - 1];
+      if (Math.hypot(p[0] - last[0], p[1] - last[1]) < 0.25) return;
+      c.live.push(p);
+      draw(ex.id);
+    });
+    const finish = () => {
+      if (!c.live) return;
+      state[ex.id].strokes.push(c.live);
+      c.live = null;
+      draw(ex.id);
+      save(ex.id);
+    };
+    canvas.addEventListener("pointerup", finish);
+    canvas.addEventListener("pointercancel", finish);
+    c.buttons.forEach(b => b.addEventListener("click", () => {
+      state[ex.id].verdict = state[ex.id].verdict === b.dataset.v ? null : b.dataset.v;
+      draw(ex.id); progress(); save(ex.id);
+    }));
+    card.querySelector(".undo").addEventListener("click", () => {
+      if (!state[ex.id].strokes.length) return;
+      state[ex.id].strokes.pop(); draw(ex.id); save(ex.id);
+    });
+    card.querySelector(".clear").addEventListener("click", () => {
+      if (!state[ex.id].strokes.length) return;
+      state[ex.id].strokes = []; draw(ex.id); save(ex.id);
+    });
+    let noteTimer = null;
+    note.addEventListener("input", () => {
+      state[ex.id].note = note.value;
+      clearTimeout(noteTimer);
+      noteTimer = setTimeout(() => save(ex.id), 700);
+    });
+    note.addEventListener("blur", () => { clearTimeout(noteTimer); if (note.value !== (c.lastNote || "")) { c.lastNote = note.value; save(ex.id); } });
+    return card;
+  }
+
+  const grid = document.getElementById("grid");
+  EX.forEach(ex => grid.appendChild(makeCard(ex)));
+  progress();
+  [["showGraph", "graph"], ["showContext", "context"], ["showSection", "section"]].forEach(([elId, key]) => {
+    document.getElementById(elId).addEventListener("change", e => { view[key] = e.target.checked; EX.forEach(ex => draw(ex.id)); });
+  });
+  document.getElementById("copy").addEventListener("click", async () => {
+    const short = Object.fromEntries(VERDICTS.map(v => [v.value, v.short]));
+    const text = EX.map(ex => {
+      const s = state[ex.id];
+      return ex.id + " " + (short[s.verdict] || "-") + (s.strokes.length ? " (" + s.strokes.length + " drawn)" : "") + (s.note ? " [" + s.note + "]" : "");
+    }).join(", ");
+    try { await navigator.clipboard.writeText(text); setStatus("Copied your marks; paste them into the chat."); }
+    catch (e) { setStatus("Copy was blocked here. Your marks still save to this page."); }
+  });
+
+  (async () => {
+    try { db = window.claude && window.claude.use ? await window.claude.use("db") : null; } catch (e) { db = null; }
+    if (!db) { setStatus("Saving isn't available in this view. Use “Copy marks as text” and paste into the chat.", true); return; }
+    try {
+      const snap = await db.collection("annotations").get();
+      snap.docs.forEach(d => {
+        const body = d.data();
+        if (!body || !state[d.id]) return;
+        state[d.id].verdict = body.verdict || null;
+        state[d.id].note = body.note || "";
+        state[d.id].strokes = (body.strokes || []).map(st => st.points || []);
+        const input = document.getElementById("note-" + d.id);
+        if (input) { input.value = state[d.id].note; cards[d.id].lastNote = state[d.id].note; }
+        cards[d.id].saved.textContent = "Saved";
+        draw(d.id);
+      });
+      progress();
+      setStatus("Saving to this page as you go.");
+    } catch (e) {
+      setStatus("Couldn't load earlier marks (" + (e && e.code || "error") + "). New marks still save.", true);
+    }
+  })();
+})();
+</script>

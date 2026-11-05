@@ -9,6 +9,7 @@ the moment it is added there.
 from __future__ import annotations
 
 import sys
+import warnings
 from pathlib import Path
 
 import pytest
@@ -20,7 +21,11 @@ for _path in (REPO_ROOT / "src", REPO_ROOT / "examples"):
 
 yaml = pytest.importorskip("yaml")
 
-from haemolynx.parsers import dump_config, load_config  # noqa: E402
+from haemolynx.parsers import (  # noqa: E402
+    IneffectiveSettingWarning,
+    dump_config,
+    load_config,
+)
 from regenerate_configs import CONFIGS, regenerate, schema_for as _schema  # noqa: E402
 
 CASES = sorted(CONFIGS.items())
@@ -64,6 +69,26 @@ def test_every_schema_entry_appears_in_the_config(config_relpath, module_name):
 def test_the_committed_config_loads_and_validates(config_relpath, module_name):
     settings = load_config(REPO_ROOT / config_relpath, _schema(module_name))
     assert set(settings) == set(_schema(module_name).names)
+
+
+@pytest.mark.parametrize("config_relpath,module_name", CASES, ids=IDS)
+def test_the_committed_config_sets_nothing_it_leaves_unread(
+    config_relpath, module_name
+):
+    """Every run of an example would warn about a value the example never reads.
+
+    Regenerating keeps whatever a file holds, so a schema default that changes
+    stays behind at its old value, which then reads as one somebody set: the
+    venule masks became optional (unset makes the arteriole row a global mask)
+    and the old placeholder paths were reported set-but-unread on every run.
+    """
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        load_config(REPO_ROOT / config_relpath, _schema(module_name))
+    unread = [
+        str(w.message) for w in caught if issubclass(w.category, IneffectiveSettingWarning)
+    ]
+    assert not unread, f"{config_relpath} sets values nothing reads: {unread}"
 
 
 @pytest.mark.parametrize("config_relpath,module_name", CASES, ids=IDS)
@@ -116,6 +141,132 @@ def test_regenerating_is_idempotent_and_preserves_committed_values(tmp_path):
     finally:
         for relpath, text in before.items():
             (REPO_ROOT / relpath).write_text(text, encoding="utf-8")
+
+
+#: What ``brain_pipeline_config.yaml`` has always configured the sweep with.
+#: Pinned by value, not by "it loads": these moved from a schema beside the
+#: example into the package's own, and a migration that quietly reset one of
+#: them to a package default would still load.
+BRAIN_SWEEP_VALUES = {
+    "pericyte_dilation_min_percent": 1,
+    "pericyte_dilation_max_percent": 30,
+    "pericyte_dilation_step_percent": 1,
+    "inlet_pressure_min_pa": 4500,
+    "inlet_pressure_max_pa": 6000,
+    "inlet_pressure_step_pa": 500,
+    "sweep_output_dir": "examples/outputs/brain_dilation_sweep",
+}
+
+#: Exact membership of the ``Perturbation runs`` schema section: typed
+#: perturbation entries, sweep ranges, and the brain-script dilation flag.
+PERTURBATION_RUNS_NAMES = frozenset(
+    {
+        "run_perturbations",
+        "perturbations",
+        "perturbation_output_dir",
+        "run_pericyte_dilation_sweep",
+        "pericyte_dilation_min_percent",
+        "pericyte_dilation_max_percent",
+        "pericyte_dilation_step_percent",
+        "arteriole_diameter_change_percent",
+        "arteriole_dilation_min_percent",
+        "arteriole_dilation_max_percent",
+        "arteriole_dilation_step_percent",
+        "capillary_dilation_min_percent",
+        "capillary_dilation_max_percent",
+        "capillary_dilation_step_percent",
+        "pericyte_geometry_dilation_percent",
+        "constriction_spacing_min_um",
+        "constriction_spacing_max_um",
+        "constriction_spacing_step_um",
+        "constriction_length_min_um",
+        "constriction_length_max_um",
+        "constriction_length_step_um",
+        "inlet_pressure_min_pa",
+        "inlet_pressure_max_pa",
+        "inlet_pressure_step_pa",
+        "sweep_output_dir",
+        "capillary_block_selection",
+        "capillary_block_branch_orders",
+        "capillary_block_probability",
+        "capillary_block_seed",
+        "capillary_block_replicates",
+        "capillary_block_vessel_ids",
+        "capillary_block_mask_path",
+        "capillary_block_mask_h5_dataset_name",
+        "capillary_block_mask_min_overlap_fraction",
+        "capillary_block_mask_vessels_per_block",
+        "capillary_block_resistance_factor",
+        "capillary_block_hypoperfusion_fraction",
+    }
+)
+
+
+def test_the_sweep_settings_are_declared_in_the_package_schema():
+    """The napari panel builds its form from `default_schema()` and nothing else.
+
+    While these lived in `examples/brain_pipeline_schema.py` the panel could
+    not show them at all, whatever tab claimed the section.
+    """
+    from haemolynx.pipeline import default_schema
+
+    schema = default_schema()
+    section = set(schema.section_names("Perturbation runs"))
+    assert section == PERTURBATION_RUNS_NAMES
+
+
+def test_the_brain_schema_adds_nothing_the_pipeline_schema_does_not_have():
+    """It is a title over the package schema now; adding them twice would raise.
+
+    `Schema(list(default_schema()) + SWEEP_SETTINGS)` is a duplicate-setting
+    error once they are declared in the package, so the example's own list has
+    to go rather than be kept alongside.
+    """
+    import brain_pipeline_schema
+    from haemolynx.pipeline import default_schema
+
+    assert not hasattr(brain_pipeline_schema, "SWEEP_SETTINGS")
+    assert brain_pipeline_schema.SCHEMA.names == default_schema().names
+
+
+def test_the_brain_config_still_configures_the_sweep_it_always_did():
+    from haemolynx.pipeline import default_schema
+
+    settings = load_config(
+        REPO_ROOT / "examples" / "brain_pipeline_config.yaml", default_schema()
+    )
+
+    assert settings["run_pericyte_dilation_sweep"] is True
+    for name, expected in BRAIN_SWEEP_VALUES.items():
+        actual = settings[name]
+        actual = actual.as_posix() if isinstance(actual, Path) else actual
+        assert actual == expected, f"{name} is {actual!r}, was {expected!r}"
+
+
+def test_the_constriction_geometry_the_sweep_reads_is_declared():
+    """`pericyte_sweep.py` read these with hardcoded fallbacks and no declaration.
+
+    An undeclared setting cannot be put in a config file at all -- the loader
+    rejects the key -- so the 40/100 um the sweep ran with could not be
+    changed without editing the source.
+    """
+    from haemolynx.haemodynamics import pericyte_sweep
+    from haemolynx.pipeline import default_schema
+
+    schema = default_schema()
+    for name, fallback in (
+        ("constriction_length_um", 40.0),
+        ("constriction_spacing_um", 100.0),
+    ):
+        assert name in schema, f"{name} is read by the sweep but not declared"
+        assert schema[name].default == fallback, (
+            f"{name} must default to the value the sweep fell back to, or a "
+            "run's numbers change without anyone editing a config"
+        )
+        assert schema[name].section == "Diameters and pericytes"
+    source = Path(pericyte_sweep.__file__).read_text(encoding="utf-8")
+    for name in ("constriction_length_um", "constriction_spacing_um"):
+        assert name in source
 
 
 def test_the_resistance_config_names_boundaries_at_both_ends():

@@ -8,7 +8,9 @@ they can only say what the schema says. Run this after editing any schema::
     python examples/regenerate_configs.py
 
 Values already present in a config file are preserved, so regenerating picks up
-new settings and refreshed documentation without discarding local edits.
+new settings and refreshed documentation without discarding local edits. A file
+cannot say which of its values were edits, so that includes an old default: when
+a setting's default changes, set the new one in each file by hand.
 """
 from __future__ import annotations
 

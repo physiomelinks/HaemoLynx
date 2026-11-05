@@ -20,24 +20,51 @@ import numpy as np
 import pytest
 
 from haemolynx.gui.results import (
+    BOUNDARY_COORDINATE_POINT_SIZE,
+    BOUNDARY_NODE_POINT_SIZE,
     BOUNDARY_NODES,
+    BRANCH_HOVER,
+    DEFAULT_VESSEL_COLOUR,
+    DRAWN_ON_TOP,
     EDGE_COLUMNS,
+    FLOW_DIRECTION,
+    FWHM_PROFILES,
+    FWHM_RAW,
     IMAGE,
     LAYER_NAMES,
+    NODE_POINT_SIZE,
     NODES,
+    PERICYTE_POINT_SIZE,
     PERICYTES,
+    POINTS_PROJECTION,
     SKELETON,
+    VECTORS_PROJECTION,
+    VESSEL_LABEL_POINT_SIZE,
     VESSEL_LABELS,
+    VESSEL_TUBES,
     VESSELS,
     ResultLayers,
+    filter_points_by_z,
+    filter_vectors_by_z,
+    image_z_extent_um,
+    is_ours_name,
+    is_z_depth_filtered_layer,
+    is_z_depth_windowed_volume_layer,
+    perturbation_flow_direction_layer_name,
+    perturbation_layer_names,
     available_edge_columns,
+    clip_volume_to_z,
     edge_features,
     edge_polylines,
     midpoints_of,
     node_points,
     pericyte_points,
     polylines_to_vectors,
+    with_projection_mode,
+    z_slice_window,
+    z_window_is_full,
 )
+from haemolynx.visualization.flow_direction import flow_direction_vectors
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -91,6 +118,49 @@ def spec_named(group, name):
     return next(spec for spec in group.layers if spec.name == name)
 
 
+def test_the_network_layers_name_naparis_projection_mode():
+    """Points and vectors off the slice shown shrink and fade through napari's
+    projection_mode, never the out_of_slice_display napari 0.9 deprecated."""
+    results = ResultLayers()
+    graph = results.stage_finished("build_network", network(a_graph()))
+    boundaries = results.stage_finished("assign_boundaries", SimpleNamespace(
+        inlet_nodes=[0], outlet_nodes=[3], arteriole_boundary_nodes=[],
+        venule_boundary_nodes=[], resistance_node_pair=None))
+    specs = [spec for group in (graph, boundaries) for spec in group.layers
+             if spec.kind in {"points", "vectors"}]
+    assert {spec.kind for spec in specs} == {"points", "vectors"}
+    for spec in specs:
+        assert "out_of_slice_display" not in spec.options, spec.name
+    assert spec_named(graph, VESSELS).options["projection_mode"] == VECTORS_PROJECTION
+    assert spec_named(graph, NODES).options["projection_mode"] == POINTS_PROJECTION
+    assert spec_named(boundaries, BOUNDARY_NODES).options["projection_mode"] == POINTS_PROJECTION
+
+
+@pytest.mark.parametrize(
+    "kind, out_of_slice, mode",
+    [
+        ("points", True, POINTS_PROJECTION),
+        ("vectors", True, VECTORS_PROJECTION),
+        ("points", False, "all"),
+        ("vectors", False, "all"),
+    ],
+)
+def test_a_saved_out_of_slice_display_becomes_its_projection_mode(kind, out_of_slice, mode):
+    """A run saved before carries the old option: it reaches napari as the
+    mode napari itself makes of it, and the saved options stay as they were."""
+    saved = {"size": 3.0, "out_of_slice_display": out_of_slice}
+    assert with_projection_mode(kind, saved) == {"size": 3.0, "projection_mode": mode}
+    assert saved == {"size": 3.0, "out_of_slice_display": out_of_slice}
+
+
+def test_options_without_the_old_name_pass_through():
+    assert with_projection_mode("points", {"size": 2.0}) == {"size": 2.0}
+    assert with_projection_mode(
+        "points", {"projection_mode": "none", "out_of_slice_display": True}
+    ) == {"projection_mode": "none"}
+    assert with_projection_mode("shapes", {"out_of_slice_display": True}) == {}
+
+
 # --- the registration test, which is the one that matters --------------------
 
 
@@ -130,6 +200,140 @@ def test_array_layers_and_graph_layers_land_on_the_same_physical_point():
     nodes = spec_named(graph_group, NODES)
     assert np.allclose(nodes.data[1], physical)
     assert np.allclose(nodes.data[1], voxel_index * np.asarray(spec_named(skeleton_group, SKELETON).scale))
+
+
+def test_skeleton_is_hidden_once_vessels_exist():
+    results = ResultLayers()
+    results.stage_finished(
+        "skeletonise",
+        SimpleNamespace(
+            image=np.zeros((4, 4, 4)),
+            skeleton=np.ones((4, 4, 4), dtype=bool),
+            voxel_size_xyz=(1.0, 1.0, 1.0),
+            voxel_size_zyx=(1.0, 1.0, 1.0),
+        ),
+    )
+    group = results.stage_finished("build_network", network(a_graph()))
+    skeleton = spec_named(group, SKELETON)
+    assert skeleton.visible is False
+
+
+def test_assign_boundaries_keeps_skeleton_hidden_after_cut():
+    results = ResultLayers()
+    results.stage_finished(
+        "skeletonise",
+        SimpleNamespace(
+            image=np.zeros((4, 4, 4)),
+            skeleton=np.ones((4, 4, 4), dtype=bool),
+            voxel_size_xyz=(1.0, 1.0, 1.0),
+            voxel_size_zyx=(1.0, 1.0, 1.0),
+        ),
+    )
+    results.stage_finished("build_network", network(a_graph()))
+    group = results.stage_finished(
+        "assign_boundaries",
+        SimpleNamespace(
+            inlet_nodes=[0],
+            outlet_nodes=[3],
+            arteriole_boundary_nodes=[],
+            venule_boundary_nodes=[],
+            graph=a_graph(),
+        ),
+    )
+    skeleton = spec_named(group, SKELETON)
+    assert skeleton.visible is False
+
+
+def test_nodes_start_hidden_when_the_graph_is_first_built():
+    """A busy point cloud shouldn't be the first thing a new run shows."""
+    group = built().stage_finished("build_network", network(a_graph()))
+    assert spec_named(group, NODES).visible is False
+
+
+def test_nodes_default_to_visible_again_on_later_stages():
+    """Only the first emission force-hides NODES -- assign_boundaries and
+    solve rebuild the same layer with visible defaulting back to True, so
+    _add_or_update restores whatever the user last set instead of
+    re-hiding a layer they turned on (see the matching comment in
+    ResultLayers._from_build_network)."""
+    results = ResultLayers()
+    results.stage_finished("build_network", network(a_graph()))
+    group = results.stage_finished(
+        "assign_boundaries",
+        SimpleNamespace(
+            inlet_nodes=[0],
+            outlet_nodes=[3],
+            arteriole_boundary_nodes=[],
+            venule_boundary_nodes=[],
+            graph=a_graph(),
+        ),
+    )
+    assert spec_named(group, NODES).visible is True
+
+
+def test_layers_for_graph_rebuilds_vessels_and_nodes_from_an_edited_graph():
+    """The "Edit" window's own refresh entry point: no stage `output` object,
+
+    just a graph it just mutated.
+    """
+    results = built()
+    edited = a_graph()
+    edited.add_node(99, pos=np.array([40.0, 0.0, 0.0]))
+    edited.add_edge(
+        3, 99, key=0,
+        voxels=[edited.nodes[3]["pos"].tolist(), edited.nodes[99]["pos"].tolist()],
+        length=10.0,
+    )
+
+    group = results.layers_for_graph(edited)
+
+    assert group.stage == "edit"
+    vessels = spec_named(group, VESSELS)
+    assert len(vessels.data) == 4  # one segment per edge, including the new one
+    nodes = spec_named(group, NODES)
+    assert 99 in list(nodes.features["node_id"])
+    assert group.note == "5 nodes, 4 vessels (edited)."
+    # The new node's degree (1) is a real value, not NaN -- coloured by
+    # degree like a freshly built network's own NODES layer.
+    new_index = list(nodes.features["node_id"]).index(99)
+    assert nodes.features["degree"][new_index] == 1
+
+
+def test_boundary_nodes_start_hidden():
+    results = ResultLayers()
+    results.stage_finished("build_network", network(a_graph()))
+    group = results.stage_finished(
+        "assign_boundaries",
+        SimpleNamespace(
+            inlet_nodes=[0],
+            outlet_nodes=[3],
+            arteriole_boundary_nodes=[],
+            venule_boundary_nodes=[],
+            graph=a_graph(),
+        ),
+    )
+    assert spec_named(group, BOUNDARY_NODES).visible is False
+
+
+def test_a_synthetic_networks_inlets_and_outlets_are_shown():
+    """Harvey, 2026-10-25 (D2a): a synthetic run's flow goes in at its
+    inlets and out at its outlets, so the viewer shows them."""
+    from haemolynx.gui.results import NETWORK_SOURCE_SYNTHETIC
+    from haemolynx.synthetic.generate import SYNTHETIC
+    from haemolynx.synthetic.template import GRAPH_NETWORK_SOURCE
+
+    assert NETWORK_SOURCE_SYNTHETIC == SYNTHETIC
+    graph = a_graph()
+    graph.graph[GRAPH_NETWORK_SOURCE] = SYNTHETIC
+    results = ResultLayers()
+    results.stage_finished("build_network", network(graph))
+    group = results.stage_finished(
+        "assign_boundaries",
+        SimpleNamespace(inlet_nodes=[0], outlet_nodes=[3], arteriole_boundary_nodes=[], venule_boundary_nodes=[], graph=graph),
+    )
+    layer = spec_named(group, BOUNDARY_NODES)
+    assert layer.visible is True
+    assert list(layer.features["role"]) == ["inlet", "outlet"]
 
 
 # --- geometry ----------------------------------------------------------------
@@ -215,6 +419,114 @@ def test_the_vessels_layer_carries_the_identity_of_each_edge():
         assert len(vessels.features[column]) == len(vessels.data)
 
 
+def _runs(rows):
+    """Runs of consecutive Vectors rows each starting where the last ended."""
+    rows = np.asarray(rows, dtype=float)
+    joined = np.all(np.isclose(rows[1:, 0], rows[:-1, 0] + rows[:-1, 1]), axis=1)
+    return 1 + int((~joined).sum())
+
+
+def test_the_vessels_layer_flags_the_zero_resistance_bridges():
+    """What the tubes draw a bridge by, row for row with the Vectors."""
+    from haemolynx.graph import IS_ZERO_RESISTANCE
+
+    graph = a_graph()
+    list(graph.edges(keys=True, data=True))[1][3][IS_ZERO_RESISTANCE] = True
+    vessels = spec_named(built(graph).stage_finished("build_network", network(graph)), VESSELS)
+    flags = np.asarray(vessels.features[IS_ZERO_RESISTANCE])
+    assert len(flags) == len(vessels.data)
+    np.testing.assert_array_equal(flags, np.asarray(vessels.features["edge_index"]) == 1)
+
+
+def test_a_bridge_is_drawn_dashed_and_every_vessel_else_whole():
+    """A zero-resistance bridge is not vessel, and the vessels layer says so:
+    its 10 µm are drawn as three dashes, every other vessel in one piece."""
+    from haemolynx.graph import IS_ZERO_RESISTANCE
+
+    graph = a_graph()
+    list(graph.edges(keys=True, data=True))[1][3][IS_ZERO_RESISTANCE] = True
+    vessels = spec_named(built(graph).stage_finished("build_network", network(graph)), VESSELS)
+    edge = np.asarray(vessels.features["edge_index"])
+    data = np.asarray(vessels.data, dtype=float)
+    bridge = data[edge == 1]
+    assert _runs(bridge) == 3
+    assert np.linalg.norm(bridge[:, 1], axis=1).sum() < 10.0
+    np.testing.assert_allclose(bridge[0, 0], [10.0, 0.0, 0.0])
+    np.testing.assert_allclose(bridge[-1, 0] + bridge[-1, 1], [20.0, 0.0, 0.0])
+    for whole in (0, 2):
+        assert _runs(data[edge == whole]) == 1
+        assert np.linalg.norm(data[edge == whole][:, 1], axis=1).sum() == pytest.approx(10.0)
+
+
+def test_a_perturbations_vessels_draw_its_bridges_dashed_too():
+    from haemolynx.graph import IS_ZERO_RESISTANCE
+
+    result = a_perturbation("art_dilate_20")
+    list(result.graph.edges(keys=True, data=True))[1][3][IS_ZERO_RESISTANCE] = True
+    group = built().stage_finished("run_perturbations", a_perturbation_run(result))
+    vessels = spec_named(group, perturbation_layer_names("art_dilate_20")[0])
+    edge = np.asarray(vessels.features["edge_index"])
+    assert len(edge) == len(vessels.data)
+    assert _runs(np.asarray(vessels.data)[edge == 1]) == 3
+    assert np.asarray(vessels.features[IS_ZERO_RESISTANCE])[edge == 1].all()
+
+
+def test_dashes_lie_on_the_path_from_its_first_point_to_its_last():
+    """Equal dashes and equal gaps, in the proportion asked for, stretched to
+    fit: the pattern starts and ends on a dash."""
+    from haemolynx.gui.results import BRIDGE_DASH_UM, BRIDGE_GAP_UM, dash_polyline
+
+    path = np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 12.0], [0.0, 8.0, 12.0]])
+    dashes = dash_polyline(path)
+    assert len(dashes) == round((20.0 + BRIDGE_GAP_UM) / (BRIDGE_DASH_UM + BRIDGE_GAP_UM))
+    np.testing.assert_allclose(dashes[0][0], path[0])
+    np.testing.assert_allclose(dashes[-1][-1], path[-1])
+    corner = [dash for dash in dashes if dash[0, 2] < 12.0 and dash[-1, 1] > 0.0]
+    assert len(corner) == 1 and [0.0, 0.0, 12.0] in corner[0].tolist()
+    for dash in dashes:
+        on_first = np.isclose(dash[:, 1], 0.0) & (dash[:, 2] <= 12.0 + 1e-9)
+        on_second = np.isclose(dash[:, 2], 12.0)
+        assert np.all(on_first | on_second) and np.allclose(dash[:, 0], 0.0)
+
+    def along(point):
+        return point[2] + point[1]
+
+    lengths = np.array([along(dash[-1]) - along(dash[0]) for dash in dashes])
+    gaps = np.array([along(b[0]) - along(a[-1]) for a, b in zip(dashes, dashes[1:])])
+    np.testing.assert_allclose(lengths, lengths[0])
+    np.testing.assert_allclose(gaps, gaps[0])
+    assert lengths[0] / gaps[0] == pytest.approx(BRIDGE_DASH_UM / BRIDGE_GAP_UM)
+    assert lengths.sum() + gaps.sum() == pytest.approx(20.0)
+
+
+def test_a_bridge_shorter_than_a_dash_is_still_two_dashes():
+    """Else it would be drawn solid, like the vessels round it."""
+    from haemolynx.gui.results import dash_polyline
+
+    dashes = dash_polyline(np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 1.0]]))
+    assert len(dashes) == 2
+    assert dashes[0][-1, 2] < dashes[1][0, 2]
+    still = np.array([[1.0, 2.0, 3.0], [1.0, 2.0, 3.0]])
+    assert [dash.tolist() for dash in dash_polyline(still)] == [still.tolist()]
+
+
+def test_vectors_draw_only_the_dashes_of_a_dashed_path():
+    """Each dash's own segments, owned by the path; a flag that is not True
+    -- NaN, None -- leaves its path whole."""
+    from haemolynx.gui.results import dash_polyline
+
+    paths, _ = edge_polylines(a_graph())
+    vectors, owner = polylines_to_vectors(paths, dashed=[np.nan, True, None])
+    for whole in (0, 2):
+        mine = vectors[owner == whole]
+        np.testing.assert_allclose(mine[:, 0] + mine[:, 1], paths[whole][1:])
+    want = np.concatenate([
+        np.stack([dash[:-1], np.diff(dash, axis=0)], axis=1) for dash in dash_polyline(paths[1])
+    ])
+    np.testing.assert_allclose(vectors[owner == 1], want)
+    assert owner.tolist() == sorted(owner.tolist())
+
+
 def test_a_column_is_empty_until_its_stage_runs_but_never_absent():
     """Declared from the first layer, filled when its stage gets to it.
 
@@ -276,6 +588,23 @@ def test_boundary_roles_are_disjoint_and_carry_their_names():
     assert len(boundaries.data) == 2
 
 
+def test_terminal_nodes_are_drawn_over_the_vessels_they_sit_in():
+    """A terminal node where a large vessel leaves the image sits inside that
+    vessel's tube and mask; depth-tested, either hides it whole. Red on a
+    red vessel it needs its rim too."""
+    assert BOUNDARY_NODES in DRAWN_ON_TOP
+    group = built().stage_finished(
+        "assign_boundaries",
+        SimpleNamespace(inlet_nodes=[0], outlet_nodes=[3],
+                        arteriole_boundary_nodes=[], venule_boundary_nodes=[],
+                        resistance_node_pair=None),
+    )
+    options = spec_named(group, BOUNDARY_NODES).options
+    assert options["blending"] == "translucent_no_depth"
+    assert options["border_color"] == "white"
+    assert options["border_width"] > 0
+
+
 def test_a_run_with_no_boundary_nodes_says_so_rather_than_drawing_nothing():
     group = built().stage_finished(
         "assign_boundaries",
@@ -284,6 +613,74 @@ def test_a_run_with_no_boundary_nodes_says_so_rather_than_drawing_nothing():
                         resistance_node_pair=None),
     )
     assert "No boundary nodes" in group.note
+
+
+def test_point_layer_sizes_match_the_earlier_viewer_style():
+    """Pin napari Points sizes against the branch-hover enlargement regression.
+
+    Graph nodes / boundary nodes / pericytes / vessel-label midpoints have been
+    3 / 6 / 4 / 2 since the first viewer commit (and on ``origin/main``).
+    Branch hover is no longer a Points overlay; its pickup radius lives in
+    ``branch_hover.BRANCH_HOVER_MAX_DISTANCE``. Boundary-tab picking rings stay
+    at 8.0 (they are rings, not snapped nodes).
+    """
+    assert VESSEL_LABEL_POINT_SIZE == 2.0
+    assert NODE_POINT_SIZE == 3.0
+    assert BOUNDARY_NODE_POINT_SIZE == 6.0
+    assert PERICYTE_POINT_SIZE == 4.0
+    assert BOUNDARY_COORDINATE_POINT_SIZE == 8.0
+
+    graph = a_graph()
+    first = list(graph.edges(keys=True, data=True))[0]
+    first[3]["pericyte_centers_um"] = [5.0]
+    first[3]["branch_order"] = "B01"
+
+    results = built(graph)
+    network_group = results.stage_finished("build_network", network(graph))
+    assert spec_named(network_group, VESSEL_LABELS).options["size"] == (
+        VESSEL_LABEL_POINT_SIZE
+    )
+    names = [spec.name for spec in network_group.layers]
+    assert BRANCH_HOVER not in names
+    assert spec_named(network_group, NODES).options["size"] == NODE_POINT_SIZE
+
+    boundary_group = results.stage_finished(
+        "assign_boundaries",
+        SimpleNamespace(
+            inlet_nodes=[0],
+            outlet_nodes=[3],
+            arteriole_boundary_nodes=[],
+            venule_boundary_nodes=[],
+            resistance_node_pair=(0, 3),
+        ),
+    )
+    assert spec_named(boundary_group, NODES).options["size"] == NODE_POINT_SIZE
+    assert spec_named(boundary_group, BOUNDARY_NODES).options["size"] == (
+        BOUNDARY_NODE_POINT_SIZE
+    )
+
+    diameter_group = results.stage_finished(
+        "assign_diameters", SimpleNamespace(graph=graph)
+    )
+    assert spec_named(diameter_group, PERICYTES).options["size"] == (
+        PERICYTE_POINT_SIZE
+    )
+
+    solve_group = results.stage_finished(
+        "solve",
+        SimpleNamespace(
+            pressure=np.zeros(4),
+            node_list=[0, 1, 2, 3],
+            equivalent_resistance=1.0,
+        ),
+    )
+    assert spec_named(solve_group, NODES).options["size"] == NODE_POINT_SIZE
+
+    from haemolynx.gui.boundary_picking import BC_COORDINATES, specs_for
+
+    picks = specs_for({"inlet_node_coordinates": [[1.0, 2.0, 3.0]]})
+    assert picks[0].name == BC_COORDINATES
+    assert picks[0].options["size"] == BOUNDARY_COORDINATE_POINT_SIZE
 
 
 # --- pressure ----------------------------------------------------------------
@@ -312,6 +709,44 @@ def test_the_equivalent_resistance_is_reported():
     assert "1.2500e+16" in group.note
 
 
+def test_both_resistances_are_reported_and_named():
+    group = built().stage_finished(
+        "solve",
+        SimpleNamespace(pressure=np.zeros(4), node_list=[0, 1, 2, 3],
+                        equivalent_resistance=1.25e16, network_resistance=7.5e15),
+    )
+    assert "Two-point equivalent resistance (first inlet to first outlet) 1.2500e+16" in group.note
+    assert "Network resistance (pressure drop / total inflow) 7.5000e+15" in group.note
+
+
+def test_the_two_point_resistance_names_the_nodes_it_was_found_between():
+    """They are the first inlet and outlet only until Post processing chooses others."""
+    group = built().stage_finished(
+        "solve",
+        SimpleNamespace(pressure=np.zeros(4), node_list=[0, 1, 2, 3],
+                        equivalent_resistance=1.25e16, equivalent_resistance_nodes=(2, 3)),
+    )
+    assert "Two-point equivalent resistance (node 2 to node 3) 1.2500e+16" in group.note
+
+
+def test_a_solve_with_neither_resistance_just_says_solved():
+    group = built().stage_finished(
+        "solve",
+        SimpleNamespace(pressure=np.zeros(4), node_list=[0, 1, 2, 3],
+                        equivalent_resistance=None),
+    )
+    assert group.note == "Solved."
+
+
+def test_a_run_without_haemodynamics_does_not_say_solved():
+    """Regression: with run_haemodynamics off the solve stage hands on an empty
+    Solution, and the Haemodynamics tab's note still read "Solved."."""
+    from haemolynx.pipeline.stages import Solution
+
+    group = built().stage_finished("solve", Solution())
+    assert group.note == "Not solved: haemodynamics are off."
+
+
 # --- pericytes ---------------------------------------------------------------
 
 
@@ -333,6 +768,178 @@ def test_pericytes_come_from_the_edges_own_centres():
 def test_no_pericytes_gives_no_layer():
     group = built().stage_finished("assign_diameters", SimpleNamespace(graph=a_graph()))
     assert all(spec.name != PERICYTES for spec in group.layers)
+
+
+def test_assign_diameters_colours_vessels_by_modelled_diameter():
+    graph = a_graph(diameter_um=5.0, diameter_source="measured", branch_order="B01")
+    group = built(graph).stage_finished("assign_diameters", SimpleNamespace(graph=graph))
+    assert spec_named(group, VESSELS).colour_by == "diameter_um"
+
+
+def test_assign_diameters_falls_back_to_branch_order_when_diameters_are_missing():
+    graph = a_graph(branch_order="B01")
+    group = built(graph).stage_finished("assign_diameters", SimpleNamespace(graph=graph))
+    assert spec_named(group, VESSELS).colour_by == "branch_order"
+
+
+def test_assign_diameters_shows_fwhm_raw_volume_and_transverse_rays():
+    graph = a_graph(diameter_um=5.0, diameter_source="measured")
+    for _u, _v, _key, data in graph.edges(keys=True, data=True):
+        data["fwhm_profile_lines_phys"] = [[[0.0, 0.0, 0.0], [0.0, 1.0, 0.0]]]
+    raw = np.arange(24, dtype=np.float32).reshape(2, 3, 4)
+    group = built(graph, voxel_size_zyx=(2.0, 1.0, 0.5)).stage_finished(
+        "assign_diameters",
+        SimpleNamespace(graph=graph, fwhm_raw=raw),
+    )
+    image = spec_named(group, FWHM_RAW)
+    assert image.kind == "image"
+    assert image.data is raw
+    assert image.scale == (2.0, 1.0, 0.5)
+    profiles = spec_named(group, FWHM_PROFILES)
+    assert profiles.kind == "vectors"
+    assert len(profiles.data) == graph.number_of_edges()
+    assert "measured" in group.note
+
+
+def test_the_fwhm_layers_draw_the_sampled_line_and_the_measured_width_apart():
+    """Two things to check by eye: the sampled line should be ~3x the vessel
+    (FWHM needs background on both sides), and the measured width should
+    span the vessel wall to wall. One layer each, so neither hides the other."""
+    from haemolynx.gui.results import FWHM_WIDTHS
+
+    graph = a_graph(diameter_um=10.0, diameter_source="measured")
+    for _u, _v, _key, data in graph.edges(keys=True, data=True):
+        data["fwhm_profile_lines_phys"] = [[[0.0, -15.0, 0.0], [0.0, 15.0, 0.0]]]
+        data["fwhm_measured_lines_phys"] = [[[0.0, -5.0, 0.0], [0.0, 5.0, 0.0]]]
+    group = built(graph).stage_finished(
+        "assign_diameters", SimpleNamespace(graph=graph, fwhm_raw=None)
+    )
+
+    def total_length(name):
+        vectors = spec_named(group, name).data
+        return float(sum(np.linalg.norm(v[1]) for v in vectors)) / graph.number_of_edges()
+
+    assert total_length(FWHM_PROFILES) == pytest.approx(30.0)
+    assert total_length(FWHM_WIDTHS) == pytest.approx(10.0)
+
+
+def test_fwhm_layers_start_hidden():
+    """The fit lines and the raw image sit on the vessels. They stay in the
+    layer list, off, until the user selects one."""
+    from haemolynx.gui.results import FWHM_WIDTHS
+
+    graph = a_graph(diameter_um=5.0, diameter_source="measured")
+    for _u, _v, _key, data in graph.edges(keys=True, data=True):
+        data["fwhm_profile_lines_phys"] = [[[0.0, 0.0, 0.0], [0.0, 1.0, 0.0]]]
+        data["fwhm_measured_lines_phys"] = [[[0.0, 0.0, 0.0], [0.0, 0.5, 0.0]]]
+    raw = np.arange(24, dtype=np.float32).reshape(2, 3, 4)
+    group = built(graph).stage_finished(
+        "assign_diameters", SimpleNamespace(graph=graph, fwhm_raw=raw)
+    )
+    for name in (FWHM_RAW, FWHM_PROFILES, FWHM_WIDTHS):
+        assert spec_named(group, name).visible is False
+
+
+def test_a_later_stage_does_not_force_the_fwhm_layers_hidden_again():
+    """Solve redraws the lines. That redraw must not set visible=False, or
+    a layer the user has switched on is turned off again."""
+    from haemolynx.gui.results import FWHM_WIDTHS
+
+    graph = a_graph(diameter_um=5.0, diameter_source="measured")
+    for _u, _v, _key, data in graph.edges(keys=True, data=True):
+        data["fwhm_profile_lines_phys"] = [[[0.0, 0.0, 0.0], [0.0, 1.0, 0.0]]]
+        data["fwhm_measured_lines_phys"] = [[[0.0, 0.0, 0.0], [0.0, 0.5, 0.0]]]
+    results = built(graph)
+    results.stage_finished("assign_diameters", SimpleNamespace(graph=graph))
+    solved = results.stage_finished("solve", _solved(graph))
+    for name in (FWHM_PROFILES, FWHM_WIDTHS):
+        assert spec_named(solved, name).visible is True
+
+
+def _measured_with_a_stray():
+    """The three-vessel line plus a stray vessel (nodes 10-11) far off along
+    y, every vessel with one FWHM line across its middle."""
+    graph = a_graph(diameter_um=5.0, diameter_source="measured")
+    for node_id, z in ((10, 0.0), (11, 10.0)):
+        graph.add_node(node_id, pos=np.array([z, 100.0, 0.0]))
+    graph.add_edge(10, 11, key=0, voxels=[[0.0, 100.0, 0.0], [10.0, 100.0, 0.0]],
+                   length=10.0, segment_id=10, diameter_um=5.0, diameter_source="measured")
+    for u, v, _key, data in graph.edges(keys=True, data=True):
+        z, y = (graph.nodes[u]["pos"][0] + graph.nodes[v]["pos"][0]) / 2, graph.nodes[u]["pos"][1]
+        data["fwhm_profile_lines_phys"] = [[[z, y - 7.5, 0.0], [z, y + 7.5, 0.0]]]
+        data["fwhm_measured_lines_phys"] = [[[z, y - 2.5, 0.0], [z, y + 2.5, 0.0]]]
+    return graph
+
+
+def _solved(graph):
+    nodes = list(graph)
+    return SimpleNamespace(graph=graph, pressure=np.zeros(len(nodes)), node_list=nodes,
+                           equivalent_resistance=None)
+
+
+def test_the_fwhm_lines_of_vessels_network_handling_removed_are_not_drawn():
+    """Regression: the lines were drawn once, from the Diameters stage's
+    network, and never again -- so a vessel removed at the start of the
+    haemodynamics (no inlet and outlet in its branch) kept its lines over a
+    segmented blob the network no longer had."""
+    from haemolynx.gui.results import FWHM_WIDTHS
+
+    graph = _measured_with_a_stray()
+    results = built(graph)
+    results.stage_finished("assign_boundaries", SimpleNamespace(graph=graph))
+    diameters = results.stage_finished("assign_diameters", SimpleNamespace(graph=graph))
+    assert len(spec_named(diameters, FWHM_PROFILES).data) == 4
+    pruned = graph.subgraph([0, 1, 2, 3]).copy()
+
+    solved = results.stage_finished("solve", _solved(pruned))
+
+    for name in (FWHM_PROFILES, FWHM_WIDTHS):
+        vectors = spec_named(solved, name).data
+        assert len(vectors) == 3, name
+        assert np.all(vectors[:, 0, 1] < 50.0), name  # none at the stray's y=100
+
+
+def test_a_fwhm_layer_left_with_no_line_is_emptied_not_left_standing():
+    graph = _measured_with_a_stray()
+    for u, v, _key, data in graph.edges(keys=True, data=True):
+        if u != 10:
+            del data["fwhm_profile_lines_phys"], data["fwhm_measured_lines_phys"]
+    results = built(graph)
+    results.stage_finished("assign_boundaries", SimpleNamespace(graph=graph))
+    results.stage_finished("assign_diameters", SimpleNamespace(graph=graph))
+
+    solved = results.stage_finished("solve", _solved(graph.subgraph([0, 1, 2, 3]).copy()))
+
+    assert spec_named(solved, FWHM_PROFILES).data.shape == (0, 2, 3)
+
+
+def test_a_run_that_drew_no_fwhm_lines_gets_no_fwhm_layer_from_the_solve():
+    graph = a_graph()
+    results = built(graph)
+    results.stage_finished("assign_diameters", SimpleNamespace(graph=graph))
+
+    solved = results.stage_finished("solve", _solved(graph))
+
+    assert FWHM_PROFILES not in [spec.name for spec in solved.layers]
+
+
+def test_post_processing_drops_the_fwhm_lines_of_a_vessel_deleted_by_hand():
+    graph = _measured_with_a_stray()
+    results = built(graph)
+    results.stage_finished("assign_boundaries", SimpleNamespace(graph=graph))
+    results.stage_finished("assign_diameters", SimpleNamespace(graph=graph))
+    edited = graph.copy()
+    edited.remove_edge(2, 3, key=0)
+
+    group = results.stage_finished("post_process", _post_processed_solution(edited))
+
+    assert len(spec_named(group, FWHM_PROFILES).data) == 3
+
+
+def test_assign_diameters_note_counts_diameter_sources():
+    graph = a_graph(diameter_um=6.0, diameter_source="table", branch_order="B01")
+    group = built(graph).stage_finished("assign_diameters", SimpleNamespace(graph=graph))
+    assert "3 table" in group.note
 
 
 # --- the stages --------------------------------------------------------------
@@ -357,7 +964,7 @@ def test_the_model_stage_adds_no_layer_but_repaints_the_network():
         "build_haemodynamic_model", SimpleNamespace(graph=graph, results={})
     )
     assert group.layers == ()
-    assert group.recolour == ((VESSELS, "resistance"),)
+    assert group.recolour == ((VESSELS, "resistance_log10"),)
     assert "3 of 3" in group.note
 
 
@@ -371,14 +978,125 @@ def test_the_view_is_turned_to_3d_once_when_the_first_geometry_arrives():
     assert again.ndisplay is None
 
 
-def test_masks_are_shown_but_not_switched_on():
-    group = built().stage_finished(
+def test_masks_are_shown_as_translucent_volume_layers():
+    """Enabled masks arrive as Image volumes with the role colours. Their
+    spec shows them; the first view of the network hides them
+    (test_the_first_view_of_a_network_hides_the_volumes_round_it)."""
+    from haemolynx.gui.results import MASK_COLOURS, MASK_LAYERS
+
+    art = np.zeros((4, 4, 4), dtype=bool)
+    art[1, 1, 1] = True
+    group = built(voxel_size_zyx=(2.0, 1.0, 0.5)).stage_finished(
         "build_network",
-        network(a_graph(), large_arteriole_mask=np.zeros((4, 4, 4), dtype=bool)),
+        network(
+            a_graph(),
+            voxel_size_zyx=(2.0, 1.0, 0.5),
+            large_arteriole_mask=art,
+            large_venule_mask=np.zeros((4, 4, 4), dtype=bool),
+        ),
     )
-    mask = next(spec for spec in group.layers if "arteriole mask" in spec.name)
-    assert mask.kind == "labels"
-    assert mask.visible is False
+    names = {spec.name for spec in group.layers}
+    assert MASK_LAYERS["large_arteriole_mask"] in names
+    assert MASK_LAYERS["large_venule_mask"] in names
+    assert MASK_LAYERS["small_arteriole_mask"] not in names
+    assert MASK_LAYERS["small_venule_mask"] not in names
+
+    mask = next(
+        spec for spec in group.layers
+        if spec.name == MASK_LAYERS["large_arteriole_mask"]
+    )
+    assert mask.kind == "image"
+    assert mask.visible is True
+    assert mask.scale == (2.0, 1.0, 0.5)
+    assert mask.contrast_limits == (0.0, 1.0)
+    assert mask.options["rendering"] == "mip"
+    assert mask.options["blending"] == "translucent"
+    assert mask.options["mask_colour"] == MASK_COLOURS["large_arteriole_mask"]
+    assert mask.data.dtype == np.uint8, "one byte a voxel, not a float32 copy"
+
+
+def test_boundaries_show_the_small_masks_boundary_labelling_read():
+    """assign_boundaries relabels the small masks (tangential redefinition,
+    continuity bridging); its own layers replace the as-loaded ones, even with
+    no large masks in the run."""
+    from haemolynx.gui.results import MASK_LAYERS
+
+    loaded = np.zeros((4, 4, 4), dtype=bool)
+    relabelled = np.zeros((4, 4, 4), dtype=bool)
+    relabelled[1:3, 1, 1] = True
+    results = ResultLayers()
+    results.stage_finished(
+        "build_network",
+        network(a_graph(), small_arteriole_mask=loaded, small_venule_mask=loaded),
+    )
+    group = results.stage_finished(
+        "assign_boundaries",
+        SimpleNamespace(
+            inlet_nodes=[0],
+            outlet_nodes=[3],
+            arteriole_boundary_nodes=[],
+            venule_boundary_nodes=[],
+            graph=a_graph(),
+            small_arteriole_mask=relabelled,
+            small_venule_mask=loaded,
+        ),
+    )
+
+    shown = spec_named(group, MASK_LAYERS["small_arteriole_mask"])
+    assert np.array_equal(shown.data, relabelled.astype(np.float32))
+    assert MASK_LAYERS["large_arteriole_mask"] not in {spec.name for spec in group.layers}
+
+
+def test_vessel_mask_volume_layers_skip_missing_and_keep_role_colours():
+    from haemolynx.gui.results import (
+        MASK_COLOURS,
+        MASK_LAYERS,
+        vessel_mask_volume_layers,
+    )
+
+    layers = vessel_mask_volume_layers(
+        {
+            "large_arteriole_mask": np.ones((2, 2, 2), dtype=bool),
+            "small_venule_mask": np.zeros((2, 2, 2), dtype=bool),
+        },
+        voxel_size_zyx=(1.5, 1.0, 0.5),
+    )
+    assert [spec.name for spec in layers] == [
+        MASK_LAYERS["large_arteriole_mask"],
+        MASK_LAYERS["small_venule_mask"],
+    ]
+    by_name = {spec.name: spec for spec in layers}
+    assert (
+        by_name[MASK_LAYERS["large_arteriole_mask"]].options["mask_colour"]
+        == MASK_COLOURS["large_arteriole_mask"]
+    )
+    assert (
+        by_name[MASK_LAYERS["small_venule_mask"]].options["mask_colour"]
+        == MASK_COLOURS["small_venule_mask"]
+    )
+    assert by_name[MASK_LAYERS["large_arteriole_mask"]].scale == (1.5, 1.0, 0.5)
+
+
+def test_mask_role_colours_are_dark_and_light_red_and_blue():
+    """Large = dark, small = light; arterioles red, venules blue -- as signed
+    branch order colours the two sides, and not red beside green, the pair a
+    red-green colour-blind eye cannot tell apart."""
+    from haemolynx.gui.results import MASK_COLOURS
+
+    large_a = MASK_COLOURS["large_arteriole_mask"]
+    small_a = MASK_COLOURS["small_arteriole_mask"]
+    large_v = MASK_COLOURS["large_venule_mask"]
+    small_v = MASK_COLOURS["small_venule_mask"]
+    # Red channel dominates for arterioles; blue for venules.
+    assert large_a[0] > large_a[1] and large_a[0] > large_a[2]
+    assert small_a[0] > small_a[1] and small_a[0] > small_a[2]
+    assert large_v[2] > large_v[0] and large_v[2] > large_v[1]
+    assert small_v[2] > small_v[0] and small_v[2] > small_v[1]
+    # Light roles are brighter (higher RGB sum) than their dark counterparts.
+    assert sum(small_a[:3]) > sum(large_a[:3])
+    assert sum(small_v[:3]) > sum(large_v[:3])
+    # Translucent enough to overlay the main image.
+    assert all(0.0 < colour[3] < 1.0 for colour in MASK_COLOURS.values())
 
 
 def test_the_hover_layer_carries_the_whole_table_and_starts_hidden():
@@ -412,10 +1130,504 @@ def test_every_name_a_builder_emits_is_declared():
 
 
 def test_every_declared_column_names_a_stage_that_exists():
+    from haemolynx.gui.results import OPTIONAL_EDGE_COLUMNS
     from haemolynx.pipeline.progress import STAGES
 
     known = {stage.call for stage in STAGES}
     assert set(EDGE_COLUMNS.values()) <= known
+    assert set(OPTIONAL_EDGE_COLUMNS.values()) <= known
+
+
+def test_edge_columns_includes_fwhm_status_and_edt_crosscheck_columns():
+    from haemolynx.gui.results import OPTIONAL_EDGE_COLUMNS, TEXT_COLUMNS, edge_columns_for_settings
+
+    assert EDGE_COLUMNS["fwhm_status"] == "assign_diameters"
+    assert TEXT_COLUMNS >= {"fwhm_status"}
+    for name in (
+        "edt_diameter_um",
+        "fwhm_edt_disagreement_ratio",
+        "fwhm_low_confidence_vs_edt",
+    ):
+        assert OPTIONAL_EDGE_COLUMNS[name] == "assign_diameters"
+    assert set(edge_columns_for_settings()) >= {
+        "fwhm_status",
+        "edt_diameter_um",
+        "fwhm_edt_disagreement_ratio",
+        "fwhm_low_confidence_vs_edt",
+    }
+
+
+def test_edge_columns_includes_vascular_community_as_a_text_column():
+    from haemolynx.gui.results import OPTIONAL_EDGE_COLUMNS, TEXT_COLUMNS, edge_columns_for_settings
+
+    assert OPTIONAL_EDGE_COLUMNS["vascular_community"] == "export_results"
+    assert TEXT_COLUMNS >= {"vascular_community"}
+    assert "vascular_community" in edge_columns_for_settings()
+
+
+def test_a_surrounds_vessels_can_be_coloured_by_which_network_they_are():
+    from haemolynx.gui.results import OPTIONAL_EDGE_COLUMNS, TEXT_COLUMNS, edge_columns_for_settings
+
+    assert OPTIONAL_EDGE_COLUMNS["network_part"] == "build_network"
+    assert TEXT_COLUMNS >= {"network_part"}
+    assert "network_part" in edge_columns_for_settings()
+
+
+def test_edge_columns_excludes_flow_dir_axis_components_when_colouring_is_off():
+    """Regression: flow_direction_colouring was declared but never read --
+    unchecking it had no effect on the declared columns. flow_dir_rgb/
+    flow_heading_deg are derived encodings, not "axis components", and stay."""
+    from haemolynx.gui.results import FLOW_DIR_COLUMNS, edge_columns_for_settings
+
+    with_colouring = edge_columns_for_settings({"flow_direction_colouring": True})
+    without_colouring = edge_columns_for_settings({"flow_direction_colouring": False})
+    default = edge_columns_for_settings()
+
+    assert FLOW_DIR_COLUMNS <= set(with_colouring)
+    assert FLOW_DIR_COLUMNS <= set(default)
+    assert FLOW_DIR_COLUMNS.isdisjoint(without_colouring)
+    assert "flow_dir_rgb" in without_colouring
+    assert "flow_heading_deg" in without_colouring
+
+
+# --- bottleneck / shunt colouring (export_results) --------------------------
+
+
+def test_bottleneck_and_shunt_columns_are_declared_for_export_results():
+    from haemolynx.gui.results import OPTIONAL_EDGE_COLUMNS, TEXT_COLUMNS, edge_columns_for_settings
+
+    names = {"bottleneck_route_share", "bottleneck_min_cut", "shunt_route_ratio", "shunt"}
+    assert all(OPTIONAL_EDGE_COLUMNS[name] == "export_results" for name in names)
+    assert TEXT_COLUMNS >= {"bottleneck_min_cut", "shunt"}
+    assert "bottleneck_route_share" not in TEXT_COLUMNS
+    assert "shunt_route_ratio" not in TEXT_COLUMNS
+    assert names <= set(edge_columns_for_settings())
+
+
+def test_export_results_offers_bottleneck_and_shunt_colouring_on_the_vessels():
+    """The real analysis writes the attributes; export_results must carry
+    them into the vessels layer's features, colourable by kind."""
+    from haemolynx.gui.results import _colouring, available_edge_columns
+    from haemolynx.statistics import (
+        compute_inlet_outlet_bottlenecks,
+        compute_inlet_outlet_shunts,
+    )
+
+    graph = a_graph()
+    results = built(graph)
+    compute_inlet_outlet_bottlenecks(graph, [0], [3])
+    compute_inlet_outlet_shunts(graph, [0], [3])
+
+    group = results.stage_finished("export_results", SimpleNamespace(graph=graph))
+    vessels = spec_named(group, VESSELS)
+
+    assert {"bottleneck_route_share", "bottleneck_min_cut", "shunt_route_ratio", "shunt"} <= set(
+        available_edge_columns(graph)
+    )
+    # A single chain: every vessel is on the one route and none is a shortcut.
+    assert list(vessels.features["bottleneck_route_share"]) == pytest.approx([1.0, 1.0, 1.0])
+    assert set(vessels.features["shunt"]) == {"not_shunt"}
+    assert _colouring(vessels.features, "bottleneck_min_cut")["colour_kind"] == "categorical"
+    assert _colouring(vessels.features, "shunt")["colour_kind"] == "categorical"
+    assert _colouring(vessels.features, "shunt_route_ratio")["colour_kind"] == "continuous"
+
+
+def test_bottleneck_and_shunt_columns_are_absent_without_inlets_and_outlets():
+    from haemolynx.gui.results import available_edge_columns
+    from haemolynx.statistics import (
+        compute_inlet_outlet_bottlenecks,
+        compute_inlet_outlet_shunts,
+    )
+
+    graph = a_graph()
+    compute_inlet_outlet_bottlenecks(graph, [], [])
+    compute_inlet_outlet_shunts(graph, [], [])
+
+    present = set(available_edge_columns(graph))
+    assert present.isdisjoint(
+        {"bottleneck_route_share", "bottleneck_min_cut", "shunt_route_ratio", "shunt"}
+    )
+
+
+# --- the other network analyses' colouring (export_results) ------------------
+
+#: Every per-vessel column the eight network analyses write, and whether it is
+#: text (categorical colouring) or a number (continuous).
+NETWORK_ANALYSIS_COLUMNS = {
+    "occlusion_flow_loss": False,
+    "occlusion_hypoperfused_length_um": False,
+    "current_flow_share": False,
+    "arteriolar_territory": True,
+    "venular_territory": True,
+    "watershed": True,
+    "arteriolar_watershed_margin": False,
+    "transit_time_s": False,
+    "arrival_time_s": False,
+    "loop_length_um": False,
+    "strahler_order": False,
+    "fiedler_value": False,
+    "fiedler_side": True,
+}
+
+
+def test_network_analysis_columns_are_declared_for_export_results():
+    from haemolynx.gui.results import OPTIONAL_EDGE_COLUMNS, TEXT_COLUMNS, edge_columns_for_settings
+
+    for name, is_text in NETWORK_ANALYSIS_COLUMNS.items():
+        assert OPTIONAL_EDGE_COLUMNS[name] == "export_results", name
+        assert (name in TEXT_COLUMNS) == is_text, name
+    assert set(NETWORK_ANALYSIS_COLUMNS) <= set(edge_columns_for_settings())
+
+
+def _solved_chain():
+    """a_graph with the flow a pressure drop 0 -> 3 would give, for transit time."""
+    graph = a_graph(diameter_um=5.0, conductance=1.0, resistance=1.0, branch_order="BO1")
+    for node, pressure in zip(range(4), (3.0, 2.0, 1.0, 0.0)):
+        graph.nodes[node]["pressure"] = pressure
+    for _u, _v, _k, data in graph.edges(keys=True, data=True):
+        data["flow_abs"] = 1e-12
+    return graph
+
+
+def test_export_results_offers_every_network_analysis_colouring_on_the_vessels():
+    from haemolynx.gui.results import _colouring, available_edge_columns
+    from haemolynx import statistics
+
+    graph = _solved_chain()
+    results = built(graph)
+    statistics.compute_single_vessel_occlusion_impact(graph, [0], [3])
+    statistics.compute_current_flow(graph, [0], [3])
+    statistics.compute_perfusion_territories(graph, [0], [3])
+    statistics.compute_transit_times(graph, [0], [3])
+    # A chain has no loop and so no finite loop length; it is covered by its
+    # own test below on a graph that has one.
+    statistics.compute_strahler_orders(graph, [0], [3])
+    statistics.compute_algebraic_connectivity(graph)
+
+    group = results.stage_finished("export_results", SimpleNamespace(graph=graph))
+    vessels = spec_named(group, VESSELS)
+    offered = set(available_edge_columns(graph))
+
+    for name, is_text in NETWORK_ANALYSIS_COLUMNS.items():
+        if name == "loop_length_um":
+            continue
+        assert name in offered, name
+        kind = _colouring(vessels.features, name)["colour_kind"]
+        assert kind == ("categorical" if is_text else "continuous"), name
+    assert list(vessels.features["current_flow_share"]) == pytest.approx([1.0, 1.0, 1.0])
+
+
+def test_loop_length_is_offered_once_a_vessel_is_on_a_loop():
+    from haemolynx.gui.results import available_edge_columns
+    from haemolynx.statistics import compute_loop_hierarchy
+
+    graph = a_graph()
+    graph.add_edge(0, 3, key=0, voxels=[[0.0, 0, 0], [30.0, 0, 0]], length=30.0, segment_id=9)
+    compute_loop_hierarchy(graph)
+
+    assert "loop_length_um" in set(available_edge_columns(graph))
+
+
+def test_network_analysis_columns_are_absent_without_inlets_and_outlets():
+    from haemolynx.gui.results import available_edge_columns
+    from haemolynx import statistics
+
+    graph = _solved_chain()
+    statistics.compute_single_vessel_occlusion_impact(graph, [], [])
+    statistics.compute_current_flow(graph, [], [])
+    statistics.compute_perfusion_territories(graph, [], [])
+    statistics.compute_transit_times(graph, [], [])
+
+    present = set(available_edge_columns(graph))
+    assert present.isdisjoint(
+        {
+            "occlusion_flow_loss", "occlusion_hypoperfused_length_um", "current_flow_share",
+            "arteriolar_territory", "venular_territory", "watershed",
+            "arteriolar_watershed_margin", "transit_time_s", "arrival_time_s",
+        }
+    )
+
+
+# --- vascular community colouring (export_results) --------------------------
+
+
+def test_export_results_refreshes_vessel_features_with_real_community_values():
+    """graph.assign_vascular_communities writes vascular_community during
+    export_results -- _from_export_results must re-emit the vessels layer
+    so those real values (not the empty placeholder every earlier stage's
+    layer already carried) reach the napari layer's own features."""
+    graph = a_graph(conductance=1e-18)
+    results = built(graph)
+    for _u, _v, _k, data in graph.edges(keys=True, data=True):
+        data["flow_abs"] = 5e-16
+    results.stage_finished(
+        "solve",
+        SimpleNamespace(node_list=list(graph.nodes),
+                        pressure=np.array([1000.0, 900.0, 700.0, 500.0])),
+    )
+
+    for _u, _v, _k, data in graph.edges(keys=True, data=True):
+        data["vascular_community"] = "D01"
+
+    group = results.stage_finished("export_results", SimpleNamespace(graph=graph))
+    vessels = spec_named(group, VESSELS)
+    assert list(vessels.features["vascular_community"]) == ["D01", "D01", "D01"]
+
+
+def test_export_results_does_not_disturb_the_current_vessel_colouring():
+    """DEFAULT_VESSEL_COLOUR has no "export_results" entry, so re-emitting
+    the vessels layer here must resolve colour_by to None -- which
+    gui._widget._colour_layer treats as "leave the colouring as it is",
+    not "reset to none"."""
+    graph = a_graph(conductance=1e-18)
+    results = built(graph)
+    for _u, _v, _k, data in graph.edges(keys=True, data=True):
+        data["flow_abs"] = 5e-16
+    solve_group = results.stage_finished(
+        "solve",
+        SimpleNamespace(node_list=list(graph.nodes),
+                        pressure=np.array([1000.0, 900.0, 700.0, 500.0])),
+    )
+    assert spec_named(solve_group, VESSELS).colour_by == "flow_abs_log10"
+
+    export_group = results.stage_finished("export_results", SimpleNamespace(graph=graph))
+    assert spec_named(export_group, VESSELS).colour_by is None
+    assert "export_results" not in DEFAULT_VESSEL_COLOUR
+
+
+# --- one layer per perturbation ----------------------------------------------
+
+
+def solved_graph(flow: float = 1e-12) -> nx.MultiGraph:
+    """A graph as a re-solve leaves it: flows on edges, pressures on nodes."""
+    graph = a_graph()
+    for index, node_id in enumerate(graph.nodes):
+        graph.nodes[node_id]["pressure"] = 100.0 - 10.0 * index
+    for _u, _v, _key, data in graph.edges(keys=True, data=True):
+        data["resistance"] = 1e15
+        data["conductance"] = 1e-15
+        data["flow_abs"] = flow
+        data["flow_signed"] = flow
+    return graph
+
+
+def a_perturbation(name: str, flow: float = 1e-12):
+    """One `PerturbationResult`, using the real dataclass.
+
+    The real one, so a field renamed in `pipeline/stages.py` fails here rather
+    than showing an empty layer list months later.
+    """
+    from haemolynx.pipeline import PerturbationResult
+
+    return PerturbationResult(
+        name=name, type="arteriole_diameter_change", graph=solved_graph(flow)
+    )
+
+
+def a_perturbation_run(*results):
+    from haemolynx.pipeline import PerturbationRun
+
+    return PerturbationRun(output_dir=Path("outputs/perturbations"),
+                           results=list(results))
+
+
+def test_two_perturbations_give_two_distinctly_named_vessel_layers():
+    """The point of the whole stage: two answers, side by side, told apart."""
+    group = built().stage_finished(
+        "run_perturbations",
+        a_perturbation_run(a_perturbation("art_dilate_20"),
+                           a_perturbation("art_constrict_20")),
+    )
+
+    vessels = [
+        spec.name for spec in group.layers
+        if spec.kind == "vectors" and spec.options.get("vector_style") == "line"
+    ]
+    assert vessels == [
+        perturbation_layer_names("art_dilate_20")[0],
+        perturbation_layer_names("art_constrict_20")[0],
+    ]
+    assert len(set(vessels)) == 2
+
+
+
+def test_every_perturbation_layer_names_its_perturbation_and_baseline_layers_none():
+    """What the view panel's "Showing" menu swaps by: a whole network at once."""
+    results = built()
+    baseline = results.stage_finished("build_network", network(a_graph(), (1.0, 1.0, 1.0)))
+    group = results.stage_finished(
+        "run_perturbations",
+        a_perturbation_run(a_perturbation("art_dilate_20"),
+                           a_perturbation("art_constrict_20")),
+    )
+
+    assert {spec.layer_set for spec in baseline.layers} == {None}
+    by_set = {}
+    for spec in group.layers:
+        by_set.setdefault(spec.layer_set, []).append(spec.name)
+    assert set(by_set) == {"art_dilate_20", "art_constrict_20"}
+    for name, layer_names in by_set.items():
+        assert set(perturbation_layer_names(name)) <= set(layer_names)
+
+def test_each_perturbation_gets_a_nodes_layer_of_its_own():
+    group = built().stage_finished(
+        "run_perturbations", a_perturbation_run(a_perturbation("art_dilate_20"))
+    )
+    assert [spec.name for spec in group.layers] == [
+        *perturbation_layer_names("art_dilate_20"),
+        perturbation_flow_direction_layer_name("art_dilate_20"),
+    ]
+
+
+def test_the_baseline_layers_are_untouched():
+    """A perturbation must not overwrite the run it is compared against."""
+    group = built().stage_finished(
+        "run_perturbations", a_perturbation_run(a_perturbation("art_dilate_20"))
+    )
+    names = {spec.name for spec in group.layers}
+    assert VESSELS not in names
+    assert NODES not in names
+    assert VESSEL_LABELS not in names
+    assert group.recolour == ()
+
+
+def test_the_panel_goes_on_holding_the_baseline_graph():
+    """`colour_options` reads the graph this class remembers -- the baseline's.
+
+    A perturbation's graph carries the same columns here, so the check that
+    means anything is identity: the remembered graph is still the one the
+    earlier stages produced.
+    """
+    baseline = a_graph()
+    results = built(baseline)
+
+    results.stage_finished(
+        "run_perturbations", a_perturbation_run(a_perturbation("art_dilate_20"))
+    )
+
+    assert results._graph is baseline
+
+
+def test_a_perturbations_layers_are_in_microns_like_every_graph_layer():
+    """Graph-derived, so already physical: scale 1, not the voxel size."""
+    group = built(voxel_size_zyx=(2.0, 1.0, 0.5)).stage_finished(
+        "run_perturbations", a_perturbation_run(a_perturbation("art_dilate_20"))
+    )
+    assert [spec.scale for spec in group.layers] == [(1.0, 1.0, 1.0)] * 3
+
+
+def test_a_perturbations_layers_start_hidden():
+    """Identical geometry to the baseline: a visible one just covers it."""
+    group = built().stage_finished(
+        "run_perturbations", a_perturbation_run(a_perturbation("art_dilate_20"))
+    )
+    assert all(spec.visible is False for spec in group.layers)
+    assert "hidden" in group.note
+
+
+def test_the_vessels_are_coloured_by_the_same_quantity_as_the_baseline():
+    """Comparing like with like is the only thing these layers are for."""
+    group = built().stage_finished(
+        "run_perturbations", a_perturbation_run(a_perturbation("art_dilate_20"))
+    )
+    vessels = spec_named(group, perturbation_layer_names("art_dilate_20")[0])
+    assert vessels.colour_by == DEFAULT_VESSEL_COLOUR["solve"]
+    assert vessels.colour_kind == "continuous"
+
+
+def test_each_perturbation_carries_its_own_numbers():
+    """Two layers built from two graphs, not two views of one."""
+    group = built().stage_finished(
+        "run_perturbations",
+        a_perturbation_run(a_perturbation("faster", flow=4e-12),
+                           a_perturbation("slower", flow=1e-12)),
+    )
+    faster = spec_named(group, perturbation_layer_names("faster")[0])
+    slower = spec_named(group, perturbation_layer_names("slower")[0])
+    assert faster.features["flow_abs"].max() == pytest.approx(4e-12)
+    assert slower.features["flow_abs"].max() == pytest.approx(1e-12)
+
+
+def test_the_nodes_layer_carries_that_perturbations_pressures():
+    """`set_edge_flows` writes them onto the graph; there is no Solution here."""
+    group = built().stage_finished(
+        "run_perturbations", a_perturbation_run(a_perturbation("art_dilate_20"))
+    )
+    nodes = spec_named(group, perturbation_layer_names("art_dilate_20")[1])
+    assert nodes.colour_by == "pressure"
+    assert nodes.features["pressure"].tolist() == [100.0, 90.0, 80.0, 70.0]
+
+
+def test_a_perturbation_with_no_network_gets_no_layer():
+    """`type: none` does nothing, so there is nothing to draw."""
+    from haemolynx.pipeline import PerturbationResult
+
+    group = built().stage_finished(
+        "run_perturbations",
+        a_perturbation_run(PerturbationResult(name="off", type="none")),
+    )
+    assert group.layers == ()
+    assert "No perturbation produced a network layer" in group.note
+
+
+def test_a_failure_is_named_in_the_note_and_the_others_still_drawn():
+    from haemolynx.pipeline import PerturbationResult
+
+    group = built().stage_finished(
+        "run_perturbations",
+        a_perturbation_run(
+            a_perturbation("art_dilate_20"),
+            PerturbationResult(name="broken", type="pericyte_dilation_sweep",
+                               error="ValueError: no inlet"),
+        ),
+    )
+    assert len(group.layers) == 3  # art_dilate_20's vessels, nodes and arrows
+    assert "broken" in group.note
+    assert "no inlet" in group.note
+
+
+def test_a_perturbation_layer_is_ours_without_being_in_the_declared_set():
+    """`LAYER_NAMES` cannot enumerate a name a config invents; the prefix can."""
+    for name in (
+        *perturbation_layer_names("art_dilate_20"),
+        perturbation_flow_direction_layer_name("art_dilate_20"),
+    ):
+        assert is_ours_name(name)
+        assert name not in LAYER_NAMES
+    assert all(is_ours_name(name) for name in LAYER_NAMES)
+    assert not is_ours_name("art_dilate_20 vessels")
+
+
+def test_a_perturbations_name_is_all_that_separates_its_layers_from_ours():
+    """So a perturbation called "vessels" cannot become the baseline's layer."""
+    vessels, nodes = perturbation_layer_names("vessels")
+    assert vessels != VESSELS
+    assert nodes != NODES
+
+
+# --- a run that was stopped part-way -----------------------------------------
+
+
+def test_resetting_forgets_the_graph_the_run_had_got_to():
+    """The graph is remembered across stages, so an abandoned run leaves one."""
+    results = built()
+    assert results.colour_options()
+
+    results.reset()
+
+    assert results.colour_options() == []
+    assert results.emitted == ()
+
+
+def test_the_next_run_after_a_reset_starts_from_nothing():
+    """Not just emptied: usable again, and back to showing the geometry whole."""
+    results = built()
+    results.reset()
+
+    group = results.stage_finished("build_network", network(a_graph()))
+
+    assert spec_named(group, VESSELS)
+    assert group.ndisplay == 3
 
 
 # --- it must not need a GUI --------------------------------------------------
@@ -454,7 +1666,7 @@ def test_no_napari_import_appears_in_the_source():
 
 
 def test_topology_steps_are_not_drawn_unless_asked_for():
-    """Eleven extra rebuilds in the middle of the slowest stage, so: opt in."""
+    """Fifteen extra rebuilds in the middle of the slowest stage, so: opt in."""
     results = built()
     group = results.stage_finished("topology_step:prune_vascular_stubs", a_graph())
     assert group.layers == ()
@@ -556,6 +1768,36 @@ def test_a_declared_column_still_carries_the_value_once_it_is_filled():
     assert np.allclose(np.asarray(vessels.features["flow_abs"], dtype=float), 7e-16)
 
 
+def test_vessel_layers_always_include_flow_abs_log10_once_flows_exist():
+    """Log10 flow is always a layer-panel option once flows exist -- there is
+    no setting that gates it."""
+    from haemolynx.haemodynamics.resistance import flow_abs_log10_value
+
+    graph = a_graph(conductance=1e-18)
+    results = ResultLayers(settings={})
+    results.stage_finished("skeletonise", SimpleNamespace(
+        image=np.zeros((4, 4, 4)), skeleton=np.zeros((4, 4, 4), dtype=bool),
+        voxel_size_xyz=(1.0, 1.0, 1.0), voxel_size_zyx=(1.0, 1.0, 1.0),
+    ))
+    results.stage_finished("build_network", network(graph))
+    for _u, _v, _k, data in graph.edges(keys=True, data=True):
+        data["flow_abs"] = 1e-12
+        data["flow_abs_log10"] = flow_abs_log10_value(1e-12)
+
+    group = results.stage_finished(
+        "solve",
+        SimpleNamespace(node_list=list(graph.nodes),
+                        pressure=np.array([1000.0, 900.0, 700.0, 500.0])),
+    )
+    vessels = next(s for s in group.layers if s.name == VESSELS)
+    assert "flow_abs_log10" in vessels.features
+    assert np.allclose(
+        np.asarray(vessels.features["flow_abs_log10"], dtype=float),
+        flow_abs_log10_value(1e-12),
+    )
+    assert spec_named(group, VESSELS).colour_by == "flow_abs_log10"
+
+
 # --- the range a colour bar should span --------------------------------------
 
 
@@ -595,6 +1837,771 @@ def test_a_column_with_nothing_in_it_has_no_range():
     assert _data_range(layer, "none") is None
 
 
+# --- Z depth filter (view-only) ----------------------------------------------
+
+
+def test_image_z_extent_um_is_voxel_z_times_stack_depth():
+    assert image_z_extent_um((2.0, 1.0, 0.5), 8) == pytest.approx(16.0)
+
+
+def test_z_depth_filter_targets_graph_vectors_and_points_only():
+    """Graph geometry uses this predicate; volumes are clipped separately."""
+    assert is_z_depth_filtered_layer(VESSELS, "vectors") is True
+    assert is_z_depth_filtered_layer(VESSEL_TUBES, "surface") is False
+    assert is_z_depth_filtered_layer(FLOW_DIRECTION, "vectors") is True
+    assert is_z_depth_filtered_layer(NODES, "points") is True
+    assert is_z_depth_filtered_layer(IMAGE, "image") is False
+    assert is_z_depth_filtered_layer(SKELETON, "labels") is False
+    assert is_z_depth_filtered_layer(FWHM_RAW, "image") is False
+    assert is_z_depth_filtered_layer(FWHM_PROFILES, "vectors") is True
+    assert is_z_depth_filtered_layer("HaemoLynx BC coordinates", "points") is False
+    assert is_z_depth_windowed_volume_layer("image") is True
+    assert is_z_depth_windowed_volume_layer("labels") is True
+
+
+def test_z_depth_windowed_volume_layer_targets_image_and_labels_not_graph_kinds():
+    assert is_z_depth_windowed_volume_layer("image") is True
+    assert is_z_depth_windowed_volume_layer("labels") is True
+    assert is_z_depth_windowed_volume_layer("vectors") is False
+    assert is_z_depth_windowed_volume_layer("points") is False
+
+
+def test_z_window_is_full_covers_the_stack_extent():
+    assert z_window_is_full(0.0, 8.0, 8.0) is True
+    assert z_window_is_full(0.0, 7.9, 8.0) is False
+    assert z_window_is_full(0.1, 8.0, 8.0) is False
+    assert z_window_is_full(0.0, 8.0, None) is False
+
+
+def test_z_slice_window_uses_slice_origin_in_microns():
+    # 4 slices, dz = 2 µm → origins 0, 2, 4, 6; extent 8 µm.
+    assert z_slice_window(4, 2.0, 0.0, 5.0) == (0, 2)
+    assert z_slice_window(4, 2.0, 0.0, 8.0) == (0, 3)
+
+
+def test_clip_volume_to_z_is_identity_at_full_range():
+    volume = np.arange(4 * 2 * 2, dtype=np.uint8).reshape(4, 2, 2)
+    out = clip_volume_to_z(volume, 2.0, 0.0, 8.0, z_extent=8.0)
+    assert out is volume
+    np.testing.assert_array_equal(out, volume)
+
+
+def test_clip_volume_to_z_zeros_outside_the_window_without_mip():
+    volume = np.zeros((4, 2, 2), dtype=np.uint8)
+    volume[0] = 1
+    volume[1] = 3
+    volume[2] = 2
+    volume[3] = 9
+    out = clip_volume_to_z(volume, 2.0, 0.0, 5.0, z_extent=8.0)
+    assert out.shape == volume.shape
+    np.testing.assert_array_equal(out[0], 1)
+    np.testing.assert_array_equal(out[1], 3)
+    np.testing.assert_array_equal(out[2], 2)
+    np.testing.assert_array_equal(out[3], 0)
+    np.testing.assert_array_equal(volume[3], 9)
+
+
+def test_clip_volume_to_z_empty_window_is_zeros():
+    volume = np.ones((4, 2, 2), dtype=np.uint8)
+    out = clip_volume_to_z(volume, 2.0, 6.0, 5.0, z_extent=8.0)
+    np.testing.assert_array_equal(out, np.zeros_like(volume))
+
+
+def _flow_graph_at_z(*z_values: float) -> nx.MultiGraph:
+    """One edge per Z slab; mid-edge arrow anchors sit near z + 5."""
+    graph = nx.MultiGraph()
+    for z in z_values:
+        u, v = int(z), int(z) + 100
+        graph.add_node(u, pos=np.array([float(z), 0.0, 0.0]))
+        graph.add_node(v, pos=np.array([float(z + 5), 0.0, 0.0]))
+        graph.add_edge(
+            u,
+            v,
+            key=0,
+            voxels=[[z, 0.0, 0.0], [z + 5, 0.0, 0.0]],
+            length=5.0,
+            flow_signed=1.0,
+            flow_abs=1.0,
+            conductance=1.0,
+        )
+    return graph
+
+
+def test_filter_flow_direction_vectors_by_z_uses_arrow_origin_z():
+    vectors, features = flow_direction_vectors(_flow_graph_at_z(0, 10, 20))
+    assert len(vectors) == 3
+    assert np.allclose(vectors[:, 0, 0], [5.0, 15.0, 25.0])
+    z_mid = 16.0
+    filtered, feats, _owner = filter_vectors_by_z(vectors, features, 0.0, z_mid)
+    assert len(filtered) == 2
+    assert np.all(filtered[:, 0, 0] <= z_mid)
+    assert len(feats["flow_abs"]) == len(filtered)
+
+
+def test_filter_vectors_by_z_keeps_segments_whose_origin_is_in_range():
+    paths, identity = edge_polylines(a_graph())
+    vectors, owner = polylines_to_vectors(paths)
+    features = {"edge_index": identity["edge_index"][owner]}
+    z_mid = 15.0
+    filtered, feats, _owner = filter_vectors_by_z(vectors, features, 0.0, z_mid)
+    # Edge start Z values are 0, 10, 20 along the line graph.
+    assert len(filtered) == 2
+    assert np.all(filtered[:, 0, 0] <= z_mid)
+    assert len(feats["edge_index"]) == len(filtered)
+
+
+def test_filter_vectors_by_z_at_full_range_restores_all_segments():
+    paths, _identity = edge_polylines(a_graph())
+    vectors, owner = polylines_to_vectors(paths)
+    features = {"edge_index": owner}
+    full_z = 30.0
+    filtered, feats, _owner = filter_vectors_by_z(vectors, features, 0.0, full_z)
+    assert len(filtered) == len(vectors)
+    assert len(feats["edge_index"]) == len(filtered)
+
+
+def test_filter_points_by_z_keeps_midpoints_up_to_z_mid():
+    paths, identity = edge_polylines(a_graph())
+    midpoints = midpoints_of(paths)
+    features = {"edge_index": identity["edge_index"]}
+    z_mid = 15.0
+    filtered, feats = filter_points_by_z(midpoints, features, 0.0, z_mid)
+    assert len(filtered) == 2
+    assert np.all(filtered[:, 0] <= z_mid)
+    assert len(feats["edge_index"]) == len(filtered)
+
+
+def test_apply_z_filter_on_viewer_restores_full_range():
+    from haemolynx.gui._widget import _apply_z_filter
+
+    graph = a_graph()
+    results = built(graph)
+    group = results.stage_finished("build_network", network(graph))
+    vessels = spec_named(group, VESSELS)
+    full_z = 30.0
+
+    class Vectors:
+        pass
+
+    layer = Vectors()
+    layer.name = VESSELS
+    layer.data = np.asarray(vessels.data)
+    layer.features = dict(vessels.features)
+    layer.metadata = {
+        "haemolynx": {
+            "z_filter_full": {
+                "data": np.asarray(vessels.data),
+                "features": {
+                    k: np.asarray(v) for k, v in vessels.features.items()
+                },
+            }
+        }
+    }
+    viewer = SimpleNamespace(layers=[layer])
+
+    _apply_z_filter(viewer, 0.0, 15.0, z_extent=full_z)
+    assert len(layer.data) == 2
+    _apply_z_filter(viewer, 0.0, full_z, z_extent=full_z)
+    assert len(layer.data) == len(vessels.data)
+
+
+def test_apply_z_filter_on_viewer_filters_flow_direction_layer():
+    from haemolynx.gui._widget import _apply_z_filter
+
+    vectors, features = flow_direction_vectors(_flow_graph_at_z(0, 10, 20))
+    full_z = 25.0
+
+    class Vectors:
+        pass
+
+    layer = Vectors()
+    layer.name = FLOW_DIRECTION
+    layer.data = np.asarray(vectors)
+    layer.features = dict(features)
+    layer.metadata = {
+        "haemolynx": {
+            "z_filter_full": {
+                "data": np.asarray(vectors),
+                "features": {k: np.asarray(v) for k, v in features.items()},
+            }
+        }
+    }
+    viewer = SimpleNamespace(layers=[layer])
+
+    _apply_z_filter(viewer, 0.0, 16.0, z_extent=full_z)
+    assert len(layer.data) == 2
+    assert np.all(layer.data[:, 0, 0] <= 16.0)
+    _apply_z_filter(viewer, 0.0, full_z, z_extent=full_z)
+    assert len(layer.data) == len(vectors)
+
+
+def test_apply_volume_z_display_on_viewer_clips_then_restores():
+    from haemolynx.gui._widget import OURS, _apply_volume_z_display, data_for_pipeline
+
+    volume = np.zeros((4, 2, 2), dtype=np.uint8)
+    volume[0] = 1
+    volume[1] = 3
+    volume[2] = 2
+    volume[3] = 9
+
+    class Image:
+        pass
+
+    layer = Image()
+    layer.name = IMAGE
+    layer.data = volume.copy()
+    layer.scale = (2.0, 1.0, 0.5)
+    layer.metadata = {
+        OURS: {"kind": "image", "z_window_full": volume.copy()}
+    }
+    viewer = SimpleNamespace(layers=[layer])
+    full_z = 8.0
+
+    _apply_volume_z_display(viewer, 0.0, 5.0, z_extent=full_z)
+    np.testing.assert_array_equal(layer.data[0], 1)
+    np.testing.assert_array_equal(layer.data[1], 3)
+    np.testing.assert_array_equal(layer.data[2], 2)
+    np.testing.assert_array_equal(layer.data[3], 0)
+    np.testing.assert_array_equal(data_for_pipeline(layer), volume)
+
+    _apply_volume_z_display(viewer, 0.0, full_z, z_extent=full_z)
+    np.testing.assert_array_equal(layer.data, volume)
+
+
+class _FakeLayerList(list):
+    """A plain list plus the `.selection.active` napari's LayerList carries."""
+
+    def __init__(self, layers, *, active=None):
+        super().__init__(layers)
+        self.selection = SimpleNamespace(active=active)
+
+
+def _fake_image_layer(name: str, *, ours: bool = True):
+    from haemolynx.gui._widget import OURS
+
+    class Image:
+        pass
+
+    layer = Image()
+    layer.name = name
+    layer.rendering = "mip"
+    layer.attenuation = 0.05
+    layer.interpolation3d = "linear"
+    layer.gamma = 1.0
+    layer.metadata = {OURS: {"kind": "image"}} if ours else {}
+    return layer
+
+
+def test_focus_image_layer_rendering_enhances_the_haemolynx_image_layer_when_active():
+    from haemolynx.gui._widget import (
+        IMAGE_FOCUS_RENDER_OPTIONS,
+        _focus_image_layer_rendering,
+    )
+
+    active = _fake_image_layer(IMAGE)
+    viewer = SimpleNamespace(layers=_FakeLayerList([active], active=active))
+
+    _focus_image_layer_rendering(viewer)
+
+    for key, value in IMAGE_FOCUS_RENDER_OPTIONS.items():
+        assert getattr(active, key) == value
+
+
+def test_focus_image_layer_rendering_defaults_the_haemolynx_image_layer_when_not_active():
+    """Also covers the 'nothing selected' case, since `active=None` never
+    equals the image layer either."""
+    from haemolynx.gui._widget import IMAGE_DEFAULT_RENDER_OPTIONS, _focus_image_layer_rendering
+
+    layer = _fake_image_layer(IMAGE)
+    layer.rendering = "attenuated_mip"  # left over from a previous selection
+    other = _fake_image_layer("something_else", ours=False)
+    viewer = SimpleNamespace(layers=_FakeLayerList([layer, other], active=other))
+
+    _focus_image_layer_rendering(viewer)
+
+    for key, value in IMAGE_DEFAULT_RENDER_OPTIONS.items():
+        assert getattr(layer, key) == value
+
+
+def test_focus_image_layer_rendering_never_touches_a_foreign_image_layer():
+    """A user's own reference image (or any Image layer HaemoLynx did not
+    create) must be left exactly as the user set it, active or not -- this
+    used to be forced to IMAGE_DEFAULT_RENDER_OPTIONS whenever it wasn't the
+    active selection, silently clobbering the user's own settings."""
+    from haemolynx.gui._widget import _focus_image_layer_rendering
+
+    foreign_active = _fake_image_layer("users_own_reference_image", ours=False)
+    foreign_active.rendering = "iso"
+    foreign_active.gamma = 2.5
+    viewer = SimpleNamespace(layers=_FakeLayerList([foreign_active], active=foreign_active))
+
+    _focus_image_layer_rendering(viewer)
+
+    assert foreign_active.rendering == "iso"
+    assert foreign_active.gamma == 2.5
+
+
+def test_focus_image_layer_rendering_never_touches_a_haemolynx_mask_volume():
+    """Vessel-mask volumes are also Image-kind and HaemoLynx's own, but this
+    feature is for the input image alone -- MASK_VOLUME_OPTIONS's own choice
+    of nearest-neighbour interpolation (crisp mask edges) must survive
+    regardless of which layer is selected."""
+    from haemolynx.gui._widget import _focus_image_layer_rendering
+    from haemolynx.gui.results import MASK_LAYERS
+
+    mask = _fake_image_layer(MASK_LAYERS["large_arteriole_mask"])
+    mask.interpolation3d = "nearest"
+    other = _fake_image_layer(IMAGE)
+    viewer = SimpleNamespace(layers=_FakeLayerList([mask, other], active=other))
+
+    _focus_image_layer_rendering(viewer)
+
+    assert mask.interpolation3d == "nearest"
+    assert mask.rendering == "mip"  # untouched, still its original fake default
+
+
+def test_focus_image_layer_rendering_only_adjusts_opacity_for_a_binary_image():
+    """A binary-ish segmented image was already given translucent rendering
+    and a transparent-background colour at layer-creation time (see
+    results.binary_value_range / BINARY_IMAGE_VOLUME_OPTIONS) -- overwriting
+    rendering back to mip/attenuated_mip here would turn it solid again, so
+    only opacity is adjusted for focus, identified by the layer's own
+    "binary_render" metadata tag (_add_or_update / _store_binary_render_
+    metadata), not by which colormap happens to be applied -- see
+    test_focus_image_layer_rendering_survives_a_colormap_change below for
+    the regression this specifically protects against."""
+    from haemolynx.gui._widget import (
+        IMAGE_DEFAULT_OPACITY_BINARY,
+        IMAGE_FOCUS_OPACITY_BINARY,
+        OURS,
+        _focus_image_layer_rendering,
+    )
+
+    active = _fake_image_layer(IMAGE)
+    active.metadata[OURS]["binary_render"] = True
+    active.rendering = "translucent"
+    viewer = SimpleNamespace(layers=_FakeLayerList([active], active=active))
+
+    _focus_image_layer_rendering(viewer)
+
+    assert active.opacity == pytest.approx(IMAGE_FOCUS_OPACITY_BINARY)
+    assert active.rendering == "translucent"  # untouched
+
+    viewer.layers.selection.active = None
+    _focus_image_layer_rendering(viewer)
+
+    assert active.opacity == pytest.approx(IMAGE_DEFAULT_OPACITY_BINARY)
+    assert active.rendering == "translucent"  # still untouched
+
+
+def test_focus_image_layer_rendering_survives_a_colormap_change():
+    """Regression test: this used to detect a binary-ish image by checking
+    layer.colormap.name against the one fixed name results.py's own
+    mask_colour colormap carries -- so the moment a user picked any other
+    colormap from napari's own dropdown, the layer read as ordinary
+    grayscale and its rendering was overwritten back to MIP-family, turning
+    a dense volume solid again regardless of which colormap they chose.
+    The metadata tag survives any colormap the user applies."""
+    from haemolynx.gui._widget import (
+        IMAGE_FOCUS_OPACITY_BINARY,
+        OURS,
+        _focus_image_layer_rendering,
+    )
+
+    active = _fake_image_layer(IMAGE)
+    active.metadata[OURS]["binary_render"] = True
+    active.rendering = "translucent"
+    active.colormap = SimpleNamespace(name="viridis")  # user's own choice
+    viewer = SimpleNamespace(layers=_FakeLayerList([active], active=active))
+
+    _focus_image_layer_rendering(viewer)
+
+    assert active.rendering == "translucent"  # not reverted to mip
+    assert active.opacity == pytest.approx(IMAGE_FOCUS_OPACITY_BINARY)
+
+
+def test_focus_image_layer_rendering_ignores_non_image_layers():
+    from haemolynx.gui._widget import _focus_image_layer_rendering
+
+    class Points:
+        pass
+
+    points = Points()
+    points.name = "points"
+    viewer = SimpleNamespace(layers=_FakeLayerList([points], active=points))
+
+    _focus_image_layer_rendering(viewer)  # must not raise
+
+    assert not hasattr(points, "rendering")
+
+
+def test_focus_image_layer_rendering_with_no_haemolynx_image_layer_is_a_no_op():
+    from haemolynx.gui._widget import _focus_image_layer_rendering
+
+    foreign = _fake_image_layer("not_ours", ours=False)
+    viewer = SimpleNamespace(layers=_FakeLayerList([foreign], active=foreign))
+
+    _focus_image_layer_rendering(viewer)
+
+    assert foreign.rendering == "mip"  # its original fake default, untouched
+
+
+def test_focus_image_layer_rendering_with_no_viewer_is_a_no_op():
+    from haemolynx.gui._widget import _focus_image_layer_rendering
+
+    # There is no viewer to inspect afterwards, so the concrete check is on
+    # the function's own contract: the early return yields None rather than
+    # raising or falling through into the (viewer-less) loop below it.
+    assert _focus_image_layer_rendering(None) is None
+
+
+# --- the segmented image gets a mask-style display when it is binary-ish --
+
+
+def test_binary_value_range_detects_all_three_real_encodings():
+    from haemolynx.gui.results import binary_value_range
+
+    assert binary_value_range(np.array([0, 1, 1, 0], dtype=np.uint8)) == (0.0, 1.0)
+    assert binary_value_range(np.array([1, 2, 2, 1], dtype=np.uint8)) == (1.0, 2.0)
+    assert binary_value_range(np.array([0, 255, 255, 0], dtype=np.uint8)) == (0.0, 255.0)
+
+
+def test_binary_value_range_is_none_for_a_blank_or_genuine_grayscale_array():
+    from haemolynx.gui.results import binary_value_range
+
+    assert binary_value_range(np.zeros((3, 3, 3), dtype=np.uint8)) is None
+    assert binary_value_range(np.array([0, 1, 2, 3], dtype=np.uint8)) is None
+    assert binary_value_range(np.array([], dtype=np.uint8)) is None
+
+
+def test_binarize_for_display_catches_a_majority_background_label_image():
+    """Regression test: a real segmented image is not always exactly
+    two-valued -- an ilastik "Simple Segmentation" export can carry a
+    handful of unclassified-border pixels at 0 alongside its 1/2 class
+    labels, which binary_value_range (exactly two values only) reads as
+    "genuine grayscale", rendering an apparently solid opaque box in 3D
+    even though the binary-image rendering fix is otherwise working.
+
+    A background value covering the overwhelming majority of voxels (here
+    98.7%) is what actually distinguishes this from real grayscale content,
+    which essentially never lands on a handful of distinct values with one
+    of them this dominant -- see test_binarize_for_display_is_none_for_a_
+    genuinely_grayscale_small_sample below for the contrasting case.
+    """
+    from haemolynx.gui.results import binarize_for_display
+
+    image = np.ones((10, 10, 10), dtype=np.uint8)  # background label: 987 voxels
+    image[0, 0, 0:5] = 0  # 5 stray unclassified-border voxels
+    image[5:7, 5:7, 5:7] = 2  # 8 voxels: the true minority foreground
+
+    result = binarize_for_display(image)
+
+    assert result is not None
+    assert result.dtype == bool
+    assert result.shape == image.shape
+    assert np.array_equal(result, image == 2)
+
+
+def test_binarize_for_display_is_none_for_a_genuinely_grayscale_small_sample():
+    """The same tiny four-pixel fixture test_a_grayscale_segmented_image_
+    keeps_the_plain_gray_colormap uses: four distinct values with no
+    majority at all (25% each) -- comfortably short of the >50% bar a real
+    background-dominated segmentation mask clears, so this must stay None
+    and let the image keep its plain grayscale colormap."""
+    from haemolynx.gui.results import binarize_for_display
+
+    assert binarize_for_display(np.array([[[0, 10], [40, 120]]], dtype=np.uint8)) is None
+
+
+def test_binarize_for_display_is_none_outside_the_three_or_four_value_window():
+    from haemolynx.gui.results import binarize_for_display
+
+    # Exactly two values is binary_value_range's job, not this function's.
+    two_valued = np.zeros((10, 10, 10), dtype=np.uint8)
+    two_valued[0, 0, 0] = 1
+    assert binarize_for_display(two_valued) is None
+
+    # More than four distinct values, even with a dominant majority, is
+    # past io.load._to_binary_volume_for_skeletonization's own small-label-
+    # set cutoff -- deliberately not mirrored here.
+    five_valued = np.zeros((10, 10, 10), dtype=np.uint8)
+    five_valued.ravel()[:5] = [1, 2, 3, 4, 5]
+    assert binarize_for_display(five_valued) is None
+
+    # Blank and non-integer input.
+    assert binarize_for_display(np.array([], dtype=np.uint8)) is None
+    assert binarize_for_display(np.ones((3, 3, 3), dtype=np.float32)) is None
+
+
+def test_a_binary_segmented_image_gets_translucent_mask_style_options():
+    """0/1, 1/2 and 0/255 must all be recognised and treated the same way --
+    a plain 'gray' colormap has no notion of background, so a dense vessel
+    volume rendered that way turns solid (MIP-family rendering shows only
+    the single brightest sample per ray). See results.BINARY_IMAGE_VOLUME_OPTIONS.
+
+    The displayed data is always the canonically-binarized boolean array,
+    with contrast_limits pinned at (0.0, 1.0) -- not the image's own raw
+    (low, high) -- so which raw label number is foreground never matters;
+    see test_a_binary_segmented_image_with_minority_low_value_is_not_inverted
+    for the real-world case this distinction actually protects against."""
+    from haemolynx.gui.results import BINARY_IMAGE_VOLUME_OPTIONS, SEGMENTED_IMAGE_COLOUR
+    from haemolynx.io.load import _to_binary_volume_for_skeletonization
+
+    for image in (
+        np.array([[[0, 1], [1, 0]]], dtype=np.uint8),
+        np.array([[[1, 2], [2, 1]]], dtype=np.uint8),
+        np.array([[[0, 255], [255, 0]]], dtype=np.uint8),
+    ):
+        group = ResultLayers().stage_finished(
+            "skeletonise",
+            SimpleNamespace(
+                image=image,
+                skeleton=np.zeros(image.shape, dtype=bool),
+                voxel_size_xyz=(1.0, 1.0, 1.0),
+                voxel_size_zyx=(1.0, 1.0, 1.0),
+            ),
+        )
+        spec = spec_named(group, IMAGE)
+        assert spec.contrast_limits == (0.0, 1.0)
+        assert np.array_equal(spec.data, _to_binary_volume_for_skeletonization(image))
+        assert spec.options["mask_colour"] == SEGMENTED_IMAGE_COLOUR
+        # Literal expected values, not BINARY_IMAGE_VOLUME_OPTIONS itself --
+        # comparing against the same constant the spec is built from could
+        # never catch it being reverted to e.g. "mip"/"attenuated_mip",
+        # which is the exact silhouette-rendering bug this feature fixes.
+        # "translucent_no_depth", not plain "translucent": depth-testing off
+        # so a colormap change cannot leave near-zero-alpha voxels wrongly
+        # discarding what is behind them.
+        assert spec.options["blending"] == "translucent_no_depth"
+        assert spec.options["rendering"] == "translucent"
+        assert spec.options["interpolation2d"] == "nearest"
+        assert spec.options["interpolation3d"] == "nearest"
+        assert set(BINARY_IMAGE_VOLUME_OPTIONS) == {
+            "blending", "rendering", "interpolation2d", "interpolation3d",
+        }
+
+
+def test_a_binary_segmented_image_with_minority_low_value_is_not_inverted():
+    """Regression test for a real production bug: an ilastik export's class
+    label numbering carries no relation to which class is the minority --
+    1=vessel (10%)/2=background (90%) is exactly as likely as the reverse.
+    Using the image's raw (low, high) as contrast_limits assumes low is
+    background, which silently inverts the mask whenever, as here, the
+    lower label number is actually the minority foreground: the real
+    vessel structure would map to the transparent end of the colormap and
+    the majority background to the opaque end, rendering as a solid box
+    even though binary_value_range correctly detected a binary-ish image."""
+    image = np.full((4, 4, 4), 2, dtype=np.uint8)  # 90% background, label 2
+    image[0, 0, 0:6] = 1  # 10% foreground, the minority, label 1 (< 2)
+
+    group = ResultLayers().stage_finished(
+        "skeletonise",
+        SimpleNamespace(
+            image=image,
+            skeleton=np.zeros(image.shape, dtype=bool),
+            voxel_size_xyz=(1.0, 1.0, 1.0),
+            voxel_size_zyx=(1.0, 1.0, 1.0),
+        ),
+    )
+    spec = spec_named(group, IMAGE)
+
+    assert spec.contrast_limits == (0.0, 1.0)
+    # The minority label (1) is what gets treated True/opaque, matching
+    # what the pipeline itself skeletonizes -- not the numerically higher
+    # majority label, which the old (low, high) contrast_limits favoured.
+    assert np.array_equal(spec.data, image == 1)
+
+
+def test_a_majority_background_label_image_also_gets_translucent_mask_style_options():
+    """The same fix as above, for the case binary_value_range alone cannot
+    catch: a segmented image with a stray third label value (see
+    test_binarize_for_display_catches_a_majority_background_label_image).
+    The displayed data becomes the binarised boolean array, not the
+    original 0/1/2 image, so a 3-stop-colormap ambiguity never arises."""
+    from haemolynx.gui.results import BINARY_IMAGE_VOLUME_OPTIONS, SEGMENTED_IMAGE_COLOUR
+
+    image = np.ones((10, 10, 10), dtype=np.uint8)
+    image[0, 0, 0:5] = 0
+    image[5:7, 5:7, 5:7] = 2
+
+    group = ResultLayers().stage_finished(
+        "skeletonise",
+        SimpleNamespace(
+            image=image,
+            skeleton=np.zeros(image.shape, dtype=bool),
+            voxel_size_xyz=(1.0, 1.0, 1.0),
+            voxel_size_zyx=(1.0, 1.0, 1.0),
+        ),
+    )
+    spec = spec_named(group, IMAGE)
+
+    assert spec.contrast_limits == (0.0, 1.0)
+    assert spec.options["mask_colour"] == SEGMENTED_IMAGE_COLOUR
+    for key, value in BINARY_IMAGE_VOLUME_OPTIONS.items():
+        assert spec.options[key] == value
+    assert spec.data.dtype == bool
+    assert np.array_equal(spec.data, image == 2)
+
+
+def test_a_grayscale_segmented_image_keeps_the_plain_gray_colormap():
+    image = np.array([[[0, 10], [40, 120]]], dtype=np.uint8)
+    group = ResultLayers().stage_finished(
+        "skeletonise",
+        SimpleNamespace(
+            image=image,
+            skeleton=np.zeros(image.shape, dtype=bool),
+            voxel_size_xyz=(1.0, 1.0, 1.0),
+            voxel_size_zyx=(1.0, 1.0, 1.0),
+        ),
+    )
+    spec = spec_named(group, IMAGE)
+    assert spec.contrast_limits is None
+    assert spec.options == {"blending": "additive", "colormap": "gray"}
+
+
+# --- skeleton layer options carry the fat catchment through every stage ----
+
+
+def test_skeleton_layer_options_carry_the_thick_mask():
+    """The thick mask survives every later stage re-emitting this layer, not
+    only the skeletonise run that first computed it."""
+    results = ResultLayers()
+    thick = np.zeros((4, 4, 4), dtype=bool)
+    thick[0, 0, 0] = True
+    results.stage_finished(
+        "skeletonise",
+        SimpleNamespace(
+            image=np.zeros((4, 4, 4), dtype=np.uint8),
+            skeleton=np.zeros((4, 4, 4), dtype=bool),
+            voxel_size_xyz=(1.0, 1.0, 1.0),
+            voxel_size_zyx=(1.0, 1.0, 1.0),
+            thick_vessel_mask=thick,
+        ),
+    )
+    assert results._skeleton_layer_options() == {"thick_vessel_mask": thick}
+
+
+def test_skeleton_layer_options_are_empty_when_thickness_gating_was_not_used():
+    results = ResultLayers()
+    results.stage_finished(
+        "skeletonise",
+        SimpleNamespace(
+            image=np.zeros((4, 4, 4), dtype=np.uint8),
+            skeleton=np.zeros((4, 4, 4), dtype=bool),
+            voxel_size_xyz=(1.0, 1.0, 1.0),
+            voxel_size_zyx=(1.0, 1.0, 1.0),
+        ),
+    )
+    assert results._skeleton_layer_options() == {}
+
+
+# --- thick/thin skeleton debug toggle: pure logic ---------------------------
+
+
+def test_thick_thin_skeleton_labels_marks_background_thin_and_thick():
+    from haemolynx.gui._widget import _thick_thin_skeleton_labels
+
+    skeleton = np.array([[[0, 1, 1, 1]]], dtype=bool)
+    thick = np.array([[[0, 0, 1, 1]]], dtype=bool)
+
+    labels = _thick_thin_skeleton_labels(skeleton, thick)
+
+    np.testing.assert_array_equal(labels, [[[0, 1, 2, 2]]])
+    assert labels.dtype == np.uint8
+
+
+class _FakeSkeletonLayer:
+    def __init__(self, data, metadata=None):
+        self.data = data
+        self.metadata = metadata or {}
+        self.colormap = "default"
+
+
+def _fake_spec(data, options):
+    return SimpleNamespace(data=data, options=options)
+
+
+def test_store_thick_thin_skeleton_metadata_keeps_mask_and_bool_skeleton():
+    from haemolynx.gui._widget import OURS, _store_thick_thin_skeleton_metadata
+
+    skeleton = np.array([True, False, True])
+    thick = np.array([True, False, False])
+    layer = _FakeSkeletonLayer(skeleton)
+    spec = _fake_spec(skeleton, {"thick_vessel_mask": thick})
+
+    _store_thick_thin_skeleton_metadata(layer, spec)
+
+    tag = layer.metadata[OURS]
+    np.testing.assert_array_equal(tag["skeleton_bool"], skeleton)
+    np.testing.assert_array_equal(tag["thick_vessel_mask"], thick)
+
+
+def test_store_thick_thin_skeleton_metadata_clears_stale_mask_when_absent():
+    from haemolynx.gui._widget import OURS, _store_thick_thin_skeleton_metadata
+
+    layer = _FakeSkeletonLayer(
+        np.array([True]),
+        metadata={OURS: {"thick_vessel_mask": np.array([True]), "skeleton_bool": np.array([True])}},
+    )
+    spec = _fake_spec(np.array([True]), {})
+
+    _store_thick_thin_skeleton_metadata(layer, spec)
+
+    tag = layer.metadata[OURS]
+    assert "thick_vessel_mask" not in tag
+    assert "skeleton_bool" not in tag
+
+
+def test_apply_thick_thin_skeleton_display_shows_two_colours_then_reverts():
+    from haemolynx.gui._widget import (
+        THICK_SKELETON_COLOUR,
+        THIN_SKELETON_COLOUR,
+        _apply_thick_thin_skeleton_display,
+        _store_thick_thin_skeleton_metadata,
+    )
+
+    skeleton = np.array([True, True, False])
+    thick = np.array([True, False, False])
+    layer = _FakeSkeletonLayer(skeleton)
+    _store_thick_thin_skeleton_metadata(layer, _fake_spec(skeleton, {"thick_vessel_mask": thick}))
+    default_colormap = layer.colormap
+
+    _apply_thick_thin_skeleton_display(layer, show=True, default_colormap=default_colormap)
+    np.testing.assert_array_equal(layer.data, [2, 1, 0])
+    assert layer.colormap[1] == THIN_SKELETON_COLOUR
+    assert layer.colormap[2] == THICK_SKELETON_COLOUR
+
+    _apply_thick_thin_skeleton_display(layer, show=False, default_colormap=default_colormap)
+    np.testing.assert_array_equal(layer.data, [1, 1, 0])
+    assert layer.colormap is default_colormap
+
+
+def test_apply_thick_thin_skeleton_display_without_stored_state_is_a_no_op():
+    from haemolynx.gui._widget import _apply_thick_thin_skeleton_display
+
+    layer = _FakeSkeletonLayer(np.array([True]))
+    original_data = layer.data
+
+    _apply_thick_thin_skeleton_display(layer, show=True, default_colormap="default")
+
+    assert layer.data is original_data
+
+
+def test_result_layers_image_z_extent_after_skeletonise():
+    results = ResultLayers()
+    assert results.image_z_extent_um() is None
+    results.stage_finished(
+        "skeletonise",
+        SimpleNamespace(
+            image=np.zeros((6, 4, 4)),
+            skeleton=np.zeros((6, 4, 4), dtype=bool),
+            voxel_size_xyz=(1.0, 1.0, 2.0),
+            voxel_size_zyx=(2.0, 1.0, 1.0),
+        ),
+    )
+    assert results.image_z_extent_um() == pytest.approx(12.0)
+
+
 def test_an_identical_column_still_gives_a_usable_range():
     """A degenerate range would make napari refuse the limits outright."""
     from types import SimpleNamespace
@@ -603,3 +2610,477 @@ def test_an_identical_column_still_gives_a_usable_range():
 
     low, high = _data_range(SimpleNamespace(features={"q": np.full(4, 3.0)}), "q")
     assert high > low
+
+
+def test_a_perturbation_gets_the_baselines_flow_colouring_hover_and_arrows():
+    """Everything the solved baseline's vessels offer that is derived from the
+    flows -- log10 flow, direction columns, branch tooltips, and a layer of
+    flow-direction arrows -- is recomputed from each perturbation's own flows."""
+    from haemolynx.gui.results import FLOW_DIR_RGB_COLUMN
+
+    graph = solved_graph(2e-12)
+    for u, v, key, data in graph.edges(keys=True, data=True):
+        data["flow_signed"] = -data["flow_abs"]  # runs v -> u: the arrows must say so
+    from haemolynx.pipeline import PerturbationResult
+
+    result = PerturbationResult(name="reversed", type="arteriole_diameter_change", graph=graph)
+    group = built().stage_finished("run_perturbations", a_perturbation_run(result))
+
+    vessels = spec_named(group, perturbation_layer_names("reversed")[0])
+    for column in ("flow_abs_log10", "flow_dir_z", FLOW_DIR_RGB_COLUMN, "tooltip"):
+        assert column in vessels.features, column
+    assert vessels.options.get("branch_hover_available")
+
+    arrows = spec_named(group, perturbation_flow_direction_layer_name("reversed"))
+    assert arrows.visible is False
+    assert arrows.options["vector_style"] == "triangle"
+    assert len(arrows.data) == graph.number_of_edges()
+    # Direction follows this perturbation's own signed flow: along -z here.
+    assert np.all(np.asarray(arrows.features["flow_dir_z"]) < 0)
+
+
+# --- replaying several stages draws each layer once --------------------------
+
+
+def test_merging_stage_groups_keeps_each_layers_final_state():
+    """A replay (Load run, "Run from this stage") applied every stage's group
+    in turn, redrawing the vessels once per stage; where one stage's layer was
+    smaller than the one before, the layer was torn down and re-added -- the
+    GL teardown that crashed napari. The merge is what the viewer ends with."""
+    from haemolynx.gui.results import LayerSpec, StageLayers, merge_stage_layers
+
+    def spec(name, rows):
+        return LayerSpec(kind="points", name=name, data=np.zeros((rows, 3)))
+
+    groups = [
+        StageLayers(stage="build_network", title="3. Graph",
+                    layers=(spec(IMAGE, 1), spec(VESSELS, 9), spec(NODES, 5)), ndisplay=3),
+        StageLayers(stage="assign_boundaries", title="4. Boundaries",
+                    layers=(spec(VESSELS, 7), spec(BOUNDARY_NODES, 2)),
+                    recolour=((NODES, "degree"), (IMAGE, "x"))),
+        StageLayers(stage="solve", title="6. Haemodynamics", layers=(spec(IMAGE, 3),),
+                    recolour=((VESSELS, "flow_abs"),), note="solved"),
+    ]
+
+    merged = merge_stage_layers(groups)
+
+    assert [s.name for s in merged.layers] == [IMAGE, VESSELS, NODES, BOUNDARY_NODES]
+    assert [len(s.data) for s in merged.layers] == [3, 7, 5, 2]
+    # IMAGE's recolour came before its last spec, which redraws it.
+    assert dict(merged.recolour) == {NODES: "degree", VESSELS: "flow_abs"}
+    assert merged.ndisplay == 3
+    assert (merged.stage, merged.title, merged.note) == ("solve", "6. Haemodynamics", "solved")
+    assert merge_stage_layers([]) is None
+
+
+def test_a_merged_replay_keeps_a_layer_hidden_that_one_spec_hid():
+    """Applied in turn, a hidden spec hides a layer and a later shown one keeps
+    what is on screen, so the nodes -- hidden when the network is built --
+    stay hidden. The merge kept only the last spec, shown, so Load run opened
+    every saved run with its point cloud of nodes over the vessels."""
+    from haemolynx.gui.results import merge_stage_layers
+
+    results = ResultLayers()
+    built_group = results.stage_finished("build_network", network(a_graph()))
+    solved = results.stage_finished(
+        "solve", SimpleNamespace(node_list=[0, 1, 2, 3], pressure=np.zeros(4))
+    )
+    assert spec_named(built_group, NODES).visible is False
+    assert spec_named(solved, NODES).visible is True
+
+    merged = merge_stage_layers([built_group, solved])
+    assert spec_named(merged, NODES).visible is False
+    assert spec_named(merged, VESSELS).visible is True
+    # Its data and features are the last spec's, as before.
+    assert spec_named(merged, NODES).features["pressure"].tolist() == [0.0, 0.0, 0.0, 0.0]
+
+
+def test_the_first_view_of_a_network_hides_the_volumes_round_it():
+    """The segmented image and the vessel masks fill the image box; shown with
+    the network they hid every vessel tube (a saved Batch E run opened as dark red
+    and nothing else). The group that first draws the network -- the one
+    turning the view to 3D, in a run or a replay -- hides them; no other does."""
+    from haemolynx.gui.results import (
+        MASK_LAYERS,
+        VOLUMES_ROUND_THE_NETWORK,
+        hidden_on_first_view,
+        merge_stage_layers,
+    )
+
+    assert set(VOLUMES_ROUND_THE_NETWORK) == {IMAGE, *MASK_LAYERS.values()}
+    results = ResultLayers()
+    skeleton = results.stage_finished("skeletonise", SimpleNamespace(
+        image=np.zeros((4, 4, 4)), skeleton=np.zeros((4, 4, 4), dtype=bool),
+        voxel_size_xyz=(1.0, 1.0, 1.0), voxel_size_zyx=(1.0, 1.0, 1.0),
+    ))
+    mask = np.zeros((4, 4, 4), dtype=bool)
+    first = results.stage_finished("build_network", network(a_graph(), large_arteriole_mask=mask))
+    again = results.stage_finished("build_network", network(a_graph(), large_arteriole_mask=mask))
+
+    assert hidden_on_first_view(skeleton) == ()
+    assert set(hidden_on_first_view(first)) >= {IMAGE, MASK_LAYERS["large_arteriole_mask"]}
+    assert hidden_on_first_view(again) == ()
+    # A replay of the run (Load run) is its first view too.
+    assert hidden_on_first_view(merge_stage_layers([skeleton, first])) == VOLUMES_ROUND_THE_NETWORK
+
+
+def test_haemodynamics_colours_by_log_resistance_and_the_solve_by_log_flow():
+    """Resistance goes as the fourth power of the width and flow spans orders
+    of magnitude: on a straight scale 96% of Stack A's flow and 99% of its
+    resistance sat in the bottom tenth, one colour. Their log10 is what the
+    stages colour by, and the straight columns stay to pick."""
+    from haemolynx.gui.results import RESISTANCE_LOG10
+
+    graph = a_graph(conductance=1e-18)
+    resistances = (1e12, 1e15, 1e18)
+    for (_u, _v, _k, data), resistance in zip(graph.edges(keys=True, data=True), resistances):
+        data["resistance"] = resistance
+        data["flow_abs"] = data["flow_signed"] = 1e3 / resistance
+    group = built(graph).stage_finished(
+        "solve", SimpleNamespace(node_list=list(graph.nodes), pressure=np.zeros(4))
+    )
+    vessels = spec_named(group, VESSELS)
+
+    assert DEFAULT_VESSEL_COLOUR["build_haemodynamic_model"] == RESISTANCE_LOG10
+    np.testing.assert_allclose(
+        sorted(set(np.asarray(vessels.features[RESISTANCE_LOG10]))), [12.0, 15.0, 18.0]
+    )
+    assert "resistance" in vessels.features
+    assert vessels.colour_by == "flow_abs_log10"
+    assert vessels.contrast_limits == pytest.approx((-15.0, -9.0))
+
+
+def test_a_solve_with_no_flows_colours_by_branch_order_as_before():
+    """No flows: log flow is declared but blank, so the solve colours by
+    branch order, as it did when it coloured by flow."""
+    group = built(a_graph(branch_order="B01")).stage_finished(
+        "solve", SimpleNamespace(node_list=[0, 1, 2, 3], pressure=np.zeros(4))
+    )
+    vessels = spec_named(group, VESSELS)
+    assert np.isnan(np.asarray(vessels.features["flow_abs_log10"], dtype=float)).all()
+    assert vessels.colour_by == "branch_order"
+
+
+def test_a_default_log_column_a_layer_lacks_falls_back_to_its_straight_one():
+    from haemolynx.gui.results import default_colour_column
+
+    assert default_colour_column("flow_abs_log10", {"flow_abs_log10": 1}) == "flow_abs_log10"
+    assert default_colour_column("resistance_log10", {"resistance": 1}) == "resistance"
+    assert default_colour_column("resistance_log10", {}) is None
+    assert default_colour_column("diameter_um", {}) is None
+    assert default_colour_column(None, {"flow_abs": 1}) is None
+
+
+def test_log_flow_colours_span_the_flowing_vessels_only():
+    """A vessel carrying no flow sits at log10 flow's floor (-20), orders of
+    magnitude under the least real flow; spanning it put every flowing vessel
+    at the top of the map. It takes the bottom colour all the same."""
+    from haemolynx.gui.results import colour_values_for_range, log10_flow_floor
+
+    assert log10_flow_floor() == -20.0
+    values = np.array([-20.0, -14.0, -12.0, np.nan])
+    np.testing.assert_allclose(colour_values_for_range("flow_abs_log10", values), [-14.0, -12.0])
+    np.testing.assert_allclose(colour_values_for_range("diameter_um", values), [-20.0, -14.0, -12.0])
+    # Nothing flowing at all: the floor is all there is to span.
+    np.testing.assert_allclose(colour_values_for_range("flow_abs_log10", [-20.0]), [-20.0])
+
+    graph = a_graph(conductance=1e-18)
+    for (_u, _v, _k, data), flow in zip(graph.edges(keys=True, data=True), (0.0, 1e-14, 1e-12)):
+        data["flow_abs"] = data["flow_signed"] = flow
+    group = built(graph).stage_finished(
+        "solve", SimpleNamespace(node_list=list(graph.nodes), pressure=np.zeros(4))
+    )
+    assert spec_named(group, VESSELS).contrast_limits == pytest.approx((-14.0, -12.0))
+
+
+def test_a_sweep_keeps_one_log_flow_range_over_its_whole_grid():
+    """Moving a sweep's slider must not re-stretch its colours: log10 flow
+    spans the least flow above none to the most, over every grid point."""
+    from haemolynx.gui.results import sweep_flow_colour_limits
+
+    sweep = SimpleNamespace(
+        flow_abs=np.array([[0.0, 1e-14, 1e-12], [np.nan, 1e-13, 1e-10]]),
+        global_flow_abs_limits=lambda: (0.0, 1e-10),
+    )
+    assert sweep_flow_colour_limits(sweep, "flow_abs") == (0.0, 1e-10)
+    assert sweep_flow_colour_limits(sweep, "flow_abs_log10") == pytest.approx((-14.0, -10.0))
+    assert sweep_flow_colour_limits(sweep, "diameter_um") is None
+    assert sweep_flow_colour_limits(
+        SimpleNamespace(flow_abs=np.zeros(3)), "flow_abs_log10"
+    ) is None
+
+
+def test_a_restored_stage_is_followed_without_building_its_layers(monkeypatch):
+    """A run from a later tab passes back through the earlier stages; their
+    layers are already on screen, so only what stage_finished remembers is
+    needed -- the same bookkeeping, none of the layer building."""
+    image = np.zeros((5, 4, 4), dtype=np.uint8)
+    skeleton = np.zeros((5, 4, 4), dtype=bool)
+    built_graph, cut_graph = a_graph(), a_graph(resistance=2.0)
+    outputs = [
+        ("skeletonise", SimpleNamespace(image=image, skeleton=skeleton, voxel_size_xyz=(2.0, 1.0, 0.5),
+                                        voxel_size_zyx=(0.5, 1.0, 2.0), thick_vessel_mask=None)),
+        ("build_network", network(built_graph, (0.5, 1.0, 2.0))),
+        ("assign_boundaries", SimpleNamespace(inlet_nodes=[0], outlet_nodes=[3], graph=cut_graph)),
+        ("assign_diameters", SimpleNamespace(graph=cut_graph, results={})),
+    ]
+    finished, restored = ResultLayers(), ResultLayers()
+    for stage, output in outputs:
+        finished.stage_finished(stage, output)
+
+    def no_layers(*_args, **_kwargs):
+        raise AssertionError("a restored stage built layers")
+
+    monkeypatch.setattr(ResultLayers, "_vessel_layers", no_layers)
+    for stage, output in outputs:
+        restored.stage_restored(stage, output)
+
+    for attribute in ("_voxel_size_zyx", "_image_shape_z", "_skeleton", "_graph", "_canonical_graph"):
+        assert getattr(restored, attribute) is getattr(finished, attribute) or (
+            getattr(restored, attribute) == getattr(finished, attribute)
+        ), attribute
+    assert restored._graph is cut_graph
+
+
+def _post_processed_solution(graph, edited_vessels=1):
+    """What the Post processing stage hands on after solving an edited network
+    again: that solve, carrying what was brought in line."""
+    node_list = list(graph)
+    pressure = np.linspace(100.0, 0.0, len(node_list))
+    for node, value in zip(node_list, pressure):
+        graph.nodes[node]["pressure"] = float(value)
+    for u, v, _key, data in graph.edges(keys=True, data=True):
+        data["flow_signed"] = 1e-12
+        data["flow_abs"] = 1e-12
+    return SimpleNamespace(
+        graph=graph,
+        pressure=pressure,
+        node_list=node_list,
+        equivalent_resistance=None,
+        network_resistance=1.0e15,
+        post_processed={"edited_vessels": edited_vessels},
+    )
+
+
+def test_post_processing_draws_the_edited_network_even_when_it_has_more_vessels():
+    """A later stage's larger graph is normally a stale copy and refused; the
+    Post processing stage changes the network on purpose -- a vessel drawn by
+    hand, a bridge split off -- so its graph becomes the one drawn."""
+    from haemolynx.gui.results import VESSELS
+
+    results = ResultLayers()
+    before = a_graph()
+    results.stage_finished("build_network", network(before))
+    results.stage_finished("assign_boundaries", SimpleNamespace(graph=before))
+    edited = a_graph()
+    edited.add_edge(0, 3, key=0, voxels=[[0.0, 0.0, 0.0], [30.0, 5.0, 0.0]], length=30.4)
+
+    group = results.stage_finished("post_process", _post_processed_solution(edited))
+
+    assert results._graph is edited
+    (vessels,) = [spec for spec in group.layers if spec.name == VESSELS]
+    assert set(np.asarray(vessels.features["edge_index"])) == {0, 1, 2, 3}
+    # And the later stages keep it: it is the canonical graph now.
+    results.stage_finished("export_results", SimpleNamespace(graph=edited))
+    assert results._graph is edited
+
+
+def test_post_processing_draws_the_edited_network_as_the_solve_does():
+    """The stage solves the edited network again, so it is drawn as a solve
+    is: vessels by flow, nodes by pressure, and the note says it re-solved."""
+    from haemolynx.gui.results import NODES, VESSELS
+
+    results = ResultLayers()
+    graph = a_graph()
+    results.stage_finished("build_network", network(graph))
+    results.stage_finished("assign_boundaries", SimpleNamespace(graph=graph))
+
+    group = results.stage_finished("post_process", _post_processed_solution(graph, 2))
+
+    (vessels,) = [spec for spec in group.layers if spec.name == VESSELS]
+    assert vessels.colour_by == DEFAULT_VESSEL_COLOUR["solve"] == "flow_abs_log10"
+    (nodes,) = [spec for spec in group.layers if spec.name == NODES]
+    assert nodes.colour_by == "pressure"
+    assert list(nodes.features["pressure"]) == pytest.approx([100.0, 200.0 / 3, 100.0 / 3, 0.0])
+    assert group.stage == "post_process"
+    assert "2 edited vessel(s) in line" in group.note and "solved again" in group.note
+
+
+def test_an_unedited_post_processing_pass_draws_nothing_again():
+    """Haemodynamics' layers already show the network; redrawing a whole-brain
+    vessels layer for a stage that did nothing would be wasted."""
+    results = ResultLayers()
+    graph = a_graph()
+    results.stage_finished("build_network", network(graph))
+    results.stage_finished("assign_boundaries", SimpleNamespace(graph=graph))
+
+    group = results.stage_finished(
+        "post_process", SimpleNamespace(graph=graph, post_processed=None)
+    )
+
+    assert group.layers == ()
+    assert group.note == "No edits."
+    assert results._graph is graph
+
+
+# --- the tissue surface (export_results) ---------------------------------------
+
+
+def _measured_tissue():
+    from haemolynx.statistics import measure_tissue_volume
+
+    raw = np.full((10, 20, 20), 10.0)
+    raw[2:8, :12, :] = 100.0  # a block of tissue cut by three image faces
+    return measure_tissue_volume(raw, (2.0, 1.0, 1.0), working_voxel_size_um=1.0)
+
+
+def test_export_results_draws_the_measured_tissue_surface_in_physical_microns():
+    from haemolynx.gui.results import TISSUE_SURFACE, TISSUE_SURFACE_COLOUR
+
+    tissue = _measured_tissue()
+    graph = a_graph()
+    group = built(graph).stage_finished(
+        "export_results", SimpleNamespace(graph=graph, tissue=tissue)
+    )
+    surface = spec_named(group, TISSUE_SURFACE)
+
+    assert surface.kind == "surface"
+    # Vertices are physical (z, y, x) microns already, like node pos.
+    assert surface.scale == (1.0, 1.0, 1.0)
+    vertices, faces = surface.data
+    assert vertices == pytest.approx(tissue.vertices)
+    assert np.array_equal(faces, tissue.faces)
+    colours = surface.options["vertex_colors"]
+    assert colours.shape == (len(vertices), 4)
+    assert tuple(colours[0]) == TISSUE_SURFACE_COLOUR
+    # See-through, without hiding the vessels it encloses.
+    assert surface.options["blending"] == "translucent_no_depth"
+    assert f"{tissue.volume_um3:.4g}" in group.note
+
+
+def test_export_results_draws_no_tissue_surface_when_none_was_measured():
+    from haemolynx.gui.results import TISSUE_SURFACE
+
+    graph = a_graph()
+    for output in (SimpleNamespace(graph=graph), SimpleNamespace(graph=graph, tissue=None)):
+        group = built(graph).stage_finished("export_results", output)
+        assert TISSUE_SURFACE not in {spec.name for spec in group.layers}
+        assert "Tissue" not in group.note
+
+
+def test_post_processing_draws_the_boundary_nodes_it_left_keeping_the_layers_toggle():
+    """Inlets and outlets set by hand on the Terminal nodes list are drawn
+    with the solve: the boundary-nodes layer as the stage left the lists.
+    Its spec is visible, so the viewer keeps whether the layer was shown."""
+    results = ResultLayers()
+    graph = a_graph()
+    results.stage_finished("build_network", network(graph))
+    results.stage_finished("assign_boundaries", SimpleNamespace(graph=graph, inlet_nodes=[0], outlet_nodes=[3]))
+    solution = _post_processed_solution(graph, 0)
+    solution.post_processed["boundary_nodes"] = {
+        "inlet_nodes": [0], "outlet_nodes": [3, 2], "arteriole_boundary_nodes": [],
+        "venule_boundary_nodes": [], "large_arteriole_boundary_nodes": [1],
+        "large_venule_boundary_nodes": [],
+    }
+
+    group = results.stage_finished("post_process", solution)
+
+    boundaries = spec_named(group, BOUNDARY_NODES)
+    assert list(boundaries.features["role"]) == ["inlet", "outlet", "outlet"]
+    assert list(boundaries.features["node_id"]) == [0, 3, 2]
+    assert boundaries.visible is True
+    assert np.allclose(boundaries.data, [[0.0, 0.0, 0.0], [30.0, 0.0, 0.0], [20.0, 0.0, 0.0]])
+    # Without the lists (an older stage output) no boundary layer is drawn again.
+    del solution.post_processed["boundary_nodes"]
+    group = results.stage_finished("post_process", solution)
+    assert BOUNDARY_NODES not in [spec.name for spec in group.layers]
+
+
+def test_a_node_whose_every_vessel_is_unsolved_shows_no_pressure():
+    """PLAN_dead_ends.md Phase 8: the solve leaves 0 Pa (or its junction's
+    pressure) on the nodes of vessels it did not solve; the viewer greys those
+    vessels and must not colour their nodes as a reading. The graph keeps the
+    value: transit time and a resumed run read it."""
+    import networkx as nx
+
+    from haemolynx.graph import FLOW_SOLVED
+    from haemolynx.gui.results import unsolved_node_pressures
+
+    G = nx.MultiGraph()
+    G.add_edge(0, 1, **{FLOW_SOLVED: True})
+    G.add_edge(1, 2, **{FLOW_SOLVED: False})
+    G.add_edge(3, 4, **{FLOW_SOLVED: False})
+    G.add_node(5)
+    G.add_edge(6, 7)  # a graph part never solved keeps its values
+
+    values = unsolved_node_pressures(G, [0, 1, 2, 3, 4, 5, 6], [9.0, 8.0, 8.0, 0.0, 0.0, 1.0, 2.0])
+
+    assert values[0] == 9.0 and values[1] == 8.0 and np.isnan(values[2])
+    assert np.isnan(values[3]) and np.isnan(values[4])
+    assert values[5] == 1.0 and values[6] == 2.0
+
+
+def test_the_signed_branch_order_column_is_each_vessels_own_generation():
+    """Colouring by generations from the bed reads each vessel in its own
+    tree (graph.branch_order.branch_order_generations): a shallow tree's
+    arteriole is -1, beside the deep tree's -2, on the vessels drawn, even
+    with one before them that cannot be drawn."""
+    from haemolynx.gui.results import BRANCH_ORDER_SIGNED, _add_branch_order_scales
+
+    G = nx.MultiGraph()
+    G.add_edge(90, 91, branch_order="Art1")  # no positions: not drawn
+    for n, p in {0: (0, 0, 0), 1: (0, 0, 10), 2: (0, 0, 20), 3: (0, 0, 30), 4: (0, 5, 30),
+                 10: (0, 20, 0), 11: (0, 20, 10), 12: (0, 20, 20)}.items():
+        G.add_node(n, pos=np.asarray(p, dtype=float))
+    for (u, v), label in {(0, 1): "Art1", (1, 2): "Art2", (2, 3): "B01", (2, 4): "B01",
+                          (10, 11): "Art1", (11, 12): "B01"}.items():
+        G.add_edge(u, v, branch_order=label)
+    _paths, identity = edge_polylines(G)
+    columns = {name: identity[name] for name in ("edge_index", "u", "v", "key")}
+    columns.update(edge_features(G, ["branch_order"]))
+
+    _add_branch_order_scales(columns, G)
+    signed = {(int(u), int(v)): s for u, v, s in zip(columns["u"], columns["v"], columns[BRANCH_ORDER_SIGNED])}
+    assert signed == {(0, 1): -2.0, (1, 2): -1.0, (2, 3): 0.0, (2, 4): 0.0, (10, 11): -1.0, (11, 12): 0.0}
+
+    # Without the graph, from the labels: both Art1 are the deeper tree's.
+    _add_branch_order_scales(columns)
+    labelled = dict(zip(columns["branch_order"], columns[BRANCH_ORDER_SIGNED]))
+    assert labelled["Art1"] == -2.0
+
+
+def test_the_export_note_names_only_what_was_written():
+    """It said "Wrote the VTK, statistics and plots." whatever was written --
+    and the panel starts with plots off."""
+    from haemolynx.gui.results import export_note
+
+    assert export_note(()) == "Wrote no files: VTK, statistics, plots and citations are all off."
+    assert export_note(("statistics",)) == "Wrote the statistics."
+    assert export_note(("VTK", "statistics", "citations")) == "Wrote the VTK, statistics and citations."
+
+    graph = a_graph()
+    group = built(graph).stage_finished(
+        "export_results", SimpleNamespace(graph=graph, exported=("statistics",))
+    )
+    assert group.note.startswith("Wrote the statistics.")
+    assert "plots" not in group.note
+
+
+def test_reset_lets_go_of_the_last_runs_skeleton():
+    """reset() kept the skeleton: a low-RAM run's stayed in use on disk into
+    the next run."""
+    import gc
+    import weakref
+
+    results = ResultLayers()
+    skeleton = np.zeros((4, 4, 4), dtype=bool)
+    gone = weakref.ref(skeleton)
+    volume = SimpleNamespace(
+        image=np.zeros((4, 4, 4)), skeleton=skeleton,
+        voxel_size_xyz=(1.0, 1.0, 1.0), voxel_size_zyx=(1.0, 1.0, 1.0),
+    )
+    results.stage_restored("skeletonise", volume)
+    del volume, skeleton
+    results.reset()
+    gc.collect()
+    assert gone() is None

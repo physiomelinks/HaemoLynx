@@ -1,0 +1,1049 @@
+"""The "Optimise settings" button, built for real, with a live QApplication.
+
+Uses `qapp` (pytest-qt) rather than the `panel`/`make_napari_viewer` fixture
+the rest of `test_gui_widget.py` uses: this feature never touches a napari
+layer or the viewer, so `settings_widget(napari_viewer=None)` is enough, and
+avoids the cost -- and, on a machine where a real `napari.Viewer()` cannot be
+constructed, the failure -- of building one just to hold a QApplication.
+
+They need a Qt binding and pytest-qt, so they are marked `gui` and skipped
+everywhere those are missing, same as `test_gui_widget.py`.
+"""
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+napari = pytest.importorskip("napari")
+pytest.importorskip("magicgui")
+
+from haemolynx.gui import _widget as widget_mod  # noqa: E402
+from haemolynx.gui._widget import settings_widget  # noqa: E402
+
+pytestmark = pytest.mark.gui
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+#: Small, real, bundle-heavy fixture -- exercises the bundle-refinement group
+#: (see CLAUDE.md's note that this file is "fast, bundle-heavy").
+FIXTURE = REPO_ROOT / "tests" / "data" / "bundled_vessels_8_to_2.h5"
+
+
+@pytest.fixture
+def panel(qapp):
+    """The panel, built without a viewer -- this feature needs none."""
+    return settings_widget(napari_viewer=None)
+
+
+def _fake_run_grid_volume(monkeypatch, image, *, downsample=None, voxel_size_xyz=(1.0, 1.0, 1.0)):
+    """Stand in for the image a run's skeletonise reads
+    (``pipeline.stages.load_volume_on_run_grid``), which the worker starts from."""
+    from haemolynx.pipeline.stages import RunGridVolume
+
+    monkeypatch.setattr(
+        widget_mod.pipeline_stages,
+        "load_volume_on_run_grid",
+        lambda settings, input_format: RunGridVolume(
+            image=image, voxel_size_xyz=tuple(voxel_size_xyz), voxel_size_source="override",
+            crop=None, downsample=downsample,
+        ),
+    )
+
+
+# --- the button exists and is wired -----------------------------------------
+
+
+def test_optimise_button_exists_with_a_tooltip(panel):
+    button = panel._haemolynx_optimise_button
+    assert button.text == "Optimise settings"
+    assert button.tooltip.strip()
+
+
+def test_optimise_button_is_a_child_of_the_input_tab(panel):
+    from haemolynx.gui.tabs import tab_titles
+
+    tabs = panel._haemolynx_tabs
+    input_index = list(tab_titles()).index("1. Input")
+    input_page = tabs.widget(input_index)
+    button_native = panel._haemolynx_optimise_button.native
+    assert button_native.isAncestorOf is not None  # a native Qt widget exists
+    # Walk up from the button to confirm the Input tab's page contains it.
+    ancestor = button_native.parent()
+    found = False
+    while ancestor is not None:
+        if ancestor is input_page:
+            found = True
+            break
+        ancestor = ancestor.parent()
+    assert found, "the Optimise settings button is not on the Input tab"
+
+
+# --- guards ------------------------------------------------------------------
+
+
+def test_optimise_settings_refuses_without_an_input_path(panel, monkeypatch):
+    started = []
+    monkeypatch.setattr(
+        widget_mod, "_run_optimisation_in_background", lambda *a, **k: started.append((a, k))
+    )
+    panel._haemolynx_optimise_settings()
+    assert not started
+    assert "Choose a segmented input image" in panel._haemolynx_report()
+
+
+def test_optimise_settings_refuses_a_missing_file(panel, monkeypatch, tmp_path):
+    started = []
+    monkeypatch.setattr(
+        widget_mod, "_run_optimisation_in_background", lambda *a, **k: started.append((a, k))
+    )
+    rows = panel._haemolynx_rows()
+    rows["input_path"].value = tmp_path / "does_not_exist.tif"
+    panel._haemolynx_optimise_settings()
+    assert not started
+    assert "Choose a segmented input image" in panel._haemolynx_report()
+
+
+def test_optimise_settings_refuses_while_a_run_is_already_going(panel, monkeypatch, tmp_path):
+    started = []
+    monkeypatch.setattr(
+        widget_mod, "_run_optimisation_in_background", lambda *a, **k: started.append((a, k))
+    )
+    real_input = tmp_path / "mask.tif"
+    real_input.write_bytes(b"")
+    rows = panel._haemolynx_rows()
+    rows["input_path"].value = real_input
+
+    panel._haemolynx_run_state.start(worker=None, cancel_flag={"cancelled": False})
+    try:
+        panel._haemolynx_optimise_settings()
+    finally:
+        panel._haemolynx_run_state.stopped()
+    assert not started
+    assert "already going" in panel._haemolynx_report()
+
+
+# --- wiring: the button starts a background worker with the right arguments --
+
+
+def test_optimise_settings_starts_the_background_worker(panel, monkeypatch, tmp_path):
+    started = []
+    monkeypatch.setattr(
+        widget_mod,
+        "_run_optimisation_in_background",
+        lambda *args, **kwargs: started.append((args, kwargs)),
+    )
+    real_input = tmp_path / "mask.tif"
+    real_input.write_bytes(b"")
+    rows = panel._haemolynx_rows()
+    rows["input_path"].value = real_input
+
+    panel._haemolynx_optimise_settings()
+
+    assert len(started) == 1
+    args, kwargs = started[0]
+    settings, schema, passed_rows, report, button, bars = args
+    assert Path(settings["input_path"]) == real_input
+    assert passed_rows is rows
+    assert button is panel._haemolynx_optimise_button
+    assert bars is panel._haemolynx_optimise_bars
+    assert kwargs["apply_prerequisites"] is not None
+    assert kwargs["run_state"] is panel._haemolynx_run_state
+    assert kwargs["max_passes"] == 1
+    assert kwargs["propose"] == panel._haemolynx_optimise_review.propose
+    assert kwargs["downsample_factor"] is None  # "Auto" is the default dropdown value
+    assert kwargs["groups"] is None  # "Choose optimisation types" is unticked by default
+
+
+def test_clicking_the_native_button_triggers_optimisation(panel, monkeypatch, tmp_path):
+    """The button's own Qt click, not just calling the handler directly."""
+    started = []
+    monkeypatch.setattr(
+        widget_mod,
+        "_run_optimisation_in_background",
+        lambda *args, **kwargs: started.append(args),
+    )
+    real_input = tmp_path / "mask.tif"
+    real_input.write_bytes(b"")
+    panel._haemolynx_rows()["input_path"].value = real_input
+
+    panel._haemolynx_optimise_button.native.click()
+
+    assert len(started) == 1
+
+
+# --- optimisation downsampling ------------------------------------------------
+
+
+def test_downsample_dropdown_exists_with_the_right_choices_and_default(panel):
+    dropdown = panel._haemolynx_optimise_downsample
+    assert list(dropdown.choices) == ["Auto", "Off", "2x", "4x", "8x", "16x"]
+    assert dropdown.value == "Auto"
+    assert dropdown.tooltip.strip()
+    assert "only" in dropdown.tooltip and "Optimise settings" in dropdown.tooltip
+
+
+def test_downsample_dropdown_choice_is_passed_through(panel, monkeypatch, tmp_path):
+    started = []
+    monkeypatch.setattr(
+        widget_mod,
+        "_run_optimisation_in_background",
+        lambda *args, **kwargs: started.append(kwargs),
+    )
+    real_input = tmp_path / "mask.tif"
+    real_input.write_bytes(b"")
+    panel._haemolynx_rows()["input_path"].value = real_input
+
+    panel._haemolynx_optimise_downsample.value = "4x"
+    panel._haemolynx_optimise_settings()
+
+    assert started[0]["downsample_factor"] == 4
+
+
+def test_downsample_dropdown_off_maps_to_factor_1(panel, monkeypatch, tmp_path):
+    started = []
+    monkeypatch.setattr(
+        widget_mod,
+        "_run_optimisation_in_background",
+        lambda *args, **kwargs: started.append(kwargs),
+    )
+    real_input = tmp_path / "mask.tif"
+    real_input.write_bytes(b"")
+    panel._haemolynx_rows()["input_path"].value = real_input
+
+    panel._haemolynx_optimise_downsample.value = "Off"
+    panel._haemolynx_optimise_settings()
+
+    assert started[0]["downsample_factor"] == 1
+
+
+# --- choose optimisation types ------------------------------------------------
+
+
+def test_choose_groups_checkbox_and_list_exist_and_start_hidden(panel):
+    from haemolynx.optimisation import GROUP_LABELS, GROUP_NAMES
+
+    checkbox = panel._haemolynx_optimise_choose_groups
+    assert checkbox.value is False
+    assert checkbox.tooltip.strip()
+
+    group_checkboxes = panel._haemolynx_optimise_group_checkboxes
+    assert set(group_checkboxes) == set(GROUP_NAMES)
+    for name, box in group_checkboxes.items():
+        assert box.text == GROUP_LABELS[name]
+        assert box.value is True  # every group runs unless the user narrows it down
+
+
+def test_ticking_choose_groups_reveals_the_checkbox_list(panel):
+    """A nested Container's own ``.visible`` only reflects reality once its
+    top-level ancestor is actually shown -- true in the real app (the panel is
+    docked and displayed), not true of a bare, never-shown widget in a test,
+    so this test shows the panel itself first."""
+    panel.show()
+    # The group list sits behind the "Check and optimise" box's Advanced button.
+    panel._haemolynx_advanced["segment:box:check_and_optimise"].toggle(True)
+
+    container = panel._haemolynx_optimise_group_checkboxes_container
+    assert container.visible is False
+
+    panel._haemolynx_optimise_choose_groups.value = True
+    assert container.visible is True
+
+    panel._haemolynx_optimise_choose_groups.value = False
+    assert container.visible is False
+
+
+def test_groups_kwarg_is_none_when_choose_groups_is_unticked(panel, monkeypatch, tmp_path):
+    started = []
+    monkeypatch.setattr(
+        widget_mod,
+        "_run_optimisation_in_background",
+        lambda *args, **kwargs: started.append(kwargs),
+    )
+    real_input = tmp_path / "mask.tif"
+    real_input.write_bytes(b"")
+    panel._haemolynx_rows()["input_path"].value = real_input
+
+    # Untick one group's box without ticking "Choose optimisation types" --
+    # it must have no effect, since the list is not in play yet.
+    panel._haemolynx_optimise_group_checkboxes["min_stub_length"].value = False
+    panel._haemolynx_optimise_settings()
+
+    assert started[0]["groups"] is None
+
+
+def test_groups_kwarg_reflects_only_the_ticked_boxes_when_chosen(panel, monkeypatch, tmp_path):
+    started = []
+    monkeypatch.setattr(
+        widget_mod,
+        "_run_optimisation_in_background",
+        lambda *args, **kwargs: started.append(kwargs),
+    )
+    real_input = tmp_path / "mask.tif"
+    real_input.write_bytes(b"")
+    panel._haemolynx_rows()["input_path"].value = real_input
+
+    panel._haemolynx_optimise_choose_groups.value = True
+    group_checkboxes = panel._haemolynx_optimise_group_checkboxes
+    for name, box in group_checkboxes.items():
+        box.value = name in ("closing_radius", "min_stub_length")
+
+    panel._haemolynx_optimise_settings()
+
+    assert set(started[0]["groups"]) == {"closing_radius", "min_stub_length"}
+
+
+# --- the generated config's schema must always be buildable ------------------
+
+
+def test_names_with_prerequisite_closure_pulls_in_the_whole_requires_chain():
+    from haemolynx.pipeline import default_schema
+
+    schema = default_schema()
+    names = widget_mod._names_with_prerequisite_closure(
+        schema, ("thick_vessel_braid_factor_limit", "input_path")
+    )
+
+    assert "thick_vessel_braid_factor_limit" in names
+    assert "input_path" in names
+    # thick_vessel_braid_factor_limit requires detect_thick_vessel_braiding,
+    # which requires do_skeletonize (two hops); input_path requires
+    # use_ilastik_segmentation (one) -- the closure must include every hop.
+    assert "detect_thick_vessel_braiding" in names
+    assert "do_skeletonize" in names
+    assert "use_ilastik_segmentation" in names
+    # The whole point: a Schema built from just this closure must not raise
+    # ConfigError for a missing requires target.
+    schema.subset(names)
+
+
+def test_optimise_settings_generated_config_schema_is_buildable():
+    """Regression: every OPTIMISE_SETTING_NAMES entry's own requires chain
+    must resolve inside the documented config schema the "finished" handler
+    builds, or writing the optimised-settings YAML crashes after a real
+    run completes (this crashed in production before
+    `_names_with_prerequisite_closure` existed)."""
+    from haemolynx.optimisation import OPTIMISE_SETTING_NAMES
+    from haemolynx.pipeline import default_schema
+
+    schema = default_schema()
+    names = widget_mod._names_with_prerequisite_closure(
+        schema, (*OPTIMISE_SETTING_NAMES, "input_path")
+    )
+
+    documented_schema = schema.subset(names)  # must not raise ConfigError
+
+    assert set(OPTIMISE_SETTING_NAMES) <= set(documented_schema.names)
+    assert "input_path" in documented_schema.names
+
+
+def test_optimise_settings_binarizes_a_normalized_float_probability_mask(
+    panel, monkeypatch, tmp_path
+):
+    """Regression test for the same mis-binarization bug fixed in
+    `_run_segmentation_quality_check_in_background` (see
+    test_gui_check_segmented_image_widget.py) --
+    `_run_optimisation_in_background` had the identical
+    ``np.asarray(image).astype(bool)`` bug on the raw loaded image, before
+    the optimiser ever saw it. Captures the ``raw_mask`` actually passed to
+    :func:`optimise_skeleton_and_graph_settings` rather than running the
+    full (slow) real search, to isolate just this fix.
+    """
+    import time
+
+    import numpy as np
+    from qtpy.QtWidgets import QApplication
+
+    from haemolynx.optimisation.search import OptimisationResult
+
+    rng = np.random.default_rng(0)
+    # Background noise well under the 0.5 threshold; a real 6x6x6 block well
+    # over it. Naive `!= 0` reads every noisy background voxel as foreground;
+    # the real threshold-at-0.5 binarisation reads only the block.
+    image = rng.uniform(0.0, 0.2, size=(12, 12, 12)).astype(np.float32)
+    image[3:9, 3:9, 3:9] = 0.9
+
+    _fake_run_grid_volume(monkeypatch, image)
+
+    captured = {}
+
+    def fake_optimise(raw_mask, **kwargs):
+        captured["raw_mask"] = raw_mask
+        return OptimisationResult(settings={}, trials=())
+
+    monkeypatch.setattr(widget_mod, "optimise_skeleton_and_graph_settings", fake_optimise)
+
+    real_input = tmp_path / "mask.tif"
+    real_input.write_bytes(b"")
+    panel._haemolynx_rows()["input_path"].value = real_input
+
+    panel._haemolynx_optimise_settings()
+
+    app = QApplication.instance()
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        app.processEvents()
+        time.sleep(0.02)
+        if "raw_mask" in captured:
+            break
+    else:
+        pytest.fail("optimiser worker did not run within 10s")
+
+    assert captured["raw_mask"].sum() == 6 ** 3  # only the thresholded block
+
+
+def test_optimise_settings_loads_the_raw_data_row_as_the_raw_image(panel, monkeypatch, tmp_path):
+    """The run's raw image (raw_image_path, on the Input tab) reaches the
+    optimiser's own `raw_image` parameter, the same way it reaches "Check
+    segmented image"'s raw comparison."""
+    import time
+
+    import numpy as np
+    from qtpy.QtWidgets import QApplication
+
+    import haemolynx.haemodynamics.fwhm_diameter as automated_mod
+    from haemolynx.optimisation.search import OptimisationResult
+
+    mask = np.zeros((12, 12, 12), dtype=bool)
+    mask[3:9, 3:9, 3:9] = True
+    raw_image = np.where(mask, 200.0, 10.0).astype(np.float32)
+
+    _fake_run_grid_volume(monkeypatch, mask)
+    monkeypatch.setattr(
+        automated_mod, "load_single_channel_tiff_volume", lambda path, axis_order, channel=None: raw_image,
+    )
+
+    captured = {}
+
+    def fake_optimise(raw_mask, **kwargs):
+        captured["raw_image"] = kwargs.get("raw_image")
+        return OptimisationResult(settings={}, trials=())
+
+    monkeypatch.setattr(widget_mod, "optimise_skeleton_and_graph_settings", fake_optimise)
+
+    real_input = tmp_path / "mask.tif"
+    real_input.write_bytes(b"")
+    raw_file = tmp_path / "raw.tif"
+    raw_file.write_bytes(b"")
+
+    rows = panel._haemolynx_rows()
+    rows["input_path"].value = real_input
+    panel._haemolynx_raw_data_row.value = raw_file
+
+    panel._haemolynx_optimise_settings()
+
+    app = QApplication.instance()
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        app.processEvents()
+        time.sleep(0.02)
+        if "raw_image" in captured:
+            break
+    else:
+        pytest.fail("optimiser worker did not run within 10s")
+
+    assert captured["raw_image"] is not None
+    assert np.array_equal(captured["raw_image"], raw_image)
+
+
+def test_optimise_settings_raw_image_none_when_raw_data_row_is_empty(panel, monkeypatch, tmp_path):
+    import time
+
+    import numpy as np
+    from qtpy.QtWidgets import QApplication
+
+    from haemolynx.optimisation.search import OptimisationResult
+
+    mask = np.zeros((12, 12, 12), dtype=bool)
+    mask[3:9, 3:9, 3:9] = True
+
+    _fake_run_grid_volume(monkeypatch, mask)
+
+    captured = {}
+
+    def fake_optimise(raw_mask, **kwargs):
+        captured["raw_image"] = kwargs.get("raw_image")
+        return OptimisationResult(settings={}, trials=())
+
+    monkeypatch.setattr(widget_mod, "optimise_skeleton_and_graph_settings", fake_optimise)
+
+    real_input = tmp_path / "mask.tif"
+    real_input.write_bytes(b"")
+    panel._haemolynx_rows()["input_path"].value = real_input
+
+    panel._haemolynx_optimise_settings()
+
+    app = QApplication.instance()
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        app.processEvents()
+        time.sleep(0.02)
+        if "raw_image" in captured:
+            break
+    else:
+        pytest.fail("optimiser worker did not run within 10s")
+
+    assert captured["raw_image"] is None
+
+
+def test_optimise_settings_raw_image_shape_mismatch_degrades_instead_of_crashing(
+    panel, monkeypatch, tmp_path
+):
+    """Regression: a raw reference image whose shape doesn't match the
+    segmented mask used to raise inside the *real*
+    `optimise_skeleton_and_graph_settings` (`_Search.__init__`'s own shape
+    check), outside the try/except meant to make a bad raw file non-fatal --
+    crashing the whole run instead of degrading exactly like a missing or
+    unreadable raw file already did. Deliberately does not fake
+    `optimise_skeleton_and_graph_settings`: a fake would hide the very bug
+    this guards against, since the crash happened inside the real function.
+    """
+    import time
+
+    import numpy as np
+    from qtpy.QtWidgets import QApplication
+
+    import haemolynx.haemodynamics.fwhm_diameter as automated_mod
+
+    mask = np.zeros((12, 12, 12), dtype=bool)
+    mask[3:9, 3:9, 3:9] = True
+    mismatched_raw_image = np.zeros((5, 5, 5), dtype=np.float32)
+
+    _fake_run_grid_volume(monkeypatch, mask)
+    monkeypatch.setattr(
+        automated_mod,
+        "load_single_channel_tiff_volume",
+        lambda path, axis_order, channel=None: mismatched_raw_image,
+    )
+
+    real_input = tmp_path / "mask.tif"
+    real_input.write_bytes(b"")
+    raw_file = tmp_path / "raw.tif"
+    raw_file.write_bytes(b"")
+
+    rows = panel._haemolynx_rows()
+    rows["input_path"].value = real_input
+    panel._haemolynx_raw_data_row.value = raw_file
+
+    panel._haemolynx_optimise_settings()
+
+    app = QApplication.instance()
+    deadline = time.time() + 30
+    while time.time() < deadline:
+        app.processEvents()
+        time.sleep(0.02)
+        current = panel._haemolynx_report()
+        if current and current != "Optimising settings...":
+            break
+    else:
+        pytest.fail("optimiser worker did not finish within 30s")
+
+    final_report = panel._haemolynx_report()
+    assert "Optimised settings ready to review below" in final_report
+    assert "skipped" in final_report.lower()
+
+
+# --- the search starts from what the run reads (PLAN_optimisers.md, Phase 2) --
+
+
+def _run_optimiser_with_a_fake_search(panel, monkeypatch, tmp_path, *, settings=None):
+    """Press Optimise settings with the search itself faked: what it was
+    handed, and the report once the worker finished."""
+    import time
+
+    from qtpy.QtWidgets import QApplication
+
+    from haemolynx.optimisation.search import OptimisationResult
+
+    captured: dict = {}
+
+    def fake_optimise(raw_mask, **kwargs):
+        captured.update(kwargs, raw_mask=raw_mask)
+        return OptimisationResult(settings=dict(settings or {}), trials=())
+
+    monkeypatch.setattr(widget_mod, "optimise_skeleton_and_graph_settings", fake_optimise)
+    real_input = tmp_path / "mask.tif"
+    real_input.write_bytes(b"")
+    panel._haemolynx_rows()["input_path"].value = real_input
+    panel._haemolynx_optimise_settings()
+
+    app = QApplication.instance()
+    deadline = time.time() + 20
+    while time.time() < deadline:
+        app.processEvents()
+        time.sleep(0.02)
+        current = panel._haemolynx_report()
+        if "raw_mask" in captured and current and current != "Optimising settings...":
+            break
+    else:
+        pytest.fail("optimiser worker did not finish within 20s")
+    return captured, panel._haemolynx_report(), real_input
+
+
+def _yaml_value(node, name):
+    """*name*'s value anywhere in a loaded config (settings sit under sections)."""
+    if isinstance(node, dict):
+        if name in node:
+            return node[name]
+        for value in node.values():
+            found = _yaml_value(value, name)
+            if found is not None:
+                return found
+    return None
+
+
+def test_optimise_settings_hands_the_search_the_runs_whole_settings_and_restriction(
+    panel, monkeypatch, tmp_path
+):
+    """Regression (A2, A5): the search was handed the 54 settings it tunes
+    and nothing else, so every trial was built with the short-loop rule,
+    mask recovery and the bridge gates at their defaults; and no thick-vessel
+    restriction. It now gets the run's settings and the run's restriction."""
+    import numpy as np
+
+    mask = np.zeros((12, 12, 12), dtype=bool)
+    mask[3:9, 3:9, 3:9] = True
+    _fake_run_grid_volume(monkeypatch, mask)
+    restriction = np.zeros_like(mask)
+    restriction[3:9, 3:9, 3:6] = True
+    monkeypatch.setattr(
+        widget_mod.pipeline_stages, "thick_vessel_restriction_mask",
+        lambda binary, settings, voxel_size_xyz, crop, downsample: restriction,
+    )
+    rows = panel._haemolynx_rows()
+    rows["remove_short_loops_under_um"].value = 0.0
+    rows["recover_uncovered_mask_vessels"].value = False
+
+    captured, _report, _input = _run_optimiser_with_a_fake_search(panel, monkeypatch, tmp_path)
+
+    starting = captured["starting_values"]
+    assert starting["remove_short_loops_under_um"] == 0.0
+    assert starting["recover_uncovered_mask_vessels"] is False
+    assert "bridge_require_mask_support" in starting
+    assert captured["thick_restriction_mask"] is restriction
+
+
+def test_optimise_settings_counts_voxels_on_the_run_grid_and_back(panel, monkeypatch, tmp_path):
+    """Regression (A1): with a downsample on import the search ran on the
+    reduced grid with the voxel counts as set on the image as read, and its
+    result went back on the reduced grid, which a run then reduced again.
+    Now they go in as a run counts them there and come back as the rows hold
+    them: kept as set, moved times the reduction."""
+    import numpy as np
+    import yaml
+
+    from haemolynx.io.downsample import downsample_for
+
+    mask = np.zeros((12, 12, 12), dtype=bool)
+    mask[3:9, 3:9, 3:9] = True
+    _fake_run_grid_volume(
+        monkeypatch, mask, downsample=downsample_for(2, (24, 24, 24), (1.0, 1.0, 1.0)),
+        voxel_size_xyz=(2.0, 2.0, 2.0),
+    )
+    rows = panel._haemolynx_rows()
+    rows["skeleton_closing_radius"].value = 2
+    rows["skeleton_bridge_gap_size"].value = 3
+
+    captured, _report, real_input = _run_optimiser_with_a_fake_search(
+        panel, monkeypatch, tmp_path,
+        # The closing radius kept at its grid count, the gap moved from 2 to 4.
+        settings={"skeleton_closing_radius": 1, "skeleton_bridge_gap_size": 4},
+    )
+
+    assert captured["starting_values"]["skeleton_closing_radius"] == 1
+    assert captured["starting_values"]["skeleton_bridge_gap_size"] == 2
+    written = sorted(real_input.parent.glob(f"*_{real_input.stem}.yaml"))
+    assert written
+    config = yaml.safe_load(written[-1].read_text())
+    assert _yaml_value(config, "skeleton_closing_radius") == 2
+    assert _yaml_value(config, "skeleton_bridge_gap_size") == 8
+
+
+def test_optimise_settings_runs_unconfined_and_says_so_when_the_vessel_masks_are_unread(
+    panel, monkeypatch, tmp_path
+):
+    import numpy as np
+
+    mask = np.zeros((12, 12, 12), dtype=bool)
+    mask[3:9, 3:9, 3:9] = True
+    _fake_run_grid_volume(monkeypatch, mask)
+
+    def unreadable(*_args, **_kwargs):
+        raise FileNotFoundError("large_arteriole_mask.tif")
+
+    monkeypatch.setattr(widget_mod.pipeline_stages, "thick_vessel_restriction_mask", unreadable)
+
+    captured, report, _input = _run_optimiser_with_a_fake_search(panel, monkeypatch, tmp_path)
+
+    assert captured["thick_restriction_mask"] is None
+    assert "Thick-vessel trials ran unconfined" in report
+    assert "large_arteriole_mask.tif" in report
+
+
+# --- a real, slow, end-to-end run --------------------------------------------
+
+
+@pytest.mark.slow
+@pytest.mark.integration
+def test_optimise_settings_end_to_end_on_a_real_fixture(panel, tmp_path):
+    """Runs the real worker to completion: rows change, and a YAML lands
+    beside the (copied) input file.
+
+    No mocking of `_run_optimisation_in_background` here -- this is the one
+    test that proves the whole button-to-file path works, not just its wiring.
+    Uses `napari.qt.threading`'s worker synchronously via Qt's own event loop,
+    pumped until the report line changes.
+    """
+    import shutil
+    import time
+
+    from qtpy.QtWidgets import QApplication
+
+    assert FIXTURE.is_file(), FIXTURE
+    copy_path = tmp_path / FIXTURE.name
+    shutil.copy(FIXTURE, copy_path)
+
+    rows = panel._haemolynx_rows()
+    rows["input_path"].value = copy_path
+    before = {
+        "skeleton_closing_radius": rows["skeleton_closing_radius"].value,
+        "graph_reconnect_threshold": rows["graph_reconnect_threshold"].value,
+    }
+
+    panel._haemolynx_optimise_settings()
+    assert "Optimising settings..." in panel._haemolynx_report()
+
+    app = QApplication.instance()
+    deadline = time.time() + 120
+    while time.time() < deadline:
+        app.processEvents()
+        time.sleep(0.05)
+        if "Optimising settings..." not in panel._haemolynx_report():
+            break
+    else:
+        pytest.fail("optimisation did not finish within 120s")
+
+    report = panel._haemolynx_report()
+    assert "Optimised settings ready to review below" in report, report
+    assert panel._haemolynx_optimise_review.pending
+
+    yaml_files = list(tmp_path.glob("*.yaml"))
+    assert yaml_files, "no config file was written beside the input image"
+    assert yaml_files[0].name.endswith(f"_{copy_path.stem}.yaml")
+
+    # Nothing reaches the panel before Apply.
+    assert {
+        "skeleton_closing_radius": rows["skeleton_closing_radius"].value,
+        "graph_reconnect_threshold": rows["graph_reconnect_threshold"].value,
+    } == before
+    panel._haemolynx_optimise_review.apply()
+    assert panel._haemolynx_report() == "Applied the optimised settings."
+
+    after = {
+        "skeleton_closing_radius": rows["skeleton_closing_radius"].value,
+        "graph_reconnect_threshold": rows["graph_reconnect_threshold"].value,
+    }
+    # Not asserting the values changed (the image may happen to favour the
+    # defaults) -- only that the round trip through the optimiser and back
+    # into the rows completed without error.
+    assert set(before) == set(after)
+
+
+# --- a run proposes; the panel changes only on Apply --------------------------
+
+
+def _proposal(settings, scorecard=()):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(settings=settings, scorecard=scorecard)
+
+
+def _writer(rows, settings):
+    """What a run hands the review: a function writing its settings into the rows."""
+    calls = []
+
+    def apply(names):
+        calls.append({name: settings[name] for name in names})
+        for name in names:
+            rows[name].value = settings[name]
+
+    return apply, calls
+
+
+def test_a_proposal_changes_nothing_until_apply(panel):
+    panel.show()
+    rows = panel._haemolynx_rows()
+    review = panel._haemolynx_optimise_review
+    was = int(rows["skeleton_min_branch_length"].value)
+    apply, calls = _writer(rows, {"skeleton_min_branch_length": was + 2})
+
+    message = review.propose(_proposal({"skeleton_min_branch_length": was + 2}), apply)
+
+    assert message == "Optimised settings ready to review below: 1 change. Apply or Discard."
+    assert review.pending and review.container.visible
+    assert f"skeleton_min_branch_length: {was} -> {was + 2}" in review.text.value
+    assert rows["skeleton_min_branch_length"].value == was
+    assert calls == []
+
+    review.apply()
+
+    assert calls == [{"skeleton_min_branch_length": was + 2}]
+    assert rows["skeleton_min_branch_length"].value == was + 2
+    assert not review.pending and not review.container.visible
+    assert panel._haemolynx_report() == "Applied the optimised settings."
+
+
+def test_discard_leaves_the_panel_as_it_was(panel):
+    rows = panel._haemolynx_rows()
+    review = panel._haemolynx_optimise_review
+    was = int(rows["skeleton_min_branch_length"].value)
+    apply, calls = _writer(rows, {"skeleton_min_branch_length": was + 2})
+    review.propose(_proposal({"skeleton_min_branch_length": was + 2}), apply)
+
+    review.discard()
+    review.apply()  # nothing left to apply
+
+    assert calls == []
+    assert rows["skeleton_min_branch_length"].value == was
+    assert panel._haemolynx_report() == "Discarded the optimised settings; the panel is unchanged."
+
+
+def test_a_proposal_worse_than_the_current_settings_says_so(panel):
+    from haemolynx.optimisation.scorecard import ScoreRow
+
+    review = panel._haemolynx_optimise_review
+    scorecard = (ScoreRow("input vessels the skeleton reaches", 0.95, 0.8, True, 0.02),)
+
+    message = review.propose(_proposal({}, scorecard), lambda _names: None)
+
+    assert "WARNING: worse than your settings on 1 measure." in message
+    assert "WARNING: worse than your current settings on input vessels" in review.text.value
+
+
+def test_clear_drops_a_pending_proposal(panel):
+    review = panel._haemolynx_optimise_review
+    apply, calls = _writer(panel._haemolynx_rows(), {})
+    review.propose(_proposal({"skeleton_min_branch_length": 9}), apply)
+
+    panel._haemolynx_clear(ask=False)
+    review.apply()
+
+    assert not review.pending
+    assert calls == []
+
+
+def test_passes_are_passed_through(panel, monkeypatch, tmp_path):
+    started = []
+    monkeypatch.setattr(
+        widget_mod, "_run_optimisation_in_background", lambda *a, **k: started.append((a, k))
+    )
+    real_input = tmp_path / "mask.tif"
+    real_input.write_bytes(b"")
+    panel._haemolynx_rows()["input_path"].value = real_input
+    panel._haemolynx_optimise_passes.value = 3
+
+    panel._haemolynx_optimise_settings()
+
+    assert started[0][1]["max_passes"] == 3
+    assert panel._haemolynx_optimise_passes.tooltip.strip()
+
+
+# --- what the button may optimise on (PLAN_optimisers.md, Phase 5) ------------
+
+
+def test_a_synthetic_network_greys_the_optimisers_and_an_image_restores_them(panel):
+    from haemolynx.gui.chrome_tooltips import OPTIMISE_SYNTHETIC_TOOLTIP
+
+    buttons = [
+        panel._haemolynx_optimise_button,
+        panel._haemolynx_optimise_fwhm_button,
+        panel._haemolynx_optimise_endothelial_button,
+    ]
+    before = [(button.enabled, button.tooltip) for button in buttons]
+    assert all(enabled for enabled, _tooltip in before)
+    rows = panel._haemolynx_rows()
+
+    rows["network_source"].value = "synthetic"
+    for button in buttons:
+        assert not button.enabled
+        assert button.tooltip == OPTIMISE_SYNTHETIC_TOOLTIP
+    assert panel._haemolynx_check_image_button.tooltip != OPTIMISE_SYNTHETIC_TOOLTIP
+
+    rows["network_source"].value = "segmented_image"
+    assert [(button.enabled, button.tooltip) for button in buttons] == before
+
+
+def test_a_change_of_settings_does_not_free_a_running_optimisers_button(panel):
+    """Every change of settings re-judges the greying, and the panel gives
+    back only what it greyed: the button a run greyed stays so until the run
+    ends."""
+    button = panel._haemolynx_optimise_button
+    button.enabled = False  # as a starting optimisation run leaves it
+    rows = panel._haemolynx_rows()
+    rows["skeleton_closing_radius"].value = 3
+    rows["use_thick_vessel_skeletonisation"].value = not rows["use_thick_vessel_skeletonisation"].value
+    assert not button.enabled
+
+
+def test_optimise_settings_refuses_for_a_synthetic_network(panel, monkeypatch, tmp_path):
+    from haemolynx.gui.chrome_tooltips import OPTIMISE_SYNTHETIC_TOOLTIP
+
+    started = []
+    monkeypatch.setattr(
+        widget_mod, "_run_optimisation_in_background", lambda *a, **k: started.append((a, k))
+    )
+    real_input = tmp_path / "mask.tif"
+    real_input.write_bytes(b"")
+    rows = panel._haemolynx_rows()
+    rows["input_path"].value = real_input
+    rows["network_source"].value = "synthetic"
+
+    panel._haemolynx_optimise_settings()
+
+    assert not started
+    assert panel._haemolynx_report() == OPTIMISE_SYNTHETIC_TOOLTIP
+
+
+def _ilastik_rows(panel, tmp_path):
+    raw = tmp_path / "raw.tif"
+    raw.write_bytes(b"")
+    rows = panel._haemolynx_rows()
+    rows["raw_image_path"].value = raw
+    rows["use_ilastik_segmentation"].value = True
+    rows["ilastik_classifier_path"].value = tmp_path / "classifier.ilp"
+    rows["ilastik_output_dir"].value = tmp_path / "segmentations"
+    return rows
+
+
+def test_with_ilastik_optimise_settings_uses_its_current_output(panel, monkeypatch, tmp_path):
+    started = []
+    monkeypatch.setattr(
+        widget_mod, "_run_optimisation_in_background", lambda *a, **k: started.append((a, k))
+    )
+    produced = tmp_path / "segmentations" / "raw_segmented.tif"
+    asked = []
+    monkeypatch.setattr(
+        widget_mod.pipeline_stages, "current_ilastik_output",
+        lambda settings: asked.append(settings) or (produced, ""),
+    )
+    _ilastik_rows(panel, tmp_path)
+
+    panel._haemolynx_optimise_settings()
+
+    assert asked and len(started) == 1
+    assert started[0][1]["segmented_path"] == produced
+
+
+def test_with_ilastik_optimise_settings_refuses_without_a_current_output(panel, monkeypatch, tmp_path):
+    started = []
+    monkeypatch.setattr(
+        widget_mod, "_run_optimisation_in_background", lambda *a, **k: started.append((a, k))
+    )
+    monkeypatch.setattr(
+        widget_mod.pipeline_stages, "current_ilastik_output",
+        lambda settings: (None, "raw_segmented.tif: there is no output yet"),
+    )
+    rows = _ilastik_rows(panel, tmp_path)
+    # A segmented image named too: a run with ilastik on analyses ilastik's
+    # output, not it, so it is not what to optimise on either.
+    real_input = tmp_path / "mask.tif"
+    real_input.write_bytes(b"")
+    rows["input_path"].value = real_input
+
+    panel._haemolynx_optimise_settings()
+
+    assert not started
+    report = panel._haemolynx_report()
+    assert "ilastik segments this run's raw image" in report
+    assert "there is no output yet" in report
+
+
+def test_the_optimiser_reads_ilastiks_output_and_never_runs_ilastik(monkeypatch, tmp_path):
+    """The worker's own function, with the output current: `segment` reads it
+    as a resumed run's segmented image, so ilastik is not started."""
+    import numpy as np
+    import tifffile
+
+    from haemolynx import io
+    from haemolynx.optimisation.search import OptimisationResult
+    from haemolynx.pipeline import default_schema
+
+    def never(**_kwargs):
+        raise AssertionError("ilastik was run")
+
+    monkeypatch.setattr(io, "run_ilastik_headless_segmentation", never)
+    mask = np.zeros((12, 30, 30), dtype=np.uint8)
+    mask[5:8, 14:17, 3:27] = 1
+    produced = tmp_path / "segmentations" / "raw_segmented.tif"
+    produced.parent.mkdir()
+    tifffile.imwrite(produced, mask)
+    raw = tmp_path / "raw.tif"
+    tifffile.imwrite(raw, mask.astype(np.float32))
+    settings = {
+        **default_schema().defaults(),
+        "input_path": None,
+        "output_dir": tmp_path / "run",
+        "raw_image_path": raw,
+        "use_ilastik_segmentation": True,
+        "ilastik_classifier_path": tmp_path / "classifier.ilp",
+        "ilastik_output_dir": produced.parent,
+    }
+    searched = {}
+
+    def fake_optimise(raw_mask, **kwargs):
+        searched["raw_mask"] = raw_mask
+        return OptimisationResult(settings={}, trials=())
+
+    monkeypatch.setattr(widget_mod, "optimise_skeleton_and_graph_settings", fake_optimise)
+
+    _result, input_path, _raw_error, _restriction_error = widget_mod._optimise_settings_for_run(
+        settings, segmented_path=produced, downsample_factor=2
+    )
+
+    assert Path(input_path) == produced
+    assert np.array_equal(searched["raw_mask"], mask.astype(bool))
+
+    # Not current, and none handed in: refused, not segmented.
+    monkeypatch.setattr(
+        widget_mod.pipeline_stages, "current_ilastik_output", lambda s: (None, "stale")
+    )
+    with pytest.raises(widget_mod._OptimiseRefused, match="stale"):
+        widget_mod._optimise_settings_for_run(settings, downsample_factor=2)
+
+
+def test_apply_writes_only_what_the_search_changed(panel, monkeypatch, tmp_path):
+    """Regression: Apply wrote every searched setting back as it was when
+    Optimise was pressed, so a row edited (or a config loaded) while the
+    proposal waited lost its new value, which the review never listed."""
+    import time
+
+    from qtpy.QtWidgets import QApplication
+
+    from haemolynx.optimisation.search import OptimisationResult
+
+    rows = panel._haemolynx_rows()
+    real_input = tmp_path / "mask.tif"
+    real_input.write_bytes(b"")
+    rows["input_path"].value = real_input
+    closing = int(rows["skeleton_closing_radius"].value)
+    branch = int(rows["skeleton_min_branch_length"].value)
+    result = OptimisationResult(
+        settings={"skeleton_closing_radius": closing + 1, "skeleton_min_branch_length": branch},
+        trials=(),
+    )
+    monkeypatch.setattr(
+        widget_mod, "_optimise_settings_for_run", lambda *a, **k: (result, real_input, None, None)
+    )
+
+    panel._haemolynx_optimise_settings()
+    app = QApplication.instance()
+    deadline = time.time() + 30
+    while not panel._haemolynx_optimise_review.pending and time.time() < deadline:
+        app.processEvents()
+        time.sleep(0.02)
+    assert panel._haemolynx_optimise_review.pending, panel._haemolynx_report()
+
+    rows["skeleton_min_branch_length"].value = branch + 5  # edited while it waits
+    panel._haemolynx_optimise_review.apply()
+
+    assert rows["skeleton_closing_radius"].value == closing + 1
+    assert rows["skeleton_min_branch_length"].value == branch + 5

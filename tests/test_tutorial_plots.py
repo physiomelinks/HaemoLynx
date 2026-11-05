@@ -25,7 +25,6 @@ def test_graph_build_plotter_tracks_paths(tmp_path) -> None:
     import numpy as np
     import networkx as nx
 
-    from haemolynx import visualization
 
     image = np.zeros((4, 8, 8), dtype=np.uint8)
     G = nx.MultiGraph()

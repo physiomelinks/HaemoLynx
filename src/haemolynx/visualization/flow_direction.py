@@ -1,0 +1,546 @@
+"""Per-edge flow direction arrows from haemodynamic edge attributes.
+
+Ports the direction logic of
+:func:`haemolynx.visualization.large_vessel_assignment.visualize_3d_plotly_large_vessel_assignment_flow_direction`
+into pure geometry that stays in physical ``(z, y, x)`` microns -- the same
+frame as node ``pos``, edge ``voxels``, and napari Vectors layers.
+
+Positive ``flow_signed`` means flow runs ``u -> v`` (as written by
+:func:`haemolynx.haemodynamics.resistance.set_edge_flows`). The centreline is
+oriented ``u -> v`` via :func:`haemolynx.visualization.geometry.edge_polyline`,
+then reversed when the signed flow is negative.
+"""
+from __future__ import annotations
+
+import math
+from dataclasses import dataclass
+from typing import Any, Mapping, Optional
+
+import numpy as np
+
+from haemolynx.graph.prune import FLOW_SOLVED
+from haemolynx.haemodynamics.resistance import flow_abs_log10_value, flow_abs_log10_values
+from haemolynx.visualization.geometry import edge_polyline
+
+__all__ = [
+    "SweepFlowArrows",
+    "edge_flow_direction_sign",
+    "flow_arrow_floor",
+    "edge_flow_arrow_zyx",
+    "edge_flow_direction_columns",
+    "flow_direction_vectors",
+    "flow_direction_components",
+    "flow_direction_rgb",
+    "flow_direction_rgba",
+    "flow_heading_deg",
+    "sweep_flow_arrows",
+]
+
+
+def edge_flow_direction_sign(
+    edge_data: Mapping[str, Any],
+    *,
+    signed_flow_attr: str = "flow_signed",
+    direction_attr: str = "edge_direction",
+    positive_flow_means_u_to_v: bool = True,
+    min_abs_flow: float = 0.0,
+) -> Optional[int]:
+    """Infer edge direction sign (+1 for u->v, -1 for v->u, None unknown).
+
+    Same priority as the Plotly flow-direction helper:
+    1) numeric sign of ``signed_flow_attr`` (default ``flow_signed``)
+    2) string labels on ``direction_attr`` (e.g. ``u_to_v`` / ``v_to_u``)
+
+    None for a vessel the solve left unsolved (``FLOW_SOLVED`` False): it
+    carries no flow, so it has no direction. None too for a numeric flow no
+    larger than *min_abs_flow* (:func:`flow_arrow_floor`): its sign is the
+    solve's rounding, not a direction.
+    """
+    if edge_data.get(FLOW_SOLVED) is False:
+        return None
+    flow_val = edge_data.get(signed_flow_attr)
+    if flow_val is not None:
+        try:
+            flow_float = float(flow_val)
+            if np.isfinite(flow_float) and abs(flow_float) <= float(min_abs_flow):
+                return None
+            if np.isfinite(flow_float) and flow_float != 0.0:
+                if flow_float > 0.0:
+                    return 1 if positive_flow_means_u_to_v else -1
+                return -1 if positive_flow_means_u_to_v else 1
+        except (TypeError, ValueError):
+            pass
+
+    dir_val = edge_data.get(direction_attr)
+    if dir_val is None:
+        return None
+    text = str(dir_val).strip().lower()
+    if text in {"u_to_v", "uv", "forward", "fwd", "+"}:
+        return 1
+    if text in {"v_to_u", "vu", "reverse", "rev", "-"}:
+        return -1
+    return None
+
+
+def flow_direction_components(direction: np.ndarray) -> tuple[float, float, float]:
+    """Signed normalised ``(z, y, x)`` components of a flow direction vector.
+
+    Each component is in ``[-1, +1]``. A zero or non-finite vector returns
+    ``(0, 0, 0)``.
+    """
+    d = np.asarray(direction, dtype=float).reshape(-1)[:3]
+    if d.shape[0] < 3 or not np.all(np.isfinite(d)):
+        return 0.0, 0.0, 0.0
+    norm = float(np.linalg.norm(d))
+    if norm <= 1e-12:
+        return 0.0, 0.0, 0.0
+    unit = d / norm
+    return float(unit[0]), float(unit[1]), float(unit[2])
+
+
+def flow_direction_rgb(direction: np.ndarray) -> tuple[float, float, float]:
+    """Map a ``(z, y, x)`` direction to RGB with ``R=x``, ``G=y``, ``B=z``.
+
+    Standard signed-direction encoding: each unit component in ``[-1, 1]``
+    maps to ``[0, 1]`` via ``(c + 1) / 2``. Opposite directions are
+    complementary (the two RGBs sum channel-wise to 1). Channels follow the
+    usual vis convention (R=x, G=y, B=z), not the storage order ``(z, y, x)``.
+    A zero or non-finite vector is mid-grey ``(0.5, 0.5, 0.5)``.
+    """
+    dz, dy, dx = flow_direction_components(direction)
+    return (dx + 1.0) / 2.0, (dy + 1.0) / 2.0, (dz + 1.0) / 2.0
+
+
+def flow_direction_rgba(
+    dir_z: np.ndarray,
+    dir_y: np.ndarray,
+    dir_x: np.ndarray,
+) -> np.ndarray:
+    """``(N, 4)`` RGBA from unit ``(z, y, x)`` components. ``R=x``, ``G=y``, ``B=z``.
+
+    Same mapping as :func:`flow_direction_rgb`. Non-finite rows become
+    mid-grey with alpha 1.
+    """
+    z = np.asarray(dir_z, dtype=float).reshape(-1)
+    y = np.asarray(dir_y, dtype=float).reshape(-1)
+    x = np.asarray(dir_x, dtype=float).reshape(-1)
+    rgb = np.column_stack(((x + 1.0) / 2.0, (y + 1.0) / 2.0, (z + 1.0) / 2.0))
+    bad = ~np.isfinite(rgb).all(axis=1)
+    rgb[bad] = 0.5
+    np.clip(rgb, 0.0, 1.0, out=rgb)
+    rgba = np.ones((rgb.shape[0], 4), dtype=float)
+    rgba[:, :3] = rgb
+    return rgba
+
+
+def flow_heading_deg(direction: np.ndarray) -> float:
+    """Azimuth in degrees ``[0, 360)`` for a flow direction in physical ``(z, y, x)``.
+
+    Horizontal heading uses ``atan2(dir_x, dir_y)`` — the in-plane angle seen when
+    looking along ``+z``. Near-pure ``±z`` vectors (``hypot(dir_y, dir_x)`` tiny)
+    map to ``0°`` (``+z``) or ``180°`` (``−z``).
+    """
+    d = np.asarray(direction, dtype=float).reshape(-1)[:3]
+    if d.shape[0] < 3 or not np.all(np.isfinite(d)):
+        return float("nan")
+    norm = float(np.linalg.norm(d))
+    if norm <= 1e-12:
+        return float("nan")
+    dz, dy, dx = (d / norm).tolist()
+    in_plane = math.hypot(dy, dx)
+    if in_plane <= 1e-12:
+        return 0.0 if dz >= 0.0 else 180.0
+    heading = math.degrees(math.atan2(dx, dy))
+    if heading < 0.0:
+        heading += 360.0
+    return heading
+
+
+def _polyline_length(points: np.ndarray) -> float:
+    if points.shape[0] < 2:
+        return 0.0
+    return float(np.sum(np.linalg.norm(np.diff(points, axis=0), axis=1)))
+
+
+def edge_flow_arrow_zyx(
+    points: np.ndarray,
+    *,
+    direction_sign: int,
+    arrow_length: float,
+    lateral_offset: float,
+) -> Optional[tuple[np.ndarray, np.ndarray]]:
+    """Nearby arrow anchor and direction vector for an edge (physical z,y,x).
+
+    Port of the Plotly helper's mid-edge tangent + lateral offset, without the
+    ``(z,y,x) -> (x,y,z)`` swap that Plotly needs.
+    """
+    points = np.asarray(points, dtype=float)
+    if points.ndim != 2 or points.shape[0] < 2 or points.shape[1] < 3:
+        return None
+    points = points[:, :3].copy()
+    if direction_sign < 0:
+        points = points[::-1, :]
+
+    mid_idx = int(points.shape[0] // 2)
+    lo = max(0, mid_idx - 1)
+    hi = min(points.shape[0] - 1, mid_idx + 1)
+    tangent = points[hi] - points[lo]
+    tangent_norm = float(np.linalg.norm(tangent))
+    if tangent_norm <= 1e-12:
+        tangent = points[-1] - points[0]
+        tangent_norm = float(np.linalg.norm(tangent))
+    if tangent_norm <= 1e-12:
+        return None
+    tangent_unit = tangent / tangent_norm
+
+    # Offset arrow laterally so it is visible next to the edge.
+    ref = np.array([0.0, 0.0, 1.0], dtype=float)
+    lateral = np.cross(tangent_unit, ref)
+    lat_norm = float(np.linalg.norm(lateral))
+    if lat_norm <= 1e-12:
+        ref = np.array([0.0, 1.0, 0.0], dtype=float)
+        lateral = np.cross(tangent_unit, ref)
+        lat_norm = float(np.linalg.norm(lateral))
+    if lat_norm <= 1e-12:
+        return None
+    lateral_unit = lateral / lat_norm
+
+    anchor = points[mid_idx] + (lateral_offset * lateral_unit)
+    vector = tangent_unit * float(arrow_length)
+    return anchor, vector
+
+
+def _iter_edges(graph: Any):
+    if getattr(graph, "is_multigraph", lambda: False)():
+        return graph.edges(keys=True, data=True)
+    return ((u, v, 0, data) for u, v, data in graph.edges(data=True))
+
+
+def edge_flow_direction_columns(
+    graph: Any, *, sign_override: Optional[int] = None
+) -> dict[str, np.ndarray]:
+    """Per drawable edge: signed unit ``(z, y, x)`` flow direction components.
+
+    Uses the same edge order and skip rules as
+    :func:`haemolynx.gui.results.edge_polylines` so the columns align with
+    vessel segment features after ``segment_owner`` indexing.
+
+    *sign_override* (+1 or -1) takes every edge as flowing ``u -> v`` (or
+    ``v -> u``) whatever its own flow says: a sweep computes both once and
+    picks per edge from each grid point's own flow sign.
+    """
+    dir_z: list[float] = []
+    dir_y: list[float] = []
+    dir_x: list[float] = []
+    headings: list[float] = []
+    if getattr(graph, "is_multigraph", lambda: False)():
+        edge_iter = graph.edges(keys=True, data=True)
+    else:
+        edge_iter = ((u, v, 0, data) for u, v, data in graph.edges(data=True))
+
+    for u, v, _key, data in edge_iter:
+        try:
+            points = edge_polyline(graph, u, v, data)
+        except ValueError:
+            continue
+        direction_sign = (
+            int(sign_override) if sign_override is not None else edge_flow_direction_sign(data)
+        )
+        if direction_sign is None:
+            dir_z.append(float("nan"))
+            dir_y.append(float("nan"))
+            dir_x.append(float("nan"))
+            headings.append(float("nan"))
+            continue
+        points = np.asarray(points, dtype=float)
+        if direction_sign < 0:
+            points = points[::-1, :]
+        if points.shape[0] < 2:
+            dir_z.append(float("nan"))
+            dir_y.append(float("nan"))
+            dir_x.append(float("nan"))
+            headings.append(float("nan"))
+            continue
+        mid_idx = int(points.shape[0] // 2)
+        lo = max(0, mid_idx - 1)
+        hi = min(points.shape[0] - 1, mid_idx + 1)
+        tangent = points[hi] - points[lo]
+        dz, dy, dx = flow_direction_components(tangent)
+        dir_z.append(dz)
+        dir_y.append(dy)
+        dir_x.append(dx)
+        headings.append(flow_heading_deg(tangent))
+
+    n = len(dir_z)
+    return {
+        "flow_dir_z": np.asarray(dir_z, dtype=float),
+        "flow_dir_y": np.asarray(dir_y, dtype=float),
+        "flow_dir_x": np.asarray(dir_x, dtype=float),
+        "flow_heading_deg": np.asarray(headings, dtype=float),
+        # Sentinel 1-D column so colour-by can name the 3D RGB map. Napari
+        # Vectors features are a pandas table and cannot store Nx3 RGB.
+        "flow_dir_rgb": np.zeros(n, dtype=float),
+    }
+
+
+def flow_arrow_floor(graph: Any) -> float:
+    """The flow (m^3/s) a vessel must exceed to get an arrow: the statistics'
+    own floor for carrying flow
+    (:func:`haemolynx.statistics.flux_heterogeneity.carrying_floor`, 1e-9 of
+    the network's largest), below which a flow's sign is the solve's rounding.
+    On Stack A (2026-10-21) it hides none: the least flow, 1.7e-20 m^3/s at an
+    open end, is 1.6e-8 of the largest."""
+    from haemolynx.statistics.flux_heterogeneity import carrying_floor
+
+    return carrying_floor(graph)
+
+
+def flow_direction_vectors(
+    graph: Any,
+    *,
+    signed_flow_attr: str = "flow_signed",
+    direction_attr: str = "edge_direction",
+    positive_flow_means_u_to_v: bool = True,
+    arrow_length_scale: float = 0.18,
+    arrow_offset_scale: float = 0.08,
+    flow_abs_attr: str = "flow_abs",
+    arrow_diameter_scale: Optional[float] = None,
+    diameter_attr: str = "diameter_um",
+) -> tuple[np.ndarray, dict[str, np.ndarray]]:
+    """One mid-edge arrow per directed edge carrying flow above
+    :func:`flow_arrow_floor`, plus features for colouring.
+
+    Every arrow is ``arrow_length_scale`` of the median vessel's length.
+    Given *arrow_diameter_scale*, an arrow is lengthened to that many of its
+    own vessel's diameters (*diameter_attr*), as far as half the vessel's
+    length: drawn over a tube as wide as the vessel, a capillary-sized arrow
+    on an artery was a speck.
+
+    Returns
+    -------
+    vectors
+        Shape ``(N, 2, 3)``: origin and displacement in physical ``(z, y, x)``.
+    features
+        Parallel columns including ``flow_abs`` (magnitude used for the heatmap),
+        ``flow_signed``, ``flow_dir_z`` / ``flow_dir_y`` / ``flow_dir_x``
+        (signed normalised direction components), ``flow_heading_deg``
+        (2D azimuth in ``[0, 360)``), and ``flow_dir_rgb`` (sentinel for the
+        3D RGB direction map). Empty dict when there are no arrows.
+    """
+    directed: list[tuple[np.ndarray, int, float, float]] = []
+    diameters: list[float] = []
+    floor = flow_arrow_floor(graph)
+    for u, v, _key, data in _iter_edges(graph):
+        try:
+            points = edge_polyline(graph, u, v, data)
+        except ValueError:
+            continue
+        direction_sign = edge_flow_direction_sign(
+            data,
+            signed_flow_attr=signed_flow_attr,
+            direction_attr=direction_attr,
+            positive_flow_means_u_to_v=positive_flow_means_u_to_v,
+            min_abs_flow=floor,
+        )
+        if direction_sign is None:
+            continue
+        signed = data.get(signed_flow_attr)
+        try:
+            signed_f = float(signed) if signed is not None else float("nan")
+        except (TypeError, ValueError):
+            signed_f = float("nan")
+        abs_val = data.get(flow_abs_attr)
+        try:
+            if abs_val is not None:
+                flow_abs = float(abs_val)
+            elif np.isfinite(signed_f):
+                flow_abs = abs(signed_f)
+            else:
+                flow_abs = float("nan")
+        except (TypeError, ValueError):
+            flow_abs = abs(signed_f) if np.isfinite(signed_f) else float("nan")
+        directed.append((np.asarray(points, dtype=float), int(direction_sign),
+                         signed_f, flow_abs))
+        try:
+            diameters.append(float(data.get(diameter_attr)))
+        except (TypeError, ValueError):
+            diameters.append(float("nan"))
+
+    if not directed:
+        return np.empty((0, 2, 3), dtype=float), {}
+
+    lengths = [_polyline_length(pts) for pts, _s, _sf, _fa in directed]
+    valid = [float(v) for v in lengths if v > 0]
+    base_len = float(np.median(valid)) if valid else 1.0
+    arrow_length = max(0.25, base_len * float(arrow_length_scale))
+    lateral_offset = max(0.10, base_len * float(arrow_offset_scale))
+    arrow_lengths = [arrow_length] * len(directed)
+    if arrow_diameter_scale is not None:
+        for index, (diameter, length) in enumerate(zip(diameters, lengths)):
+            if np.isfinite(diameter) and diameter > 0:
+                own = min(float(arrow_diameter_scale) * diameter, 0.5 * float(length))
+                arrow_lengths[index] = max(arrow_length, own)
+
+    origins: list[np.ndarray] = []
+    directions: list[np.ndarray] = []
+    signed_col: list[float] = []
+    abs_col: list[float] = []
+    log10_col: list[float] = []
+    dir_z_col: list[float] = []
+    dir_y_col: list[float] = []
+    dir_x_col: list[float] = []
+    heading_col: list[float] = []
+    for (points, direction_sign, signed_f, flow_abs), length in zip(directed, arrow_lengths):
+        result = edge_flow_arrow_zyx(
+            points,
+            direction_sign=direction_sign,
+            arrow_length=length,
+            lateral_offset=lateral_offset,
+        )
+        if result is None:
+            continue
+        anchor, vector = result
+        origins.append(anchor)
+        directions.append(vector)
+        signed_col.append(signed_f)
+        abs_col.append(flow_abs)
+        if np.isfinite(flow_abs):
+            log10_col.append(flow_abs_log10_value(flow_abs))
+        else:
+            log10_col.append(float("nan"))
+        dz, dy, dx = flow_direction_components(vector)
+        dir_z_col.append(dz)
+        dir_y_col.append(dy)
+        dir_x_col.append(dx)
+        heading_col.append(flow_heading_deg(vector))
+
+    if not origins:
+        return np.empty((0, 2, 3), dtype=float), {}
+
+    vectors = np.stack(
+        [np.stack(origins, axis=0), np.stack(directions, axis=0)], axis=1
+    )
+    features = {
+        "flow_abs": np.asarray(abs_col, dtype=float),
+        "flow_abs_log10": np.asarray(log10_col, dtype=float),
+        "flow_signed": np.asarray(signed_col, dtype=float),
+        "flow_dir_z": np.asarray(dir_z_col, dtype=float),
+        "flow_dir_y": np.asarray(dir_y_col, dtype=float),
+        "flow_dir_x": np.asarray(dir_x_col, dtype=float),
+        "flow_heading_deg": np.asarray(heading_col, dtype=float),
+        "flow_dir_rgb": np.zeros(len(dir_z_col), dtype=float),
+    }
+    return vectors, features
+
+
+@dataclass(frozen=True, eq=False)
+class SweepFlowArrows:
+    """Each vessel's mid-edge arrow both ways round, for a sweep's arrows to
+    follow its slider: :meth:`at` picks, at one grid point, each vessel's by
+    the sign of its flow and drops those at or below the grid point's
+    :func:`flow_arrow_floor`, as :func:`flow_direction_vectors` draws a solved
+    network. Built once (:func:`sweep_flow_arrows`); a grid point costs a
+    selection, not a walk over the network."""
+
+    #: Each arrow's vessel, by its position in ``edges(keys=True)`` order.
+    edge_index: np.ndarray
+    #: ``(M, 2, 3)`` arrows (origin, displacement) for flow ``u -> v``, and
+    #: for ``v -> u``.
+    forward: np.ndarray
+    backward: np.ndarray
+    #: ``(M, 3)`` signed unit ``(z, y, x)`` directions and ``(M,)`` headings
+    #: of those arrows (:func:`flow_direction_components`, :func:`flow_heading_deg`).
+    forward_direction: np.ndarray
+    backward_direction: np.ndarray
+    forward_heading: np.ndarray
+    backward_heading: np.ndarray
+
+    def at(self, flow_signed: Any) -> tuple[np.ndarray, dict[str, np.ndarray]]:
+        """The arrows and their features at one grid point, *flow_signed*
+        being its signed flow on every edge in ``edges(keys=True)`` order."""
+        flows = np.asarray(flow_signed, dtype=float)
+        if flows.size == 0 or len(self.edge_index) == 0:
+            return np.empty((0, 2, 3), dtype=float), {}
+        magnitudes = np.abs(flows)
+        finite = magnitudes[np.isfinite(magnitudes)]
+        from haemolynx.statistics.flux_heterogeneity import CARRYING_FLOOR_FRACTION
+
+        floor = CARRYING_FLOOR_FRACTION * float(finite.max()) if finite.size else 0.0
+        signed = flows[self.edge_index]
+        keep = np.isfinite(signed) & (np.abs(signed) > floor)
+        ahead = (signed > 0)[keep]
+        vectors = np.where(ahead[:, None, None], self.forward[keep], self.backward[keep])
+        directions = np.where(ahead[:, None], self.forward_direction[keep], self.backward_direction[keep])
+        flow_abs = np.abs(signed[keep])
+        features = {
+            "flow_abs": flow_abs,
+            "flow_abs_log10": flow_abs_log10_values(flow_abs),
+            "flow_signed": signed[keep],
+            "flow_dir_z": directions[:, 0],
+            "flow_dir_y": directions[:, 1],
+            "flow_dir_x": directions[:, 2],
+            "flow_heading_deg": np.where(ahead, self.forward_heading[keep], self.backward_heading[keep]),
+            "flow_dir_rgb": np.zeros(int(keep.sum()), dtype=float),
+        }
+        return vectors, features
+
+
+def sweep_flow_arrows(
+    graph: Any,
+    *,
+    arrow_length_scale: float = 0.18,
+    arrow_offset_scale: float = 0.08,
+) -> SweepFlowArrows:
+    """Both arrows of every vessel of *graph* a sweep can give flow: every
+    edge with a centreline that the baseline's solve did not leave unsolved
+    (``FLOW_SOLVED`` False), sized as :func:`flow_direction_vectors` sizes
+    them (the median vessel's length) so the slider moves none of them."""
+    candidates: list[tuple[int, np.ndarray]] = []
+    for index, (u, v, _key, data) in enumerate(_iter_edges(graph)):
+        if data.get(FLOW_SOLVED) is False:
+            continue
+        try:
+            points = np.asarray(edge_polyline(graph, u, v, data), dtype=float)
+        except ValueError:
+            continue
+        candidates.append((index, points))
+    lengths = [_polyline_length(points) for _index, points in candidates]
+    valid = [length for length in lengths if length > 0]
+    base_len = float(np.median(valid)) if valid else 1.0
+    arrow_length = max(0.25, base_len * float(arrow_length_scale))
+    lateral_offset = max(0.10, base_len * float(arrow_offset_scale))
+
+    kept: list[int] = []
+    arrows: dict[int, list] = {1: [], -1: []}
+    for index, points in candidates:
+        both = [
+            edge_flow_arrow_zyx(
+                points, direction_sign=sign, arrow_length=arrow_length, lateral_offset=lateral_offset
+            )
+            for sign in (1, -1)
+        ]
+        if any(arrow is None for arrow in both):
+            continue
+        kept.append(index)
+        for sign, (anchor, vector) in zip((1, -1), both):
+            arrows[sign].append((anchor, vector))
+
+    def stacked(sign: int):
+        if not arrows[sign]:
+            return (np.empty((0, 2, 3)), np.empty((0, 3)), np.empty(0))
+        vectors = np.stack([np.stack([a, b]) for a, b in arrows[sign]]).astype(float)
+        directions = np.asarray([flow_direction_components(b) for _a, b in arrows[sign]], dtype=float)
+        headings = np.asarray([flow_heading_deg(b) for _a, b in arrows[sign]], dtype=float)
+        return vectors, directions, headings
+
+    forward, forward_direction, forward_heading = stacked(1)
+    backward, backward_direction, backward_heading = stacked(-1)
+    return SweepFlowArrows(
+        edge_index=np.asarray(kept, dtype=int),
+        forward=forward,
+        backward=backward,
+        forward_direction=forward_direction,
+        backward_direction=backward_direction,
+        forward_heading=forward_heading,
+        backward_heading=backward_heading,
+    )

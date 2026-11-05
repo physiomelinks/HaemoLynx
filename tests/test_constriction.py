@@ -13,7 +13,6 @@ import networkx as nx
 import numpy as np
 import pytest
 
-from haemolynx.haemodynamics import constriction
 from haemolynx.haemodynamics.constriction import (
     apply_constriction_sites,
     diameter_at_position,
@@ -25,9 +24,11 @@ from haemolynx.haemodynamics.constriction_strategy import (
     uniform_constriction_factors,
 )
 from haemolynx.haemodynamics.pericyte_mask import MaskConstrictionSites
+from haemolynx.haemodynamics.poiseuille import PoiseuilleModel
 from haemolynx.haemodynamics.probability import (
     set_poiseuille_resistances_with_probabilistic_periodic_constrictions,
 )
+from haemolynx.haemodynamics.viscosity import viscosity_for
 
 
 class _FixedSites:
@@ -93,6 +94,36 @@ def test_measured_edge_diameter_supersedes_the_branch_order_table():
     assert used_fwhm is True
 
 
+def test_without_fwhm_an_edges_own_diameter_still_supersedes_the_table():
+    """With FWHM diameters off the baseline still solves each vessel at its
+    own stamped diameter (EDT fallback, hand override); a constriction must
+    start there too, not at the table's -- and not look at a FWHM fit."""
+    d1, d2, _ = resolve_edge_diameters(
+        edge_data={"diameter_um": 3.0, "fwhm_diameter_um": 9.0},
+        branch_order="B01",
+        diameter_by_branch_order={"B01": 5.0},
+        constriction_factor_by_branch_order={"B01": 0.5},
+        prefer_edge_fwhm_baseline=False,
+    )
+    assert (d1, d2) == (3.0, 1.5)
+    d1, d2, _ = resolve_edge_diameters(
+        edge_data={"diameter_um": 3.0},
+        branch_order="B01",
+        diameter_by_branch_order={"B01": {"d1": 6.0, "d2": 4.5}},
+        constriction_factor_by_branch_order=None,
+        prefer_edge_fwhm_baseline=False,
+    )
+    assert (d1, d2) == (3.0, 2.25)  # the pair's ratio, on the vessel's own diameter
+    d1, d2, _ = resolve_edge_diameters(
+        edge_data={"fwhm_diameter_um": 9.0},
+        branch_order="B01",
+        diameter_by_branch_order={"B01": 5.0},
+        constriction_factor_by_branch_order={"B01": 0.5},
+        prefer_edge_fwhm_baseline=False,
+    )
+    assert (d1, d2) == (5.0, 2.5)  # no stamped diameter, FWHM off: the table
+
+
 def test_unmeasured_edge_falls_back_to_the_table_diameter():
     d1, d2, used_fwhm = resolve_edge_diameters(
         edge_data={"fwhm_diameter_um": 0.0},
@@ -115,14 +146,6 @@ def test_unmeasured_edge_falls_back_to_the_table_diameter():
                 "prefer_edge_fwhm_baseline": False,
             },
             "No diameter mapping",
-        ),
-        (
-            {
-                "diameter_by_branch_order": {"B01": 5.0},
-                "constriction_factor_by_branch_order": None,
-                "prefer_edge_fwhm_baseline": False,
-            },
-            "No constriction factor",
         ),
         (
             {
@@ -155,6 +178,32 @@ def test_unusable_diameter_settings_are_rejected(kwargs, message):
         resolve_edge_diameters(edge_data={}, branch_order="B01", **kwargs)
 
 
+def test_missing_map_entry_uses_default_constriction_factor():
+    """Sparse override map: absent orders keep the base factor (not an error)."""
+    d1, d2, _ = resolve_edge_diameters(
+        edge_data={},
+        branch_order="B02",
+        diameter_by_branch_order={"B02": 5.0},
+        constriction_factor_by_branch_order={"B01": 1.0},
+        prefer_edge_fwhm_baseline=False,
+        default_constriction_factor=0.8,
+    )
+    assert (d1, d2) == (5.0, 4.0)
+
+
+def test_map_entry_replaces_default_constriction_factor():
+    """Listed orders use the map value; it is not multiplied by the base."""
+    d1, d2, _ = resolve_edge_diameters(
+        edge_data={},
+        branch_order="B01",
+        diameter_by_branch_order={"B01": 5.0},
+        constriction_factor_by_branch_order={"B01": 1.0},
+        prefer_edge_fwhm_baseline=False,
+        default_constriction_factor=0.8,
+    )
+    assert (d1, d2) == (5.0, 5.0)
+
+
 # --- the diameter profile ---------------------------------------------------
 
 
@@ -185,13 +234,63 @@ def test_overlapping_sites_take_the_narrowest_diameter():
     assert overlapping == pytest.approx(3.0)
 
 
+def test_a_dilation_factor_widens_locally_at_the_site():
+    """factor > 1 must widen: a plain min(d1, d2) would leave d1 forever."""
+    assert diameter_at_position(50.0, 5.0, 6.0, [50.0], 40.0) == pytest.approx(6.0)
+    assert diameter_at_position(71.0, 5.0, 6.0, [50.0], 40.0) == pytest.approx(5.0)
+
+
+def test_factor_above_one_lowers_integrated_resistance():
+    narrow = integrated_resistance(
+        length=100.0,
+        d1=5.0,
+        d2=4.0,
+        constriction_centers=[50.0],
+        constriction_length=40.0,
+        num_points=501,
+    )
+    baseline = integrated_resistance(
+        length=100.0,
+        d1=5.0,
+        d2=5.0,
+        constriction_centers=[50.0],
+        constriction_length=40.0,
+        num_points=501,
+    )
+    wide = integrated_resistance(
+        length=100.0,
+        d1=5.0,
+        d2=6.0,
+        constriction_centers=[50.0],
+        constriction_length=40.0,
+        num_points=501,
+    )
+    assert narrow > baseline > wide
+
+
+def test_overlapping_dilation_sites_take_the_widest_diameter():
+    # Same geometry as the narrowing overlap test: 63 um is on the ramp of
+    # the site at 50 and on the plateau of the one at 70.
+    single = diameter_at_position(63.0, 5.0, 7.0, [50.0], 40.0)
+    overlapping = diameter_at_position(63.0, 5.0, 7.0, [50.0, 70.0], 40.0)
+    assert single == pytest.approx(6.4)
+    assert overlapping == pytest.approx(7.0)
+
+
 # --- the resistance integral ------------------------------------------------
 
 
-def test_unconstricted_resistance_matches_the_closed_form():
+def test_unconstricted_resistance_matches_the_uniform_poiseuille_segment():
+    """The integral is the same physics as `resistance_of_uniform_segment`.
+
+    It used to integrate a dimensionless ``1 / d^1.647``, so a constricted edge
+    and a uniform one were in different units and orders of magnitude apart.
+    An edge with no sites on it must now be exactly the uniform segment.
+    """
     length, diameter = 100.0, 5.0
-    viscosity = 1.0 / diameter ** constriction.VISCOSITY_DIAMETER_EXPONENT
-    expected = (128.0 * viscosity * length) / (np.pi * diameter ** 4)
+    expected = PoiseuilleModel(
+        constriction_length=40.0, constriction_spacing=100.0
+    ).resistance_of_uniform_segment(length, diameter)
     computed = integrated_resistance(
         length=length,
         d1=diameter,
@@ -201,6 +300,77 @@ def test_unconstricted_resistance_matches_the_closed_form():
         num_points=1001,
     )
     assert computed == pytest.approx(expected, rel=1e-9)
+
+
+def test_unconstricted_resistance_matches_the_closed_form():
+    length, diameter = 100.0, 5.0
+    viscosity = viscosity_for(diameter, law="pries", diameter_basis="plasma_column")
+    length_m = length / 1e6
+    diameter_m = diameter / 1e6
+    expected = (128.0 * viscosity * length_m) / (np.pi * diameter_m ** 4)
+    computed = integrated_resistance(
+        length=length,
+        d1=diameter,
+        d2=diameter,
+        constriction_centers=[],
+        constriction_length=40.0,
+        num_points=1001,
+    )
+    assert computed == pytest.approx(expected, rel=1e-9)
+
+
+def test_a_capillary_resistance_is_in_the_physiological_si_band():
+    """Pa.s/m^3, not model units.
+
+    `tests/test_poiseuille_physical_units.py` pins a 5 x 500 um capillary to
+    the literature 1e16-1e17 band under the capillary power law; Pries, the
+    default here, is about twice that, so this is the order-of-magnitude check
+    and `test_unconstricted_resistance_matches_the_uniform_poiseuille_segment`
+    is the exact one. Before this module read the viscosity settings the same
+    integral returned ~1e-3, which is not a resistance in any unit system.
+    """
+    resistance = integrated_resistance(
+        length=500.0,
+        d1=5.0,
+        d2=5.0,
+        constriction_centers=[],
+        constriction_length=40.0,
+        num_points=1001,
+    )
+    assert 1e16 <= resistance <= 1e18, f"{resistance:.3e} Pa.s/m^3 is not physiological"
+
+
+def test_the_configured_viscosity_law_changes_the_integrated_resistance():
+    kwargs = dict(
+        length=200.0,
+        d1=5.0,
+        d2=4.0,
+        constriction_centers=[100.0],
+        constriction_length=40.0,
+        num_points=501,
+    )
+    pries = integrated_resistance(viscosity_law="pries", **kwargs)
+    plasma = integrated_resistance(viscosity_law="constant", **kwargs)
+    # Plasma is thinner than blood at capillary diameters, so it must be the
+    # lower resistance -- and the two must not be the same number, which is
+    # what a hard-coded viscosity here would have produced.
+    assert plasma < pries
+    assert pries / plasma > 1.5
+
+
+def test_the_diameter_basis_changes_the_integrated_resistance():
+    kwargs = dict(
+        length=200.0,
+        d1=5.0,
+        d2=4.0,
+        constriction_centers=[100.0],
+        constriction_length=40.0,
+        num_points=501,
+        viscosity_law="pries",
+    )
+    plasma_column = integrated_resistance(diameter_basis="plasma_column", **kwargs)
+    anatomical = integrated_resistance(diameter_basis="anatomical", **kwargs)
+    assert anatomical > plasma_column
 
 
 def test_constricting_an_edge_raises_its_resistance():
@@ -304,6 +474,93 @@ def test_an_edge_without_the_required_attributes_is_rejected(attribute, message)
         )
 
 
+def _graph_with_a_bridge() -> nx.MultiGraph:
+    """A B01 vessel and, past it, a thick-vessel bridge: no branch order
+    (bridges have none since 43dcf45), its negligible resistance already set."""
+    from haemolynx.graph.thick_vessel_junctions import IS_ZERO_RESISTANCE
+
+    graph = _one_edge_graph()
+    graph.add_node(2, pos=np.asarray([0.0, 0.0, 110.0]))
+    graph.add_edge(1, 2, key=0, length=10.0, resistance=1.0, conductance=1.0, **{IS_ZERO_RESISTANCE: True})
+    return graph
+
+
+def test_a_thick_vessel_bridge_is_left_to_the_overrides_by_both_constriction_paths():
+    """Stack A's pericyte perturbation stopped at its first bridge (2026-10-12):
+    both paths demanded a branch order of every edge. A bridge is no vessel
+    -- apply_final_resistance_overrides sets it -- so both skip it, and still
+    refuse a vessel without one."""
+    graph = _graph_with_a_bridge()
+    _graph, results = apply_constriction_sites(
+        graph,
+        _FixedSites([]),
+        diameter_by_branch_order={"B01": 5.0},
+        constriction_factor_by_branch_order={"B01": 0.8},
+        prefer_edge_fwhm_baseline=False,
+        constriction_length=40.0,
+        num_integration_points=101,
+    )
+    assert results["edges_set"] == 1
+    assert graph.edges[1, 2, 0]["resistance"] == 1.0
+    assert "pericyte_count_assigned" not in graph.edges[1, 2, 0]
+
+    graph = _graph_with_a_bridge()
+    _graph, results = PoiseuilleModel(40.0, 100.0).set_poiseuille_resistances_with_constrictions(
+        graph, {"B01": {"d1": 5.0, "d2": 4.0}}
+    )
+    assert results["edges_set"] == 1
+    assert graph.edges[1, 2, 0]["resistance"] == 1.0
+
+    graph = _graph_with_a_bridge()
+    del graph.edges[0, 1, 0]["branch_order"]
+    with pytest.raises(ValueError, match="missing required 'branch_order'"):
+        PoiseuilleModel(40.0, 100.0).set_poiseuille_resistances_with_constrictions(graph, {"B01": {"d1": 5.0, "d2": 4.0}})
+
+
+def _graph_with_a_piece(state: str) -> nx.MultiGraph:
+    """A B01 vessel and, apart from it, a vessel with no branch order whose
+    solve left it in *state* (``graph.FLOW_STATE``)."""
+    from haemolynx.graph import FLOW_SOLVED, FLOW_STATE
+
+    graph = _one_edge_graph()
+    for node, z in ((5, 200.0), (6, 220.0)):
+        graph.add_node(node, pos=np.asarray([0.0, 0.0, z]))
+    graph.add_edge(5, 6, key=0, length=20.0, resistance=3.0, conductance=1.0 / 3.0,
+                   **{FLOW_SOLVED: state == "solved", FLOW_STATE: state})
+    return graph
+
+
+def _constrict_both_ways(graph):
+    apply_constriction_sites(
+        graph,
+        _FixedSites([]),
+        diameter_by_branch_order={"B01": 5.0},
+        constriction_factor_by_branch_order={"B01": 0.8},
+        prefer_edge_fwhm_baseline=False,
+        constriction_length=40.0,
+        num_integration_points=101,
+    )
+    return PoiseuilleModel(40.0, 100.0).set_poiseuille_resistances_with_constrictions(
+        graph, {"B01": {"d1": 5.0, "d2": 4.0}}
+    )[1]
+
+
+def test_a_vessel_no_inlet_and_outlet_reach_is_skipped_by_both_constriction_paths():
+    """Under boundary_handling=leave_unsolved a piece no inlet and outlet
+    reach keeps no branch order (they are assigned from the inlets), and
+    Stack A's pericyte perturbation stopped at the first of 954 (2026-10-12).
+    It carries no flow whatever its resistance, so both paths pass it by, as
+    set_poiseuille_resistances does; a solved vessel without one is still
+    refused."""
+    graph = _graph_with_a_piece("no_boundary")
+    results = _constrict_both_ways(graph)
+    assert results["edges_set"] == 1
+    assert graph.edges[5, 6, 0]["resistance"] == 3.0
+
+    with pytest.raises(ValueError, match="missing required 'branch_order'"):
+        _constrict_both_ways(_graph_with_a_piece("solved"))
+
+
 # --- the strategies agree ---------------------------------------------------
 
 
@@ -356,6 +613,31 @@ def test_uniform_constriction_factors_covers_every_branch_order():
     }
 
 
+def test_resolve_constriction_factor_table_applies_base_then_map_overrides():
+    from haemolynx.haemodynamics.constriction_strategy import (
+        resolve_constriction_factor_table,
+    )
+
+    diameters = {"Art1": 20.0, "B01": 6.0, "B02": 5.0, "Ven1": 20.0}
+    empty = resolve_constriction_factor_table(diameters, {}, default_factor=0.8)
+    none = resolve_constriction_factor_table(diameters, None, default_factor=0.8)
+    assert empty == none == {
+        "Art1": 0.8,
+        "B01": 0.8,
+        "B02": 0.8,
+        "Ven1": 0.8,
+    }
+    overridden = resolve_constriction_factor_table(
+        diameters, {"B01": 1.0}, default_factor=0.8
+    )
+    assert overridden == {
+        "Art1": 0.8,
+        "B01": 1.0,
+        "B02": 0.8,
+        "Ven1": 0.8,
+    }
+
+
 @pytest.mark.parametrize(
     "flags, expected_strategy",
     [
@@ -382,6 +664,206 @@ def test_the_settings_select_the_strategy(flags, expected_strategy):
     )
     assert strategy == expected_strategy
     assert results["edges_set"] == 1
+
+
+def _network_of_every_diameter_source() -> nx.MultiGraph:
+    """Four vessels as assign_diameters leaves them with FWHM + EDT on: one
+    measured, one EDT fallback, one hand override, and one whose order
+    (B59) is past a table built to max_branch_order -- all four with their
+    own ``diameter_um``, none needing the table."""
+    graph = nx.MultiGraph()
+    rows = [
+        ("B01", {"fwhm_diameter_um": 4.0, "diameter_um": 4.0, "diameter_source": "measured"}),
+        ("B02", {"edt_diameter_um": 7.5, "diameter_um": 7.5, "diameter_source": "edt_mask"}),
+        ("B03", {"diameter_um": 9.0, "diameter_source": "override"}),
+        ("B59", {"edt_diameter_um": 3.0, "diameter_um": 3.0, "diameter_source": "edt_mask"}),
+    ]
+    for index, (order, attrs) in enumerate(rows):
+        graph.add_edge(index, index + 10, length=120.0, branch_order=order, **attrs)
+    return graph
+
+
+@pytest.mark.parametrize("fwhm", [True, False], ids=["fwhm_on", "fwhm_off"])
+@pytest.mark.parametrize(
+    "flags",
+    [{}, {"use_probabilistic_constriction": True}],
+    ids=["periodic", "probabilistic"],
+)
+def test_an_unconstricted_perturbation_reproduces_the_baseline(flags, fwhm):
+    """A pericyte perturbation with factor 1 must re-solve the network it
+    started from. The constriction path read only ``fwhm_diameter_um`` with
+    FWHM diameters on, and only the table with them off, so every EDT-fallback
+    and hand-set vessel went back to the table diameter; and it demanded a
+    table entry for every order -- the user's run failed outright on B59
+    with max_branch_order 51."""
+    table = {"B01": 5.0, "B02": 5.0, "B03": 5.0}
+    baseline, _ = PoiseuilleModel(40.0, 100.0).set_poiseuille_resistances(
+        _network_of_every_diameter_source(), table, prefer_edge_fwhm_diameter=fwhm
+    )
+    perturbed, _strategy, results = set_resistances_for_constriction_strategy(
+        _network_of_every_diameter_source(),
+        diameter_by_branch_order=table,
+        constriction_factor_by_branch_order={},
+        use_pericyte_mask_constriction=False,
+        prefer_edge_fwhm_baseline=fwhm,
+        constriction_length=40.0,
+        constriction_spacing=100.0,
+        default_constriction_factor=1.0,
+        use_probabilistic_constriction=flags.get("use_probabilistic_constriction", False),
+        seed=1,
+    )
+
+    assert results["edges_set"] == 4
+    assert results["used_fwhm_baseline"] == 1
+    for u, v, key, data in baseline.edges(keys=True, data=True):
+        assert perturbed[u][v][key]["resistance"] == pytest.approx(data["resistance"], rel=1e-6)
+
+
+@pytest.mark.parametrize("fwhm", [True, False], ids=["fwhm_on", "fwhm_off"])
+def test_an_order_past_the_table_takes_the_default_constriction_factor(fwhm):
+    graph, _strategy, _results = set_resistances_for_constriction_strategy(
+        _network_of_every_diameter_source(),
+        diameter_by_branch_order={"B01": 5.0, "B02": 5.0, "B03": 5.0},
+        constriction_factor_by_branch_order={"B01": 0.9},
+        use_pericyte_mask_constriction=False,
+        use_probabilistic_constriction=False,
+        prefer_edge_fwhm_baseline=fwhm,
+        constriction_length=40.0,
+        constriction_spacing=100.0,
+        default_constriction_factor=0.5,
+    )
+    expected = PoiseuilleModel(constriction_length=40.0, constriction_spacing=100.0)
+    assert graph[3][13][0]["resistance"] == pytest.approx(
+        expected.calculate_integrated_resistance(120.0, 3.0, 1.5), rel=1e-9
+    )
+
+
+# --- every strategy reads the configured viscosity law ----------------------
+#
+# `viscosity_law` used to reach only the periodic `PoiseuilleModel` path, so a
+# run that selected `pries` and constricted from a mask silently got an
+# uncalibrated `1 / d^1.647` while `G.graph["viscosity_law"]` claimed otherwise.
+
+
+def _strategy_resistance(viscosity_law: str, **flags) -> float:
+    settings = {
+        "use_pericyte_mask_constriction": False,
+        "use_probabilistic_constriction": False,
+        "prefer_edge_fwhm_baseline": False,
+        **flags,
+    }
+    graph, _strategy, _results = set_resistances_for_constriction_strategy(
+        _one_edge_graph(length=200.0),
+        diameter_by_branch_order={"B01": 5.0},
+        constriction_factor_by_branch_order={"B01": 0.6},
+        constriction_length=40.0,
+        constriction_spacing=100.0,
+        viscosity_law=viscosity_law,
+        **settings,
+    )
+    return float(graph[0][1][0]["resistance"])
+
+
+@pytest.mark.parametrize(
+    "flags",
+    [
+        {},
+        {"use_probabilistic_constriction": True},
+    ],
+    ids=["periodic", "probabilistic"],
+)
+def test_every_constriction_strategy_responds_to_the_viscosity_law(flags):
+    pries = _strategy_resistance("pries", **flags)
+    plasma = _strategy_resistance("constant", **flags)
+    assert plasma < pries
+    assert pries / plasma > 1.5
+
+
+def test_the_mask_strategy_responds_to_the_viscosity_law(tmp_path):
+    import tifffile
+
+    mask = np.zeros((5, 5, 5), dtype=np.uint8)
+    # One blob a couple of microns off the straight z-axis edge below.
+    mask[2, 1, 1] = 1
+    mask_path = tmp_path / "pericytes.tif"
+    tifffile.imwrite(mask_path, mask)
+
+    def resistance(viscosity_law: str) -> float:
+        graph = nx.MultiGraph()
+        graph.add_node(0, pos=np.asarray([0.0, 0.0, 0.0]))
+        graph.add_node(1, pos=np.asarray([4.0, 0.0, 0.0]))
+        graph.add_edge(0, 1, key=0, length=4.0, branch_order="B01")
+        graph, strategy, results = set_resistances_for_constriction_strategy(
+            graph,
+            diameter_by_branch_order={"B01": 5.0},
+            constriction_factor_by_branch_order={"B01": 0.6},
+            use_pericyte_mask_constriction=True,
+            use_probabilistic_constriction=False,
+            prefer_edge_fwhm_baseline=False,
+            constriction_length=4.0,
+            constriction_spacing=100.0,
+            viscosity_law=viscosity_law,
+            pericyte_mask_path=mask_path,
+            max_assignment_distance_um=None,
+            min_pericyte_diameter_um=None,
+            max_pericyte_diameter_um=None,
+        )
+        assert strategy == "pericyte_mask"
+        assert results["edges_set"] == 1
+        assert graph[0][1][0]["pericyte_count_assigned"] == 1
+        return float(graph[0][1][0]["resistance"])
+
+    pries = resistance("pries")
+    plasma = resistance("constant")
+    assert plasma < pries
+    assert pries / plasma > 1.5
+
+
+def test_the_baseline_versus_constricted_comparison_reads_the_viscosity_law(tmp_path):
+    from haemolynx.haemodynamics.pericyte_comparison import (
+        compare_baseline_vs_pericyte_constriction,
+    )
+
+    def effective_resistance(viscosity_law: str) -> float:
+        graph = nx.MultiGraph()
+        for node in range(3):
+            graph.add_node(node, pos=np.asarray([0.0, 0.0, node * 200.0]))
+        for node in range(2):
+            graph.add_edge(node, node + 1, key=0, length=200.0, branch_order="B01")
+        summary = compare_baseline_vs_pericyte_constriction(
+            graph,
+            diameter_by_branch_order={"B01": 5.0},
+            constriction_factor_by_branch_order={"B01": 0.6},
+            resistance_node_pair=(0, 2),
+            output_csv_path=tmp_path / f"{viscosity_law}.csv",
+            viscosity_law=viscosity_law,
+        )
+        return float(summary["constricted_resistance"])
+
+    pries = effective_resistance("pries")
+    plasma = effective_resistance("constant")
+    assert plasma < pries
+    assert pries / plasma > 1.5
+
+
+def test_a_constricted_edge_is_comparable_with_a_uniform_poiseuille_edge():
+    """Same units, same order of magnitude -- and higher, because it narrows."""
+    length, diameter = 200.0, 5.0
+    graph, _results = set_poiseuille_resistances_with_probabilistic_periodic_constrictions(
+        _one_edge_graph(length=length),
+        diameter_by_branch_order={"B01": diameter},
+        constriction_factor_by_branch_order={"B01": 0.6},
+        constriction_length=40.0,
+        constriction_spacing=100.0,
+        constriction_probability=1.0,
+    )
+    constricted = float(graph[0][1][0]["resistance"])
+    uniform = PoiseuilleModel(
+        constriction_length=40.0, constriction_spacing=100.0
+    ).resistance_of_uniform_segment(length, diameter)
+
+    assert constricted > uniform
+    assert constricted / uniform < 10.0
 
 
 def test_the_mask_strategy_needs_a_mask():

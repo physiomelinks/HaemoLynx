@@ -56,10 +56,16 @@ def validate_skeleton_connection(
     Returns (is_valid, voxel_path or None).
 
     Positions are in physical units; *voxel_size* converts them to array
-    indices for skeleton look-ups.
+    indices for skeleton look-ups. A point of the straight line between them
+    is near the skeleton when a skeleton voxel lies within one voxel of the
+    finest axis of it on every axis, measured physically: on cube voxels its
+    26-neighbourhood, and along a z four times coarser its own slice -- a
+    whole voxel each way there was 2 um, against 0.5 um in-plane.
+    *max_gap* is accepted for its callers and not used.
     """
     try:
         vs = np.asarray(voxel_size, dtype=float)
+        reach = np.rint(float(vs.min()) / vs).astype(int)
         p1 = np.round(np.asarray(pos1, dtype=float) / vs).astype(int)
         p2 = np.round(np.asarray(pos2, dtype=float) / vs).astype(int)
         if not (
@@ -77,9 +83,9 @@ def validate_skeleton_connection(
         skeleton_nearby = 0
         for point in line_points:
             region = skeleton_data[
-                max(0, point[0] - 1) : min(skeleton_data.shape[0], point[0] + 2),
-                max(0, point[1] - 1) : min(skeleton_data.shape[1], point[1] + 2),
-                max(0, point[2] - 1) : min(skeleton_data.shape[2], point[2] + 2),
+                max(0, point[0] - reach[0]) : min(skeleton_data.shape[0], point[0] + reach[0] + 1),
+                max(0, point[1] - reach[1]) : min(skeleton_data.shape[1], point[1] + reach[1] + 1),
+                max(0, point[2] - reach[2]) : min(skeleton_data.shape[2], point[2] + reach[2] + 1),
             ]
             if np.any(region > 0):
                 skeleton_nearby += 1

@@ -1,12 +1,127 @@
 """Boundary-based node selection helpers."""
 from __future__ import annotations
 
+import logging
+import math
+import warnings
 from typing import Any, Iterable, Mapping
 
 import numpy as np
 import networkx as nx
 
 from ._helpers import sort_nodes
+
+logger = logging.getLogger(__name__)
+
+
+class BoundaryCoordinateWarning(UserWarning):
+    """A configured coordinate did not land on the network it points at.
+
+    The ``coordinates`` method snaps each point to the *nearest* terminal, so
+    it never fails -- a point on no vessel at all still selects something, and
+    the run goes on to solve a network whose inlets are somewhere else
+    entirely. This warning is the only sign, so it says which setting, which
+    point, and how far the snap went.
+    """
+
+
+#: How far a point may snap before it is reported, in voxels of the graph's own
+#: image. A pick read off a viewer is accurate to a few voxels, and pruning and
+#: cluster collapse move a terminal a few more; past ten the point is not
+#: describing the terminal it selects. Voxels rather than microns so the same
+#: number means the same thing on any stack.
+SNAP_WARNING_VOXELS = 10.0
+
+#: Microns to fall back on when the graph carries no voxel size.
+SNAP_WARNING_MICRONS = 10.0
+
+
+def _voxel_size_zyx(G: nx.Graph) -> np.ndarray | None:
+    """The per-array-axis voxel size ``build_graph_from_skeleton`` recorded."""
+    voxel_size = G.graph.get("voxel_size")
+    if voxel_size is None:
+        return None
+    arr = np.asarray(voxel_size, dtype=float)
+    if arr.shape != (3,) or not np.all(np.isfinite(arr)) or np.any(arr <= 0):
+        return None
+    return arr
+
+
+def _snap_warning_distance(voxel_size_zyx: np.ndarray | None) -> float:
+    if voxel_size_zyx is None:
+        return SNAP_WARNING_MICRONS
+    return SNAP_WARNING_VOXELS * float(np.max(voxel_size_zyx))
+
+
+def _nearest_distance(pos: Mapping[Any, np.ndarray], terminals: list[Any], point: np.ndarray) -> float:
+    return min(float(np.linalg.norm(pos[node_id] - point)) for node_id in terminals)
+
+
+def _terminal_extent(
+    pos: Mapping[Any, np.ndarray], terminals: list[Any]
+) -> tuple[np.ndarray, np.ndarray]:
+    """The corners of the box the terminal nodes occupy, in microns."""
+    stacked = np.asarray([pos[node_id] for node_id in terminals], dtype=float)
+    return stacked.min(axis=0), stacked.max(axis=0)
+
+
+def warn_about_coordinate_snaps(
+    G: nx.Graph,
+    points: list[np.ndarray],
+    distances: list[float],
+    *,
+    setting_name: str,
+    pos: Mapping[Any, np.ndarray],
+    terminals: list[Any],
+) -> None:
+    """Report coordinates that snapped to a terminal far from where they point.
+
+    Node ``pos`` is physical microns, and so is every coordinate setting. The
+    mistake this catches is a coordinate read off a viewer showing voxel
+    indices: on the anisotropic stacks this pipeline is built for it lands at a
+    fraction of the depth it should, on no vessel, and snaps to whatever
+    terminal happens to be nearest. It is detectable because the *right*
+    reading is still available -- multiplying the point by the voxel size lands
+    it on a terminal, and by a wide margin -- so that is what is checked, and
+    the fix is named in the message.
+
+    A point outside the network's own extent is left alone unless it carries
+    that signature: pointing at a corner and taking the terminal nearest it is
+    a deliberate way to use this method, and it is always "far" from anything.
+    """
+    voxel_size = _voxel_size_zyx(G)
+    threshold = _snap_warning_distance(voxel_size)
+    lo, hi = _terminal_extent(pos, terminals)
+    for index, (point, distance) in enumerate(zip(points, distances)):
+        if distance <= threshold:
+            continue
+        as_voxel_distance = None
+        if voxel_size is not None:
+            as_microns = point * voxel_size
+            candidate = _nearest_distance(pos, terminals, as_microns)
+            if candidate * 2.0 < distance:
+                as_voxel_distance = candidate
+        # A point outside the network's own extent is the deliberate idiom
+        # "take the terminal nearest this corner", so only the reading that
+        # says the units are wrong is worth reporting there.
+        inside = bool(np.all(point >= lo) and np.all(point <= hi))
+        if as_voxel_distance is None and not inside:
+            continue
+        message = (
+            f"{setting_name}[{index}] = {tuple(round(float(v), 1) for v in point)} "
+            f"is {distance:.1f} um from the nearest terminal node, which is the "
+            "one it selects. Coordinates are physical (z, y, x) microns, the "
+            "same units as node positions."
+        )
+        if as_voxel_distance is not None:
+            message += (
+                " Read as voxel indices it would be "
+                f"{tuple(round(float(v), 1) for v in point * voxel_size)} um, "
+                f"{as_voxel_distance:.1f} um from a terminal -- so this "
+                "point looks like a voxel index. Fix: multiply it by the "
+                f"voxel size {tuple(round(float(v), 4) for v in voxel_size)}."
+            )
+        warnings.warn(message, BoundaryCoordinateWarning, stacklevel=2)
 
 
 def select_boundary_terminal_nodes(
@@ -16,8 +131,14 @@ def select_boundary_terminal_nodes(
     edge_percent: float,
     end_percent: float,
     axis: int = 1,
+    disjoint: bool = True,
 ) -> tuple[list[Any], list[Any]]:
     """Select the degree-1 nodes in the first and last bands along one axis.
+
+    With *disjoint* (the default) a terminal in both bands is an inlet only;
+    without, each band is returned whole, for a caller that leaves out the
+    inlets actually chosen -- which need not be the first band's, when the
+    inlets are chosen another way.
 
     The bands are measured across the span the terminal nodes themselves cover
     along ``axis``, not across the image. Two reasons, both of which made the
@@ -55,12 +176,77 @@ def select_boundary_terminal_nodes(
 
     inlets = [node for node in terminal_nodes if axis_coord(node) <= top_limit]
     outlets = [node for node in terminal_nodes if axis_coord(node) >= bottom_start]
-    inlet_set = set(inlets)
-    outlets = [node for node in outlets if node not in inlet_set]
+    if disjoint:
+        inlet_set = set(inlets)
+        outlets = [node for node in outlets if node not in inlet_set]
 
     inlets.sort(key=lambda n: (axis_coord(n), n))
     outlets.sort(key=lambda n: (-axis_coord(n), n))
     return inlets, outlets
+
+
+#: How close to an image face a terminal must be, in microns, to be an open
+#: end -- a vessel the image cut through -- rather than a dead end inside the
+#: tissue. Loose, because a skeleton stops short of the face it runs into by
+#: up to the vessel's radius.
+DEFAULT_OPEN_END_MAX_DISTANCE_UM = 10.0
+
+
+def open_terminal_nodes(
+    G: nx.Graph, image_shape: tuple[int, ...], *, max_distance_um: float
+) -> list[Any] | None:
+    """The terminals within *max_distance_um* of an image face, in node order.
+
+    ``None`` when the graph does not record its voxel size (or the image is
+    not 3D), so the image's extent in microns is unknown and nothing can be
+    said either way.
+    """
+    voxel_size = _voxel_size_zyx(G)
+    if voxel_size is None or len(image_shape) != 3:
+        return None
+    from .dead_ends import face_distance
+
+    extent = (np.asarray(image_shape, dtype=float) - 1.0) * voxel_size
+    terminals, pos = _terminal_nodes_and_position_map(G)
+    return [
+        node
+        for node in terminals
+        if face_distance(pos[node], extent)[0] <= float(max_distance_um)
+    ]
+
+
+def _keep_open_ends(
+    selected: list[Any],
+    open_ends: list[Any] | None,
+    *,
+    method: str,
+    node_role: str,
+    max_distance_um: float,
+) -> list[Any]:
+    """*selected* less its interior dead ends -- or all of it, with a warning,
+    when none of it is an open end (the network may simply stop short of
+    every face, and no boundary at all would fail the run later instead)."""
+    if open_ends is None:
+        return selected
+    open_set = set(open_ends)
+    kept = [node for node in selected if node in open_set]
+    dropped = len(selected) - len(kept)
+    if kept:
+        if dropped:
+            logger.info(
+                "%s %s nodes: left out %d terminal(s) more than %.3g um from every "
+                "image face -- dead ends inside the tissue, not vessels the image cut.",
+                method, node_role, dropped, max_distance_um,
+            )
+        return kept
+    if selected:
+        logger.warning(
+            "%s %s nodes: none of the %d candidate terminal(s) lies within %.3g um of "
+            "an image face, so interior dead ends are being used as boundaries. Check "
+            "the network reaches the image edge, or raise boundary_open_end_max_distance_um.",
+            method, node_role, len(selected), max_distance_um,
+        )
+    return selected
 
 
 def _terminal_nodes_and_position_map(G: nx.Graph) -> tuple[list[Any], dict[Any, np.ndarray]]:
@@ -77,6 +263,68 @@ def _normalize_point(point: Iterable[float], *, name: str) -> np.ndarray:
     return arr
 
 
+def _resolve_node_id(G: nx.Graph, value: Any) -> Any | None:
+    """*value* as the graph node it names, or None when it names none.
+
+    Node IDs are ints, but a hand-edited config can quote one ("12") or a
+    numpy-typed list can carry ``12.0``; either still means node 12.
+    """
+    if isinstance(value, np.generic):
+        value = value.item()
+    if isinstance(value, bool):  # True == 1, but nobody means node 1 by it
+        return None
+    if isinstance(value, float):
+        # Before the lookup: 4.0 finds node 4 (they hash alike), and would
+        # then go on through the run as a float key.
+        if not value.is_integer():
+            return None
+        value = int(value)
+    try:
+        if value in G:
+            return value
+    except TypeError:  # unhashable, e.g. a list typed where an ID belongs
+        return None
+    if isinstance(value, str) and value.strip().lstrip("-").isdigit():
+        as_int = int(value.strip())
+        return as_int if as_int in G else None
+    return None
+
+
+def select_nodes_by_id(
+    G: nx.Graph,
+    node_ids: Iterable[Any],
+    *,
+    setting_name: str = "node_ids",
+) -> list[Any]:
+    """The graph nodes *node_ids* name, raising for any the graph lacks.
+
+    Any node, not only terminals: this is the method for saying exactly which
+    node is meant, and an arteriole/venule boundary -- where a vessel hands
+    over to the capillaries -- is usually a junction. A missing ID raises
+    rather than being skipped, because a node ID names a node in one build of
+    the graph: rebuilding with other settings renumbers them, and a run that
+    quietly dropped the stale ones would solve with different boundaries.
+    """
+    resolved: list[Any] = []
+    missing: list[Any] = []
+    for value in node_ids:
+        node = _resolve_node_id(G, value)
+        if node is None:
+            missing.append(value)
+        else:
+            resolved.append(node)
+    if missing:
+        raise ValueError(
+            f"{setting_name} lists node ID(s) {missing} that are not in the graph "
+            f"({G.number_of_nodes()} nodes). A node ID names a node in one build "
+            "of the graph: changing the Skeletonise or Graph settings, or cutting "
+            "the network at the large-vessel volumes, can renumber or remove "
+            f"nodes. Fix: pick the nodes again on the graph this run builds, or "
+            "choose another selection method."
+        )
+    return resolved
+
+
 def select_boundary_nodes_by_method(
     G: nx.Graph,
     image_shape: tuple[int, ...],
@@ -91,18 +339,59 @@ def select_boundary_nodes_by_method(
     exclude_nodes: Iterable[Any] | None = None,
     inlet_nodes_for_distance: Iterable[Any] | None = None,
     distance_from_inlet_node: float = 0.0,
+    coordinates_setting_name: str = "coordinates",
+    open_end_max_distance_um: float | None = DEFAULT_OPEN_END_MAX_DISTANCE_UM,
+    node_ids: Iterable[Any] | None = None,
+    node_ids_setting_name: str = "node_ids",
+    open_end_test: str = "distance",
 ) -> list[Any]:
-    """Select boundary nodes for one role using the specified method."""
+    """Select boundary nodes for one role using the specified method.
+
+    ``coordinates_setting_name`` only names the setting the points came from,
+    so a :class:`BoundaryCoordinateWarning` can say which one to edit;
+    ``node_ids_setting_name`` does the same for ``node_ids``.
+
+    ``node_ids`` takes exactly the nodes listed (see
+    :func:`select_nodes_by_id`), terminals or not.
+
+    The two methods that choose terminals by position alone,
+    ``edge_percent`` and ``degree_1_from_inlet``, keep only *open ends* --
+    terminals within *open_end_max_distance_um* of an image face (see
+    :func:`open_terminal_nodes`). A terminal deep inside the tissue is a
+    vessel's dead end (a segmentation gap, most often): holding it at a
+    boundary pressure pushes flow in or out where none enters the tissue.
+    ``None`` turns this off. *open_end_test* ``"leaves_image"`` uses the
+    dead-end definition instead (``graph.dead_ends.open_end_nodes``: the kind
+    graph building marked, else a tip touching a face). When a method's
+    candidates hold no open end at all, it keeps them all and warns. The
+    other methods take what the user placed or asked for, unfiltered.
+    """
+    if open_end_test not in ("distance", "leaves_image"):
+        raise ValueError(f"open_end_test must be 'distance' or 'leaves_image', got {open_end_test!r}")
+
+    def open_ends_of(G) -> list[Any] | None:
+        if open_end_test == "leaves_image":
+            from .dead_ends import open_end_nodes
+
+            return open_end_nodes(G)
+        return open_terminal_nodes(G, image_shape, max_distance_um=open_end_max_distance_um)
+
+    filters = open_end_max_distance_um is not None or open_end_test == "leaves_image"
     if node_role not in {"inlet", "outlet"}:
         raise ValueError("node_role must be 'inlet' or 'outlet'.")
-
-    terminals, pos = _terminal_nodes_and_position_map(G)
-    if not terminals:
-        return []
 
     method_norm = str(method).strip().lower()
     excluded = set(exclude_nodes or [])
     selected: list[Any]
+
+    if method_norm == "node_ids":
+        # Before the terminal check: these need not be terminals.
+        selected = select_nodes_by_id(G, node_ids or [], setting_name=node_ids_setting_name)
+        return [node for node in sort_nodes(selected) if node not in excluded]
+
+    terminals, pos = _terminal_nodes_and_position_map(G)
+    if not terminals:
+        return []
 
     if method_norm == "all_degree_1":
         selected = terminals
@@ -111,6 +400,8 @@ def select_boundary_nodes_by_method(
         if not points:
             return []
         selected = []
+        targets: list[np.ndarray] = []
+        distances: list[float] = []
         for idx, point in enumerate(points):
             target = _normalize_point(point, name=f"coordinates[{idx}]")
             nearest = min(
@@ -118,6 +409,16 @@ def select_boundary_nodes_by_method(
                 key=lambda node_id: float(np.linalg.norm(pos[node_id] - target)),
             )
             selected.append(nearest)
+            targets.append(target)
+            distances.append(float(np.linalg.norm(pos[nearest] - target)))
+        warn_about_coordinate_snaps(
+            G,
+            targets,
+            distances,
+            setting_name=coordinates_setting_name,
+            pos=pos,
+            terminals=terminals,
+        )
     elif method_norm == "volume":
         boxes = list(volume_boxes or [])
         if not boxes:
@@ -146,8 +447,19 @@ def select_boundary_nodes_by_method(
             edge_percent=edge_percent,
             end_percent=end_percent,
             axis=axis,
+            # The inlets this run chose are excluded below (exclude_nodes): the
+            # first band is not them when they were chosen another way.
+            disjoint=False,
         )
         selected = inlet_nodes if node_role == "inlet" else outlet_nodes
+        if filters:
+            selected = _keep_open_ends(
+                selected,
+                open_ends_of(G),
+                method=method_norm,
+                node_role=node_role,
+                max_distance_um=float(open_end_max_distance_um or 0.0),
+            )
     elif method_norm == "degree_1_from_inlet":
         if distance_from_inlet_node < 0:
             raise ValueError("distance_from_inlet_node must be non-negative.")
@@ -167,42 +479,284 @@ def select_boundary_nodes_by_method(
             )
             if nearest_start_dist > distance_from_inlet_node:
                 selected.append(node_id)
+        if filters:
+            selected = _keep_open_ends(
+                selected,
+                open_ends_of(G),
+                method=method_norm,
+                node_role=node_role,
+                max_distance_um=float(open_end_max_distance_um or 0.0),
+            )
     else:
         raise ValueError(
             "Unknown boundary-node method. Supported methods are: "
             "'coordinates', 'all_degree_1', 'volume', 'edge_percent', "
-            "'degree_1_from_inlet'."
+            "'degree_1_from_inlet', 'node_ids'."
         )
 
     return [node for node in sort_nodes(selected) if node not in excluded]
 
 
+#: The Input tab's ``network_source`` choice: analyse a segmented image,
+#: generate a synthetic network matched to a previous run's ``.haemorun``
+#: (``haemolynx.synthetic``), or draw one round that run's own network
+#: (``synthetic.surround``). The literals are repeated in
+#: ``pipeline/schema.py`` (which stays importable without numpy);
+#: ``tests/test_parsers_schema.py`` pins them equal.
+NETWORK_SOURCE_SETTING = "network_source"
+NETWORK_SOURCE_SEGMENTED_IMAGE = "segmented_image"
+NETWORK_SOURCE_SYNTHETIC = "synthetic"
+NETWORK_SOURCE_SYNTHETIC_SURROUND = "synthetic_surround"
+NETWORK_SOURCES: tuple[str, ...] = (
+    NETWORK_SOURCE_SEGMENTED_IMAGE,
+    NETWORK_SOURCE_SYNTHETIC,
+    NETWORK_SOURCE_SYNTHETIC_SURROUND,
+)
 
-#: Config settings naming each boundary role's selection method, coordinates and
-#: volume boxes, plus the ``node_role`` the selector expects.
+
+def network_is_synthetic(settings: Mapping[str, Any]) -> bool:
+    """Whether the run generates its network instead of reading an image
+    (``network_source`` holding ``"synthetic"``, or ``"synthetic_surround"``:
+    the template run's own network inside a drawn one, which reads no image
+    either). The one place this is decided: the stages, preflight, the
+    citations and the panel all ask here."""
+    return settings.get(NETWORK_SOURCE_SETTING, NETWORK_SOURCE_SEGMENTED_IMAGE) in (
+        NETWORK_SOURCE_SYNTHETIC,
+        NETWORK_SOURCE_SYNTHETIC_SURROUND,
+    )
+
+
+def network_surrounds_image(settings: Mapping[str, Any]) -> bool:
+    """Whether the synthetic network is drawn round the template run's own
+    (``network_source`` holding ``"synthetic_surround"``,
+    ``synthetic.surround_network``): where a surround's stages, checks and
+    outputs differ from a synthetic network's, they ask here."""
+    return settings.get(NETWORK_SOURCE_SETTING) == NETWORK_SOURCE_SYNTHETIC_SURROUND
+
+
+#: Each mask role's own switch, under ``automated_vessel_assignment``.
+VESSEL_MASK_SWITCHES: dict[str, str] = {
+    "large": "use_large_vessel_masks",
+    "small": "use_small_vessel_masks_for_boundary_assignment",
+}
+
+
+#: The switch that cuts the small masks from the large ones by width, and the width.
+SPLIT_LARGE_VESSEL_MASKS = "split_large_vessel_masks_by_diameter"
+SPLIT_DIAMETER = "large_vessel_mask_split_diameter_um"
+
+
+def vessel_masks_in_use(settings: Mapping[str, Any], mask_role: str) -> bool:
+    """Whether the run uses the ``"large"`` or ``"small"`` arteriole/venule masks.
+
+    True only with ``automated_vessel_assignment`` *and* the role's own switch
+    on -- or, for the small masks, while they are cut from the large ones
+    (:func:`small_vessel_masks_split_from_large`). The panel hides a role's
+    switch, and every row under it, while a gate
+    above it is off, so a switch left ticked underneath is out of effect, not
+    on: its masks are not loaded, nothing assigns from them, and preflight
+    asks nothing of them. Never for a synthetic network
+    (:func:`network_is_synthetic`): the generator chooses its boundaries, and
+    there is no image for a mask to lie on. The one place this is decided:
+    loading the masks, the Boundaries stage, the panel's greying and
+    preflight all ask here. Whether a role's own files are read is
+    :func:`vessel_mask_files_in_use`.
+    """
+    if mask_role not in VESSEL_MASK_SWITCHES:
+        raise ValueError(f"mask_role must be 'large' or 'small', got {mask_role!r}.")
+    if network_is_synthetic(settings):
+        return False
+    if mask_role == "small" and small_vessel_masks_split_from_large(settings):
+        return True
+    return bool(settings.get("automated_vessel_assignment")) and bool(
+        settings.get(VESSEL_MASK_SWITCHES[mask_role])
+    )
+
+
+def small_vessel_masks_split_from_large(settings: Mapping[str, Any]) -> bool:
+    """Whether the small arteriole/venule masks are cut from the large ones by
+    width (``split_large_vessel_masks_by_diameter``,
+    :mod:`haemolynx.io.vessel_mask_split`): the split on, the large masks in
+    use, and the small masks' own switch off -- the panel shows the split
+    only then, so it is off otherwise, whatever it holds. The small masks are
+    then in use (:func:`vessel_masks_in_use`) though no file of theirs is
+    read (:func:`vessel_mask_files_in_use`).
+    """
+    return (
+        bool(settings.get(SPLIT_LARGE_VESSEL_MASKS))
+        and vessel_masks_in_use(settings, "large")
+        and not bool(settings.get(VESSEL_MASK_SWITCHES["small"]))
+    )
+
+
+def vessel_mask_files_in_use(settings: Mapping[str, Any], mask_role: str) -> bool:
+    """Whether the run reads the role's own mask files, or has ilastik make
+    them: its masks in use (:func:`vessel_masks_in_use`) by its own switch,
+    not cut from the large ones. Loading, the file checks, the batch's
+    matching and the panel's search for mask files ask here."""
+    return vessel_masks_in_use(settings, mask_role) and bool(
+        settings.get(VESSEL_MASK_SWITCHES[mask_role])
+    )
+
+
+#: Each role's switches for segmenting its masks from the raw image: ilastik's,
+#: then the HaemoLynx classifier's (shown only while ilastik's is off).
+VESSEL_MASK_SEGMENTATION_SWITCHES: dict[str, tuple[str, str]] = {
+    "large": ("use_ilastik_large_vessel_segmentation", "use_pixel_classifier_large_vessel_segmentation"),
+    "small": ("use_ilastik_small_vessel_segmentation", "use_pixel_classifier_small_vessel_segmentation"),
+}
+
+
+def vessel_mask_classifier_in_use(settings: Mapping[str, Any], mask_role: str) -> bool:
+    """Whether the HaemoLynx classifier makes the role's masks: its switch on,
+    ilastik's off, and the role's own masks in use."""
+    ilastik, classifier = VESSEL_MASK_SEGMENTATION_SWITCHES[mask_role]
+    return (
+        bool(settings.get(classifier))
+        and not settings.get(ilastik)
+        and vessel_mask_files_in_use(settings, mask_role)
+    )
+
+
+def vessel_masks_segmented_from_raw(settings: Mapping[str, Any], mask_role: str) -> bool:
+    """Whether the role's masks are made from the raw image -- by ilastik or
+    by the HaemoLynx classifier -- rather than read from mask files."""
+    ilastik, _classifier = VESSEL_MASK_SEGMENTATION_SWITCHES[mask_role]
+    if not vessel_mask_files_in_use(settings, mask_role):
+        return False
+    return bool(settings.get(ilastik)) or vessel_mask_classifier_in_use(settings, mask_role)
+
+
+def large_vessel_mask_split_diameter_um(settings: Mapping[str, Any]) -> float | None:
+    """The width the large masks are split at, or None while they are not
+    (:func:`small_vessel_masks_split_from_large`). Raises when they are and
+    no positive width is set: preflight says so first
+    (``checks.check_large_vessel_mask_split``)."""
+    if not small_vessel_masks_split_from_large(settings):
+        return None
+    value = settings.get(SPLIT_DIAMETER)
+    try:
+        diameter = float(value)
+    except (TypeError, ValueError):
+        diameter = float("nan")
+    if not math.isfinite(diameter) or diameter <= 0.0:
+        raise ValueError(
+            f"{SPLIT_LARGE_VESSEL_MASKS} is on, but {SPLIT_DIAMETER} is {value!r}: "
+            "state the width, in microns, at which a large vessel becomes a small one."
+        )
+    return diameter
+
+
+def vessel_classes_by_size(settings: Mapping[str, Any]) -> bool:
+    """Whether this run classes its vessels by their measured width
+    (``classify_vessels_by_size``, :mod:`haemolynx.graph.vessel_size_classes`).
+
+    True only with the box on, a segmented image, and no vessel masks
+    (``automated_vessel_assignment`` off): masks and the convention are two
+    sources of one labelling, and the panel hides the box while the masks
+    are on, so it is off then, whatever it holds. The one place this is
+    decided: the Diameters stage, preflight, batch checks and the citations
+    all ask here.
+    """
+    if network_is_synthetic(settings):
+        return False
+    return bool(settings.get("classify_vessels_by_size")) and not bool(
+        settings.get("automated_vessel_assignment")
+    )
+
+
+def inlets_outlets_from_vessel_masks(settings: Mapping[str, Any]) -> bool:
+    """Whether the large-vessel masks choose the inlet and outlet nodes.
+
+    True only with the large masks in use (:func:`vessel_masks_in_use`) *and*
+    ``inlets_outlets_from_vessel_masks`` on. Off, the inlets and outlets come
+    from the manual Inlet/Outlet methods even while the masks drive the
+    large-vessel treatment. Never with global vessel masks
+    (``io.vessel_masks_are_global``): a mask of every vessel cannot tell an
+    inlet from an outlet. The one place this is decided: the Boundaries
+    stage, the panel's greying and preflight all ask here.
+    """
+    from haemolynx.io.vessel_masks import vessel_masks_are_global
+
+    return (
+        vessel_masks_in_use(settings, "large")
+        and bool(settings.get("inlets_outlets_from_vessel_masks", True))
+        and not vessel_masks_are_global(settings)
+    )
+
+
+def manual_vessel_boundaries_read(settings: Mapping[str, Any]) -> bool:
+    """Whether the run reads the Arteriole and Venule tabs' own lists: not
+    while the small masks choose those boundaries (:func:`vessel_masks_in_use`),
+    nor with global vessel masks (``io.vessel_masks_are_global``), which give
+    no branch orders for a boundary to end. The one place this is decided:
+    the Boundaries stage, the panel's greying and a batch's checks ask here.
+    """
+    from haemolynx.io.vessel_masks import vessel_masks_are_global
+
+    return not vessel_masks_in_use(settings, "small") and not vessel_masks_are_global(settings)
+
+
+def assigns_large_vessel_branch_orders(settings: Mapping[str, Any]) -> bool:
+    """``assign_large_vessel_branch_orders`` in effect: on, the large masks in
+    use, and the network not cut at them (the cut takes away the vessels the
+    Large_Art/Large_Ven tier would label). The panel hides the switch
+    whenever one of those does not hold, so it is off then, whatever it holds.
+    Off too with global vessel masks, which give no branch orders at all.
+    """
+    from haemolynx.io.vessel_masks import vessel_masks_are_global
+
+    return (
+        bool(settings.get("assign_large_vessel_branch_orders"))
+        and vessel_masks_in_use(settings, "large")
+        and not bool(settings.get("cut_network_at_large_vessel_volumes", False))
+        and not vessel_masks_are_global(settings)
+    )
+
+
+#: Config settings naming each boundary role's selection method, coordinates,
+#: volume boxes and node IDs, plus the ``node_role`` the selector expects.
 BOUNDARY_ROLE_SETTINGS: dict[str, dict[str, str]] = {
     "inlet": {
         "method": "inlet_node_selection_method",
         "coordinates": "inlet_node_coordinates",
         "volume_boxes": "inlet_node_volumes",
+        "node_ids": "inlet_node_ids",
         "node_role": "inlet",
     },
     "outlet": {
         "method": "outlet_node_selection_method",
         "coordinates": "outlet_node_coordinates",
         "volume_boxes": "outlet_node_volumes",
+        "node_ids": "outlet_node_ids",
         "node_role": "outlet",
     },
     "arteriole_boundary": {
         "method": "arteriole_boundary_selection_method",
         "coordinates": "arteriole_boundary_node_coordinates",
         "volume_boxes": "arteriole_boundary_node_volumes",
+        "node_ids": "arteriole_boundary_node_ids",
         "node_role": "inlet",
     },
     "venule_boundary": {
         "method": "venule_boundary_selection_method",
         "coordinates": "venule_boundary_node_coordinates",
         "volume_boxes": "venule_boundary_node_volumes",
+        "node_ids": "venule_boundary_node_ids",
+        "node_role": "outlet",
+    },
+    "large_vessel_inlet": {
+        "method": "large_vessel_inlet_node_selection_method",
+        "coordinates": "large_vessel_inlet_node_coordinates",
+        "volume_boxes": "large_vessel_inlet_node_volumes",
+        "node_ids": "large_vessel_inlet_node_ids",
+        "node_role": "inlet",
+    },
+    "large_vessel_outlet": {
+        "method": "large_vessel_outlet_node_selection_method",
+        "coordinates": "large_vessel_outlet_node_coordinates",
+        "volume_boxes": "large_vessel_outlet_node_volumes",
+        "node_ids": "large_vessel_outlet_node_ids",
         "node_role": "outlet",
     },
 }
@@ -220,6 +774,90 @@ BOUNDARY_BAND_SETTINGS: dict[str, str] = {
 }
 
 
+#: Roles whose nodes hold a pressure or a flow in the solve. A node ID picked
+#: for one of these off a junction is most often a click that missed the
+#: terminal beside it, so it is reported; the arteriole/venule boundaries are
+#: where branch ordering stops, and a junction is what they usually are.
+_FLOW_BOUNDARY_ROLES = frozenset(
+    {"inlet", "outlet", "large_vessel_inlet", "large_vessel_outlet"}
+)
+
+
+def _node_id_list(value: Any) -> list[Any]:
+    """A node-ID setting as a list: a lone ID typed without brackets is one."""
+    if value is None:
+        return []
+    if isinstance(value, (str, bytes, int, float, np.generic)):
+        return [value]
+    try:
+        return list(value)
+    except TypeError:
+        return [value]
+
+
+def _report_node_id_picks(
+    G: nx.Graph,
+    role: str,
+    setting_name: str,
+    requested: list[Any],
+    chosen: list[Any],
+) -> None:
+    """Log what a ``node_ids`` pick did not do as asked.
+
+    A listed node an earlier role already took is left out (inlets before
+    outlets before the vessel boundaries, as every method does), which would
+    otherwise be silent.
+    """
+    resolved = select_nodes_by_id(G, requested, setting_name=setting_name)
+    kept = set(chosen)
+    taken = [node for node in sort_nodes(resolved) if node not in kept]
+    if taken:
+        logger.warning(
+            "%s: node(s) %s already belong to an earlier boundary role, so %s "
+            "does not take them.", setting_name, taken, role,
+        )
+    if role in _FLOW_BOUNDARY_ROLES:
+        interior = [node for node in chosen if G.degree(node) != 1]
+        if interior:
+            logger.warning(
+                "%s: node(s) %s are not terminals (degree %s), so the %s "
+                "boundary is held inside the network rather than where a vessel "
+                "leaves the image. Check they are the nodes you meant.",
+                setting_name, interior, [G.degree(node) for node in interior],
+                role.replace("_", " "),
+            )
+
+
+#: Methods that take a list. Anything else (``edge_percent``,
+#: ``all_degree_1``, ``degree_1_from_inlet``, ``mask_stump``) reads none, so a
+#: list left over from another method is not a reason to run it.
+_METHOD_LIST = {
+    "coordinates": "coordinates",
+    "volume": "volume_boxes",
+    "node_ids": "node_ids",
+}
+
+
+def boundary_role_configured(settings: Mapping[str, Any], role: str) -> bool:
+    """Whether *role* has the list its selection method reads.
+
+    The arteriole and venule roles are optional: they run only when that list
+    is non-empty. A list the method does not read is ignored, so node IDs left
+    behind after switching back to coordinates do not make the selector raise
+    on the empty coordinate list, and do not make ``edge_percent`` pick
+    terminals. Methods that read no list are not a configuration of these
+    roles. An unknown role is not configured.
+    """
+    names = BOUNDARY_ROLE_SETTINGS.get(role)
+    if names is None:
+        return False
+    method = str(settings.get(names["method"]) or "coordinates").strip().lower()
+    listed = _METHOD_LIST.get(method)
+    if listed is None:
+        return False
+    return bool(settings.get(names[listed]))
+
+
 def select_boundary_nodes_for_role(
     G: nx.Graph,
     image_shape: tuple[int, ...],
@@ -230,8 +868,8 @@ def select_boundary_nodes_for_role(
 ) -> list[Any]:
     """Select one role's boundary nodes from the boundary-assignment settings.
 
-    The four roles differ only in which settings they read, so naming the role
-    is enough; :data:`BOUNDARY_ROLE_SETTINGS` records which those are.
+    The roles differ only in which settings they read, so naming the role is
+    enough; :data:`BOUNDARY_ROLE_SETTINGS` records which those are.
 
     A method whose settings hold nothing for it to work with raises here,
     naming the setting to change: it would otherwise return an empty list and
@@ -247,7 +885,29 @@ def select_boundary_nodes_for_role(
     method = str(settings[names["method"]]).strip().lower()
     coordinates = list(settings.get(names["coordinates"]) or [])
     volume_boxes = list(settings.get(names["volume_boxes"]) or [])
+    node_ids = _node_id_list(settings.get(names["node_ids"]))
     inlet_nodes = list(settings.get("inlet_nodes") or [])
+
+    if method == "node_ids":
+        if not node_ids:
+            raise ValueError(
+                f"{names['method']}='node_ids' takes exactly the nodes listed in "
+                f"{names['node_ids']}, but that setting is empty. Fix: list the "
+                f"node IDs in {names['node_ids']} (or pick them in the viewer on "
+                f"the Boundaries tab), or set {names['method']} to "
+                "'edge_percent', which needs no node IDs from this dataset."
+            )
+        chosen = select_boundary_nodes_by_method(
+            G,
+            image_shape,
+            method=method,
+            node_role=names["node_role"],
+            node_ids=node_ids,
+            node_ids_setting_name=names["node_ids"],
+            exclude_nodes=exclude_nodes,
+        )
+        _report_node_id_picks(G, role, names["node_ids"], node_ids, chosen)
+        return chosen
 
     if method == "coordinates" and not coordinates:
         raise ValueError(
@@ -266,12 +926,23 @@ def select_boundary_nodes_for_role(
             "this dataset."
         )
     if method == "degree_1_from_inlet" and not inlet_nodes:
+        if names["node_role"] == "inlet" and role in ("inlet", "large_vessel_inlet"):
+            # The inlets are what this role chooses: there are none to measure from.
+            raise ValueError(
+                f"{names['method']}='degree_1_from_inlet' measures each terminal's "
+                "distance from the inlet nodes, which this role is the one to choose. "
+                f"Fix: set {names['method']} to another method."
+            )
+        chooser = (
+            "large_vessel_inlet_node_selection_method"
+            if role == "large_vessel_outlet"
+            else "inlet_node_selection_method"
+        )
         raise ValueError(
             f"{names['method']}='degree_1_from_inlet' measures each terminal's "
-            "distance from the inlet nodes, and none have been chosen. Fix: "
-            f"set {names['method']} to another method, or pick the inlet "
-            "nodes first by giving inlet_node_selection_method one of the "
-            "other methods."
+            f"distance from the inlet nodes, and {chooser} chose none. Fix: set "
+            f"{names['method']} to another method, or change {chooser} or what it "
+            "reads so it finds the inlets."
         )
 
     # Settings the config does not carry fall through to the selector's own
@@ -281,6 +952,12 @@ def select_boundary_nodes_for_role(
         for name, keyword in BOUNDARY_BAND_SETTINGS.items()
         if settings.get(name) is not None
     }
+    # Unlike the band settings, an empty value here means "off", not "the
+    # selector's default" -- so an absent setting is the only fall-through.
+    if "boundary_open_end_max_distance_um" in settings:
+        band["open_end_max_distance_um"] = settings["boundary_open_end_max_distance_um"]
+    if settings.get("boundary_open_end_test"):
+        band["open_end_test"] = settings["boundary_open_end_test"]
     return select_boundary_nodes_by_method(
         G,
         image_shape,
@@ -290,5 +967,6 @@ def select_boundary_nodes_for_role(
         volume_boxes=volume_boxes,
         exclude_nodes=exclude_nodes,
         inlet_nodes_for_distance=inlet_nodes,
+        coordinates_setting_name=names["coordinates"],
         **band,
     )

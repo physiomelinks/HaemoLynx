@@ -13,7 +13,7 @@ The callback is a plain function taking one event, so what "showing progress"
 means is the consumer's decision: nothing here imports napari, Qt or tqdm, and
 nothing here writes to the console unless asked to (:func:`log_progress`).
 
-Graph building reports a second, finer level -- the eleven topology steps of
+Graph building reports a second, finer level -- the thirteen topology steps of
 :func:`haemolynx.graph.build_graph_from_skeleton` -- through the same callback,
 so a consumer that only cares about stages can ignore ``kind == "step"``.
 
@@ -25,11 +25,76 @@ missed by everything that reports it.
 from __future__ import annotations
 
 import logging
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Callable, Iterator, Optional, Sequence
 
 logger = logging.getLogger(__name__)
+
+#: Pericyte / constriction knobs declared under Diameters and pericytes in the
+#: schema (so apply.py's section_values still finds them) but claimed here so
+#: their panel rows sit on Perturbations. Keep in sync with
+#: ``PERICYTE_CONSTRICTION_SETTINGS`` in haemodynamics.perturbations -- the
+#: drift test in test_gui_tabs pins that.
+_PERICYTE_SETTINGS_ON_PERTURBATIONS_TAB: tuple[str, ...] = (
+    "pericyte_constriction_factor",
+    "constriction_by_branch_order",
+    "constriction_length_um",
+    "constriction_spacing_um",
+    "use_pericyte_mask_constriction",
+    "pericyte_mask_path",
+    "pericyte_mask_h5_dataset_name",
+    "pericyte_max_assignment_distance_um",
+    "pericyte_min_diameter_um",
+    "pericyte_max_diameter_um",
+    "use_probabilistic_pericyte_constriction",
+    "pericyte_constriction_probability",
+    "pericyte_constriction_seed",
+)
+
+#: Legacy baseline flags and comparison-CSV knobs. Still in the Diameters
+#: schema section for apply.py / CLI, but claimed here so they leave the
+#: Diameters tab without becoming always-on or typed-entry rows. The pipeline
+#: forces ``do_pericyte_construction`` and ``run_pericyte_resistance_comparison``
+#: False on baseline and every perturbation merge.
+_LEGACY_SETTINGS_HIDDEN_FROM_DIAMETERS: tuple[str, ...] = (
+    "do_pericyte_construction",
+    "run_pericyte_resistance_comparison",
+    "pericyte_comparison_baseline_value",
+    "pericyte_comparison_constricted_value",
+    "reuse_comparison_pericyte_cohort_for_main_run",
+)
+
+#: Alias kept for older test imports; prefer
+#: :data:`_LEGACY_SETTINGS_HIDDEN_FROM_DIAMETERS`.
+_COMPARISON_SETTINGS_HIDDEN_FROM_DIAMETERS = _LEGACY_SETTINGS_HIDDEN_FROM_DIAMETERS
+
+#: Pries-Secomb bifurcation haematocrit distribution. Stays in the Diameters
+#: schema section (apply.py's ``_haemodynamics_apply_config`` pulls that
+#: whole section in), but claimed here so its rows sit on the Haemodynamics
+#: tab beside the flow solve they configure, not on Diameters.
+_HAEMATOCRIT_DISTRIBUTION_SETTINGS_ON_HAEMODYNAMICS_TAB: tuple[str, ...] = (
+    "haematocrit_model",
+    "haematocrit_junction_rule",
+    "haematocrit_split_connector_length_um",
+    "haematocrit_distribution_max_iterations",
+    "haematocrit_distribution_tolerance",
+)
+
+#: The viscosity law, its Pries override, the uniform haematocrit it can read
+#: and the red-cell volume the flux statistic counts cells by. Stay in the
+#: Diameters schema section (apply.py's section_values still finds them
+#: there), but claimed here so their rows sit on Haemodynamics beside the
+#: model that actually consumes them (build_haemodynamic_model). Which
+#: diameter a segmented vessel measures (segmentation_source) is a property
+#: of the dataset, not the blood model, and sits with the image on Input.
+_VISCOSITY_SETTINGS_ON_HAEMODYNAMICS_TAB: tuple[str, ...] = (
+    "viscosity_law",
+    "pries_viscosity_form",
+    "haematocrit",
+    "red_cell_volume_fl",
+)
 
 
 @dataclass(frozen=True)
@@ -45,6 +110,10 @@ class Stage:
     settings: tuple[str, ...] = ()
     #: Whole schema sections it steers, claimed after every named claim.
     sections: tuple[str, ...] = ()
+    #: The tab this stage's settings appear on. None means a tab of its own,
+    #: named `title`. A stage naming another stage's tab contributes its rows
+    #: to that tab and opens no tab of its own.
+    tab: Optional[str] = None
 
 
 #: Every stage of a run, in the order :func:`run_pipeline_stages` runs them.
@@ -61,12 +130,51 @@ STAGES: tuple[Stage, ...] = (
         summary="Load the volume, resolve its voxel size, reduce vessels to a skeleton.",
         settings=(
             "do_skeletonize",
+            "use_thick_vessel_skeletonisation",
+            "skeleton_thick_vessel_min_radius_um",
+            "skeleton_fill_mask_holes_before_thickness",
+            "skeleton_thick_vessel_wall_absorption_um",
+            "skeleton_thick_vessel_flake_filter_um",
+            "skeleton_thick_vessel_max_bridge_radius_multiple",
+            "skeleton_thick_vessel_max_bridge_distance_um",
+            "skeleton_thick_vessel_bridge_radius_smoothing_um",
+            "skeleton_thick_vessel_large_stack_tree",
+            # Declared under Vessel masks (they name which masks), but it is
+            # this stage's thickness gate that reads them -- see
+            # stages.thick_vessel_restriction_mask -- so their rows sit
+            # beside the thick-vessel settings they change.
+            "skeleton_thick_vessel_restrict_to_mask",
+            "skeleton_thick_vessel_restrict_to_mask_warn_below",
+            # A read-only check on the tree this stage just built -- see
+            # preprocessing.thick_vessel_braid_guard.
+            "detect_thick_vessel_braiding",
+            "thick_vessel_braid_factor_limit",
+            "thick_vessel_braid_min_occupied_slices",
+            "skeletonize_tile_large_components",
+            "skeletonize_tile_max_voxels",
+            "skeletonize_tile_halo_um",
             "skeleton_closing_radius",
             "skeleton_bridge_gap_size",
             "skeleton_min_branch_length",
             "skeleton_max_bridge_distance",
+            "skeleton_bridge_weight_by_segmentation",
+            "skeleton_bridge_z_distance_weight",
+            "skeleton_bridge_min_facing_cosine",
+            # Graph building's reconnects read them too.
+            "bridge_require_mask_support",
+            "bridge_max_background_gap_um",
+            "bridge_min_mask_fraction",
             "skeleton_component_connectivity",
             "skeleton_min_component_percent",
+            "skeleton_bundle_scan_size",
+            "skeleton_bundle_density_fraction",
+            "skeleton_bundle_max_connections_per_hub",
+            "skeleton_bundle_hub_min_spacing",
+            # A read-only check on the skeleton this stage just built -- see
+            # preprocessing.skeleton_consistency.
+            "skeleton_mask_consistency_warn_below",
+            "missing_vessel_min_voxels",
+            "skeleton_missing_vessel_warn_below",
         ),
     ),
     Stage(
@@ -78,59 +186,172 @@ STAGES: tuple[Stage, ...] = (
             "graph_reconnect_threshold",
             "final_orphan_reconnect_threshold",
             "cluster_collapse_distance",
+            "cluster_collapse_method",
+            "cluster_collapse_max_radial_dispersion",
+            "cluster_collapse_persistence_search_multiple",
             "min_stub_length",
+            "min_stub_length_radius_multiple",
+            "recover_uncovered_mask_vessels",
+            "recovery_min_region_volume_um3",
+            "recovery_min_length_um",
+            "facing_dead_end_max_gap_um",
+            "remove_short_loops_under_um",
+            "lumen_cleanup_max_rounds",
+            "short_loop_keep_hole_over_um",
+            "lumen_cleanup_rewire_pairs",
+            "lumen_cleanup_guard_rejoins",
+            "retrace_lost_skeleton",
+            # Read by the thick-vessel split, graph building's last step.
+            "thick_vessel_fill_centreline_gaps",
+            "thick_vessel_extend_centreline_ends",
+            "thick_bridge_centreline_tolerance_um",
+            "extend_dead_ends_to_faces",
+            "trace_on_dead_ends",
+            "join_dead_ends_to_vessel_sides",
+            "stub_face_protection",
+            "remove_pieces_without_junction",
+            "remove_interior_dead_ends",
+            "recovery_short_loop_keep_hole_over_um",
+            "remove_interior_dead_ends_and_merge",
             "save_step_artifacts",
             # Centreline smoothing is the last thing graph building does.
             "smooth_centrelines",
             "centreline_smoothing_method",
             "centreline_smoothing_iterations",
             "centreline_max_deviation",
+            # A read-only check on the graph this stage just built -- see
+            # graph.cartwheel_guard.
+            "detect_cartwheel_hub_artifacts",
+            "cartwheel_hub_min_degree",
+            "cartwheel_hub_max_radial_dispersion",
+            "cartwheel_hub_tangent_length_um",
+            # Read-only checks on the graph this stage just built -- see
+            # graph.diagnostics.diagnose_skeleton_graph_consistency and
+            # diagnose_graph_mask_consistency.
+            "skeleton_graph_consistency_warn_below",
+            "graph_mask_consistency_warn_below",
+            "graph_missing_vessel_warn_below",
         ),
-        sections=("Vessel masks",),
     ),
     Stage(
         call="assign_boundaries",
         title="4. Boundaries",
         summary="Where flow enters and leaves, and where vessel types change.",
-        sections=("Boundary assignment",),
+        # Vessel masks stay in their own schema section so build_network's
+        # section_values still finds them; the panel shows them here under
+        # automated assignment, above the manual methods.
+        sections=("Vessel masks", "Boundary assignment"),
     ),
     Stage(
         call="assign_diameters",
         title="5. Diameters",
-        summary="Branch orders, then the diameter each vessel is modelled with.",
-        settings=(
-            "use_fwhm_edge_diameters",
-            "strict_branch_order_assignment",
-            "max_branch_order",
-            "all_diams_const",
-            "default_diameter",
-            "manual_capillary_diameter_by_branch_order",
-            "manual_arteriole_diameter_by_branch_order",
-            "manual_venule_diameter_by_branch_order",
-            "diameter_by_branch_order",
-            "custom_edges",
+        summary="Branch orders and the diameter each vessel is modelled with.",
+        # Declared under boundary assignment, but it is branch-order
+        # assignment that reads it, which happens here.
+        settings=("strict_branch_order_assignment",),
+        # This is the stage that reads them: it hands the whole
+        # `Diameters and pericytes` section to the haemodynamics as one group
+        # (see `pipeline/stages.py`), so the settings and the tab agree.
+        # Pericyte / constriction knobs live under Perturbation runs (a typed
+        # perturbation's options, not the baseline model) and the viscosity
+        # law / haematocrit live under Haemodynamics (the model that reads
+        # them) -- both retabbed by name below, ahead of this section claim.
+        sections=(
+            "Diameters and pericytes",
+            "FWHM diameter measurement",
+            "EDT mask diameter estimate",
+            "Endothelial diameter",
         ),
-        sections=("FWHM diameter measurement",),
     ),
     Stage(
         call="build_haemodynamic_model",
         title="6. Haemodynamics",
-        summary="Poiseuille resistance per vessel, and any pericyte constriction.",
-        settings=("run_haemodynamics", "constriction_by_branch_order"),
-        sections=("Diameters and pericytes",),
+        summary=(
+            "Whether to solve the flow, the blood model it solves with, and "
+            "the pressures to solve it at."
+        ),
+        settings=(
+            "run_haemodynamics",
+            *_VISCOSITY_SETTINGS_ON_HAEMODYNAMICS_TAB,
+        ),
+        # Done to the assigned network at the start of this stage (see
+        # stages.apply_network_handling), so its rows sit here.
+        sections=("Network handling",),
     ),
     Stage(
+        # Its rows belong beside the haemodynamics they configure, so this
+        # stage opens no tab of its own; it is still a stage a run reports.
         call="solve",
-        title="7. Solve",
+        title="Solve",
         summary="Pressures and flows, from the boundary pressures.",
-        settings=("inlet_p_bc", "outlet_p_bc", "do_equiv_resistance_calculation"),
+        settings=(
+            "inlet_p_bc",
+            "outlet_p_bc",
+            "haemodynamics_solver",
+            "do_equiv_resistance_calculation",
+            "equivalent_resistance_solver",
+            *_HAEMATOCRIT_DISTRIBUTION_SETTINGS_ON_HAEMODYNAMICS_TAB,
+        ),
+        tab="6. Haemodynamics",
+    ),
+    Stage(
+        # Hand edits to the solved network, with its flows on screen: the
+        # panel can pause a run here (mid_run_postprocessing, on Input). The
+        # stage brings the edits in line with the rest of the network and
+        # solves its haemodynamics again; it has no settings, and its tab
+        # lays out its own page.
+        call="post_process",
+        title="7. Post processing",
+        summary=(
+            "Fix the solved network by hand: junctions where four or more "
+            "vessels meet, and vessels to add or delete; then solve its "
+            "haemodynamics again."
+        ),
+    ),
+    Stage(
+        call="run_perturbations",
+        title="8. Perturbations",
+        summary="What to re-solve the finished network for.",
+        # Pericyte / constriction knobs stay in the Diameters schema section
+        # (apply.py reads that group by name) but their *rows* belong here:
+        # they are options of a typed perturbation, revealed only when one is
+        # chosen. Legacy baseline / comparison flags are claimed here too so
+        # they leave the Diameters tab without becoming always-on or typed
+        # rows (the pipeline forces those flags False on baseline and merges).
+        # Named claims beat the Diameters section claim below.
+        settings=(
+            *_PERICYTE_SETTINGS_ON_PERTURBATIONS_TAB,
+            *_LEGACY_SETTINGS_HIDDEN_FROM_DIAMETERS,
+        ),
+        sections=("Perturbation runs",),
+    ),
+    Stage(
+        # Statistics and the 3D cell-mask measurement are computed inside
+        # export_results (there is no separate pipeline stage for them), but
+        # get a tab of their own so a long, rarely-touched options list does
+        # not crowd the VTK/plot settings on "10. Export". call=None is the
+        # same feature "Solve" above uses in the other direction (a real
+        # stage sharing another's tab): a tab the pipeline does not run as
+        # its own stage.
+        call=None,
+        title="9. Additional measurements",
+        summary=(
+            "Global vessel statistics, 3D distance to a cell mask, measurements "
+            "around pericytes, and vascular communities for colouring the vessels."
+        ),
+        sections=(
+            "Statistics and measurements",
+            "Pericyte measurements",
+            "Connectivity/Network Analysis",
+            "Vascular communities",
+        ),
     ),
     Stage(
         call="export_results",
-        title="8. Export",
-        summary="VTK, statistics and plots.",
-        settings=("vtk_output_prefix", "base_plot_dir", "verbose_logging"),
-        sections=("Solver and output", "Statistics and measurements"),
+        title="10. Export",
+        summary="VTK and plots.",
+        settings=("base_plot_dir", "verbose_logging"),
+        sections=("Solver and output",),
     ),
 )
 
@@ -142,9 +363,13 @@ STAGE_FINISHED = "stage_finished"
 STAGE_FAILED = "stage_failed"
 #: A step *inside* a stage finished -- graph building's topology passes.
 STEP = "step"
+#: A stage is still busy inside one long call (ilastik, today) and has
+#: nothing new to show. Sent about every half second so a watcher can stop
+#: the run there; a display has nothing to change for it.
+HEARTBEAT = "heartbeat"
 
 #: Every kind an event can be, for a consumer that wants to check.
-KINDS: tuple[str, ...] = (STAGE_STARTED, STAGE_FINISHED, STAGE_FAILED, STEP)
+KINDS: tuple[str, ...] = (STAGE_STARTED, STAGE_FINISHED, STAGE_FAILED, STEP, HEARTBEAT)
 
 
 @dataclass(frozen=True)
@@ -171,8 +396,14 @@ class ProgressEvent:
     step_index: Optional[int] = None
     #: For ``STEP``: how many steps the stage has, when it knows.
     step_total: Optional[int] = None
+    #: For ``STEP``: the step now running, when the stage knows it -- what a
+    #: watcher should be shown until the next event, rather than ``step``.
+    next_step: Optional[str] = None
     #: For ``STAGE_FAILED``: what was raised.
     error: Optional[BaseException] = None
+    #: For ``STAGE_FINISHED`` and ``STAGE_FAILED``: how long the stage ran,
+    #: wall-clock seconds.
+    seconds: Optional[float] = None
 
     @property
     def completed(self) -> int:
@@ -204,13 +435,19 @@ class StageProgress:
         """How many steps this stage has reported so far."""
         return self._done
 
-    def step(self, label: str, total: Optional[int] = None) -> None:
+    def step(
+        self, label: str, total: Optional[int] = None, next_step: Optional[str] = None
+    ) -> None:
         """Report that the step named *label* has just finished.
 
         *total* is how many steps the stage will report in all; it is passed on
         every call because the caller usually has the list to hand, and the
         most recent value is the one reported. Without it a consumer gets a
         step count but no end point, and should show an indeterminate bar.
+
+        *next_step* names the step starting now. A watcher shown only *label*
+        reads the step just finished as the one running, and blames it for
+        however long the next one takes.
         """
         if total is not None:
             self._total = total
@@ -224,9 +461,44 @@ class StageProgress:
                 step=label,
                 step_index=self._done,
                 step_total=self._total,
+                next_step=next_step,
             )
         )
         self._done += 1
+
+    def fraction(self, label: str, done: int, total: int) -> None:
+        """Report how far one long step has got: *done* of *total* of its
+        parts, as the step bar shows them, *label* saying what it is doing
+        (and how long is left). Not counted as a step finished."""
+        self._run.emit(
+            ProgressEvent(
+                kind=STEP,
+                stage=self._stage.call or "",
+                title=self._stage.title,
+                index=self._index,
+                total=self._run.total,
+                step=label,
+                step_index=max(0, int(done) - 1),
+                step_total=int(total),
+            )
+        )
+
+    def alive(self) -> None:
+        """Report that the stage is still working, with nothing new to show.
+
+        For a stage waiting on one long call: each call gives the watcher a
+        chance to stop the run (by raising from its callback) without the
+        stage having to know how a run is stopped.
+        """
+        self._run.emit(
+            ProgressEvent(
+                kind=HEARTBEAT,
+                stage=self._stage.call or "",
+                title=self._stage.title,
+                index=self._index,
+                total=self._run.total,
+            )
+        )
 
 
 class RunProgress:
@@ -242,10 +514,14 @@ class RunProgress:
         self,
         callback: Optional[ProgressCallback] = None,
         stages: Sequence[Stage] = STAGES,
+        checks: Optional[dict] = None,
     ) -> None:
         self._callback = callback
         #: Only stages the pipeline actually runs; a panel-only tab is not one.
         self._stages = tuple(stage for stage in stages if stage.call)
+        #: What the run's read-only checks found, by name, for its record
+        #: (``pipeline.provenance``: the manifest's ``checks``).
+        self.checks: dict = checks if checks is not None else {}
 
     @property
     def total(self) -> int:
@@ -289,12 +565,50 @@ class RunProgress:
             )
 
         self.emit(event(STAGE_STARTED))
+        started = time.perf_counter()
         try:
             yield reporter
         except BaseException as error:
-            self.emit(event(STAGE_FAILED, error=error))
+            self.emit(event(STAGE_FAILED, error=error, seconds=time.perf_counter() - started))
             raise
-        self.emit(event(STAGE_FINISHED))
+        self.emit(event(STAGE_FINISHED, seconds=time.perf_counter() - started))
+
+
+def segmentation_progress_text(progress) -> str:
+    """What a classifier segmentation is doing, for a progress bar or a
+    status line, from its ``classifier.SegmentProgress``."""
+    if progress.writing:
+        return "Writing the masks"
+    this, passes = progress.passes
+    text = "Classifying the raw image"
+    if passes > 1:
+        text += f" (pass {this} of {passes})"
+    if progress.start_plane:
+        text += f", taken up at plane {progress.start_plane}"
+    return f"{text}, {time_left(progress.remaining)}"
+
+
+def time_left(seconds: Optional[float]) -> str:
+    """About how long is left, as a person says it: ``about 2 h 05 min left``,
+    ``about 7 min left``, ``under a minute left``; None while it cannot be told."""
+    if seconds is None:
+        return "working out the time left"
+    if seconds < 60:
+        return "under a minute left"
+    minutes = int(round(seconds / 60.0))
+    if minutes < 60:
+        return f"about {minutes} min left"
+    return f"about {minutes // 60} h {minutes % 60:02d} min left"
+
+
+def format_seconds(seconds: float) -> str:
+    """A stage's wall time as a person reads it: ``0.4 s``, ``2 min 05 s``, ``1 h 02 min``."""
+    if seconds < 60:
+        return f"{seconds:.1f} s"
+    whole = int(round(seconds))
+    if whole < 3600:
+        return f"{whole // 60} min {whole % 60:02d} s"
+    return f"{whole // 3600} h {whole % 3600 // 60:02d} min"
 
 
 def log_progress(event: ProgressEvent) -> None:
@@ -309,11 +623,15 @@ def log_progress(event: ProgressEvent) -> None:
     if event.kind == STAGE_STARTED:
         logger.info(f"Stage {position}: {event.title}")
     elif event.kind == STAGE_FINISHED:
-        logger.info(f"Stage {position} done: {event.title}")
+        took = "" if event.seconds is None else f" ({format_seconds(event.seconds)})"
+        logger.info(f"Stage {position} done: {event.title}{took}")
     elif event.kind == STAGE_FAILED:
-        logger.error(f"Stage {position} failed: {event.title}: {event.error}")
+        after = "" if event.seconds is None else f" after {format_seconds(event.seconds)}"
+        logger.error(f"Stage {position} failed{after}: {event.title}: {event.error}")
     elif event.kind == STEP:
         of_total = f"/{event.step_total}" if event.step_total else ""
+        running = f"; now {event.next_step}" if event.next_step else ""
         logger.debug(
-            f"Stage {position} step {(event.step_index or 0) + 1}{of_total}: {event.step}"
+            f"Stage {position} step {(event.step_index or 0) + 1}{of_total}: "
+            f"{event.step} done{running}"
         )

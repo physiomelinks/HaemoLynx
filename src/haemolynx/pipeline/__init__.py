@@ -19,9 +19,15 @@ a run is visible and can be intervened in::
 Either way a run says where it has got to, if anything is listening::
 
     run_pipeline_stages(settings, schema, progress=log_progress)
+
+and leaves a manifest of what made its outputs beside them -- settings, version,
+commit, input checksums, stage times and peak memory. A script calling the
+stages itself gets one by running them inside :func:`record_run`.
 """
 from .checks import preflight
+from .citations import render_citations, write_citations
 from .progress import (
+    HEARTBEAT,
     KINDS,
     STAGE_FAILED,
     STAGE_FINISHED,
@@ -33,29 +39,41 @@ from .progress import (
     RunProgress,
     Stage,
     StageProgress,
+    format_seconds,
     log_progress,
 )
+from .provenance import record_run
 from .schema import SCHEMA, default_schema, write_default_config
 from .settings import fill_derived_settings, resolve_settings
 from .stages import (
     BoundaryNodes,
     HaemodynamicModel,
+    PerturbationResult,
+    PerturbationRun,
+    PipelineResume,
     SegmentedInputs,
     SkeletonisedVolume,
     Solution,
     VesselNetwork,
+    apply_network_handling,
     assign_boundaries,
     assign_diameters,
     build_haemodynamic_model,
     build_network,
     export_results,
+    load_volume_for_skeletonise,
+    post_process,
+    run_perturbations,
     run_pipeline_stages,
+    run_voxel_size_xyz,
     segment,
     skeletonise,
     solve,
+    solve_post_processed,
 )
 
 __all__ = [
+    "HEARTBEAT",
     "KINDS",
     "SCHEMA",
     "STAGES",
@@ -65,6 +83,9 @@ __all__ = [
     "STEP",
     "BoundaryNodes",
     "HaemodynamicModel",
+    "PerturbationResult",
+    "PerturbationRun",
+    "PipelineResume",
     "ProgressCallback",
     "ProgressEvent",
     "RunProgress",
@@ -74,19 +95,29 @@ __all__ = [
     "Stage",
     "StageProgress",
     "VesselNetwork",
+    "apply_network_handling",
     "assign_boundaries",
     "assign_diameters",
     "build_haemodynamic_model",
     "build_network",
     "default_schema",
     "export_results",
+    "load_volume_for_skeletonise",
+    "run_voxel_size_xyz",
+    "post_process",
     "log_progress",
     "preflight",
+    "record_run",
     "fill_derived_settings",
+    "format_seconds",
+    "render_citations",
     "resolve_settings",
+    "run_perturbations",
     "run_pipeline_stages",
     "segment",
     "skeletonise",
     "solve",
+    "solve_post_processed",
+    "write_citations",
     "write_default_config",
 ]

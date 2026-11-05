@@ -1,0 +1,463 @@
+"""Choosing one channel of a multi-channel image.
+
+A setting such as ``raw_image_channel`` counts from 0; Fiji calls the same
+channels C1, C2, ... These tests pin what the panel lists for a file
+(:func:`haemolynx.io.tiff_channels` and :func:`haemolynx.gui.form.channel_choices`),
+what preflight refuses before a run starts, and that FWHM's raw image is
+read from the chosen channel of a composite.
+"""
+from __future__ import annotations
+
+import numpy as np
+import pytest
+
+tifffile = pytest.importorskip("tifffile")
+
+from haemolynx.gui.form import (  # noqa: E402
+    CHANNEL_SETTINGS,
+    NO_CHANNEL_CHOOSE,
+    NO_CHANNEL_SINGLE,
+    channel_choices,
+    field_for,
+    widget_type_for,
+)
+from haemolynx.io import TiffChannel, tiff_channel_axis, tiff_channels  # noqa: E402
+from haemolynx.pipeline import default_schema  # noqa: E402
+from haemolynx.pipeline.checks import check_image_channels  # noqa: E402
+
+
+def _lut(channel: int) -> np.ndarray:
+    lut = np.zeros((3, 256), dtype=np.uint8)
+    lut[channel] = np.arange(256)
+    return lut
+
+
+def _composite(path, *, channels: int = 2, **metadata) -> np.ndarray:
+    """A ZCYX ImageJ composite whose channel c holds the value c + 1 (x 100)."""
+    stack = np.stack(
+        [np.full((3, 8, 8), 100 * (c + 1), dtype=np.uint16) for c in range(channels)], axis=1
+    )
+    tifffile.imwrite(str(path), stack, imagej=True, metadata={"axes": "ZCYX", **metadata})
+    return stack
+
+
+# --- tiff_channels ----------------------------------------------------------
+
+
+def test_a_composite_lists_its_channels_by_lut_colour(tmp_path):
+    path = tmp_path / "composite.tif"
+    _composite(path, LUTs=[_lut(0), _lut(1)])
+
+    channels = tiff_channels(path)
+
+    assert channels == [TiffChannel(0, None, "red"), TiffChannel(1, None, "green")]
+    assert [c.label for c in channels] == ["C1 (red)", "C2 (green)"]
+
+
+def test_slice_labels_name_the_channels(tmp_path):
+    path = tmp_path / "labelled.tif"
+    # A hyperstack's labels run channel-fastest: one per (z, c) plane.
+    _composite(path, Labels=["plasma", "claudin-5"] * 3)
+
+    assert [c.label for c in tiff_channels(path)] == ["C1 (plasma)", "C2 (claudin-5)"]
+
+
+def test_ome_channel_names_are_read(tmp_path):
+    path = tmp_path / "named.ome.tif"
+    stack = np.zeros((3, 2, 8, 8), dtype=np.uint16)
+    tifffile.imwrite(
+        str(path), stack, ome=True,
+        metadata={"axes": "ZCYX", "Channel": {"Name": ["plasma", "claudin-5"]}},
+    )
+
+    assert [c.name for c in tiff_channels(path)] == ["plasma", "claudin-5"]
+
+
+def test_an_unnamed_ome_channel_does_not_take_the_next_ones_name(tmp_path):
+    """Regression: only the named Channel elements were collected and handed
+    out in order, so with C1 unnamed the panel listed C1 as claudin-5."""
+    path = tmp_path / "half_named.ome.tif"
+    ome = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<OME xmlns="http://www.openmicroscopy.org/Schemas/OME/2016-06">'
+        '<Image ID="Image:0"><Pixels ID="Pixels:0" DimensionOrder="XYCZT" Type="uint16" '
+        'SizeX="8" SizeY="8" SizeC="2" SizeZ="3" SizeT="1">'
+        '<Channel ID="Channel:0:0" SamplesPerPixel="1"/>'
+        '<Channel ID="Channel:0:1" Name="claudin-5" SamplesPerPixel="1"/>'
+        '<TiffData/></Pixels></Image></OME>'
+    )
+    tifffile.imwrite(str(path), np.zeros((6, 8, 8), dtype=np.uint16), description=ome, metadata=None)
+
+    channels = tiff_channels(path)
+
+    assert [c.label for c in channels] == ["C1", "C2 (claudin-5)"]
+
+
+def test_a_channel_with_nothing_said_about_it_is_just_its_fiji_name(tmp_path):
+    path = tmp_path / "plain.tif"
+    _composite(path, channels=3)
+
+    assert [c.label for c in tiff_channels(path)] == ["C1", "C2", "C3"]
+
+
+def test_a_single_channel_stack_has_no_channels_to_choose(tmp_path):
+    path = tmp_path / "single.tif"
+    tifffile.imwrite(str(path), np.zeros((3, 8, 8), dtype=np.uint16), imagej=True,
+                     metadata={"axes": "ZYX"})
+
+    assert tiff_channels(path) == []
+
+
+def test_a_z_stack_tifffile_labels_as_channels_is_still_a_z_stack(tmp_path):
+    """tifffile saves a plain (z, y, x) array with imagej=True as a
+    hyperstack of z *channels* (axes CYX). The loaders read it as the z-stack
+    it is, so it must not be offered as 40 channels to choose from."""
+    path = tmp_path / "stack.tif"
+    tifffile.imwrite(str(path), np.zeros((40, 8, 8), dtype=np.uint16), imagej=True)
+    with tifffile.TiffFile(str(path)) as tif:
+        assert tif.series[0].axes == "CYX"  # the premise
+
+    assert tiff_channels(path) == []
+
+
+def test_a_single_plane_colour_composite_does_list_its_channels(tmp_path):
+    path = tmp_path / "plane.tif"
+    tifffile.imwrite(
+        str(path), np.zeros((2, 8, 8), dtype=np.uint16), imagej=True,
+        metadata={"axes": "CYX", "mode": "composite", "LUTs": [_lut(0), _lut(1)]},
+    )
+
+    assert [c.label for c in tiff_channels(path)] == ["C1 (red)", "C2 (green)"]
+
+
+def test_a_single_plane_ome_composite_lists_its_channels_and_reads_one(tmp_path):
+    """Regression: a 2D two-channel OME file (CYX, its channels named) was
+    offered no channels and read as a stack of its two channels."""
+    from haemolynx.haemodynamics.fwhm_diameter import _read_tiff_channel
+
+    path = tmp_path / "plane.ome.tif"
+    plane = np.stack([np.full((8, 8), 1, np.uint16), np.full((8, 8), 2, np.uint16)])
+    tifffile.imwrite(
+        str(path), plane, ome=True,
+        metadata={"axes": "CYX", "Channel": {"Name": ["plasma", "claudin-5"]}},
+    )
+
+    assert [c.label for c in tiff_channels(path)] == ["C1 (plasma)", "C2 (claudin-5)"]
+    second = _read_tiff_channel(path, 1)
+    assert second.shape == (1, 8, 8) and (second == 2).all()
+
+
+def test_an_ome_z_stack_tifffile_labels_as_channels_is_still_a_z_stack(tmp_path):
+    """tifffile writes a plain 3D array as OME "CYX", its channels described
+    by nothing: still the z-stack it is."""
+    path = tmp_path / "stack.ome.tif"
+    tifffile.imwrite(str(path), np.zeros((40, 8, 8), dtype=np.uint16), ome=True)
+    with tifffile.TiffFile(str(path)) as tif:
+        assert tif.series[0].axes == "CYX"  # the premise
+
+    assert tiff_channels(path) == []
+
+
+@pytest.mark.parametrize(
+    "axes, shape, metadata, expected",
+    [
+        ("ZYX", (5, 8, 8), None, None),
+        ("ZCYX", (5, 2, 8, 8), None, 1),
+        ("CYX", (5, 8, 8), {"mode": "grayscale"}, None),
+        ("CYX", (2, 8, 8), {"mode": "composite"}, 0),
+        ("CYX", (2, 8, 8), {"mode": "color"}, 0),
+        ("CYX", (2, 8, 8), {"LUTs": [np.zeros((3, 256))]}, 0),
+        ("TZCYX", (1, 5, 2, 8, 8), None, 2),
+        ("TCYX", (1, 3, 8, 8), None, None),
+    ],
+)
+def test_which_axis_holds_channels(axes, shape, metadata, expected):
+    assert tiff_channel_axis(axes, shape, metadata) == expected
+
+
+@pytest.mark.parametrize("name", ["missing.tif", "not_a_tiff.tif"])
+def test_a_missing_or_unreadable_file_lists_nothing_rather_than_raising(tmp_path, name):
+    (tmp_path / "not_a_tiff.tif").write_bytes(b"not a tiff at all")
+
+    assert tiff_channels(tmp_path / name) == []
+    assert tiff_channels(None) == []
+    assert tiff_channels("") == []
+
+
+# --- channel_choices: the drop-down's entries --------------------------------
+
+
+def test_choices_for_a_single_channel_file_offer_only_none():
+    assert channel_choices([]) == [(NO_CHANNEL_SINGLE, None)]
+
+
+def test_choices_for_a_composite_ask_for_a_channel_then_list_them():
+    channels = [TiffChannel(0, None, "red"), TiffChannel(1, "claudin-5")]
+
+    assert channel_choices(channels) == [
+        (NO_CHANNEL_CHOOSE, None),
+        ("C1 (red)", 0),
+        ("C2 (claudin-5)", 1),
+    ]
+
+
+def test_a_chosen_channel_the_file_lacks_stays_listed_and_marked():
+    choices = channel_choices([TiffChannel(0), TiffChannel(1)], current=3)
+
+    assert choices[-1] == ("C4 (not in this file)", 3)
+    assert [value for _label, value in choices] == [None, 0, 1, 3]
+
+
+def test_a_channel_set_before_the_file_is_read_is_listed_by_its_fiji_name():
+    assert channel_choices([], current=1) == [(NO_CHANNEL_SINGLE, None), ("C2", 1)]
+
+
+def test_every_channel_setting_is_a_drop_down_paired_with_its_image_setting():
+    schema = default_schema()
+    names = {setting.name for setting in schema}
+    for channel_name, path_name in CHANNEL_SETTINGS.items():
+        assert channel_name in names and path_name in names
+        setting = schema[channel_name]
+        assert widget_type_for(setting) == "ComboBox"
+        field = field_for(setting, 1)
+        assert field.options["choices"] == [(NO_CHANNEL_SINGLE, None), ("C2", 1)]
+
+
+# --- preflight ---------------------------------------------------------------
+
+
+def _fwhm_settings(path, channel=None, **extra):
+    return {
+        "measure_diameters_from_raw_image": True,
+        "raw_image_path": str(path),
+        "raw_image_channel": channel,
+        **extra,
+    }
+
+
+def test_a_composite_with_no_channel_chosen_is_refused_naming_its_channels(tmp_path):
+    path = tmp_path / "composite.tif"
+    _composite(path, LUTs=[_lut(0), _lut(1)])
+
+    report = check_image_channels(_fwhm_settings(path))
+
+    assert len(report.errors) == 1
+    assert "C1 (red), C2 (green)" in report.errors[0]
+    assert "raw_image_channel" in report.errors[0]
+
+
+def test_a_channel_the_composite_lacks_is_refused(tmp_path):
+    path = tmp_path / "composite.tif"
+    _composite(path)
+
+    report = check_image_channels(_fwhm_settings(path, channel=2))
+
+    assert len(report.errors) == 1
+    assert "C3" in report.errors[0] and "2 channels" in report.errors[0]
+
+
+def test_a_channel_set_for_a_single_channel_image_is_refused(tmp_path):
+    path = tmp_path / "single.tif"
+    tifffile.imwrite(str(path), np.zeros((3, 8, 8), dtype=np.uint16), imagej=True)
+
+    report = check_image_channels(_fwhm_settings(path, channel=0))
+
+    assert len(report.errors) == 1
+    assert "single-channel" in report.errors[0]
+
+
+def test_a_valid_channel_passes(tmp_path):
+    path = tmp_path / "composite.tif"
+    _composite(path)
+
+    assert not check_image_channels(_fwhm_settings(path, channel=1)).errors
+
+
+@pytest.mark.parametrize("stain", ["auto", "plasma_column", "endothelial"])
+def test_the_raw_image_is_checked_whatever_it_stains(tmp_path, stain):
+    path = tmp_path / "composite.tif"
+    _composite(path)
+
+    report = check_image_channels(_fwhm_settings(path, raw_image_stain=stain))
+
+    assert len(report.errors) == 1
+    assert "raw_image_channel" in report.errors[0]
+
+
+def test_the_tissue_volume_reading_the_raw_image_checks_its_channel(tmp_path):
+    path = tmp_path / "composite.tif"
+    _composite(path)
+
+    settings = _fwhm_settings(
+        path, measure_diameters_from_raw_image=False, measure_tissue_volume=True
+    )
+
+    assert any("raw_image_channel" in error for error in check_image_channels(settings).errors)
+
+
+def test_a_raw_image_ilastik_segments_still_needs_its_channel_for_the_build(tmp_path):
+    """ilastik segments the whole file, but the network build then reads one
+    channel of it (the raw evidence round the mask) whatever else is on, so
+    a composite needs raw_image_channel for every run that names it."""
+    path = tmp_path / "composite.tif"
+    _composite(path)
+
+    settings = _fwhm_settings(
+        path, measure_diameters_from_raw_image=False, use_ilastik_segmentation=True
+    )
+
+    assert any("raw_image_channel" in error for error in check_image_channels(settings).errors)
+    assert not check_image_channels({**settings, "raw_image_channel": 1}).errors
+
+
+def test_preflight_runs_the_channel_check(tmp_path):
+    from haemolynx.pipeline import preflight
+
+    path = tmp_path / "composite.tif"
+    _composite(path)
+    schema = default_schema()
+    settings = {setting.name: setting.default for setting in schema}
+    settings.update(_fwhm_settings(path))
+
+    report = preflight(settings, schema)
+
+    assert any("raw_image_channel" in error for error in report.errors)
+
+
+# --- FWHM reads the chosen channel -------------------------------------------
+
+
+def test_channel_0_of_a_z_stack_tifffile_labels_as_channels_is_the_whole_stack(tmp_path):
+    """Reading "channel 0" must not take one plane of a mislabelled z-stack."""
+    from haemolynx.haemodynamics.fwhm_diameter import load_single_channel_tiff_volume
+
+    path = tmp_path / "stack.tif"
+    stack = np.arange(5 * 8 * 8, dtype=np.uint16).reshape(5, 8, 8)
+    tifffile.imwrite(str(path), stack, imagej=True)
+
+    np.testing.assert_array_equal(load_single_channel_tiff_volume(path, channel=0), stack)
+
+
+def _apply_config(path, channel):
+    from haemolynx.haemodynamics.apply import HaemodynamicsApplyConfig
+
+    return HaemodynamicsApplyConfig(
+        diameters={"diameter_by_branch_order": {"capillary": 5.0}},
+        fwhm={
+            "use_fwhm_edge_diameters": True,
+            "fwhm_raw_tiff_path": str(path),
+            "fwhm_raw_channel": channel,
+        },
+    )
+
+
+@pytest.mark.parametrize("channel, value", [(0, 100.0), (1, 200.0)])
+def test_the_fwhm_raw_volume_is_the_chosen_channel(tmp_path, channel, value):
+    from haemolynx.haemodynamics.apply import load_fwhm_raw_volume
+
+    path = tmp_path / "composite.tif"
+    _composite(path)
+
+    volume = load_fwhm_raw_volume(_apply_config(path, channel))
+
+    assert volume.shape == (3, 8, 8)
+    np.testing.assert_array_equal(np.unique(volume), [value])
+
+
+def test_the_fwhm_measurement_forwards_its_channel_to_the_loader(tmp_path, monkeypatch):
+    """measure_edge_diameters_fwhm_from_raw_tiff reads the channel it is
+    given, rather than failing on (or averaging) a composite."""
+    import networkx as nx
+
+    from haemolynx.haemodynamics import fwhm_diameter
+
+    path = tmp_path / "composite.tif"
+    _composite(path)
+    loaded = {}
+    original = fwhm_diameter.load_single_channel_tiff_volume
+
+    def spy(*args, **kwargs):
+        volume = original(*args, **kwargs)
+        loaded["channel"] = kwargs.get("channel")
+        loaded["values"] = np.unique(volume)
+        return volume
+
+    monkeypatch.setattr(fwhm_diameter, "load_single_channel_tiff_volume", spy)
+
+    fwhm_diameter.measure_edge_diameters_fwhm_from_raw_tiff(
+        nx.MultiGraph(),
+        raw_tiff_path=path,
+        voxel_size_zyx=(1.0, 1.0, 1.0),
+        sample_spacing_along_edge_um=1.0,
+        transverse_profile_step_um=0.5,
+        transverse_half_extent_um=4.0,
+        raw_channel=1,
+    )
+
+    assert loaded["channel"] == 1
+    np.testing.assert_array_equal(loaded["values"], [200.0])
+
+
+# --- the raw image is optional -------------------------------------------------
+
+
+def test_a_run_without_a_raw_image_needs_none():
+    from haemolynx.pipeline.checks import check_raw_image
+
+    report = check_raw_image({"measure_diameters_from_raw_image": False})
+
+    assert report.ok and not report.warnings
+
+
+def test_measuring_diameters_without_a_raw_image_is_a_warning_and_the_run_goes_on():
+    """The raw image is optional: a switch that reads it is skipped without
+    one (the panel greys it out), and the run goes on from the segmented
+    image alone -- said, so a config that asks for it knows."""
+    from haemolynx.pipeline.checks import check_raw_image
+
+    report = check_raw_image({"run_haemodynamics": True, "measure_diameters_from_raw_image": True})
+
+    assert report.ok
+    assert len(report.warnings) == 1
+    assert "measure_diameters_from_raw_image" in report.warnings[0]
+    assert "raw_image_path is not set" in report.warnings[0]
+    assert "skipped" in report.warnings[0]
+
+
+def test_ilastik_without_a_raw_image_reads_the_segmented_image_instead(tmp_path):
+    from haemolynx.pipeline.checks import check_raw_image
+
+    mask = tmp_path / "mask.tif"
+    mask.write_bytes(b"")
+    report = check_raw_image({"use_ilastik_segmentation": True, "input_path": str(mask)})
+
+    assert report.ok
+    assert len(report.warnings) == 1 and "use_ilastik_segmentation" in report.warnings[0]
+    assert ("input_path", str(mask)) in report.passed
+
+
+def test_ilastik_without_a_raw_image_or_a_segmented_image_is_an_error(tmp_path):
+    from haemolynx.pipeline.checks import check_raw_image
+
+    for input_path in (None, str(tmp_path / "gone.tif")):
+        report = check_raw_image({"use_ilastik_segmentation": True, "input_path": input_path})
+        assert len(report.errors) == 1
+        assert "use_ilastik_segmentation" in report.errors[0]
+        assert "raw_image_path" in report.errors[0] and "input_path" in report.errors[0]
+
+
+def test_a_missing_raw_image_is_an_error_for_every_run_that_names_it(tmp_path):
+    """The network build reads a raw image whenever one is set (the raw
+    evidence round the mask), so a missing one is never only a warning: it
+    used to be, and the run then failed in build_network."""
+    from haemolynx.pipeline.checks import check_raw_image
+
+    gone = str(tmp_path / "gone.tif")
+
+    read = check_raw_image({"raw_image_path": gone, "measure_diameters_from_raw_image": True})
+    unread = check_raw_image({"raw_image_path": gone, "measure_diameters_from_raw_image": False})
+
+    assert len(read.errors) == 1 and "gone.tif" in read.errors[0]
+    assert "measure_diameters_from_raw_image" in read.errors[0]
+    assert len(unread.errors) == 1 and "gone.tif" in unread.errors[0]
+    assert "network build" in unread.errors[0]

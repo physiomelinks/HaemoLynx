@@ -12,10 +12,20 @@ display, which is most of what there is to get wrong.
 from __future__ import annotations
 
 from pathlib import Path
-from dataclasses import dataclass
+from dataclasses import dataclass, field as dataclass_field
 from typing import Any, Mapping, Sequence
 
-from haemolynx.parsers.schema import Schema, Setting, is_prerequisite_met
+from haemolynx.parsers.schema import (
+    PREREQUISITE_EQUALS,
+    PREREQUISITE_NOT_EQUALS,
+    PREREQUISITE_OFF,
+    Schema,
+    Setting,
+    is_prerequisite_met,
+    parse_prerequisite,
+    prerequisite_name,
+)
+from haemolynx.gui.setting_tooltips import tooltip_for
 
 #: Schema kind -> the magicgui widget that edits it. `any`, `mapping` and the
 #: list kinds have no dedicated widget, so they are edited as Python literals:
@@ -41,6 +51,218 @@ WIDGET_TYPES = {
 DEFAULT_INT_RANGE = (-(2**31), 2**31 - 1)
 DEFAULT_FLOAT_RANGE = (-1e12, 1e12)
 
+#: Sections whose gated rows *disappear* until their ``requires`` hold, rather
+#: than staying visible and greyed. Input swaps segmented-file vs ilastik
+#: children; Vessel masks nests under ``automated_vessel_assignment``;
+#: Diameters nests constant vs per-order tables and FWHM under its parents;
+#: Statistics nests cell-mask under its parent bool;
+#: EDT mask diameter estimate nests under ``use_edt_diameter_crosscheck``
+#: (the mask step of the diameter chain, after FWHM or the endothelium and
+#: before the table -- see haemodynamics.apply.assign_edge_diameters), with
+#: only its FWHM disagreement warning also needing FWHM on;
+#: Connectivity/Network Analysis nests entirely under
+#: ``statistics`` then its own ``statistics_network_analysis`` toggle, the
+#: same two-level pattern -- it groups every graph-theoretic connectivity
+#: measure (bridges, loops, centrality, community structure) apart from
+#: Statistics' own geometric/morphometric ones.
+HIDE_WHEN_UNMET_SECTIONS = frozenset({
+    "Input and segmentation",
+    "Vessel masks",
+    "Diameters and pericytes",
+    "FWHM diameter measurement",
+    "EDT mask diameter estimate",
+    "Endothelial diameter",
+    "Statistics and measurements",
+    "Connectivity/Network Analysis",
+    "Vascular communities",
+})
+
+#: Shared across main / large / small ilastik. Declared once under Input;
+#: schema ``requires`` cannot OR, so the form hosts them on Input or
+#: Boundaries (same setting names / widgets) via :func:`shared_ilastik_host`.
+SHARED_ILASTIK_SETTINGS: tuple[str, ...] = (
+    "ilastik_executable",
+    "ilastik_output_dir",
+    "ilastik_output_suffix",
+    "ilastik_timeout_seconds",
+    "ilastik_reuse_existing_output",
+)
+SHARED_ILASTIK_SETTING_SET = frozenset(SHARED_ILASTIK_SETTINGS)
+
+#: Parents whose children hide when unmet even outside
+#: :data:`HIDE_WHEN_UNMET_SECTIONS` (Graph centreline knobs live under
+#: ``Pipeline stages``; Export IDE-plot knobs live under ``Solver and output``;
+#: cartwheel hub guard knobs live under their own ``Cartwheel hub guard``
+#: section, which is too small a slice of "3. Graph" to earn a whole-section
+#: entry in :data:`HIDE_WHEN_UNMET_SECTIONS`; likewise ``run_perturbations``'s
+#: one same-tab child in "Perturbation runs" -- the other settings in that
+#: section are only ever edited inside a perturbation entry's own typed
+#: editor, gated by that entry's type dropdown rather than this mechanism,
+#: so they are not listed here). ``cluster_collapse_method`` hides the knob
+#: each collapse method alone reads, and ``capillary_block_selection`` the
+#: vessels a capillary block's other way of choosing them would read, inside
+#: a perturbation entry.
+#: The switches that segment one image two ways -- with an ilastik project or
+#: with the panel's own classifier -- each mapped to the other. A run uses one:
+#: while either is on (and in effect) the other greys, its tooltip saying why
+#: (:func:`exclusive_reason`). The classifier's ``!ilastik`` gate greys its row
+#: rather than hiding it (:func:`hidden_by`); the ilastik switch, which has no
+#: gate on the classifier, greys through :func:`exclusive_partner_in_effect`.
+#: Both on (an old config) greys only the classifier, out of effect, so the
+#: ilastik switch can still be unticked.
+_EXCLUSIVE_PAIRS = (
+    ("use_ilastik_segmentation", "use_pixel_classifier_segmentation"),
+    ("use_ilastik_large_vessel_segmentation", "use_pixel_classifier_large_vessel_segmentation"),
+    ("use_ilastik_small_vessel_segmentation", "use_pixel_classifier_small_vessel_segmentation"),
+)
+EXCLUSIVE_SWITCHES: dict[str, str] = {
+    one: other for pair in _EXCLUSIVE_PAIRS for one, other in (pair, pair[::-1])
+}
+
+#: The rows a classifier fills with the masks it makes from the raw image, each
+#: mapped to that classifier's switch: the segmented image (the main
+#: classifier's mask of every vessel), each vessel-mask role's arteriole (or
+#: global) and venule masks, and the masks of objects (pericytes, capillary
+#: blocks, cells, the cell distances' vessels). While the switch is on and in
+#: effect the row stays in view, greyed (:func:`classifier_filled_reason`) and
+#: filled with the path of the mask the run makes
+#: (``gui.classifier_training.classifier_filled_rows``), rather than hiding --
+#: in a perturbation entry too, though never as its override; unticked, it
+#: keeps naming that file.
+CLASSIFIER_FILLED_ROWS: dict[str, str] = {
+    "input_path": "use_pixel_classifier_segmentation",
+    "large_arteriole_mask_path": "use_pixel_classifier_large_vessel_segmentation",
+    "large_venule_mask_path": "use_pixel_classifier_large_vessel_segmentation",
+    "small_arteriole_mask_path": "use_pixel_classifier_small_vessel_segmentation",
+    "small_venule_mask_path": "use_pixel_classifier_small_vessel_segmentation",
+    "pericyte_mask_path": "use_pixel_classifier_pericyte_segmentation",
+    "pericyte_measurement_mask_path": "use_pixel_classifier_pericyte_segmentation",
+    "capillary_block_mask_path": "use_pixel_classifier_block_segmentation",
+    "cell_mask_path": "use_pixel_classifier_cell_segmentation",
+    "measurement_3d_vessel_mask_path": "use_pixel_classifier_3d_vessel_segmentation",
+}
+
+HIDE_WHEN_UNMET_PARENTS = frozenset(
+    {
+        "smooth_centrelines",
+        "use_thick_vessel_skeletonisation",
+        "visualize_results",
+        "show_plots_in_ide",
+        "detect_cartwheel_hub_artifacts",
+        "run_perturbations",
+        "cluster_collapse_method",
+        "capillary_block_selection",
+    }
+)
+
+#: A dataset-name setting -> the path setting naming the file it is a dataset
+#: *of*. A dataset name means nothing unless that file is HDF5, so its row
+#: shows only while the path names one.
+H5_DATASET_SETTINGS: dict[str, str] = {
+    "capillary_block_mask_h5_dataset_name": "capillary_block_mask_path",
+    "cell_mask_h5_dataset_name": "cell_mask_path",
+    "measurement_3d_vessel_mask_h5_dataset_name": "measurement_3d_vessel_mask_path",
+    "pericyte_mask_h5_dataset_name": "pericyte_mask_path",
+    "pericyte_measurement_mask_h5_dataset_name": "pericyte_measurement_mask_path",
+}
+
+#: What the loaders read as HDF5 (see haemolynx.io.load).
+H5_SUFFIXES = frozenset({".h5", ".hdf5"})
+
+
+def is_h5_path(value: Any) -> bool:
+    """True when *value* names an HDF5 file by its suffix."""
+    if value is None:
+        return False
+    text = str(value).strip()
+    return bool(text) and Path(text).suffix.lower() in H5_SUFFIXES
+
+
+def shared_ilastik_host(values: Mapping[str, Any]) -> str | None:
+    """Where the shared ilastik knobs should appear, or ``None`` if nowhere.
+
+    Prefer Input when main-image ilastik is on. When only vessel-mask ilastik
+    is on, host them on Boundaries so they are not stranded while Input hides
+    them -- only while that role's masks are in use, since a switch left on
+    under an unticked mask switch is hidden and runs nothing. The main switch
+    ticked with no raw image segments nothing: a vessel-mask classifier then
+    takes them to Boundaries, where they are read; with none, they stay on
+    Input beside the main ilastik rows, greyed until a raw image is entered.
+    One schema value each — the panel reparents the same rows.
+    """
+    from haemolynx.graph.boundaries import network_is_synthetic, vessel_mask_files_in_use
+
+    if network_is_synthetic(values):
+        return None  # nothing is segmented: no image to run ilastik on
+    main = bool(values.get("use_ilastik_segmentation"))
+    # Main ilastik takes them first only while it can run
+    # (pipeline.stages.ilastik_segments): ticked with no raw image it kept
+    # them on Input though a vessel-mask classifier read them.
+    if main and values.get("raw_image_path") not in (None, ""):
+        return "input"
+    if (
+        values.get("use_ilastik_large_vessel_segmentation")
+        and vessel_mask_files_in_use(values, "large")
+    ) or (
+        values.get("use_ilastik_small_vessel_segmentation")
+        and vessel_mask_files_in_use(values, "small")
+    ):
+        return "boundaries"
+    return "input" if main else None
+
+
+#: The classifier rows of a mask of objects, hosted where the mask is read
+#: (as the shared ilastik rows are): the pericyte classifier under the mask
+#: row of the first perturbation placing pericytes from a mask, else in the
+#: pericyte measurements; the block classifier under the mask row of the first
+#: capillary block perturbation from a mask. Nowhere while nothing reads the
+#: mask. One set of rows each, which the panel moves (:func:`hosted_classifier_host`).
+HOSTED_CLASSIFIER_ROWS: dict[str, tuple[str, ...]] = {
+    "pericytes": ("use_pixel_classifier_pericyte_segmentation", "pixel_classifier_pericyte_path"),
+    "blocks": ("use_pixel_classifier_block_segmentation", "pixel_classifier_block_path"),
+}
+HOSTED_CLASSIFIER_SETTING_SET: frozenset[str] = frozenset(
+    name for names in HOSTED_CLASSIFIER_ROWS.values() for name in names
+)
+
+#: The mask each hosted classifier makes, as the setting a perturbation reads
+#: it by: the row in an entry the classifier's rows go under.
+HOSTED_MASK_SETTINGS: dict[str, str] = {"pericytes": "pericyte_mask_path", "blocks": "capillary_block_mask_path"}
+
+
+def hosted_classifier_entry(kind: str, values: Mapping[str, Any]) -> int | None:
+    """The first perturbation in the list that reads the mask of *kind* (a
+    pericyte type placing pericytes from a mask, the measured constriction; a
+    capillary block from a mask), by its place in the list; None for none.
+    Whether perturbations run this time or not: the rows go with the entry."""
+    from haemolynx.graph.boundaries import network_is_synthetic
+    from haemolynx.haemodynamics.perturbations import perturbation_mask_setting, perturbations_from_settings
+
+    if network_is_synthetic(values):
+        return None
+    wanted = HOSTED_MASK_SETTINGS[kind]
+    for index, spec in enumerate(perturbations_from_settings(values)):
+        if perturbation_mask_setting(spec.type, {**values, **dict(spec.overrides)}) == wanted:
+            return index
+    return None
+
+
+def hosted_classifier_host(kind: str, values: Mapping[str, Any]) -> str | None:
+    """Where the classifier rows of *kind* (:data:`HOSTED_CLASSIFIER_ROWS`)
+    appear: ``"perturbations"`` while a perturbation in the list reads its
+    mask (in that entry, :func:`hosted_classifier_entry`), else
+    ``"measurements"`` for the pericytes while Pericyte measurements is
+    ticked, else None."""
+    from haemolynx.graph.boundaries import network_is_synthetic
+
+    if network_is_synthetic(values):
+        return None
+    if hosted_classifier_entry(kind, values) is not None:
+        return "perturbations"
+    if kind == "pericytes" and values.get("measure_pericytes"):
+        return "measurements"
+    return None
+
 
 @dataclass(frozen=True)
 class Field:
@@ -54,15 +276,36 @@ class Field:
     help: str
     section: str
     advanced: bool
-    #: Prerequisites from the schema, e.g. ``("use_ilastik_segmentation",)`` or
-    #: ``("!use_ilastik_segmentation",)``. The form greys the row out until
-    #: they hold, rather than hiding it, so a user can see why it is off.
+    #: Prerequisites from the schema, e.g. ``("use_ilastik_segmentation",)``,
+    #: ``("!use_ilastik_segmentation",)``, or ``("haematocrit_model=distributed_iterative",)``
+    #: for a row that only applies under one value of a ``choice`` setting.
+    #: Most sections grey the row out until they hold so a user can see why it
+    #: is off. Rows in :data:`HIDE_WHEN_UNMET_SECTIONS` instead *hide* when
+    #: unmet — see :meth:`is_visible`.
     enabled_by: tuple[str, ...]
 
     #: The kind this row came from, needed to read its value back.
     kind: str = "any"
     #: True when the setting has no default, so an empty box means None.
     nullable: bool = False
+    #: Hint text for an empty box, e.g. "auto"; never becomes the value.
+    #: magicgui's ``create_widget`` does not accept a ``placeholder`` kwarg,
+    #: so this is applied to the built widget separately, not through
+    #: :attr:`options`.
+    placeholder: str | None = None
+    #: The gates in this row's chain that are path settings (the raw image):
+    #: an unmet one greys the row where a toggle's would hide it, and is
+    #: worded "not set" rather than "off". Filled by :func:`fields_for`.
+    path_gates: frozenset[str] = frozenset()
+    #: The declared default of each ``choice`` gate in this row's ``requires``
+    #: (``{"network_source": "segmented_image"}``), so a values mapping that
+    #: lacks the gate reads it as holding its default rather than nothing.
+    #: Filled by :func:`fields_for`; a bool or path gate missing reads as off.
+    gate_defaults: Mapping[str, Any] = dataclass_field(default_factory=dict)
+
+    def rule_holds(self, rule: str, values: Mapping[str, Any]) -> bool:
+        """:func:`is_prerequisite_met`, a missing choice gate at its default."""
+        return is_prerequisite_met(rule, values, default=self.gate_defaults.get(prerequisite_name(rule)))
 
     def to_setting_value(self, raw: Any) -> Any:
         """A widget's value as the setting's own value.
@@ -91,18 +334,469 @@ class Field:
 
     def is_enabled(self, values: Mapping[str, Any]) -> bool:
         """Whether this setting can take effect, given the other values."""
-        return all(is_prerequisite_met(rule, values) for rule in self.enabled_by)
+        return all(self.rule_holds(rule, values) for rule in self.enabled_by)
+
+    @property
+    def hide_when_unmet(self) -> bool:
+        """True when unmet prerequisites should hide this row, not grey it.
+
+        Input, Diameters/FWHM, Vessel-mask, and Statistics options nest under
+        parent toggles; showing every greyed child makes those tabs unreadable.
+        Shared ilastik knobs, centreline children, thick-vessel children, and
+        Export IDE-plot children also hide (hosted or parent-gated). Other
+        sections still grey so the reason stays visible.
+        """
+        if self.name in SHARED_ILASTIK_SETTING_SET:
+            return True
+        if not hidden_by(self, self.enabled_by):
+            # No gate, or only the path gates it names itself (the raw
+            # image), which grey it.
+            return False
+        if self.section in HIDE_WHEN_UNMET_SECTIONS:
+            return True
+        return any(
+            prerequisite_name(rule) in HIDE_WHEN_UNMET_PARENTS
+            for rule in self.enabled_by
+        )
+
+    def is_visible(
+        self, values: Mapping[str, Any], unmet: Sequence[str] | None = None
+    ) -> bool:
+        """Whether this row should appear given the other values.
+
+        Shared ilastik rows use Input-tab visibility here (hosted on Input).
+        Boundaries hosting is layered on by :func:`visible_vessel_mask_settings`.
+        An HDF5 dataset-name row (:data:`H5_DATASET_SETTINGS`) also needs the
+        file it names a dataset of to be HDF5. *unmet* is the row's gates not
+        holding -- its whole chain, from :func:`unmet_chain`, when the caller
+        has the schema; its own ``requires`` otherwise.
+        """
+        if self.name in SHARED_ILASTIK_SETTING_SET:
+            return shared_ilastik_host(values) == "input"
+        pair = H5_DATASET_SETTINGS.get(self.name)
+        if pair is not None and not is_h5_path(values.get(pair)):
+            return False
+        if self.hide_when_unmet:
+            if unmet is None:
+                unmet = [rule for rule in self.enabled_by if not self.rule_holds(rule, values)]
+            # A path gate the row names itself (the raw image) greys it
+            # rather than hiding it: a row that vanished when the Input
+            # tab's raw image was cleared would look removed, where greyed
+            # it says what to set.
+            return not hidden_by(self, unmet)
+        return True
 
     def why_disabled(self, values: Mapping[str, Any]) -> str:
-        """A sentence saying which prerequisite is unmet, for the tooltip."""
-        unmet = [rule for rule in self.enabled_by if not is_prerequisite_met(rule, values)]
+        """A sentence saying which prerequisite is unmet, for the tooltip.
+
+        Each gate is named by its row's label and a choice by what its
+        dropdown shows, as the panel shows them, not as the config spells them.
+        """
+        unmet = [rule for rule in self.enabled_by if not self.rule_holds(rule, values)]
         if not unmet:
             return ""
-        parts = [
-            f"'{rule[1:]}' is on" if rule.startswith("!") else f"'{rule}' is off"
-            for rule in unmet
-        ]
-        return f"Not used while {' and '.join(parts)}."
+        parts = []
+        exclusive = ""
+        for rule in unmet:
+            name, test, expected = parse_prerequisite(rule)
+            if test == PREREQUISITE_OFF and name == EXCLUSIVE_SWITCHES.get(self.name):
+                exclusive = exclusive_reason(name)
+                continue
+            if test == PREREQUISITE_OFF and name == CLASSIFIER_FILLED_ROWS.get(self.name):
+                exclusive = classifier_filled_reason(name)
+                continue
+            row = f'"{label_for(name)}"'
+            shown = CHOICE_VALUE_LABELS.get(name, {}).get(expected, expected)
+            if test == PREREQUISITE_EQUALS:
+                parts.append(f"{row} is not {shown}")
+            elif test == PREREQUISITE_NOT_EQUALS:
+                parts.append(f"{row} is {shown}")
+            elif name in self.path_gates:
+                parts.append(f"{row} is {'set' if test == PREREQUISITE_OFF else 'not set'}")
+            elif test == PREREQUISITE_OFF:
+                parts.append(f"{row} is on")
+            else:
+                parts.append(f"{row} is off")
+        text = f"Not used while {' and '.join(parts)}" if parts else ""
+        if exclusive:
+            text = f"{text}. {exclusive}" if text else exclusive
+        return text
+
+
+def exclusive_reason(partner: str) -> str:
+    """The tooltip of a switch greyed because *partner*, its other way of
+    segmenting the same image (:data:`EXCLUSIVE_SWITCHES`), is on."""
+    return (
+        f'Unavailable while "{label_for(partner)}" is on: the image is segmented one way at a '
+        "time. Untick that to choose this."
+    )
+
+
+def classifier_filled_reason(switch: str) -> str:
+    """The tooltip of a row greyed because the classifier *switch* makes its
+    mask from the raw image (:data:`CLASSIFIER_FILLED_ROWS`)."""
+    return (
+        f'Filled with the mask the classifier makes from the raw image while "{label_for(switch)}" '
+        "is on. Untick that to choose a file."
+    )
+
+
+def exclusive_partner_in_effect(schema: Schema, name: str, values: Mapping[str, Any]) -> str | None:
+    """*name*'s other way of segmenting the same image (:data:`EXCLUSIVE_SWITCHES`)
+    when it is on and in effect, so *name*'s row greys; None otherwise. A
+    partner ticked but out of effect (the classifier while ilastik is on too)
+    greys nothing, so two switches never grey each other."""
+    partner = EXCLUSIVE_SWITCHES.get(name)
+    if partner is None or partner not in schema or not is_prerequisite_met(partner, values):
+        return None
+    return None if unmet_chain(schema, partner, values) else partner
+
+
+def hidden_by(field: Field, unmet: Sequence[str]) -> tuple[str, ...]:
+    """The rules of *unmet* that hide *field* rather than grey it.
+
+    Every one but a path gate the row names in its own ``requires``: the
+    raw image is an input, not a parent toggle, so the switches that read
+    it stay in view, greyed, while it is unset -- and the rows nested under
+    those switches hide as they do under any switch that is not in effect.
+    Nor the row's other way of segmenting the same image being on
+    (:data:`EXCLUSIVE_SWITCHES`): greyed, the row says to untick that one.
+    Nor the classifier that makes the row's mask (:data:`CLASSIFIER_FILLED_ROWS`):
+    greyed, the row shows the file it writes.
+    """
+    standing_aside = {
+        switch
+        for switch in (EXCLUSIVE_SWITCHES.get(field.name), CLASSIFIER_FILLED_ROWS.get(field.name))
+        if switch is not None
+    }
+    return tuple(
+        rule
+        for rule in unmet
+        if not (rule in field.enabled_by and prerequisite_name(rule) in field.path_gates)
+        and not (
+            parse_prerequisite(rule)[1] == PREREQUISITE_OFF and prerequisite_name(rule) in standing_aside
+        )
+    )
+
+
+def prerequisite_chain(schema: Schema, name: str) -> tuple[str, ...]:
+    """Every ``requires`` rule *name* depends on: its own, then its gates' own.
+
+    A setting's ``requires`` names only its nearest gates -- the FWHM decoy
+    check's sample size names the decoy check, not FWHM itself -- but it
+    takes effect only while every gate above those is met too. The panel
+    reads the whole chain, so a row never lingers after a toggle further up
+    has hidden the row it hangs under.
+
+    A ``!gate`` rule's own gate is not followed: the rule asks for the gate
+    to be *out of* effect, and what the gate needs says nothing about that
+    (the segmented image, read while ilastik is off, does not need the raw
+    image ilastik would). :func:`unmet_chain` reads such a gate as off when
+    its own chain is unmet.
+    """
+    chain: list[str] = []
+    seen: set[str] = set()
+    pending = [name]
+    while pending:
+        current = pending.pop(0)
+        if current in seen or current not in schema:
+            continue
+        seen.add(current)
+        for rule in schema[current].requires:
+            if rule not in chain:
+                chain.append(rule)
+            if parse_prerequisite(rule)[1] != PREREQUISITE_OFF:
+                pending.append(prerequisite_name(rule))
+    return tuple(chain)
+
+
+def unmet_chain(
+    schema: Schema, name: str, values: Mapping[str, Any], _seen: frozenset[str] = frozenset()
+) -> tuple[str, ...]:
+    """The rules of *name*'s :func:`prerequisite_chain` not holding in
+    *values*, in chain order; empty when the row is in effect.
+
+    A ``!gate`` rule holds when the gate is off, or on but out of effect
+    because its own chain is unmet (an ilastik switch ticked with no raw
+    image to segment is not segmenting), so the rows that apply while a
+    feature is off come back as the feature's gates go.
+    """
+    unmet: list[str] = []
+    for rule in prerequisite_chain(schema, name):
+        gate, test, _expected = parse_prerequisite(rule)
+        default = _gate_default(schema, gate)
+        if test == PREREQUISITE_OFF and gate not in _seen and is_prerequisite_met(gate, values, default=default):
+            if unmet_chain(schema, gate, values, _seen | {name, gate}):
+                continue
+        if not is_prerequisite_met(rule, values, default=default):
+            unmet.append(rule)
+    return tuple(unmet)
+
+
+def _gate_default(schema: Schema, gate: str) -> Any:
+    """What a ``choice`` gate missing from a values mapping reads as: its
+    declared default. A bool or path gate missing reads as off, as before."""
+    if gate in schema and schema[gate].kind == "choice":
+        return schema[gate].default
+    return None
+
+
+def gate_defaults_for(schema: Schema, name: str) -> dict[str, Any]:
+    """The :attr:`Field.gate_defaults` of *name*: its choice gates' defaults."""
+    out: dict[str, Any] = {}
+    for rule in schema[name].requires if name in schema else ():
+        gate = prerequisite_name(rule)
+        if gate in schema and schema[gate].kind == "choice":
+            out[gate] = schema[gate].default
+    return out
+
+
+def chain_met(schema: Schema, name: str, values: Mapping[str, Any]) -> bool:
+    """True when every gate above *name* holds (see :func:`unmet_chain`)."""
+    return not unmet_chain(schema, name, values)
+
+
+def _visible_settings_in_section(
+    schema: Schema, values: Mapping[str, Any], section: str
+) -> set[str]:
+    """Setting names in *section* that should appear for *values*."""
+    shown: set[str] = set()
+    for setting in schema:
+        if setting.section != section:
+            continue
+        field = field_for(
+            setting,
+            values.get(setting.name),
+            path_gates=path_gates_for(schema, setting.name),
+            gate_defaults=gate_defaults_for(schema, setting.name),
+        )
+        if field.is_visible(values, unmet_chain(schema, setting.name, values)):
+            shown.add(field.name)
+    return shown
+
+
+def visible_vessel_mask_settings(
+    schema: Schema, values: Mapping[str, Any]
+) -> set[str]:
+    """Vessel-mask setting names that should appear for *values*.
+
+    The root ``automated_vessel_assignment`` toggle is always included; every
+    other Vessel masks row follows its ``requires`` chain. Shared ilastik
+    executable/output knobs join in when :func:`shared_ilastik_host` is
+    ``"boundaries"`` (same setting names as on Input).
+    """
+    shown = _visible_settings_in_section(schema, values, "Vessel masks")
+    if shared_ilastik_host(values) == "boundaries":
+        shown.update(SHARED_ILASTIK_SETTING_SET)
+    return shown
+
+
+def visible_input_segmentation_settings(
+    schema: Schema, values: Mapping[str, Any]
+) -> set[str]:
+    """Input-tab setting names that should appear for *values*.
+
+    Ungated rows (toggle, voxel metadata) stay; ``input_path`` vs main-ilastik
+    children follow ``use_ilastik_segmentation``. Shared executable/output knobs
+    appear only while hosted on Input (see :func:`shared_ilastik_host`).
+    """
+    return _visible_settings_in_section(schema, values, "Input and segmentation")
+
+
+def visible_graph_centreline_settings(
+    schema: Schema, values: Mapping[str, Any]
+) -> set[str]:
+    """Graph-tab centreline setting names that should appear for *values*.
+
+    ``smooth_centrelines`` stays whenever it is shown; its method / iterations /
+    max-deviation children hide until smoothing is on.
+    """
+    names = (
+        "smooth_centrelines",
+        "centreline_smoothing_method",
+        "centreline_smoothing_iterations",
+        "centreline_max_deviation",
+    )
+    shown: set[str] = set()
+    for name in names:
+        setting = schema[name]
+        field = field_for(
+            setting,
+            values.get(name),
+            path_gates=path_gates_for(schema, name),
+            gate_defaults=gate_defaults_for(schema, name),
+        )
+        if field.is_visible(values, unmet_chain(schema, name, values)):
+            shown.add(name)
+    return shown
+
+
+def visible_diameter_settings(
+    schema: Schema, values: Mapping[str, Any]
+) -> set[str]:
+    """Diameters-tab diameter + FWHM + EDT setting names that should appear.
+
+    Parent toggles (``all_diams_const``, ``measure_diameters_from_raw_image``,
+    ``use_edt_diameter_crosscheck``, …) stay; gated children follow their
+    ``requires`` chains. EDT mask diameter estimate nests two levels under
+    ``measure_diameters_from_raw_image`` then ``use_edt_diameter_crosscheck``.
+    """
+    return (
+        _visible_settings_in_section(schema, values, "Diameters and pericytes")
+        | _visible_settings_in_section(schema, values, "FWHM diameter measurement")
+        | _visible_settings_in_section(schema, values, "EDT mask diameter estimate")
+        | _visible_settings_in_section(schema, values, "Endothelial diameter")
+    )
+
+
+def visible_statistics_settings(
+    schema: Schema, values: Mapping[str, Any]
+) -> set[str]:
+    """Export-tab Statistics + Connectivity/Network Analysis setting names
+    that should appear for *values*.
+
+    Parent toggles (``statistics``, ``measurement_3d_to_cell_mask``) stay;
+    gated children follow their ``requires`` chains. Under
+    ``measurement_3d_to_cell_mask`` that means ``cell_mask_path``,
+    ``cell_mask_h5_dataset_name``, ``measurement_3d_vessel_mask_path`` and
+    ``measurement_3d_vessel_mask_h5_dataset_name``. Connectivity/Network
+    Analysis (every graph-theoretic connectivity measure: bridges, loops,
+    centrality, community structure) nests two levels under ``statistics``
+    then its own ``statistics_network_analysis`` toggle, the same pattern
+    :func:`visible_diameter_settings` uses for EDT under FWHM.
+    """
+    return _visible_settings_in_section(
+        schema, values, "Statistics and measurements"
+    ) | _visible_settings_in_section(schema, values, "Connectivity/Network Analysis")
+
+
+#: Export-tab IDE plot rows: schema keys stay snake_case for YAML.
+SETTING_ROW_LABELS: dict[str, str] = {
+    "network_source": "Input",
+    "synthetic_template_path": "Template run (.haemorun or .haemobatch)",
+    "synthetic_template_source": "Match the template by",
+    "synthetic_seed": "Synthetic network seed",
+    "synthetic_scale": "Synthetic box scale",
+    "synthetic_scale_axes": "Scale the box along",
+    "synthetic_extension_arteriole_density": "Arterial tree density beyond the template's box",
+    "synthetic_extension_venule_density": "Venous tree density beyond the template's box",
+    "synthetic_interior_dead_ends": "Reproduce dead ends inside the tissue",
+    "synthetic_bed_model": "Capillary bed model",
+    "synthetic_open_ends": "Vessels leaving the box",
+    "visualize_results": "Produce IDE plots",
+    "show_plots_in_ide": "Show plots in IDE",
+    "ide_plot_mode": "IDE plot mode",
+    "hold_ide_plots_open": "Hold IDE plots open",
+    "use_thick_vessel_skeletonisation": "Use alternate skeletonisation for thick vessels",
+    "use_memmap_loading": "Low RAM option for large networks (High disk space usage)",
+    "measurement_3d_to_cell_mask": "Measure distance between vessels and 3D object mask",
+    "measure_tissue_volume": "Measure tissue volume from the raw image (for vessel density)",
+    "mid_run_postprocessing": "Mid-run postprocessing",
+    "use_ilastik_segmentation": "Segment raw image with a pretrained Ilastik classifier",
+    "use_pixel_classifier_segmentation": "Classify and segment raw image in Napari",
+    "input_path": "Segmented image path",
+    "segmentation_source": "Segmentation source",
+    "raw_image_path": "Raw image path",
+    "raw_image_channel": "Raw data channel",
+    "raw_image_stain": "Raw image stain",
+    "output_dir": "Output folder",
+    "measure_diameters_from_raw_image": "Measure diameters from the raw image",
+    "pries_viscosity_form": "Pries law override",
+    # With no venule mask (classifier) entered, the arteriole row's mask is a
+    # global one: io.vessel_masks_are_global.
+    "large_arteriole_mask_path": "Large arteriole/global mask path",
+    "small_arteriole_mask_path": "Small arteriole/global mask path",
+    "ilastik_arteriole_classifier_path": "Ilastik arteriole/global classifier path",
+    "ilastik_small_arteriole_classifier_path": "Ilastik small arteriole/global classifier path",
+    "ilastik_arteriole_channels": "Ilastik arteriole/global classifier's raw channels",
+    "ilastik_venule_channels": "Ilastik venule classifier's raw channels",
+    "ilastik_small_arteriole_channels": "Ilastik small arteriole/global classifier's raw channels",
+    "ilastik_small_venule_channels": "Ilastik small venule classifier's raw channels",
+}
+
+#: Display text for a ``choice`` setting's values, keyed by setting name then
+#: raw value. The stored/YAML value stays a plain snake_case identifier, like
+#: every other choice setting -- only the dropdown's own visible text reads
+#: as a sentence for the ones a user picks a whole model from, rather than a
+#: mode word like "pries" or "plasma_column".
+CHOICE_VALUE_LABELS: dict[str, dict[str, str]] = {
+    "network_source": {
+        "segmented_image": "Segmented image",
+        "synthetic": "Synthetic network from a template run",
+        "synthetic_surround": "The template run's network inside a synthetic one",
+    },
+    "synthetic_template_source": {
+        "statistics": "The template run's statistics report",
+        "graph": "Per-vessel distributions of the template graph",
+    },
+    "synthetic_bed_model": {
+        "delaunay": "Delaunay fill of a jittered lattice",
+        "voronoi": "Edges of a Voronoi tessellation",
+    },
+    "synthetic_open_ends": {
+        "closed": "None (inlets and outlets only)",
+        "template": "As many as the template's",
+    },
+    "synthetic_scale_axes": {
+        "xyz": "x, y and z",
+        "xy": "x and y (the template's depth kept)",
+    },
+    "segmentation_source": {
+        "plasma_column": "Plasma column (luminal stain)",
+        "endothelial": "Anatomical (endothelial wall stain)",
+    },
+    "raw_image_stain": {
+        "auto": "Auto (tell from the image)",
+        "plasma_column": "Plasma column (luminal stain)",
+        "endothelial": "Endothelial (wall stain)",
+    },
+    "segmented_image_downsample": {"none": "None"},
+    "raw_image_downsample": {"none": "None"},
+    "haematocrit_model": {
+        "fixed": "Fixed haematocrit",
+        "distributed_iterative": "Calculated haematocrit distribution - iterative",
+    },
+    "haematocrit_junction_rule": {
+        "no_separation": "1. No phase separation beyond bifurcations (Secomb)",
+        "sequential_bifurcations": "2. Chain of bifurcations (Secomb, generalised)",
+        "split_junctions": "3. Split 4+ vessel junctions into bifurcations",
+    },
+    "haemodynamics_solver": {
+        "dense": "Dense solver",
+        "sparse": "Sparse solver",
+    },
+    "equivalent_resistance_solver": {
+        "eigendecomposition": "Eigendecomposition solver",
+        "sparse": "Sparse solver",
+    },
+    "pries_viscosity_form": {
+        "auto": "Auto: in vitro (1992) or in vivo (1994) by diameter basis",
+        "in_vivo_1994": "In vivo (Pries et al., 1994)",
+        "in_vivo_2005": "In vivo (Pries and Secomb, 2005)",
+        "in_vitro_1992": "In vitro (Pries et al., 1992)",
+    },
+    "boundary_handling": {
+        "leave_unsolved": "Leave unsolved",
+        "remove_disconnected": "Remove disconnected and dead-end branches/trees",
+    },
+}
+
+
+def raw_image_stain_note(
+    setting: Any, read_as: str | None, reading: Mapping[str, Any] | None
+) -> str:
+    """What to say under the "Raw image stain" row: for ``auto``, what the last
+    run read the image as (the graph's ``raw_image_stain``, with its reading's
+    contrast and block count when it has them), since the row itself cannot
+    say and the Diameters tab's method rows follow the answer. Nothing for a
+    stain the user named, or an ``auto`` no run has read yet."""
+    labels = CHOICE_VALUE_LABELS["raw_image_stain"]
+    if setting != "auto" or read_as not in labels or read_as == "auto":
+        return ""
+    note = f"Read as: {labels[read_as]}"
+    if reading and reading.get("blocks"):
+        note += f" (contrast {float(reading.get('contrast', 0.0)):+.2f} over {int(reading['blocks'])} blocks)"
+    return note
 
 
 def label_for(name: str, unit: str | None = None) -> str:
@@ -115,8 +809,9 @@ def label_for(name: str, unit: str | None = None) -> str:
 
     Spelled exactly as the schema spells it, so the row and the config file
     agree -- a GUI that says "µm" where the file says "um" reads as two units.
+    IDE plot rows use :data:`SETTING_ROW_LABELS` so "IDE" stays capitalized.
     """
-    label = name.replace("_", " ").capitalize()
+    label = SETTING_ROW_LABELS.get(name) or name.replace("_", " ").capitalize()
     return f"{label} ({unit})" if unit else label
 
 
@@ -134,11 +829,19 @@ OPTIONS_BY_WIDGET = {
 }
 
 
-def _options_for(setting: Setting, widget_type: str) -> dict[str, Any]:
+def _options_for(setting: Setting, widget_type: str, value: Any = None) -> dict[str, Any]:
     """The magicgui keyword options the widget this setting gets will accept."""
     options: dict[str, Any] = {}
-    if setting.kind == "choice":
-        options["choices"] = list(setting.choices or ())
+    if setting.name in CHANNEL_SETTINGS:
+        # Until the panel reads the file it names, only the current channel.
+        options["choices"] = channel_choices([], value)
+    elif setting.kind == "choice":
+        labels = CHOICE_VALUE_LABELS.get(setting.name)
+        options["choices"] = (
+            [(labels.get(c, c), c) for c in (setting.choices or ())]
+            if labels
+            else list(setting.choices or ())
+        )
     elif setting.kind == "int" and widget_type == "SpinBox":
         low, high = DEFAULT_INT_RANGE
         options["min"] = int(setting.minimum) if setting.minimum is not None else low
@@ -157,7 +860,52 @@ def _options_for(setting: Setting, widget_type: str) -> dict[str, Any]:
             options["mode"] = "r"
         else:
             options["mode"] = "w"
+        if setting.name in PATH_FILTERS:
+            options["filter"] = PATH_FILTERS[setting.name]
     return options
+
+
+#: Settings that pick one channel of the image another setting names: the
+#: panel shows them as a drop-down of that file's channels, Fiji-named (C1,
+#: C2, ...), where a number box would leave the user to count from 0.
+#: The file dialogue's filter for a path setting that names one kind of
+#: file; kept equal to ``gui.run_snapshot.SAVE_FILTER`` (not imported: that
+#: module imports the stages).
+PATH_FILTERS: dict[str, str] = {
+    "synthetic_template_path": (
+        "HaemoLynx run or batch template (*.haemorun *.haemobatch);;HaemoLynx run (*.haemorun);;"
+        "Batch template (*.haemobatch);;All files (*)"
+    ),
+}
+
+CHANNEL_SETTINGS = {
+    "raw_image_channel": "raw_image_path",
+    "tissue_raw_channel": "tissue_raw_tiff_path",
+}
+
+#: The drop-down's "no channel" entry: a single-channel file has nothing to
+#: pick, and a multi-channel one has to be told which.
+NO_CHANNEL_SINGLE = "single-channel file"
+NO_CHANNEL_CHOOSE = "choose a channel"
+
+
+def channel_choices(channels, current: int | None = None) -> list[tuple[str, int | None]]:
+    """``(label, value)`` entries for a channel drop-down.
+
+    *channels* is what :func:`haemolynx.io.tiff_channels` read from the file
+    (empty for a single-channel one, or none chosen yet). A channel the file
+    does not have stays listed when it is the current one -- marked, so the
+    mistake is visible rather than silently changed to another channel.
+    """
+    entries: list[tuple[str, int | None]] = [
+        (NO_CHANNEL_CHOOSE if channels else NO_CHANNEL_SINGLE, None)
+    ]
+    entries += [(channel.label, channel.index) for channel in channels]
+    known = {channel.index for channel in channels}
+    if current is not None and int(current) not in known:
+        label = f"C{int(current) + 1}"
+        entries.append((f"{label} (not in this file)" if channels else label, int(current)))
+    return entries
 
 
 #: Widgets that cannot hold "unset". A setting with no default needs one that
@@ -166,11 +914,26 @@ def _options_for(setting: Setting, widget_type: str) -> dict[str, Any]:
 #: setting is set while the feature reading it is off.
 NUMERIC_WIDGETS = {"SpinBox", "FloatSpinBox"}
 
+#: Numbers with a default whose unset value is a choice of its own, and what
+#: an empty box means. A spin box cannot be emptied, so the panel could never
+#: choose it: the FWHM same-edge window unset is sized by each vessel's width,
+#: the only way its multiplier and minimum rows take effect.
+EMPTYABLE_NUMBERS: Mapping[str, str] = {
+    "fwhm_same_edge_arc_window_um": "by vessel width",
+}
+
+
+def can_be_left_empty(setting: Setting) -> bool:
+    """Whether the panel lets *setting*'s box be emptied, meaning unset."""
+    return setting.default is None or setting.name in EMPTYABLE_NUMBERS
+
 
 def widget_type_for(setting: Setting) -> str:
     """The widget that can express this setting, including its unset state."""
+    if setting.name in CHANNEL_SETTINGS:
+        return "ComboBox"
     widget = WIDGET_TYPES[setting.kind]
-    if setting.default is None and widget in NUMERIC_WIDGETS:
+    if can_be_left_empty(setting) and widget in NUMERIC_WIDGETS:
         return "LineEdit"
     return widget
 
@@ -206,8 +969,19 @@ def display_value_for(setting: Setting, value: Any) -> Any:
     return _display_value(setting, value, widget_type_for(setting))
 
 
-def field_for(setting: Setting, value: Any = None) -> Field:
-    """The form row for one setting, showing *value* or the schema default."""
+def field_for(
+    setting: Setting,
+    value: Any = None,
+    *,
+    path_gates: frozenset[str] = frozenset(),
+    gate_defaults: Mapping[str, Any] | None = None,
+) -> Field:
+    """The form row for one setting, showing *value* or the schema default.
+
+    *path_gates* names the path settings among its gates (see
+    :attr:`Field.path_gates`) and *gate_defaults* its choice gates' defaults
+    (:attr:`Field.gate_defaults`); :func:`fields_for` reads both off the schema.
+    """
     widget_type = widget_type_for(setting)
     return Field(
         name=setting.name,
@@ -216,20 +990,42 @@ def field_for(setting: Setting, value: Any = None) -> Field:
         value=_display_value(
             setting, setting.default if value is None else value, widget_type
         ),
-        options=_options_for(setting, widget_type),
-        help=setting.help + (f" ({setting.unit})" if setting.unit else ""),
+        options=_options_for(
+            setting, widget_type, setting.default if value is None else value
+        ),
+        help=tooltip_for(setting) + (f" ({setting.unit})" if setting.unit else ""),
         section=setting.section,
         advanced=setting.advanced,
         enabled_by=tuple(setting.requires or ()),
         kind=setting.kind,
-        nullable=setting.default is None,
+        nullable=can_be_left_empty(setting),
+        placeholder=setting.placeholder or EMPTYABLE_NUMBERS.get(setting.name),
+        path_gates=path_gates,
+        gate_defaults=dict(gate_defaults or {}),
+    )
+
+
+def path_gates_for(schema: Schema, name: str) -> frozenset[str]:
+    """The path settings among every gate above *name*."""
+    return frozenset(
+        gate
+        for gate in (prerequisite_name(rule) for rule in prerequisite_chain(schema, name))
+        if gate in schema and schema[gate].kind == "path"
     )
 
 
 def fields_for(schema: Schema, values: Mapping[str, Any] | None = None) -> list[Field]:
     """Every setting as a form row, in schema order."""
     values = values or {}
-    return [field_for(setting, values.get(setting.name)) for setting in schema]
+    return [
+        field_for(
+            setting,
+            values.get(setting.name),
+            path_gates=path_gates_for(schema, setting.name),
+            gate_defaults=gate_defaults_for(schema, setting.name),
+        )
+        for setting in schema
+    ]
 
 
 def sections_for(

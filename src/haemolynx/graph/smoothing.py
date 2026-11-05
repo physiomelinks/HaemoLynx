@@ -21,24 +21,43 @@ skeleton on capillaries, where the turns are genuine rather than sampled.
 
 Whatever is done to a centreline, it must still describe the vessel it came
 from, so a smoothed path is accepted only if every interior point stays within
-``max_deviation`` of a skeleton voxel; otherwise it is blended back towards the
+a tolerance of a skeleton voxel; otherwise it is blended back towards the
 original until it does, and failing that the original is kept. Each edge records
-which of those happened.
+which of those happened. The tolerance is ``max_deviation``, widened where one
+voxel's staircase is itself wider (half the voxel diagonal -- on 2 um z steps a
+straight line lies up to ~1 um from every voxel centre) and in a wide vessel (a
+fraction of its radius): a fixed 1 um kept the staircase exactly where it was
+largest.
+
+Where the original path is itself off the skeleton, the tolerance is measured
+from the path instead. Graph building bridges gaps in the skeleton with straight
+steps, often 5-20 um long, and a node moved by cluster collapse starts its
+edges off the skeleton too; no voxel lies along either, so judged against the
+skeleton alone not even the original passed, and an edge with a bridge kept its
+staircase. On the Stack A graph that kept 1137 of 3305 edges raw, 31 of its
+61 mm of vessel, nearly all for a straight step of 2 um or more; measured from
+the path where it leaves the skeleton, none are, and those edges came back 7%
+shorter.
 """
 from __future__ import annotations
 
 import logging
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping, Optional
 
 import networkx as nx
 import numpy as np
+
+from haemolynx.geometry import resample_at_step
 
 logger = logging.getLogger(__name__)
 
 __all__ = [
     "SMOOTHING_METHODS",
+    "STRAIGHT_STEP_UM",
+    "edges_with_straight_steps",
     "smooth_polyline",
     "smooth_graph_centrelines",
+    "smooth_straight_steps",
     "taubin_smooth_polyline",
     "chaikin_smooth_polyline",
 ]
@@ -55,9 +74,21 @@ TAUBIN_MU = -0.53
 #: majority while still catching a corner that has been cut across a bend.
 DEFAULT_MAX_DEVIATION_UM = 1.0
 
+#: How much of a vessel's radius a smoothed centreline may stray from the
+#: skeleton: well inside the lumen, however wide it is.
+RADIUS_FRACTION = 0.5
+
+#: At most this many points along an edge are read for its radius (their median).
+_RADIUS_SAMPLES = 7
+
 #: Tried in turn when a smoothed path strays too far: each is the weight given
 #: to the smoothed path against the original.
 RELAXATION_STEPS = (0.75, 0.5, 0.25, 0.1)
+
+#: Samples per tolerance along an original path's off-skeleton stretches. A
+#: point exactly the tolerance from the path is at most 0.8% further than that
+#: from the nearest sample, so sampling rejects next to nothing the path allows.
+_OFF_SKELETON_SAMPLES_PER_TOLERANCE = 4
 
 
 def taubin_smooth_polyline(points: Any, iterations: int = 10) -> np.ndarray:
@@ -125,22 +156,88 @@ def _deviation(points: np.ndarray, tree) -> np.ndarray:
     return tree.query(points)[0]
 
 
+def _resample_to_point_count(points: np.ndarray, n: int) -> np.ndarray:
+    """*points* resampled to exactly *n* points along its own arc length.
+
+    Chaikin corner-cutting roughly doubles the point count each iteration
+    (``_chaikin_once``), unlike Taubin, which perturbs the same points it
+    was given -- so a chaikin-smoothed candidate can have a different shape
+    than *original*, which the relaxation blend below needs to combine
+    elementwise. Resampling by normalized arc length gives the two curves a
+    matching point count without assuming any correspondence between their
+    original indices.
+    """
+    if len(points) == n:
+        return points
+    deltas = np.linalg.norm(np.diff(points, axis=0), axis=1)
+    cumulative = np.concatenate(([0.0], np.cumsum(deltas)))
+    total = float(cumulative[-1])
+    if total <= 0.0:
+        return np.repeat(points[:1], n, axis=0)
+    targets = np.linspace(0.0, total, n)
+    resampled = np.empty((n, points.shape[1]), dtype=float)
+    for axis in range(points.shape[1]):
+        resampled[:, axis] = np.interp(targets, cumulative, points[:, axis])
+    return resampled
+
+
 def _polyline_length(points: np.ndarray) -> float:
     return float(np.linalg.norm(np.diff(points, axis=0), axis=1).sum())
 
 
+def _off_skeleton_stretches(original: np.ndarray, tree, max_deviation: float) -> np.ndarray:
+    """Points along *original* that lie further than *max_deviation* from the
+    skeleton: its straight bridges across gaps, and its first steps off a node
+    that cluster collapse moved. Empty for a path that never leaves the skeleton.
+
+    Sampled :data:`_OFF_SKELETON_SAMPLES_PER_TOLERANCE` to the tolerance, and
+    at the path's own vertices -- so the original always passes, and a blend
+    close to it can, even where it strays only a sliver past the tolerance that
+    the samples fall either side of.
+
+    The tolerance is often exactly half the voxel diagonal, which is how far a
+    diagonal step's midpoint is from the voxels it joins, so a staircase on its
+    own skeleton must not round its way in: hence the margin.
+    """
+    dense = np.vstack(
+        [original, resample_at_step(original, max_deviation / _OFF_SKELETON_SAMPLES_PER_TOLERANCE)]
+    )
+    return dense[_deviation(dense, tree) > max_deviation * (1.0 + 1e-9)]
+
+
+def _distance_to_polyline(points: np.ndarray, polyline: np.ndarray) -> np.ndarray:
+    """How far each of *points* is from the nearest point of *polyline*'s segments."""
+    a, b = polyline[:-1], polyline[1:]
+    d = b - a
+    length_sq = np.einsum("ij,ij->i", d, d)
+    rel = points[:, None, :] - a[None, :, :]
+    t = np.einsum("mij,ij->mi", rel, d) / np.where(length_sq > 0, length_sq, 1.0)
+    t = np.clip(np.where(length_sq > 0, t, 0.0), 0.0, 1.0)
+    return np.linalg.norm(rel - t[..., None] * d, axis=2).min(axis=1)
+
+
 def _is_acceptable(
-    original: np.ndarray, candidate: np.ndarray, tree, max_deviation: float
+    original: np.ndarray,
+    candidate: np.ndarray,
+    tree,
+    max_deviation: float,
+    off_skeleton: Optional[np.ndarray] = None,
+    must_pass: Optional[np.ndarray] = None,
 ) -> bool:
     """Whether *candidate* still describes the vessel *original* traced.
 
     Two conditions, and both are needed.
 
-    Every interior point must stay within *max_deviation* of a skeleton voxel.
-    Only interior points are judged: the endpoints are the graph's node
-    positions, which smoothing never moves and which cluster collapse has often
-    already placed off the skeleton, so judging them would reject a path for a
-    fault it does not have.
+    Every interior point must stay within *max_deviation* of a skeleton voxel,
+    or, where the original is itself off the skeleton, of the original:
+    *off_skeleton* is those stretches of it (:func:`_off_skeleton_stretches`).
+    Graph building bridges gaps with straight steps that no voxel lies along,
+    so judged against the skeleton alone a path with a bridge failed whatever
+    was done to it -- the original included. Where the original is on the
+    skeleton the test is the skeleton's alone. Only interior points are
+    judged: the endpoints are the graph's node positions, which smoothing never
+    moves and which cluster collapse has often already placed off the skeleton,
+    so judging them would reject a path for a fault it does not have.
 
     And it must not be longer than the path it came from. Removing a staircase
     can only shorten a centreline, so a longer result means the filter has
@@ -150,29 +247,151 @@ def _is_acceptable(
     inflated curve wiggles *within* the tolerance and still adds length. Left
     unchecked, a thousand passes measured 8.2% over the true length, which is
     worse than not smoothing at all.
+
+    Given *must_pass*, it must also run within *max_deviation* of each of those
+    points. Being near the original is not enough where the original turns back
+    on itself: a chord across the turn lies along the way back, and only the
+    turn's own points show that it was cut off.
     """
     if _polyline_length(candidate) > _polyline_length(original) * (1.0 + 1e-9):
         return False
-    return float(_deviation(candidate[1:-1], tree).max()) <= max_deviation
+    if must_pass is not None and len(must_pass) and float(
+        _distance_to_polyline(must_pass, candidate).max()
+    ) > max_deviation * (1.0 + 1e-9):
+        return False
+    interior = candidate[1:-1]
+    strayed = interior[_deviation(interior, tree) > max_deviation]
+    if not len(strayed):
+        return True
+    if off_skeleton is None or not len(off_skeleton):
+        return False
+    from scipy.spatial import cKDTree
+
+    return float(cKDTree(off_skeleton).query(strayed)[0].max()) <= max_deviation
 
 
 def _accept(
-    original: np.ndarray, smoothed: np.ndarray, tree, max_deviation: float
+    original: np.ndarray,
+    smoothed: np.ndarray,
+    tree,
+    max_deviation: float,
+    must_pass: Optional[np.ndarray] = None,
 ) -> tuple[np.ndarray, str]:
-    """The most smoothed version that still describes the same vessel."""
+    """The most smoothed version that still describes the same vessel (and runs
+    within *max_deviation* of each of *must_pass*, when given)."""
     if len(smoothed) < 3:
         return original, "too_short"
 
-    if _is_acceptable(original, smoothed, tree, max_deviation):
+    off_skeleton = _off_skeleton_stretches(original, tree, max_deviation)
+    if _is_acceptable(original, smoothed, tree, max_deviation, off_skeleton, must_pass):
         return smoothed, "smoothed"
 
+    # Elementwise blending needs matching point counts; see
+    # _resample_to_point_count's own docstring for why smoothed and
+    # original can differ (Taubin never does -- this is a no-op there).
+    smoothed_for_blend = (
+        smoothed if len(smoothed) == len(original)
+        else _resample_to_point_count(smoothed, len(original))
+    )
     for weight in RELAXATION_STEPS:
-        blended = (1.0 - weight) * original + weight * smoothed
+        blended = (1.0 - weight) * original + weight * smoothed_for_blend
         blended[0], blended[-1] = original[0], original[-1]
-        if _is_acceptable(original, blended, tree, max_deviation):
+        if _is_acceptable(original, blended, tree, max_deviation, off_skeleton, must_pass):
             return blended, "relaxed"
 
     return original, "kept_raw"
+
+
+def _coarse_steps_smoothed(
+    points: np.ndarray, spacing: np.ndarray, method: str, iterations: int
+) -> np.ndarray:
+    """*points* with each coordinate along an axis coarser than the finest
+    smoothed over that axis's own voxels; the finest axes' left as they are.
+
+    A path crossing a 2 um z plane every few 0.5 um steps in-plane is a
+    staircase a z voxel high, a few microns from step to step: smoothed over
+    the finest step it stays (a 41.6 um oblique vessel on 2 x 0.5 x 0.5 um
+    voxels measured 47.1 um, on 3 x 0.5 x 0.5 um 50.5 um). Counted in voxel
+    steps (each step one, as a 26-connected skeleton walks), the other
+    coordinates of a straight vessel run evenly, so a coarse coordinate
+    averaged and filtered over as many steps as one of its voxels spans of
+    the axis leading the path (the one the path crosses most voxels of)
+    comes out straight with them. Along a path the coarse axis leads, that
+    coordinate is straight already, so what the path does across it is left
+    to the fine pass: smoothed over no more distance than a path in-plane
+    is."""
+    voxel_steps = np.abs(np.diff(points / spacing, axis=0))
+    steps = voxel_steps.max(axis=1)
+    along = np.concatenate([[0.0], np.cumsum(steps)])
+    keep = np.concatenate([[True], steps > 0.0])
+    if along[-1] <= 0.0:
+        return points
+    out = points.copy()
+    finest = float(spacing.min())
+    leading = float(spacing[int(np.argmax(voxel_steps.sum(axis=0)))])
+    for axis in np.flatnonzero(~np.isclose(spacing, finest)):
+        width = max(1.0, float(spacing[axis]) / leading)
+        count = int(np.ceil(along[-1] / width)) + 1
+        if count < 3:
+            continue
+        at = np.linspace(0.0, along[-1], count)
+        # Each sample the mean over the coarse voxel's worth of steps round
+        # it, not the value at it: read at a point, the staircase aliased
+        # into a slow wave 0.3 um off the vessel.
+        # Smoothed as a polyline with the parameter along (three columns,
+        # as Chaikin's corner cutting writes), so every method keeps it.
+        means = _window_means(along[keep], points[keep, axis], at, width / 2.0)
+        curve = np.column_stack([at, means, np.zeros_like(at)])
+        smoothed = smooth_polyline(curve, method=method, iterations=iterations)
+        out[:, axis] = np.interp(along, smoothed[:, 0], smoothed[:, 1])
+    return out
+
+
+def _window_means(knots: np.ndarray, values: np.ndarray, at: np.ndarray, half: float) -> np.ndarray:
+    """The mean of the piecewise-linear function through ``(knots, values)``
+    (*knots* increasing) over ``at +- half``, the window narrowed evenly to
+    fit inside the knots -- so a straight line comes back as itself, its ends
+    included."""
+    width = np.diff(knots)
+    integral = np.concatenate([[0.0], np.cumsum(0.5 * (values[1:] + values[:-1]) * width)])
+
+    def integral_to(x: np.ndarray) -> np.ndarray:
+        i = np.clip(np.searchsorted(knots, x, side="right") - 1, 0, len(knots) - 2)
+        u = x - knots[i]
+        return integral[i] + values[i] * u + 0.5 * (values[i + 1] - values[i]) / width[i] * u * u
+
+    reach = np.minimum(half, np.minimum(at - knots[0], knots[-1] - at))
+    means = np.interp(at, knots, values)
+    inside = reach > 0.0
+    means[inside] = (integral_to(at[inside] + reach[inside]) - integral_to(at[inside] - reach[inside])) / (
+        2.0 * reach[inside]
+    )
+    return means
+
+
+def edge_tolerance_um(
+    voxels: np.ndarray,
+    *,
+    max_deviation: float,
+    voxel_size_zyx: tuple[float, float, float],
+    radius_at: Optional[Callable[[np.ndarray], float]] = None,
+) -> float:
+    """How far this edge's smoothed centreline may sit from the skeleton.
+
+    The largest of *max_deviation*, half the voxel diagonal (the staircase's
+    own scale), and :data:`RADIUS_FRACTION` of the vessel's radius -- the
+    median of *radius_at* at up to :data:`_RADIUS_SAMPLES` points along it.
+    """
+    tolerance = max(
+        float(max_deviation), 0.5 * float(np.linalg.norm(np.asarray(voxel_size_zyx, dtype=float)))
+    )
+    if radius_at is not None and len(voxels):
+        picks = np.unique(np.linspace(0, len(voxels) - 1, min(_RADIUS_SAMPLES, len(voxels))).astype(int))
+        radii = [float(radius_at(voxels[i])) for i in picks]
+        radii = [r for r in radii if r > 0]
+        if radii:
+            tolerance = max(tolerance, RADIUS_FRACTION * float(np.median(radii)))
+    return tolerance
 
 
 def smooth_graph_centrelines(
@@ -183,14 +402,31 @@ def smooth_graph_centrelines(
     method: str = "taubin",
     iterations: int = 10,
     max_deviation: float = DEFAULT_MAX_DEVIATION_UM,
+    radius_at: Optional[Callable[[np.ndarray], float]] = None,
+    edges=None,
+    always_resample: bool = False,
 ) -> Mapping[str, int]:
     """Smooth every edge's centreline in place, and re-measure its length.
 
-    ``length`` is rewritten from the accepted path, so the number the
-    haemodynamics uses describes the same curve the exports draw. Each edge
-    gains ``centreline_smoothing`` saying what happened to it: ``smoothed``,
+    With *edges* (``(u, v, key)``, either way round), only those. With
+    *always_resample*, every path is first resampled at the finest voxel's
+    step, as one on anisotropic voxels always is: a long straight step is two
+    points far apart, and the filter, which moves points, only pulls its two
+    ends in (on cube voxels a 6.4 um chord kept a 2.75 um step; resampled,
+    1 um). On anisotropic voxels the coordinates along the coarser axes are
+    smoothed over their own voxels first (:func:`_coarse_steps_smoothed`).
+
+    ``length`` is rewritten from every edge's path -- smoothed or not -- so the
+    number the haemodynamics uses describes the same curve the exports draw,
+    whatever earlier steps did to either. Each edge gains
+    ``centreline_smoothing`` saying what happened to it: ``smoothed``,
     ``relaxed`` (blended back to stay on the vessel), ``kept_raw`` (nothing was
     close enough) or ``too_short`` (a two-point edge has no corners to cut).
+
+    How far a smoothed path may stray is set per edge by
+    :func:`edge_tolerance_um` -- *radius_at*, when given, is the vessel radius
+    in microns at a ``(z, y, x)`` position (e.g.
+    ``graph.assemble.mask_radius_sampler``).
 
     Returns those counts. A graph with no skeleton to check against is left
     alone -- there would be nothing to say whether a smoothed path had wandered
@@ -201,31 +437,58 @@ def smooth_graph_centrelines(
     from haemolynx.graph._helpers import calculate_path_length
 
     counts = {"smoothed": 0, "relaxed": 0, "kept_raw": 0, "too_short": 0}
-    support = np.argwhere(np.asarray(skeleton) > 0).astype(float)
+    # A bool skeleton (a memmap, in low-RAM mode) needs no whole-volume `> 0`.
+    skeleton = np.asanyarray(skeleton)
+    foreground = skeleton if skeleton.dtype == bool else skeleton > 0
+    support = np.argwhere(foreground).astype(float)
     if support.size == 0:
         logger.warning("No skeleton voxels: centrelines are left as they are.")
         return counts
     tree = cKDTree(support * np.asarray(voxel_size_zyx, dtype=float))
+    spacing = np.asarray(voxel_size_zyx, dtype=float)
+    finest_step = float(spacing.min())
+    anisotropic = not np.allclose(spacing, spacing[0])
 
-    edges = G.edges(keys=True, data=True) if G.is_multigraph() else (
+    chosen = None if edges is None else {(frozenset((u, v)), key) for u, v, key in edges}
+    all_edges = G.edges(keys=True, data=True) if G.is_multigraph() else (
         (u, v, 0, data) for u, v, data in G.edges(data=True)
     )
-    for u, v, key, data in list(edges):
+    for u, v, key, data in list(all_edges):
+        if chosen is not None and (frozenset((u, v)), key) not in chosen:
+            continue
         voxels = data.get("voxels")
         if voxels is None or len(voxels) < 3:
             counts["too_short"] += 1
             data["centreline_smoothing"] = "too_short"
+            if voxels is not None and len(voxels) >= 2:
+                data["length"] = float(calculate_path_length(voxels))
             continue
 
         original = np.asarray(voxels, dtype=float)
-        smoothed = smooth_polyline(original, method=method, iterations=iterations)
-        accepted, outcome = _accept(original, smoothed, tree, max_deviation)
+        # On anisotropic voxels the centreline's vertices are a voxel apart --
+        # four times further along a 2 um z than in-plane -- and a pass of the
+        # filter averages neighbouring vertices, so z runs were smoothed over
+        # four times the distance. Evenly spaced points first.
+        even = resample_at_step(original, finest_step) if (anisotropic or always_resample) else original
+        # The coarse axis's own staircase first (_coarse_steps_smoothed):
+        # smoothed over the fine step alone it stayed.
+        source = (
+            resample_at_step(_coarse_steps_smoothed(original, spacing, method, iterations), finest_step)
+            if anisotropic else even
+        )
+        smoothed = smooth_polyline(source, method=method, iterations=iterations)
+        tolerance = edge_tolerance_um(
+            original, max_deviation=max_deviation, voxel_size_zyx=voxel_size_zyx, radius_at=radius_at
+        )
+        accepted, outcome = _accept(even, smoothed, tree, tolerance)
 
         counts[outcome] += 1
         data["centreline_smoothing"] = outcome
         if outcome in {"smoothed", "relaxed"}:
             data["voxels"] = accepted.tolist()
-            data["length"] = float(calculate_path_length(accepted.tolist()))
+        # Every edge, kept raw included: an earlier step may have moved a
+        # path's end without measuring it again.
+        data["length"] = float(calculate_path_length(data["voxels"]))
 
     logger.info(
         "Centreline smoothing (%s, %d passes): %d smoothed, %d relaxed, "
@@ -234,3 +497,63 @@ def smooth_graph_centrelines(
         counts["kept_raw"], counts["too_short"],
     )
     return counts
+
+
+#: A straight step longer than this (um) in a centreline of three or more
+#: points is a join drawn after smoothing: the lumen clean-up's chords
+#: (``doubled_stretches``' zips and rejoins) and a junction end cluster
+#: collapse moved, which the smoothing pass before them never saw.
+STRAIGHT_STEP_UM = 3.0
+
+
+def edges_with_straight_steps(G: nx.Graph, max_step_um: float = STRAIGHT_STEP_UM) -> list:
+    """``(u, v, key)`` of every vessel (not a thick-vessel bridge, which is
+    straight by design) whose path of three or more points holds a straight
+    step longer than *max_step_um*."""
+    from haemolynx.graph.thick_vessel_junctions import IS_ZERO_RESISTANCE
+
+    found = []
+    all_edges = G.edges(keys=True, data=True) if G.is_multigraph() else (
+        (u, v, 0, data) for u, v, data in G.edges(data=True)
+    )
+    for u, v, key, data in all_edges:
+        voxels = data.get("voxels")
+        if data.get(IS_ZERO_RESISTANCE) or voxels is None or len(voxels) < 3:
+            continue
+        steps = np.linalg.norm(np.diff(np.asarray(voxels, dtype=float), axis=0), axis=1)
+        if float(steps.max()) > max_step_um:
+            found.append((u, v, key))
+    return found
+
+
+def smooth_straight_steps(
+    G: nx.Graph,
+    skeleton: np.ndarray,
+    *,
+    voxel_size_zyx: tuple[float, float, float] = (1.0, 1.0, 1.0),
+    method: str = "taubin",
+    iterations: int = 10,
+    max_deviation: float = DEFAULT_MAX_DEVIATION_UM,
+    radius_at: Optional[Callable[[np.ndarray], float]] = None,
+    max_step_um: float = STRAIGHT_STEP_UM,
+) -> int:
+    """Smooth again, in place, the vessels holding a straight step longer
+    than *max_step_um* (:func:`edges_with_straight_steps`), resampled first
+    so the step is smoothed with the rest, under the same acceptance as
+    :func:`smooth_graph_centrelines` (near the skeleton or the path it came
+    from, never longer). Every other edge is left exactly as it is. Returns
+    how many edges were smoothed.
+
+    The lumen clean-up runs after the build's smoothing pass and joins a cut
+    piece to the vessel it doubled with a straight chord across the lumen;
+    on Stack A 15 such chords of 5-8.5 um were left, drawn as kinks, and their
+    14 vessels were 21 um (4%) longer than smoothed.
+    """
+    edges = edges_with_straight_steps(G, max_step_um)
+    if not edges:
+        return 0
+    counts = smooth_graph_centrelines(
+        G, skeleton, voxel_size_zyx=voxel_size_zyx, method=method, iterations=iterations,
+        max_deviation=max_deviation, radius_at=radius_at, edges=edges, always_resample=True,
+    )
+    return int(counts["smoothed"] + counts["relaxed"])

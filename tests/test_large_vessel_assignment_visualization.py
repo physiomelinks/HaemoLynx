@@ -1,0 +1,669 @@
+"""Tests for large-vessel assignment Plotly visualizations."""
+from __future__ import annotations
+
+from pathlib import Path
+from types import SimpleNamespace
+
+import networkx as nx
+import numpy as np
+
+from haemolynx.pipeline import default_schema
+from haemolynx.pipeline.stages import (
+    HaemodynamicModel,
+    Solution,
+    VesselNetwork,
+    _write_run_final_graph_3d_html,
+    export_results,
+)
+from haemolynx.visualization import (
+    VESSEL_VOLUME_TRACE_STYLES,
+    add_binary_mask_volume_trace,
+    selected_vessel_masks_for_html,
+    visualize_3d_plotly_large_vessel_assignment,
+    visualize_3d_plotly_large_vessel_assignment_flow_direction,
+    write_final_graph_3d_html,
+)
+
+
+def _tiny_graph() -> nx.MultiGraph:
+    G = nx.MultiGraph()
+    G.add_node(1, pos=np.array([0.0, 0.0, 0.0]))
+    G.add_node(2, pos=np.array([0.0, 0.0, 5.0]))
+    G.add_node(3, pos=np.array([0.0, 0.0, 10.0]))
+    G.add_edge(1, 2, flow_signed=2.0, branch_order="Art1")
+    G.add_edge(2, 3, flow_signed=-1.0, branch_order="Ven1")
+    return G
+
+
+def _tiny_masks(shape=(8, 6, 6)):
+    large_art = np.zeros(shape, dtype=bool)
+    large_ven = np.zeros(shape, dtype=bool)
+    small_art = np.zeros(shape, dtype=bool)
+    small_ven = np.zeros(shape, dtype=bool)
+    large_art[0:2, 0:2, 0:2] = True
+    large_ven[0:2, 0:2, 4:6] = True
+    small_art[6:8, 4:6, 0:2] = True
+    small_ven[6:8, 4:6, 4:6] = True
+    return large_art, large_ven, small_art, small_ven
+
+
+def _volume_traces(fig):
+    return [trace for trace in fig.data if getattr(trace, "type", "") == "volume"]
+
+
+def _volume_style_tuple(trace):
+    colorscale = list(trace.colorscale)
+    color = colorscale[-1][1]
+    return (trace.name, float(trace.opacity), str(color))
+
+
+def test_visualize_large_vessel_assignment_with_flow_direction_adds_arrows():
+    G = _tiny_graph()
+    large_art, large_ven, small_art, small_ven = _tiny_masks((12, 12, 12))
+
+    fig = visualize_3d_plotly_large_vessel_assignment_flow_direction(
+        G,
+        large_arteriole_mask=large_art,
+        large_venule_mask=large_ven,
+        small_arteriole_mask=small_art,
+        small_venule_mask=small_ven,
+        input_nodes=[1],
+        output_nodes=[3],
+        voxel_size_zyx=(1.0, 1.0, 1.0),
+        show=False,
+    )
+
+    cone_traces = [trace for trace in fig.data if getattr(trace, "type", "") == "cone"]
+    assert len(cone_traces) == 1
+    assert len(cone_traces[0]["x"]) == 2
+
+
+def test_large_vessel_assignment_viz_schema_default():
+    schema = default_schema()
+    assert schema["large_vessel_3d_volume_downsample_stride"].default == 1
+    assert schema["large_vessel_3d_volume_downsample_stride"].requires == (
+        "use_large_vessel_masks",
+        "automated_vessel_assignment",
+    )
+
+
+def test_assignment_view_volume_traces_use_shared_styles():
+    G = _tiny_graph()
+    large_art, large_ven, small_art, small_ven = _tiny_masks()
+    fig = visualize_3d_plotly_large_vessel_assignment(
+        G,
+        large_arteriole_mask=large_art,
+        large_venule_mask=large_ven,
+        small_arteriole_mask=small_art,
+        small_venule_mask=small_ven,
+        input_nodes=[1],
+        output_nodes=[3],
+        show=False,
+    )
+    styles = {_volume_style_tuple(trace) for trace in _volume_traces(fig)}
+    expected = {
+        (
+            str(item["name"]),
+            float(item["opacity"]),
+            str(item["color"]),
+        )
+        for item in VESSEL_VOLUME_TRACE_STYLES.values()
+    }
+    assert styles == expected
+
+
+def _line_traces(fig):
+    return [trace for trace in fig.data if getattr(trace, "mode", "") == "lines"]
+
+
+def test_assignment_view_gives_large_vessel_edges_their_own_trace_not_capillary():
+    """Large_Art/Large_Ven edges must render as their own line trace, not
+    silently fall through to the "capillary" default -- the normalizer used
+    to only recognise Art*/Ven*/B* prefixes, so a Large_Art/Large_Ven edge
+    (matching none of them, and carrying no vessel_type/mask_vessel_type
+    fallback attribute either) fell all the way through to "capillary"."""
+    G = nx.MultiGraph()
+    G.add_node(1, pos=np.array([0.0, 0.0, 0.0]))
+    G.add_node(2, pos=np.array([0.0, 0.0, 5.0]))
+    G.add_node(3, pos=np.array([0.0, 0.0, 10.0]))
+    G.add_node(4, pos=np.array([0.0, 0.0, 15.0]))
+    G.add_edge(1, 2, branch_order="Large_Art1")
+    G.add_edge(2, 3, branch_order="Art1")
+    G.add_edge(3, 4, branch_order="Large_Ven1")
+    large_art, large_ven, small_art, small_ven = _tiny_masks()
+
+    fig = visualize_3d_plotly_large_vessel_assignment(
+        G,
+        large_arteriole_mask=large_art,
+        large_venule_mask=large_ven,
+        small_arteriole_mask=small_art,
+        small_venule_mask=small_ven,
+        input_nodes=[1],
+        output_nodes=[4],
+        show=False,
+    )
+
+    line_names = {trace.name for trace in _line_traces(fig)}
+    assert "Edges (large arteriole)" in line_names
+    assert "Edges (large venule)" in line_names
+    assert "Edges (capillary)" not in line_names
+
+    large_art_trace = next(t for t in _line_traces(fig) if t.name == "Edges (large arteriole)")
+    assert large_art_trace.line.color == "rgba(139, 0, 0, 0.9)"
+    large_ven_trace = next(t for t in _line_traces(fig) if t.name == "Edges (large venule)")
+    assert large_ven_trace.line.color == "rgba(8, 48, 107, 0.9)"
+
+
+def test_assignment_view_omits_large_volumes_when_masks_are_none():
+    G = _tiny_graph()
+    _large_art, _large_ven, small_art, small_ven = _tiny_masks()
+    fig = visualize_3d_plotly_large_vessel_assignment(
+        G,
+        large_arteriole_mask=None,
+        large_venule_mask=None,
+        small_arteriole_mask=small_art,
+        small_venule_mask=small_ven,
+        input_nodes=[1],
+        output_nodes=[3],
+        show=False,
+    )
+    names = {trace.name for trace in _volume_traces(fig)}
+    assert names == {
+        VESSEL_VOLUME_TRACE_STYLES["small_arteriole"]["name"],
+        VESSEL_VOLUME_TRACE_STYLES["small_venule"]["name"],
+    }
+
+
+def test_assignment_view_calls_shared_volume_helper(monkeypatch):
+    G = _tiny_graph()
+    large_art, large_ven, small_art, small_ven = _tiny_masks()
+    calls: list[dict] = []
+    real = add_binary_mask_volume_trace
+
+    def spy(fig, mask, **kwargs):
+        calls.append(kwargs)
+        return real(fig, mask, **kwargs)
+
+    monkeypatch.setattr(
+        "haemolynx.visualization.large_vessel_assignment.add_binary_mask_volume_trace",
+        spy,
+    )
+    visualize_3d_plotly_large_vessel_assignment(
+        G,
+        large_arteriole_mask=large_art,
+        large_venule_mask=large_ven,
+        small_arteriole_mask=small_art,
+        small_venule_mask=small_ven,
+        input_nodes=[1],
+        output_nodes=[3],
+        volume_downsample_stride=2,
+        show=False,
+    )
+    by_name = {call["name"]: call for call in calls}
+    for style in VESSEL_VOLUME_TRACE_STYLES.values():
+        assert by_name[style["name"]]["color"] == style["color"]
+        assert by_name[style["name"]]["opacity"] == style["opacity"]
+        assert by_name[style["name"]]["volume_downsample_stride"] == 2
+
+
+def test_selected_vessel_masks_follow_gui_flags():
+    large_art, large_ven, small_art, small_ven = _tiny_masks()
+    both = selected_vessel_masks_for_html(
+        use_large_vessel_masks=True,
+        use_small_vessel_masks=True,
+        large_arteriole_mask=large_art,
+        large_venule_mask=large_ven,
+        small_arteriole_mask=small_art,
+        small_venule_mask=small_ven,
+    )
+    assert both["large_arteriole_mask"] is large_art
+    assert both["small_venule_mask"] is small_ven
+
+    large_only = selected_vessel_masks_for_html(
+        use_large_vessel_masks=True,
+        use_small_vessel_masks=False,
+        large_arteriole_mask=large_art,
+        large_venule_mask=large_ven,
+        small_arteriole_mask=small_art,
+        small_venule_mask=small_ven,
+    )
+    assert large_only["large_venule_mask"] is large_ven
+    assert large_only["small_arteriole_mask"] is None
+    assert large_only["small_venule_mask"] is None
+
+    none = selected_vessel_masks_for_html(
+        use_large_vessel_masks=False,
+        use_small_vessel_masks=False,
+        large_arteriole_mask=large_art,
+        large_venule_mask=large_ven,
+        small_arteriole_mask=small_art,
+        small_venule_mask=small_ven,
+    )
+    assert all(value is None for value in none.values())
+
+
+def test_final_graph_html_includes_pipeline_volume_traces_when_masks_enabled(tmp_path):
+    G = _tiny_graph()
+    large_art, large_ven, small_art, small_ven = _tiny_masks()
+    html_path = tmp_path / "final_graph_3d.html"
+    fig = write_final_graph_3d_html(
+        G,
+        save_html_path=html_path,
+        use_large_vessel_masks=True,
+        use_small_vessel_masks=True,
+        large_arteriole_mask=large_art,
+        large_venule_mask=large_ven,
+        small_arteriole_mask=small_art,
+        small_venule_mask=small_ven,
+        input_nodes=[1],
+        output_nodes=[3],
+        volume_downsample_stride=1,
+        show=False,
+    )
+    pipeline = visualize_3d_plotly_large_vessel_assignment(
+        G,
+        large_arteriole_mask=large_art,
+        large_venule_mask=large_ven,
+        small_arteriole_mask=small_art,
+        small_venule_mask=small_ven,
+        input_nodes=[1],
+        output_nodes=[3],
+        volume_downsample_stride=1,
+        show=False,
+    )
+    assert {_volume_style_tuple(t) for t in _volume_traces(fig)} == {
+        _volume_style_tuple(t) for t in _volume_traces(pipeline)
+    }
+    assert html_path.is_file() and html_path.stat().st_size > 0
+
+
+def test_final_graph_html_omits_unselected_mask_volumes(tmp_path):
+    G = _tiny_graph()
+    large_art, large_ven, small_art, small_ven = _tiny_masks()
+
+    large_only = write_final_graph_3d_html(
+        G,
+        save_html_path=tmp_path / "large.html",
+        use_large_vessel_masks=True,
+        use_small_vessel_masks=False,
+        large_arteriole_mask=large_art,
+        large_venule_mask=large_ven,
+        small_arteriole_mask=small_art,
+        small_venule_mask=small_ven,
+        show=False,
+    )
+    large_names = {trace.name for trace in _volume_traces(large_only)}
+    assert large_names == {
+        VESSEL_VOLUME_TRACE_STYLES["large_arteriole"]["name"],
+        VESSEL_VOLUME_TRACE_STYLES["large_venule"]["name"],
+    }
+
+    small_only = write_final_graph_3d_html(
+        G,
+        save_html_path=tmp_path / "small.html",
+        use_large_vessel_masks=False,
+        use_small_vessel_masks=True,
+        large_arteriole_mask=large_art,
+        large_venule_mask=large_ven,
+        small_arteriole_mask=small_art,
+        small_venule_mask=small_ven,
+        show=False,
+    )
+    small_names = {trace.name for trace in _volume_traces(small_only)}
+    assert small_names == {
+        VESSEL_VOLUME_TRACE_STYLES["small_arteriole"]["name"],
+        VESSEL_VOLUME_TRACE_STYLES["small_venule"]["name"],
+    }
+
+    neither = write_final_graph_3d_html(
+        G,
+        save_html_path=tmp_path / "none.html",
+        use_large_vessel_masks=False,
+        use_small_vessel_masks=False,
+        large_arteriole_mask=large_art,
+        large_venule_mask=large_ven,
+        small_arteriole_mask=small_art,
+        small_venule_mask=small_ven,
+        show=False,
+    )
+    assert _volume_traces(neither) == []
+    scatter_names = {trace.name for trace in neither.data}
+    assert "Edges" in scatter_names
+    assert "Nodes" in scatter_names
+
+
+def test_final_graph_html_writer_delegates_to_pipeline_assignment_view(
+    monkeypatch, tmp_path
+):
+    G = _tiny_graph()
+    large_art, large_ven, small_art, small_ven = _tiny_masks()
+    captured = {}
+
+    def fake_assignment(*args, **kwargs):
+        captured["kwargs"] = kwargs
+        return SimpleNamespace(data=())
+
+    monkeypatch.setattr(
+        "haemolynx.visualization.pipeline_artifacts.visualize_3d_plotly_large_vessel_assignment",
+        fake_assignment,
+    )
+    write_final_graph_3d_html(
+        G,
+        save_html_path=tmp_path / "final_graph_3d.html",
+        use_large_vessel_masks=True,
+        use_small_vessel_masks=True,
+        large_arteriole_mask=large_art,
+        large_venule_mask=large_ven,
+        small_arteriole_mask=small_art,
+        small_venule_mask=small_ven,
+        volume_downsample_stride=3,
+        show=False,
+    )
+    kwargs = captured["kwargs"]
+    assert kwargs["large_arteriole_mask"] is large_art
+    assert kwargs["small_venule_mask"] is small_ven
+    assert kwargs["volume_downsample_stride"] == 3
+
+
+def test_final_graph_html_uses_full_mask_extent_not_a_z_crop():
+    G = _tiny_graph()
+    shape = (10, 4, 4)
+    large_art = np.zeros(shape, dtype=bool)
+    large_ven = np.zeros(shape, dtype=bool)
+    large_art[0, 1, 1] = True
+    large_art[9, 2, 2] = True
+    large_ven[0, 2, 1] = True
+    voxel_size_zyx = (2.0, 1.0, 1.0)
+    fig = write_final_graph_3d_html(
+        G,
+        save_html_path=None,
+        use_large_vessel_masks=True,
+        use_small_vessel_masks=False,
+        large_arteriole_mask=large_art,
+        large_venule_mask=large_ven,
+        voxel_size_zyx=voxel_size_zyx,
+        show=False,
+    )
+    art = next(
+        trace
+        for trace in _volume_traces(fig)
+        if trace.name == VESSEL_VOLUME_TRACE_STYLES["large_arteriole"]["name"]
+    )
+    z_coords = np.asarray(art.z, dtype=float)
+    assert z_coords.min() == 0.0
+    assert z_coords.max() == 9.0 * voxel_size_zyx[0]
+
+
+def test_run_html_helper_passes_loaded_masks_and_flags(monkeypatch, tmp_path):
+    G = _tiny_graph()
+    large_art, large_ven, small_art, small_ven = _tiny_masks()
+    captured = {}
+
+    def fake_writer(*args, **kwargs):
+        captured.update(kwargs)
+        return None
+
+    monkeypatch.setattr(
+        "haemolynx.visualization.write_final_graph_3d_html",
+        fake_writer,
+    )
+    settings = {
+        "plot_dir": tmp_path,
+        "automated_vessel_assignment": True,
+        "use_large_vessel_masks": True,
+        "use_small_vessel_masks_for_boundary_assignment": True,
+        "show_plots_in_ide": False,
+        "interactive_plots": False,
+        "large_vessel_3d_volume_downsample_stride": 2,
+        "inlet_nodes": [1],
+        "outlet_nodes": [3],
+        "arteriole_boundary_nodes": [],
+        "venule_boundary_nodes": [],
+    }
+    _write_run_final_graph_3d_html(
+        settings,
+        G,
+        large_arteriole_mask=large_art,
+        large_venule_mask=large_ven,
+        small_arteriole_mask=small_art,
+        small_venule_mask=small_ven,
+        voxel_size_zyx=(1.0, 1.0, 1.0),
+        show=False,
+    )
+    assert captured["use_large_vessel_masks"] is True
+    assert captured["use_small_vessel_masks"] is True
+    assert captured["large_arteriole_mask"] is large_art
+    assert captured["small_venule_mask"] is small_ven
+    assert captured["volume_downsample_stride"] == 2
+    assert captured["save_html_path"] == tmp_path / "final_graph_3d.html"
+    assert large_art.shape[0] == 8
+
+
+def test_export_results_rewrites_final_graph_html_with_network_masks(
+    monkeypatch, tmp_path
+):
+    G = _tiny_graph()
+    large_art, large_ven, small_art, small_ven = _tiny_masks()
+    captured = {}
+
+    def fake_writer(*args, **kwargs):
+        captured.update(kwargs)
+        return None
+
+    monkeypatch.setattr(
+        "haemolynx.visualization.write_final_graph_3d_html",
+        fake_writer,
+    )
+    monkeypatch.setattr(
+        "haemolynx.visualization.plot_node_degree_distribution",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        "haemolynx.visualization.visualize_3d_plotly",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        "haemolynx.visualization.visualize_geometry_with_branch_orders",
+        lambda *args, **kwargs: None,
+    )
+    volume = SimpleNamespace(
+        image=np.zeros((8, 6, 6), dtype=np.uint8),
+        output_dir=tmp_path,
+        voxel_size_zyx=(1.0, 1.0, 1.0),
+        voxel_size_xyz=(1.0, 1.0, 1.0),
+    )
+    network = VesselNetwork(
+        graph=G,
+        volume=volume,
+        large_arteriole_mask=large_art,
+        large_venule_mask=large_ven,
+        small_arteriole_mask=small_art,
+        small_venule_mask=small_ven,
+    )
+    model = HaemodynamicModel(graph=G)
+    solution = Solution(graph=G)
+    settings = {
+        "statistics": False,
+        "measurement_3d_to_cell_mask": False,
+        "run_haemodynamics": False,
+        "vtk_export": False,
+        "visualize_vtk": False,
+        "visualize_results": True,
+        "export_citations": False,
+        "compute_vascular_communities": False,
+        "ide_plot_mode": "final_only",
+        "show_plots_in_ide": False,
+        "interactive_plots": False,
+        "hold_ide_plots_open": False,
+        "final_render_mode": "3d",
+        "plot_dir": tmp_path,
+        "input_path": Path("stack.tif"),
+        "automated_vessel_assignment": True,
+        "use_large_vessel_masks": True,
+        "use_small_vessel_masks_for_boundary_assignment": False,
+        "large_vessel_3d_volume_downsample_stride": 1,
+        "inlet_nodes": [1],
+        "outlet_nodes": [3],
+        "arteriole_boundary_nodes": [],
+        "venule_boundary_nodes": [],
+    }
+    export_results(settings, network, model, solution)
+    assert captured["use_large_vessel_masks"] is True
+    assert captured["use_small_vessel_masks"] is False
+    assert captured["large_arteriole_mask"] is large_art
+    assert captured["small_arteriole_mask"] is small_art
+    assert captured["save_html_path"] == tmp_path / "final_graph_3d.html"
+
+
+def test_export_skips_final_graph_html_when_produce_ide_plots_is_off(
+    monkeypatch, tmp_path
+):
+    def boom(*_args, **_kwargs):
+        raise AssertionError(
+            "final_graph_3d.html must not be written when Produce IDE plots is off"
+        )
+
+    monkeypatch.setattr(
+        "haemolynx.pipeline.stages.visualization.write_final_graph_3d_html",
+        boom,
+    )
+    G = _tiny_graph()
+    large_art, large_ven, small_art, small_ven = _tiny_masks()
+    volume = SimpleNamespace(
+        image=np.zeros((8, 6, 6), dtype=np.uint8),
+        output_dir=tmp_path,
+        voxel_size_zyx=(1.0, 1.0, 1.0),
+        voxel_size_xyz=(1.0, 1.0, 1.0),
+    )
+    network = VesselNetwork(
+        graph=G,
+        volume=volume,
+        large_arteriole_mask=large_art,
+        large_venule_mask=large_ven,
+        small_arteriole_mask=small_art,
+        small_venule_mask=small_ven,
+    )
+    export_results(
+        {
+            "statistics": False,
+            "measurement_3d_to_cell_mask": False,
+            "run_haemodynamics": False,
+            "vtk_export": False,
+            "visualize_vtk": False,
+            "visualize_results": False,
+            "export_citations": False,
+            "compute_vascular_communities": False,
+            "plot_dir": tmp_path,
+            "input_path": Path("stack.tif"),
+        },
+        network,
+        HaemodynamicModel(graph=G),
+        Solution(graph=G),
+    )
+
+
+def test_build_network_and_export_write_final_graph_html_via_shared_helper():
+    import inspect
+
+    from haemolynx.pipeline import stages
+
+    build_src = inspect.getsource(stages.build_network)
+    export_src = inspect.getsource(stages.export_results)
+    assert "_write_run_final_graph_3d_html" in build_src
+    assert "_write_run_final_graph_3d_html" in export_src
+
+
+def test_volume_trace_pools_a_coarse_axis_over_fewer_voxels():
+    """Regression (audit): the stride pooled every axis by the same number of
+    voxels, so on 0.5 x 0.5 x 2 um voxels a stride of 4 made blocks 8 um deep
+    and 2 um wide, and two vessel layers 6 um apart in depth drew as one. The
+    stride is now finest-axis voxels: z is pooled by 1, y and x by 4."""
+    import plotly.graph_objects as go
+
+    from haemolynx.visualization.large_vessel_assignment import _axis_strides
+
+    spacing = (2.0, 0.5, 0.5)
+    mask = np.zeros((8, 16, 16), dtype=bool)
+    mask[2, 4:12, 4:12] = True
+    mask[5, 4:12, 4:12] = True  # three slices deeper: 6 um
+
+    fig = go.Figure()
+    assert add_binary_mask_volume_trace(
+        fig, mask, name="m", color="red", opacity=0.5, voxel_size_zyx=spacing,
+        volume_downsample_stride=4,
+    )
+    trace = fig.data[0]
+    z = np.asarray(trace.z, dtype=float)
+    value = np.asarray(trace.value, dtype=float)
+
+    assert _axis_strides(4, spacing) == (1, 4, 4)
+    assert set(np.round(z[value > 0], 6)) == {4.0, 10.0}
+    assert (value[np.isclose(z, 6.0) | np.isclose(z, 8.0)] == 0).all()
+    # In-plane, blocks of 4 voxels = 2 um, the same as one z slice.
+    assert set(np.round(np.diff(np.unique(np.asarray(trace.x, dtype=float))), 6)) == {2.0}
+
+
+def test_axis_strides_on_cube_voxels_is_the_stride_everywhere():
+    from haemolynx.visualization.large_vessel_assignment import _axis_strides
+
+    assert _axis_strides(3, (1.0, 1.0, 1.0)) == (3, 3, 3)
+    assert _axis_strides(1, (2.0, 0.5, 0.5)) == (1, 1, 1)
+
+
+def test_a_whole_image_mask_is_pooled_to_a_volume_a_page_can_hold():
+    """Drawn whole, two 124 x 1024 x 1024 masks ran a 62 GB machine out of
+    memory writing the HTML. A stride too fine is coarsened to fit."""
+    import plotly.graph_objects as go
+
+    from haemolynx.visualization.large_vessel_assignment import MAX_VOLUME_TRACE_POINTS
+
+    mask = np.zeros((40, 400, 400), dtype=bool)
+    mask[:, 50:350, 50:350] = True          # 3.6 million voxels in its box
+    fig = go.Figure()
+    assert add_binary_mask_volume_trace(
+        fig, mask, name="big", color="#00FF7F", opacity=0.1,
+        voxel_size_zyx=(2.0, 0.59, 0.59), volume_downsample_stride=1,
+    )
+    trace = fig.data[0]
+    assert len(trace.value) <= MAX_VOLUME_TRACE_POINTS
+    # Still spans the mask, in microns.
+    assert float(np.max(trace.x)) > 300 * 0.59 and float(np.min(trace.x)) < 60 * 0.59
+
+    small = np.zeros((10, 20, 20), dtype=bool)
+    small[2:8, 5:15, 5:15] = True
+    fig = go.Figure()
+    add_binary_mask_volume_trace(fig, small, name="small", color="#000", opacity=0.1,
+                                 voxel_size_zyx=(1.0, 1.0, 1.0))
+    assert len(fig.data[0].value) == 6 * 10 * 10, "a small mask is drawn as it is"
+
+
+def test_the_small_vessel_labelling_view_pools_its_masks_too(tmp_path):
+    from haemolynx.graph.terminal_node_assignment import (
+        write_small_vessel_mask_boundary_labelling_3d_html,
+    )
+    from haemolynx.visualization.large_vessel_assignment import MAX_VOLUME_TRACE_POINTS
+
+    art = np.zeros((40, 400, 400), dtype=bool)
+    art[:, :, :] = True
+    ven = np.zeros_like(art)
+    ven[10:20, 100:200, 100:200] = True
+    captured = []
+    import plotly.graph_objects as go
+    real_add = go.Figure.add_trace
+
+    def spy(self, trace, *a, **k):
+        captured.append(trace)
+        return real_add(self, trace, *a, **k)
+
+    go.Figure.add_trace = spy
+    try:
+        assert write_small_vessel_mask_boundary_labelling_3d_html(
+            _tiny_graph(), small_arteriole_mask=art, small_venule_mask=ven,
+            arteriole_boundary_nodes=[], venule_boundary_nodes=[],
+            voxel_size_zyx=(2.0, 0.59, 0.59), output_html_path=tmp_path / "v.html",
+        )
+    finally:
+        go.Figure.add_trace = real_add
+    volumes = [t for t in captured if isinstance(t, go.Volume)]
+    assert len(volumes) == 2
+    assert all(len(t.value) <= MAX_VOLUME_TRACE_POINTS for t in volumes)

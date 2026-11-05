@@ -1,0 +1,1677 @@
+"""What ``skeletonise()`` does with the thickness-gate toggle.
+
+The default is Lee on the whole mask. Turning the Skeletonise-tab toggle on
+routes fat plasma-labelled regions through the EDT-ridge tree instead.
+"""
+from __future__ import annotations
+
+import os
+import time
+from pathlib import Path
+
+import numpy as np
+import pytest
+import tifffile
+from scipy import ndimage
+
+from haemolynx.pipeline import default_schema
+from haemolynx.pipeline.stages import _skeletonize_tile_halo_voxels, segment, skeletonise
+from haemolynx.preprocessing import (
+    BRAID_FACTOR_LIMIT,
+    THICK_VESSEL_MIN_RADIUS_UM,
+    braid_factor,
+    lee_braid_factor,
+    thick_vessel_object_mask,
+)
+from test_thick_vessel_skeletonisation import plasma_labelled_object
+
+SCHEMA = default_schema()
+
+
+def settings_for(tmp_path: Path, mask_path: Path, **overrides) -> dict:
+    values = SCHEMA.defaults()
+    values.update(
+        {
+            "input_path": mask_path,
+            "output_dir": tmp_path / "run",
+            "plot_dir": tmp_path / "plots",
+            "do_skeletonize": True,
+            **overrides,
+        }
+    )
+    # A test turning on one segmentation_cleanup_* step almost always wants
+    # the master switch on too -- it now gates every one of them (see
+    # pipeline.schema's segmentation_cleanup) -- unless it explicitly says
+    # otherwise, which test_segmentation_cleanup_off_by_default... does by
+    # passing no overrides at all.
+    if "segmentation_cleanup" not in overrides and any(
+        name.startswith("segmentation_cleanup_") for name in overrides
+    ):
+        values["segmentation_cleanup"] = True
+    return values
+
+
+def _write_mask(tmp_path: Path, mask: np.ndarray) -> Path:
+    path = tmp_path / "mask.tif"
+    tifffile.imwrite(path, np.asarray(mask, dtype=np.uint8) * 255)
+    return path
+
+
+def _write_2d_mask(tmp_path: Path, mask: np.ndarray) -> Path:
+    path = tmp_path / "mask_2d.tif"
+    tifffile.imwrite(path, np.asarray(mask, dtype=np.uint8) * 255)
+    return path
+
+
+def test_use_memmap_loading_gives_the_same_skeleton_as_the_ordinary_load(tmp_path):
+    """``use_memmap_loading`` must only change where the image/skeleton live,
+    never what ``skeletonise()`` actually produces -- stage-level version of
+    the per-function equivalence tests in ``tests/test_memmap_loading.py``."""
+    mask, _fat_roi = plasma_labelled_object(8.0)
+    mask_path = _write_mask(tmp_path, mask)
+
+    memmap_settings = settings_for(tmp_path / "memmap", mask_path, use_memmap_loading=True)
+    memmap_volume = skeletonise(memmap_settings, segment(memmap_settings))
+
+    eager_settings = settings_for(tmp_path / "eager", mask_path, use_memmap_loading=False)
+    eager_volume = skeletonise(eager_settings, segment(eager_settings))
+
+    # Not just "the two runs agree" -- a settings dict is a plain dict, so an
+    # override key nothing actually reads would make the two runs identical
+    # (both plain eager loads) without the toggle being wired to anything.
+    # This is the assertion that would have caught that.
+    assert isinstance(memmap_volume.image, np.memmap)
+    assert not isinstance(eager_volume.image, np.memmap)
+    # .skeleton itself is *not* asserted memmap here: preprocess_skeleton_for_graph's
+    # first step, skimage.morphology.remove_small_objects, has no disk-backed
+    # output option and always copies to a fresh in-RAM array (see that
+    # function's own docstring) -- the same category of hard limit as
+    # skeletonize/watershed having no `out=` parameter.
+    assert np.array_equal(memmap_volume.skeleton, eager_volume.skeleton)
+    assert np.array_equal(memmap_volume.image, eager_volume.image)
+    assert memmap_volume.voxel_size_xyz == eager_volume.voxel_size_xyz
+
+
+def test_memmap_directory_setting_controls_where_the_backing_file_lands(tmp_path):
+    """Not just 'still a memmap' -- memmap_directory must actually redirect
+    the backing file, the same discriminating-assertion lesson as the
+    use_memmap_loading test above: an unwired setting would leave the
+    default OS temp directory in use and this would pass vacuously."""
+    mask, _fat_roi = plasma_labelled_object(8.0)
+    mask_path = _write_mask(tmp_path, mask)
+    custom_dir = tmp_path / "custom_memmap_dir"
+    assert not custom_dir.exists()
+
+    settings = settings_for(
+        tmp_path / "run",
+        mask_path,
+        use_memmap_loading=True,
+        memmap_directory=custom_dir,
+    )
+    volume = skeletonise(settings, segment(settings))
+
+    assert isinstance(volume.image, np.memmap)
+    assert Path(volume.image.filename).parent == custom_dir
+
+
+def test_a_second_run_reuses_the_raw_volume_instead_of_reloading_it(tmp_path):
+    """The point of memmap_directory's reuse-across-runs behaviour: a second
+    pipeline run against the same input skips re-reading/re-decompressing
+    it. Proven the same way tests/test_raw_volume_cache.py proves it -- by
+    checking the returned image is backed by the deterministic cache file,
+    not a freshly-created one -- rather than by anything that could pass
+    vacuously (e.g. two runs merely agreeing on pixel values, which an
+    unwired cache would too)."""
+    from haemolynx.io.raw_volume_cache import _cache_file_paths, _cache_key
+
+    mask, _fat_roi = plasma_labelled_object(8.0)
+    mask_path = _write_mask(tmp_path, mask)
+    # A source written in the last few seconds is never cached (see
+    # haemolynx.io.raw_volume_cache), so stand in for one written long ago.
+    old_ns = time.time_ns() - 60_000_000_000
+    os.utime(mask_path, ns=(old_ns, old_ns))
+    cache_dir = tmp_path / "cache"
+
+    settings = settings_for(
+        tmp_path / "run1", mask_path, use_memmap_loading=True, memmap_directory=cache_dir
+    )
+    first_volume = skeletonise(settings, segment(settings))
+
+    resolved = mask_path.resolve()
+    key = _cache_key(resolved, resolved.stat(), "zyx")
+    memmap_path, _sidecar_path = _cache_file_paths(cache_dir, key)
+    assert Path(first_volume.image.filename) == memmap_path
+
+    settings2 = settings_for(
+        tmp_path / "run2", mask_path, use_memmap_loading=True, memmap_directory=cache_dir
+    )
+    second_volume = skeletonise(settings2, segment(settings2))
+
+    assert Path(second_volume.image.filename) == memmap_path
+    assert np.array_equal(second_volume.image, first_volume.image)
+    assert np.array_equal(second_volume.skeleton, first_volume.skeleton)
+
+
+def test_skeletonize_tiling_gives_the_same_result_as_untiled_memmap_skeletonisation(tmp_path):
+    """skeletonize_tile_large_components (Tier 2) must not change what
+    skeletonise() produces for a component small enough that a generous
+    halo fully covers any boundary effect.
+
+    plasma_labelled_object(8.0) is one connected component whose own tight
+    bounding box is (17, 99, 61) = 102,663 voxels (confirmed directly,
+    since the tile threshold has to beat the *component's* own bbox, not
+    the outer mask array's shape). tile_max_voxels=20000 is well under one
+    of its own (99*61=6039-voxel) slices x a handful, forcing several
+    tiles rather than the two a looser threshold would give."""
+    mask, _fat_roi = plasma_labelled_object(8.0)
+    mask_path = _write_mask(tmp_path, mask)
+
+    tiled_settings = settings_for(
+        tmp_path / "tiled",
+        mask_path,
+        use_memmap_loading=True,
+        skeletonize_tile_large_components=True,
+        skeletonize_tile_max_voxels=20_000,
+        skeletonize_tile_halo_um=20.0,
+    )
+    tiled_volume = skeletonise(tiled_settings, segment(tiled_settings))
+
+    untiled_settings = settings_for(
+        tmp_path / "untiled", mask_path, use_memmap_loading=True
+    )
+    untiled_volume = skeletonise(untiled_settings, segment(untiled_settings))
+
+    assert np.array_equal(tiled_volume.skeleton, untiled_volume.skeleton)
+
+
+def test_skeletonize_tile_halo_voxels_is_zero_when_tiling_is_off():
+    settings = {"skeletonize_tile_large_components": False, "skeletonize_tile_halo_um": 30.0}
+    assert _skeletonize_tile_halo_voxels(settings, (2.0, 1.0, 1.0)) == 0
+
+
+def test_skeletonize_tile_halo_voxels_converts_microns_to_z_voxels():
+    settings = {"skeletonize_tile_large_components": True, "skeletonize_tile_halo_um": 30.0}
+    assert _skeletonize_tile_halo_voxels(settings, (2.0, 1.0, 1.0)) == 15
+
+
+def test_thickness_gate_defaults_off_and_matches_the_locked_radius():
+    assert SCHEMA["use_thick_vessel_skeletonisation"].default is False
+    assert SCHEMA["skeleton_thick_vessel_min_radius_um"].default == pytest.approx(
+        THICK_VESSEL_MIN_RADIUS_UM
+    )
+    assert SCHEMA["skeleton_fill_mask_holes_before_thickness"].default is True
+
+
+def test_the_noisy_seven_vessel_fixture_skeletonises_to_one_piece_by_default(tmp_path):
+    """Regression: noise specks grown by bridge_gaps survived the size filter
+    once it ran after bridging, splitting this fixture's skeleton into three
+    pieces, so a default run could not be solved (inlets and outlets ended up
+    on different pieces)."""
+    fixture = Path(__file__).parent / "data" / "seven_vessel_noisy_3d.tif"
+    settings = settings_for(tmp_path, fixture)
+
+    volume = skeletonise(settings, segment(settings))
+
+    _labels, pieces = ndimage.label(volume.skeleton, structure=np.ones((3, 3, 3)))
+    assert pieces == 1
+
+
+def test_skeletonise_toggle_off_leaves_the_fat_sheet_on_lee(tmp_path):
+    mask, fat_roi = plasma_labelled_object(8.0)
+    assert lee_braid_factor(fat_roi, axis=2) > BRAID_FACTOR_LIMIT
+    settings = settings_for(tmp_path, _write_mask(tmp_path, mask))
+    volume = skeletonise(settings, segment(settings))
+    thick = thick_vessel_object_mask(
+        mask,
+        min_radius_um=THICK_VESSEL_MIN_RADIUS_UM,
+        voxel_size_zyx=volume.voxel_size_zyx,
+    )
+    assert braid_factor(volume.skeleton & thick, axis=2) > BRAID_FACTOR_LIMIT
+
+
+def test_skeletonise_forwards_max_bridge_distance_um_setting(tmp_path, monkeypatch):
+    """Stage-wiring regression test: skeleton_thick_vessel_max_bridge_distance_um
+    must reach skeletonize_thickness_gated's own max_bridge_distance_um
+    parameter -- the lower levels (thick_vessels.py) are already pinned,
+    but nothing previously checked the settings-dict key this stage reads
+    actually matches the one wired through."""
+    import haemolynx.preprocessing as preprocessing_module
+
+    captured = {}
+    real = preprocessing_module.skeletonize_thickness_gated
+
+    def spy(*args, **kwargs):
+        captured["max_bridge_distance_um"] = kwargs.get("max_bridge_distance_um")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(preprocessing_module, "skeletonize_thickness_gated", spy)
+
+    mask, _fat_roi = plasma_labelled_object(8.0)
+    settings = settings_for(
+        tmp_path,
+        _write_mask(tmp_path, mask),
+        use_thick_vessel_skeletonisation=True,
+        skeleton_thick_vessel_max_bridge_distance_um=37.0,
+    )
+    skeletonise(settings, segment(settings))
+
+    assert captured["max_bridge_distance_um"] == pytest.approx(37.0)
+
+
+def test_skeletonise_restrict_to_mask_off_never_loads_vessel_masks(tmp_path, monkeypatch):
+    """The default ("off") must cost nothing extra: no vessel-mask load at
+    all, matching plain thickness-gated skeletonisation's existing cost --
+    skeleton_thick_vessel_restrict_to_mask is opt-in."""
+    import haemolynx.io as io_module
+
+    calls: list = []
+    real = io_module.load_and_validate_vessel_masks
+
+    def spy(*args, **kwargs):
+        calls.append(kwargs.get("mask_role"))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(io_module, "load_and_validate_vessel_masks", spy)
+
+    mask, _fat_roi = plasma_labelled_object(8.0)
+    settings = settings_for(
+        tmp_path,
+        _write_mask(tmp_path, mask),
+        use_thick_vessel_skeletonisation=True,
+    )
+    skeletonise(settings, segment(settings))
+
+    assert calls == []
+
+
+def test_skeletonise_restrict_to_mask_unions_the_configured_masks(tmp_path, monkeypatch):
+    """skeleton_thick_vessel_restrict_to_mask="both" must load both the
+    large and small vessel masks and OR them together before forwarding
+    the union to skeletonize_thickness_gated's own restrict_thick_to_mask
+    -- proving the settings-dict key this stage reads reaches the right
+    place, not just that some restriction is passed."""
+    import haemolynx.io as io_module
+    import haemolynx.preprocessing as preprocessing_module
+
+    mask, _fat_roi = plasma_labelled_object(8.0)
+    shape = mask.shape
+
+    large_art = np.zeros(shape, dtype=bool)
+    large_art[0, 0, 0] = True
+    large_ven = np.zeros(shape, dtype=bool)
+    large_ven[0, 0, 1] = True
+    small_art = np.zeros(shape, dtype=bool)
+    small_art[0, 0, 2] = True
+    small_ven = np.zeros(shape, dtype=bool)
+    small_ven[0, 0, 3] = True
+
+    calls: list = []
+
+    def fake_load(**kwargs):
+        role = kwargs["mask_role"]
+        calls.append(role)
+        if role == "large":
+            return large_art, large_ven, (1.0, 1.0, 1.0), (1.0, 1.0, 1.0)
+        return small_art, small_ven, (1.0, 1.0, 1.0), (1.0, 1.0, 1.0)
+
+    monkeypatch.setattr(io_module, "load_and_validate_vessel_masks", fake_load)
+
+    captured = {}
+    real = preprocessing_module.skeletonize_thickness_gated
+
+    def spy(*args, **kwargs):
+        captured["restrict_thick_to_mask"] = kwargs.get("restrict_thick_to_mask")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(preprocessing_module, "skeletonize_thickness_gated", spy)
+
+    settings = settings_for(
+        tmp_path,
+        _write_mask(tmp_path, mask),
+        use_thick_vessel_skeletonisation=True,
+        skeleton_thick_vessel_restrict_to_mask="both",
+    )
+    skeletonise(settings, segment(settings))
+
+    assert set(calls) == {"large", "small"}
+    expected = large_art | large_ven | small_art | small_ven
+    assert np.array_equal(captured["restrict_thick_to_mask"], expected)
+
+
+def test_skeletonise_warns_when_a_restriction_mask_is_misaligned(tmp_path, monkeypatch, caplog):
+    """A restriction mask whose own voxels mostly fall on background (not
+    the real segmented image) must log a warning naming which mask and its
+    overlap fraction -- see preprocessing.diagnose_mask_restriction_
+    alignment. An aligned mask logs an info line instead, not a warning."""
+    import haemolynx.io as io_module
+
+    mask, _fat_roi = plasma_labelled_object(8.0)
+    shape = mask.shape
+
+    aligned = np.zeros(shape, dtype=bool)
+    inside = tuple(np.argwhere(mask)[0])
+    aligned[inside] = True  # a real voxel of the segmented mask itself
+
+    misaligned = np.zeros(shape, dtype=bool)
+    misaligned[0, 0, 0] = True  # the fixture's own corner, outside the vessel
+    assert not mask[0, 0, 0], "fixture assumption: the corner is background"
+
+    def fake_load(**kwargs):
+        return aligned, misaligned, (1.0, 1.0, 1.0), (1.0, 1.0, 1.0)
+
+    monkeypatch.setattr(io_module, "load_and_validate_vessel_masks", fake_load)
+
+    settings = settings_for(
+        tmp_path,
+        _write_mask(tmp_path, mask),
+        use_thick_vessel_skeletonisation=True,
+        skeleton_thick_vessel_restrict_to_mask="large",
+    )
+    with caplog.at_level("INFO", logger="haemolynx.pipeline.stages"):
+        skeletonise(settings, segment(settings))
+
+    warnings = [r.message for r in caplog.records if r.levelname == "WARNING"]
+    infos = [r.message for r in caplog.records if r.levelname == "INFO"]
+    assert any(
+        "large_venule_mask" in m and "Thick-vessel mask restriction" in m
+        for m in warnings
+    ), warnings
+    assert any(
+        "large_arteriole_mask" in m and "Thick-vessel mask restriction" in m
+        for m in infos
+    ), infos
+    assert not any("large_arteriole_mask" in m for m in warnings)
+
+
+def test_skeletonise_toggle_on_collapses_the_fat_sheet_and_keeps_capillaries(tmp_path):
+    mask, fat_roi = plasma_labelled_object(8.0)
+    lee_braid = lee_braid_factor(fat_roi, axis=2)
+    assert lee_braid > BRAID_FACTOR_LIMIT
+    settings = settings_for(
+        tmp_path,
+        _write_mask(tmp_path, mask),
+        use_thick_vessel_skeletonisation=True,
+    )
+    volume = skeletonise(settings, segment(settings))
+    thick = thick_vessel_object_mask(
+        mask,
+        min_radius_um=THICK_VESSEL_MIN_RADIUS_UM,
+        voxel_size_zyx=volume.voxel_size_zyx,
+    )
+    assert braid_factor(volume.skeleton & thick, axis=2) < lee_braid
+    capillaries = mask & ~fat_roi
+    assert int((volume.skeleton & capillaries).sum()) > 0
+
+
+def test_skeletonise_loads_a_genuinely_2d_tiff_as_a_single_slice_volume_and_warns(
+    tmp_path, caplog
+):
+    """A 2D input reaches skeletonise() through the same input_path /
+    image_axis_order settings row as any other file -- no separate control
+    -- and comes out promoted to a (1, H, W) volume with a logged warning,
+    per haemolynx.io.load_2d.
+
+    skeleton_closing_radius is disabled here: its morphological closing
+    uses a 3D ball structuring element that erodes away a single-slice
+    volume entirely, a pre-existing limitation of that particular
+    genuinely-3D-specific operation (exactly the kind the loader's own
+    warning already tells a caller to check for), not something this
+    loading feature is responsible for fixing. Plain Lee skeletonisation
+    is dimension-generic and unaffected -- confirmed here on the actual
+    stage path, matching the isolated check already done for
+    skeletonize_volume."""
+    mask_2d = np.zeros((40, 40), dtype=bool)
+    mask_2d[20, 5:35] = True
+    mask_2d[5:35, 20] = True
+    settings = settings_for(
+        tmp_path,
+        _write_2d_mask(tmp_path, mask_2d),
+        skeleton_closing_radius=0,
+    )
+
+    with caplog.at_level("WARNING", logger="haemolynx.io.load_2d"):
+        volume = skeletonise(settings, segment(settings))
+
+    assert volume.skeleton.shape[0] == 1
+    assert volume.skeleton.shape[1:] == mask_2d.shape
+    assert int(volume.skeleton.sum()) > 0
+    assert any("2D image" in r.message for r in caplog.records)
+
+
+@pytest.mark.parametrize("crop", [False, True])
+def test_an_auto_axis_order_reads_an_hdf5_stored_x_y_z_as_its_axistags_say(tmp_path, crop):
+    """image_axis_order="auto" on an ilastik-style HDF5 whose axistags say it
+    is stored (x, y, z) skeletonises the same volume as the canonical file
+    read as "zyx" -- read whole, and through the crop_on_import box, which
+    reads only the box of an HDF5 and is given in canonical voxels."""
+    import json
+
+    h5py = pytest.importorskip("h5py")
+    mask = np.zeros((9, 14, 30), dtype=bool)
+    mask[3:6, 5:8, 2:28] = True
+    mask[3:6, 2:12, 14:17] = True
+    canonical = _write_mask(tmp_path, mask)
+    stored = tmp_path / "stored_xyz.h5"
+    with h5py.File(stored, "w") as handle:
+        dataset = handle.create_dataset("data", data=np.transpose(mask, (2, 1, 0)).astype(np.uint8))
+        dataset.attrs["axistags"] = json.dumps(
+            {"axes": [{"key": key, "typeFlags": 2, "resolution": 0, "description": ""}
+                      for key in "xyz"]}
+        )
+    box = {"crop_on_import": True, "crop_size_xyz": [24, 10, 7]} if crop else {}
+
+    expected = skeletonise(
+        expected_settings := settings_for(tmp_path, canonical, **box),
+        segment(expected_settings),
+    )
+    settings = settings_for(tmp_path, stored, image_axis_order="auto", **box)
+    volume = skeletonise(settings, segment(settings))
+
+    assert volume.image.shape == expected.image.shape == ((7, 10, 24) if crop else mask.shape)
+    assert np.array_equal(np.asarray(volume.image, dtype=bool), np.asarray(expected.image, dtype=bool))
+    assert np.array_equal(volume.skeleton, expected.skeleton)
+    assert int(volume.skeleton.sum()) > 0
+    assert settings["image_axis_order"] == "auto"
+
+
+# --- segmentation cleanup (Input tab, before skeletonisation) ----------------
+
+
+def _fragmented_mask() -> np.ndarray:
+    """Two collinear tube fragments with a small gap, one tiny disconnected
+    speck -- exercises reconnect + remove-small in one fixture."""
+    mask = np.zeros((10, 10, 40), dtype=bool)
+    mask[4:6, 4:6, 0:15] = True
+    mask[4:6, 4:6, 20:35] = True
+    mask[0, 0, 0] = True
+    return mask
+
+
+def test_segmentation_cleanup_off_by_default_never_calls_clean_segmented_mask(
+    tmp_path, monkeypatch
+):
+    """Default settings must cost nothing extra: the orchestrator is never
+    called at all, matching the codebase's "off is free" convention for
+    every other opt-in stage feature."""
+    import haemolynx.preprocessing as preprocessing_module
+
+    calls: list = []
+    real = preprocessing_module.clean_segmented_mask_for_skeletonisation
+
+    def spy(*args, **kwargs):
+        calls.append(1)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(
+        preprocessing_module, "clean_segmented_mask_for_skeletonisation", spy
+    )
+
+    settings = settings_for(tmp_path, _write_mask(tmp_path, _fragmented_mask()))
+    volume = skeletonise(settings, segment(settings))
+
+    assert calls == []
+    assert volume.raw_segmented_image is None
+
+
+def test_skeletonise_forwards_reconnect_max_bridge_distance_um_setting(
+    tmp_path, monkeypatch
+):
+    """`parameters_of` introspects whatever function currently sits at
+    ``preprocessing.clean_segmented_mask_for_skeletonisation`` to decide
+    which settings to forward -- a plain ``*args, **kwargs`` spy would
+    replace that signature and silently break the forwarding it is meant
+    to test, so the spy must keep the real one (functools.wraps)."""
+    import functools
+
+    import haemolynx.preprocessing as preprocessing_module
+
+    captured = {}
+    real = preprocessing_module.clean_segmented_mask_for_skeletonisation
+
+    @functools.wraps(real)
+    def spy(*args, **kwargs):
+        captured["reconnect_max_bridge_distance_um"] = kwargs.get(
+            "reconnect_max_bridge_distance_um"
+        )
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(
+        preprocessing_module, "clean_segmented_mask_for_skeletonisation", spy
+    )
+
+    settings = settings_for(
+        tmp_path,
+        _write_mask(tmp_path, _fragmented_mask()),
+        segmentation_cleanup_reconnect_gaps=True,
+        segmentation_cleanup_reconnect_max_bridge_distance_um=17.0,
+    )
+    skeletonise(settings, segment(settings))
+
+    assert captured["reconnect_max_bridge_distance_um"] == pytest.approx(17.0)
+
+
+def test_skeletonise_forwards_smooth_sigma_um_setting(tmp_path, monkeypatch):
+    import functools
+
+    import haemolynx.preprocessing as preprocessing_module
+
+    captured = {}
+    real = preprocessing_module.clean_segmented_mask_for_skeletonisation
+
+    @functools.wraps(real)
+    def spy(*args, **kwargs):
+        captured["smooth_sigma_um"] = kwargs.get("smooth_sigma_um")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(
+        preprocessing_module, "clean_segmented_mask_for_skeletonisation", spy
+    )
+
+    settings = settings_for(
+        tmp_path,
+        _write_mask(tmp_path, _fragmented_mask()),
+        segmentation_cleanup_smooth_surfaces=True,
+        segmentation_cleanup_smooth_sigma_um=2.5,
+    )
+    skeletonise(settings, segment(settings))
+
+    assert captured["smooth_sigma_um"] == pytest.approx(2.5)
+
+
+def test_skeletonise_forwards_smooth_method_and_morphological_radius_um_settings(
+    tmp_path, monkeypatch
+):
+    import functools
+
+    import haemolynx.preprocessing as preprocessing_module
+
+    captured = {}
+    real = preprocessing_module.clean_segmented_mask_for_skeletonisation
+
+    @functools.wraps(real)
+    def spy(*args, **kwargs):
+        captured["smooth_method"] = kwargs.get("smooth_method")
+        captured["smooth_morphological_radius_um"] = kwargs.get(
+            "smooth_morphological_radius_um"
+        )
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(
+        preprocessing_module, "clean_segmented_mask_for_skeletonisation", spy
+    )
+
+    settings = settings_for(
+        tmp_path,
+        _write_mask(tmp_path, _fragmented_mask()),
+        segmentation_cleanup_smooth_surfaces=True,
+        segmentation_cleanup_smooth_method="morphological",
+        segmentation_cleanup_smooth_morphological_radius_um=1.75,
+    )
+    skeletonise(settings, segment(settings))
+
+    assert captured["smooth_method"] == "morphological"
+    assert captured["smooth_morphological_radius_um"] == pytest.approx(1.75)
+
+
+def test_skeletonise_forwards_remove_small_min_volume_um3_setting(tmp_path, monkeypatch):
+    import functools
+
+    import haemolynx.preprocessing as preprocessing_module
+
+    captured = {}
+    real = preprocessing_module.clean_segmented_mask_for_skeletonisation
+
+    @functools.wraps(real)
+    def spy(*args, **kwargs):
+        captured["remove_small_min_volume_um3"] = kwargs.get(
+            "remove_small_min_volume_um3"
+        )
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(
+        preprocessing_module, "clean_segmented_mask_for_skeletonisation", spy
+    )
+
+    settings = settings_for(
+        tmp_path,
+        _write_mask(tmp_path, _fragmented_mask()),
+        segmentation_cleanup_remove_small_volumes=True,
+        segmentation_cleanup_remove_small_min_volume_um3=9.0,
+    )
+    skeletonise(settings, segment(settings))
+
+    assert captured["remove_small_min_volume_um3"] == pytest.approx(9.0)
+
+
+def test_skeletonise_forwards_whisker_radius_um_setting(tmp_path, monkeypatch):
+    import functools
+
+    import haemolynx.preprocessing as preprocessing_module
+
+    captured = {}
+    real = preprocessing_module.clean_segmented_mask_for_skeletonisation
+
+    @functools.wraps(real)
+    def spy(*args, **kwargs):
+        captured["whisker_radius_um"] = kwargs.get("whisker_radius_um")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(
+        preprocessing_module, "clean_segmented_mask_for_skeletonisation", spy
+    )
+
+    settings = settings_for(
+        tmp_path,
+        _write_mask(tmp_path, _fragmented_mask()),
+        segmentation_cleanup_remove_whiskers=True,
+        segmentation_cleanup_whisker_radius_um=1.3,
+    )
+    skeletonise(settings, segment(settings))
+
+    assert captured["whisker_radius_um"] == pytest.approx(1.3)
+
+
+def test_skeletonise_forwards_split_min_marker_separation_um_setting(tmp_path, monkeypatch):
+    import functools
+
+    import haemolynx.preprocessing as preprocessing_module
+
+    captured = {}
+    real = preprocessing_module.clean_segmented_mask_for_skeletonisation
+
+    @functools.wraps(real)
+    def spy(*args, **kwargs):
+        captured["split_min_marker_separation_um"] = kwargs.get(
+            "split_min_marker_separation_um"
+        )
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(
+        preprocessing_module, "clean_segmented_mask_for_skeletonisation", spy
+    )
+
+    settings = settings_for(
+        tmp_path,
+        _write_mask(tmp_path, _fragmented_mask()),
+        segmentation_cleanup_split_narrow_necks=True,
+        segmentation_cleanup_split_min_marker_separation_um=6.0,
+    )
+    skeletonise(settings, segment(settings))
+
+    assert captured["split_min_marker_separation_um"] == pytest.approx(6.0)
+
+
+def test_skeletonise_forwards_close_gaps_radius_um_setting(tmp_path, monkeypatch):
+    import functools
+
+    import haemolynx.preprocessing as preprocessing_module
+
+    captured = {}
+    real = preprocessing_module.clean_segmented_mask_for_skeletonisation
+
+    @functools.wraps(real)
+    def spy(*args, **kwargs):
+        captured["close_gaps_radius_um"] = kwargs.get("close_gaps_radius_um")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(
+        preprocessing_module, "clean_segmented_mask_for_skeletonisation", spy
+    )
+
+    settings = settings_for(
+        tmp_path,
+        _write_mask(tmp_path, _fragmented_mask()),
+        segmentation_cleanup_close_gaps=True,
+        segmentation_cleanup_close_gaps_radius_um=1.5,
+    )
+    skeletonise(settings, segment(settings))
+
+    assert captured["close_gaps_radius_um"] == pytest.approx(1.5)
+
+
+def test_skeletonise_raw_segmented_image_is_set_when_only_remove_whiskers_is_on(
+    tmp_path,
+):
+    settings = settings_for(
+        tmp_path,
+        _write_mask(tmp_path, _fragmented_mask()),
+        segmentation_cleanup_remove_whiskers=True,
+    )
+    volume = skeletonise(settings, segment(settings))
+    assert volume.raw_segmented_image is not None
+
+
+def test_skeletonise_raw_segmented_image_is_set_when_only_split_narrow_necks_is_on(
+    tmp_path,
+):
+    settings = settings_for(
+        tmp_path,
+        _write_mask(tmp_path, _fragmented_mask()),
+        segmentation_cleanup_split_narrow_necks=True,
+    )
+    volume = skeletonise(settings, segment(settings))
+    assert volume.raw_segmented_image is not None
+
+
+def test_skeletonise_raw_segmented_image_is_set_when_only_close_gaps_is_on(tmp_path):
+    settings = settings_for(
+        tmp_path,
+        _write_mask(tmp_path, _fragmented_mask()),
+        segmentation_cleanup_close_gaps=True,
+    )
+    volume = skeletonise(settings, segment(settings))
+    assert volume.raw_segmented_image is not None
+
+
+def test_skeletonise_raw_segmented_image_is_set_only_when_cleanup_ran(tmp_path):
+    settings_off = settings_for(tmp_path, _write_mask(tmp_path, _fragmented_mask()))
+    volume_off = skeletonise(settings_off, segment(settings_off))
+    assert volume_off.raw_segmented_image is None
+
+    settings_on = settings_for(
+        tmp_path,
+        _write_mask(tmp_path, _fragmented_mask()),
+        segmentation_cleanup_remove_small_volumes=True,
+        segmentation_cleanup_remove_small_min_volume_um3=5.0,
+    )
+    volume_on = skeletonise(settings_on, segment(settings_on))
+    assert volume_on.raw_segmented_image is not None
+    assert bool(volume_on.raw_segmented_image[0, 0, 0])  # the speck, pre-cleanup
+
+
+def test_skeletonise_feeds_the_cleaned_mask_to_skeletonisation(tmp_path):
+    """volume.image (what skeletonisation and everything downstream reads)
+    must be the corrected mask, not the raw one -- the speck removed by
+    cleanup must not still be present in volume.image."""
+    settings = settings_for(
+        tmp_path,
+        _write_mask(tmp_path, _fragmented_mask()),
+        segmentation_cleanup_remove_small_volumes=True,
+        segmentation_cleanup_remove_small_min_volume_um3=5.0,
+    )
+    volume = skeletonise(settings, segment(settings))
+
+    assert not bool(np.asarray(volume.image)[0, 0, 0])
+
+
+def _solid_mask_with_an_internal_cavity() -> np.ndarray:
+    """A solid block with a small enclosed void -- an imaging-noise-style
+    air gap inside an otherwise solid vessel lumen."""
+    mask = np.zeros((10, 10, 10), dtype=bool)
+    mask[2:8, 2:8, 2:8] = True
+    mask[4:6, 4:6, 4:6] = False  # the cavity itself
+    return mask
+
+
+def test_skeletonise_fill_cavities_fills_the_hollow_lumen_in_volume_image(tmp_path):
+    """volume.image (what skeletonisation and everything downstream reads)
+    must have the enclosed cavity filled in -- a hollow lumen from imaging
+    noise must not survive into the mask fed to skeletonisation, and
+    raw_segmented_image must still show it hollow, pre-cleanup."""
+    settings = settings_for(
+        tmp_path,
+        _write_mask(tmp_path, _solid_mask_with_an_internal_cavity()),
+        segmentation_cleanup_fill_cavities=True,
+    )
+    volume = skeletonise(settings, segment(settings))
+
+    assert bool(np.asarray(volume.image)[5, 5, 5])  # the cavity, now filled
+    assert volume.raw_segmented_image is not None
+    assert not bool(volume.raw_segmented_image[5, 5, 5])  # cavity, pre-cleanup
+
+
+def _tube_with_a_single_voxel_dropout() -> np.ndarray:
+    """A solid tube with one dropped cross-section slice -- too small (and,
+    on a real vessel, often too close to a junction) for
+    reconnect_vessel_like_components's PCA-based cylindricality gate to
+    confidently bridge, exactly what close_small_gaps exists to bridge
+    indiscriminately instead."""
+    shape = (20, 20, 20)
+    zz, yy, xx = np.indices(shape, dtype=float)
+    radial = np.sqrt((zz - 10) ** 2 + (yy - 10) ** 2)
+    tube = (radial <= 4.0) & (xx >= 2) & (xx <= 17)
+    tube[:, :, 9] = False
+    return tube
+
+
+def test_skeletonise_close_gaps_bridges_a_single_voxel_dropout_in_volume_image(tmp_path):
+    """volume.image (what skeletonisation and everything downstream reads)
+    must have the dropout bridged -- reconnect_gaps is not on, so only
+    close_gaps could have done it."""
+    settings = settings_for(
+        tmp_path,
+        _write_mask(tmp_path, _tube_with_a_single_voxel_dropout()),
+        segmentation_cleanup_close_gaps=True,
+    )
+    volume = skeletonise(settings, segment(settings))
+
+    assert bool(np.asarray(volume.image)[10, 10, 9])  # the dropout, now bridged
+
+
+def test_thick_vessel_skeletonisation_honours_the_low_ram_settings(tmp_path, monkeypatch):
+    """Regression: the thick-vessel path ignored use_memmap_loading and the
+    tiling settings, though it is the option most used on whole-brain stacks."""
+    import haemolynx.preprocessing as preprocessing_module
+
+    captured = {}
+    real = preprocessing_module.skeletonize_thickness_gated
+
+    def spy(*args, **kwargs):
+        captured.update(kwargs)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(preprocessing_module, "skeletonize_thickness_gated", spy)
+    mask, _fat_roi = plasma_labelled_object(8.0)
+    memmaps = tmp_path / "memmaps"
+    memmaps.mkdir()
+    settings = settings_for(
+        tmp_path,
+        _write_mask(tmp_path, mask),
+        use_thick_vessel_skeletonisation=True,
+        use_memmap_loading=True,
+        memmap_directory=memmaps,
+        skeletonize_tile_large_components=True,
+        skeletonize_tile_max_voxels=12345,
+    )
+    skeletonise(settings, segment(settings))
+
+    assert captured["use_memmap"] is True
+    assert str(captured["memmap_directory"]) == str(memmaps)
+    assert captured["tile_large_components"] is True
+    assert captured["tile_max_voxels"] == 12345
+
+
+@pytest.mark.parametrize("multiple", [1.5, 0.0])
+def test_graph_building_judges_stubs_by_the_mask_it_was_skeletonised_from(tmp_path, monkeypatch, multiple):
+    """build_network hands graph building the radius multiple and a sampler
+    reading the vessel radius from the binary mask (also what centreline
+    smoothing is given, so it is built whenever smoothing is on)."""
+    import haemolynx.graph as graph_module
+    from haemolynx.pipeline.stages import build_network
+
+    captured = {}
+    real = graph_module.build_graph_from_skeleton
+
+    def spy(skeleton, **kwargs):
+        captured.update(kwargs)
+        return real(skeleton, **kwargs)
+
+    monkeypatch.setattr(graph_module, "build_graph_from_skeleton", spy)
+    mask = np.zeros((9, 20, 40), dtype=bool)
+    mask[3:6, 8:12, 2:38] = True
+    settings = settings_for(
+        tmp_path, _write_mask(tmp_path, mask), min_stub_length_radius_multiple=multiple
+    )
+    volume = skeletonise(settings, segment(settings))
+    build_network(settings, volume, SCHEMA)
+
+    assert captured["min_stub_length_radius_multiple"] == pytest.approx(multiple)
+    radius_at = captured["stub_radius_at"]
+    assert radius_at(np.array([4.0, 10.0, 20.0])) > 0  # inside the vessel
+    assert radius_at(np.array([0.0, 0.0, 0.0])) == 0  # background
+
+
+def test_graph_building_tells_duplicate_edges_apart_by_the_mask(tmp_path, monkeypatch):
+    """build_network hands graph building the binary mask the skeleton came
+    from, which is what decides whether two edges joining the same two nodes
+    are one vessel -- even with stub radii and centreline smoothing, the
+    mask's other readers, both off."""
+    import haemolynx.graph as graph_module
+    from haemolynx.pipeline.stages import build_network
+
+    captured = {}
+    real = graph_module.build_graph_from_skeleton
+
+    def spy(skeleton, **kwargs):
+        captured.update(kwargs)
+        return real(skeleton, **kwargs)
+
+    monkeypatch.setattr(graph_module, "build_graph_from_skeleton", spy)
+    mask = np.zeros((9, 20, 40), dtype=bool)
+    mask[3:6, 8:12, 2:38] = True
+    settings = settings_for(
+        tmp_path,
+        _write_mask(tmp_path, mask),
+        min_stub_length_radius_multiple=0.0,
+        smooth_centrelines=False,
+    )
+    volume = skeletonise(settings, segment(settings))
+    build_network(settings, volume, SCHEMA)
+
+    assert captured["stub_radius_at"] is None
+    np.testing.assert_array_equal(captured["segmentation_mask"], mask)
+
+
+# --- the thick-vessel region kept between runs (preprocessing/thick_vessel_region_cache.py) ---
+
+
+def _never_found(*_args, **_kwargs):
+    pytest.fail("the thick-vessel region should have come from the cache")
+
+
+def test_a_second_run_reads_the_thick_vessel_region_the_first_found(tmp_path, monkeypatch):
+    """The region is found once and kept beside the skeleton; a run with the
+    same mask and settings reads it back and skeletonises the same."""
+    from haemolynx.preprocessing import thick_vessels as module
+
+    mask, _fat_roi = plasma_labelled_object(8.0)
+    settings = settings_for(
+        tmp_path, _write_mask(tmp_path, mask), use_thick_vessel_skeletonisation=True
+    )
+    first = skeletonise(settings, segment(settings))
+    assert first.thick_vessel_mask is not None
+    assert (first.output_dir / "mask_thick_vessel_region.json").exists()
+    assert (first.output_dir / "mask_thick_vessel_region.npy").exists()
+
+    monkeypatch.setattr(module, "thick_vessel_object_mask", _never_found)
+    second = skeletonise(settings, segment(settings))
+    assert np.array_equal(second.skeleton, first.skeleton)
+    assert np.array_equal(second.thick_vessel_mask, first.thick_vessel_mask)
+
+
+def test_a_changed_setting_or_mask_finds_the_region_again(tmp_path, monkeypatch):
+    from haemolynx.preprocessing import thick_vessels as module
+
+    mask, _fat_roi = plasma_labelled_object(8.0)
+    settings = settings_for(
+        tmp_path, _write_mask(tmp_path, mask), use_thick_vessel_skeletonisation=True
+    )
+    skeletonise(settings, segment(settings))
+    real = module.thick_vessel_object_mask
+    radii = []
+
+    def spy(*args, **kwargs):
+        radii.append(kwargs["min_radius_um"])
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(module, "thick_vessel_object_mask", spy)
+    settings["skeleton_thick_vessel_min_radius_um"] = 5.0
+    skeletonise(settings, segment(settings))
+    assert radii == [5.0]
+    skeletonise(settings, segment(settings))  # the new entry serves
+    assert radii == [5.0]
+    settings["skeleton_thick_vessel_min_radius_um"] = THICK_VESSEL_MIN_RADIUS_UM
+    skeletonise(settings, segment(settings))  # one entry per run output: the old one is gone
+    assert radii == [5.0, THICK_VESSEL_MIN_RADIUS_UM]
+
+    changed = mask.copy()
+    assert not changed[0, 0, 0]
+    changed[0, 0, 0] = True
+    _write_mask(tmp_path, changed)
+    skeletonise(settings, segment(settings))
+    assert len(radii) == 3
+
+
+def test_a_mask_with_no_thick_region_is_remembered_too(tmp_path, monkeypatch):
+    from haemolynx.preprocessing import thick_vessels as module
+
+    mask, _fat_roi = plasma_labelled_object(8.0)
+    settings = settings_for(
+        tmp_path,
+        _write_mask(tmp_path, mask),
+        use_thick_vessel_skeletonisation=True,
+        skeleton_thick_vessel_min_radius_um=50.0,
+    )
+    first = skeletonise(settings, segment(settings))
+    assert first.thick_vessel_mask is None
+
+    monkeypatch.setattr(module, "thick_vessel_object_mask", _never_found)
+    second = skeletonise(settings, segment(settings))
+    assert second.thick_vessel_mask is None
+    assert np.array_equal(second.skeleton, first.skeleton)
+
+
+def test_a_run_loading_its_skeleton_gets_the_region_back_from_the_cache(tmp_path, monkeypatch):
+    """With do_skeletonize off the region used to be None whatever the
+    settings said, and graph building made no thick-vessel bridges."""
+    from haemolynx.preprocessing import thick_vessels as module
+    from haemolynx.preprocessing import thick_vessel_region
+
+    mask, _fat_roi = plasma_labelled_object(8.0)
+    settings = settings_for(
+        tmp_path, _write_mask(tmp_path, mask), use_thick_vessel_skeletonisation=True
+    )
+    first = skeletonise(settings, segment(settings))
+
+    real = module.thick_vessel_object_mask
+    monkeypatch.setattr(module, "thick_vessel_object_mask", _never_found)
+    settings["do_skeletonize"] = False
+    loaded = skeletonise(settings, segment(settings))
+    assert np.array_equal(loaded.skeleton, first.skeleton)
+    assert np.array_equal(loaded.thick_vessel_mask, first.thick_vessel_mask)
+
+    # No entry for these settings: found, as the settings say, and kept.
+    monkeypatch.setattr(module, "thick_vessel_object_mask", real)
+    settings["skeleton_thick_vessel_min_radius_um"] = 5.0
+    found = skeletonise(settings, segment(settings)).thick_vessel_mask
+    expected = thick_vessel_region(
+        mask, min_radius_um=5.0, voxel_size_zyx=first.voxel_size_zyx, fill_mask_holes=True
+    )
+    assert np.array_equal(found, expected)
+    monkeypatch.setattr(module, "thick_vessel_object_mask", _never_found)
+    assert np.array_equal(skeletonise(settings, segment(settings)).thick_vessel_mask, expected)
+
+
+def test_a_loaded_skeleton_with_no_region_kept_finds_it_again(tmp_path):
+    """A skeleton loaded on another machine, or after its region was cleared
+    (a batch clears it), gave graph building no thick vessels to bridge: the
+    graph was not the one the run that made the skeleton built."""
+    mask, _fat_roi = plasma_labelled_object(8.0)
+    settings = settings_for(
+        tmp_path, _write_mask(tmp_path, mask), use_thick_vessel_skeletonisation=True
+    )
+    made = skeletonise(settings, segment(settings))
+    assert made.thick_vessel_mask is not None
+    from haemolynx.pipeline.stages import thick_vessel_region_cache
+
+    assert thick_vessel_region_cache(settings).discard()
+
+    settings["do_skeletonize"] = False
+    loaded = skeletonise(settings, segment(settings))
+    assert np.array_equal(loaded.thick_vessel_mask, made.thick_vessel_mask)
+
+
+@pytest.mark.parametrize("low_ram", [False, True])
+def test_skeletonise_hands_on_the_thick_centreline_tree_it_drew(tmp_path, low_ram):
+    """Graph building reads the tree skeletonisation drew rather than
+    drawing it again (a volume of zeros and a Dijkstra over every fat
+    voxel): the volume carries its voxels, the ones the region gives. A
+    skeleton loaded instead of made carries none, so it is drawn there."""
+    from haemolynx.graph.thick_vessel_junctions import thick_vessel_centreline_voxels
+
+    mask, _fat_roi = plasma_labelled_object(8.0)
+    settings = settings_for(
+        tmp_path, _write_mask(tmp_path, mask), use_thick_vessel_skeletonisation=True,
+        use_memmap_loading=low_ram, memmap_directory=tmp_path if low_ram else None,
+    )
+    volume = skeletonise(settings, segment(settings))
+
+    assert volume.thick_vessel_mask is not None and volume.thick_vessel_mask.any()
+    tree = volume.thick_vessel_centreline
+    assert tree is not None and len(tree)
+    assert np.array_equal(tree, thick_vessel_centreline_voxels(volume.thick_vessel_mask, volume.voxel_size_zyx))
+
+    loaded = skeletonise(dict(settings, do_skeletonize=False), segment(settings))
+    assert loaded.thick_vessel_centreline is None
+
+
+# --- a loaded skeleton's mask is the one a made skeleton came from ------------------
+
+
+def _thick_object_with_a_speck() -> np.ndarray:
+    """The plasma-labelled thick vessel and its capillaries, and one voxel on
+    its own that segmentation cleanup's remove-small-volumes takes away."""
+    mask, _fat_roi = plasma_labelled_object(8.0)
+    assert not mask[0, 0, 0]
+    mask[0, 0, 0] = True
+    return mask
+
+
+def _cleanup_settings(tmp_path: Path) -> dict:
+    return settings_for(
+        tmp_path,
+        _write_mask(tmp_path, _thick_object_with_a_speck()),
+        use_thick_vessel_skeletonisation=True,
+        segmentation_cleanup_remove_small_volumes=True,
+        segmentation_cleanup_remove_small_min_volume_um3=5.0,
+    )
+
+
+def _attribute_key(value):
+    if isinstance(value, np.ndarray):
+        return ("array", value.shape, np.round(value.astype(float), 6).tolist())
+    if isinstance(value, (list, tuple)):
+        return tuple(_attribute_key(item) for item in value)
+    if isinstance(value, dict):
+        return tuple(sorted((key, _attribute_key(item)) for key, item in value.items()))
+    if isinstance(value, float):
+        return round(value, 6)
+    return repr(value)
+
+
+def _graph_key(G) -> tuple:
+    """Every node and edge with all its attributes, keyed by position, so two
+    builds of one network compare equal whatever ids they gave the nodes."""
+    pos = {node: tuple(np.round(data["pos"], 6).tolist()) for node, data in G.nodes(data=True)}
+    nodes = sorted((pos[node], _attribute_key(data)) for node, data in G.nodes(data=True))
+    edges = sorted(
+        (tuple(sorted((pos[u], pos[v]))), _attribute_key(data)) for u, v, data in G.edges(data=True)
+    )
+    return tuple(nodes), tuple(edges)
+
+
+def test_a_loaded_skeleton_is_built_on_the_cleaned_mask_a_made_one_was(tmp_path, monkeypatch):
+    """With segmentation cleanup on, a run loading its skeleton (do_skeletonize
+    off) used to hand graph building the segmented image uncleaned: the speck
+    cleanup took away was back in its mask, the thick-vessel region (kept
+    under a digest of the cleaned mask) was not found, and the graph had no
+    thick-vessel split -- six nodes where the made run had four."""
+    from haemolynx.pipeline.stages import build_network
+    from haemolynx.preprocessing import thick_vessels as module
+
+    settings = _cleanup_settings(tmp_path)
+    made = skeletonise(settings, segment(settings))
+    made_graph = build_network(settings, made, SCHEMA).graph
+    assert not np.asarray(made.image)[0, 0, 0]
+    assert made.thick_vessel_mask is not None
+
+    monkeypatch.setattr(module, "thick_vessel_object_mask", _never_found)
+    loaded_settings = dict(settings, do_skeletonize=False)
+    loaded = skeletonise(loaded_settings, segment(loaded_settings))
+    loaded_graph = build_network(loaded_settings, loaded, SCHEMA).graph
+
+    np.testing.assert_array_equal(loaded.skeleton, made.skeleton)
+    np.testing.assert_array_equal(
+        np.asarray(loaded.image, dtype=bool), np.asarray(made.image, dtype=bool)
+    )
+    np.testing.assert_array_equal(loaded.raw_segmented_image, made.raw_segmented_image)
+    assert bool(loaded.raw_segmented_image[0, 0, 0])  # the speck, before cleanup
+    np.testing.assert_array_equal(loaded.thick_vessel_mask, made.thick_vessel_mask)
+    assert _graph_key(loaded_graph) == _graph_key(made_graph)
+
+
+def test_a_loaded_skeleton_with_cleanup_off_keeps_the_image_as_read(tmp_path):
+    """Cleanup off: a loaded skeleton's image is the segmented image, with no
+    raw image beside it, as a made skeleton's is."""
+    settings = settings_for(tmp_path, _write_mask(tmp_path, _thick_object_with_a_speck()))
+    skeletonise(settings, segment(settings))
+
+    loaded = skeletonise(dict(settings, do_skeletonize=False), segment(settings))
+
+    assert bool(np.asarray(loaded.image)[0, 0, 0])
+    assert loaded.raw_segmented_image is None
+
+
+def test_a_run_resumed_past_skeletonising_without_its_outputs_reads_the_cleaned_mask(tmp_path):
+    """The panel's run-from-a-tab for a run loaded from a file has no stored
+    stage outputs: it turns do_skeletonize off and the skeleton is loaded.
+    Graph building must still read the mask the skeleton was made from."""
+    from haemolynx.pipeline.stages import PipelineResume, run_pipeline_stages
+
+    settings = _cleanup_settings(tmp_path)
+    made = {}
+    made_graph = run_pipeline_stages(
+        dict(settings), SCHEMA, stop_after="build_network",
+        on_stage_output=lambda name, output: made.setdefault(name, output),
+    )
+    resumed = {}
+    resumed_graph = run_pipeline_stages(
+        dict(settings, do_skeletonize=False), SCHEMA,
+        resume=PipelineResume(start_from="build_network"), stop_after="build_network",
+        on_stage_output=lambda name, output: resumed.setdefault(name, output),
+    )
+
+    np.testing.assert_array_equal(
+        np.asarray(resumed["skeletonise"].image, dtype=bool),
+        np.asarray(made["skeletonise"].image, dtype=bool),
+    )
+    np.testing.assert_array_equal(
+        resumed["skeletonise"].thick_vessel_mask, made["skeletonise"].thick_vessel_mask
+    )
+    assert _graph_key(resumed_graph) == _graph_key(made_graph)
+
+
+def _rod_mask() -> np.ndarray:
+    mask = np.zeros((20, 15, 15), dtype=bool)
+    mask[2:18, 4:11, 4:11] = True
+    return mask
+
+
+def test_the_skeleton_figures_are_drawn_only_with_plots_on(tmp_path):
+    """They were written on every run, whatever visualize_results said, into a
+    folder made first: a panel run (plots off) failed at Skeletonise when the
+    plot folder could not be made, and wrote two PNGs where it could."""
+    mask_path = _write_mask(tmp_path, _rod_mask())
+    blocker = tmp_path / "not_a_folder"
+    blocker.write_text("")
+    off = settings_for(tmp_path, mask_path, visualize_results=False, plot_dir=blocker / "plots")
+
+    volume = skeletonise(off, segment(off))
+
+    assert volume.skeleton.any()
+    assert not (blocker / "plots").exists()
+
+    plots = tmp_path / "plots_on"
+    on = settings_for(tmp_path, mask_path, visualize_results=True, plot_dir=plots)
+    skeletonise(on, segment(on))
+    assert (plots / "skeleton_projection.png").is_file()
+    assert (plots / "raw_skeleton.png").is_file()
+
+
+# --- a skeleton loaded instead of made (do_skeletonize off) -----------------
+
+TUBE_VOXEL_SIZE_XYZ = (0.4, 0.5, 2.0)
+
+
+def _write_anisotropic_tube(tmp_path: Path) -> Path:
+    """A tube along x in a stack whose ImageJ metadata gives its voxel size."""
+    mask = np.zeros((12, 40, 60), dtype=np.uint8)
+    mask[4:9, 17:24, 2:58] = 255
+    path = tmp_path / "tube.tif"
+    tifffile.imwrite(
+        str(path), mask, imagej=True,
+        resolution=(1.0 / TUBE_VOXEL_SIZE_XYZ[0], 1.0 / TUBE_VOXEL_SIZE_XYZ[1]),
+        metadata={"spacing": TUBE_VOXEL_SIZE_XYZ[2], "unit": "um"},
+    )
+    return path
+
+
+def test_a_loaded_skeleton_reads_the_voxel_size_of_its_image_without_the_record(tmp_path):
+    """The panel writes a skeleton alone for a run resumed from a later tab
+    (stage_checkpoints.ensure_skeleton_artefact); loading it read the voxel
+    size from the record beside it, and with none ran on 1 um voxels."""
+    path = _write_anisotropic_tube(tmp_path)
+    made_settings = settings_for(tmp_path, path)
+    made = skeletonise(made_settings, segment(made_settings))
+    assert made.voxel_size_xyz == pytest.approx(TUBE_VOXEL_SIZE_XYZ)
+    (tmp_path / "run" / "tube_voxel_size.json").unlink()
+
+    loaded_settings = settings_for(tmp_path, path, do_skeletonize=False)
+    loaded = skeletonise(loaded_settings, segment(loaded_settings))
+
+    assert loaded.voxel_size_xyz == pytest.approx(TUBE_VOXEL_SIZE_XYZ)
+    assert loaded.voxel_size_zyx == pytest.approx(made.voxel_size_zyx)
+    assert np.array_equal(loaded.skeleton, made.skeleton)
+
+
+def test_a_loaded_skeleton_resolves_its_voxel_size_as_a_fresh_run_would(tmp_path, caplog):
+    """The record keeps the voxel size the making run resolved: an override,
+    read back as the image's metadata, outlived the override itself."""
+    import logging
+
+    path = _write_anisotropic_tube(tmp_path)
+    made_settings = settings_for(
+        tmp_path, path, voxel_size_policy="override", voxel_size_override_xyz=(1.0, 1.0, 1.0)
+    )
+    made = skeletonise(made_settings, segment(made_settings))
+    assert made.voxel_size_xyz == pytest.approx((1.0, 1.0, 1.0))
+
+    loaded_settings = settings_for(tmp_path, path, do_skeletonize=False)
+    with caplog.at_level(logging.WARNING, logger="haemolynx.pipeline.stages"):
+        loaded = skeletonise(loaded_settings, segment(loaded_settings))
+
+    fresh_settings = settings_for(tmp_path / "fresh", path)
+    fresh = skeletonise(fresh_settings, segment(fresh_settings))
+    assert loaded.voxel_size_xyz == pytest.approx(fresh.voxel_size_xyz)
+    assert loaded.voxel_size_xyz == pytest.approx(TUBE_VOXEL_SIZE_XYZ)
+    assert any("was made at a voxel size" in r.getMessage() for r in caplog.records)
+
+
+def _cropped(tmp_path, path, start_xyz, end_xyz, **overrides) -> dict:
+    return settings_for(
+        tmp_path, path, crop_on_import=True, crop_method="coordinates",
+        crop_start_xyz=start_xyz, crop_end_xyz=end_xyz, **overrides,
+    )
+
+
+def test_a_loaded_skeleton_cut_from_another_box_of_its_size_is_refused(tmp_path):
+    """Only the shape was compared: a box moved, the same size, loaded the
+    skeleton of the old box onto the new one's image."""
+    path = _write_anisotropic_tube(tmp_path)
+    made_settings = _cropped(tmp_path, path, (0, 0, 0), (39, 39, 11))
+    made = skeletonise(made_settings, segment(made_settings))
+
+    own = _cropped(tmp_path, path, (0, 0, 0), (39, 39, 11), do_skeletonize=False)
+    assert np.array_equal(skeletonise(own, segment(own)).skeleton, made.skeleton)
+
+    moved = _cropped(tmp_path, path, (10, 0, 0), (49, 39, 11), do_skeletonize=False)
+    with pytest.raises(ValueError, match="crop_on_import"):
+        skeletonise(moved, segment(moved))
+
+
+def test_a_loaded_downsampled_skeleton_is_refused_for_a_box_of_its_size(tmp_path):
+    """The whole image reduced 2x in y and x is the shape of a box half its
+    width and height: the box's run loaded the whole image's skeleton."""
+    path = _write_anisotropic_tube(tmp_path)
+    made_settings = settings_for(tmp_path, path, segmented_image_downsample="2x")
+    made = skeletonise(made_settings, segment(made_settings))
+    assert made.skeleton.shape == (12, 20, 30)
+
+    box = _cropped(tmp_path, path, (0, 0, 0), (29, 19, 11), do_skeletonize=False)
+    with pytest.raises(ValueError, match="crop_on_import"):
+        skeletonise(box, segment(box))
+
+
+def test_preflight_looks_for_the_skeleton_the_stage_loads_with_ilastik_out_of_effect(tmp_path):
+    """With ilastik's switch on but no raw image to segment, ilastik does not
+    run and the stage loads {input stem}_skeleton.npy; preflight looked for
+    input_skeleton.npy and refused the run."""
+    from haemolynx.pipeline.checks import check_cached_artefacts
+
+    output_dir = tmp_path / "run"
+    output_dir.mkdir()
+    np.save(output_dir / "vessels_skeleton.npy", np.zeros((2, 2, 2), dtype=bool))
+    settings = {
+        "input_path": tmp_path / "vessels.tif",
+        "output_dir": output_dir,
+        "do_skeletonize": False,
+        "use_ilastik_segmentation": True,
+        "raw_image_path": None,
+    }
+    assert check_cached_artefacts(settings).ok, check_cached_artefacts(settings).errors
+
+    settings["raw_image_path"] = tmp_path / "raw.tif"  # ilastik segments: its output's name
+    report = check_cached_artefacts(settings)
+    assert any("raw_segmented_skeleton.npy" in message for message in report.errors)
+
+
+def test_a_record_older_than_its_skeleton_is_not_held_against_it(tmp_path):
+    """The panel writes a skeleton alone for a resumed run, beside the record
+    of whichever run made one there before: that record says nothing of it."""
+    path = _write_anisotropic_tube(tmp_path)
+    first = _cropped(tmp_path, path, (0, 0, 0), (39, 39, 11))
+    skeletonise(first, segment(first))
+    record = tmp_path / "run" / "tube_voxel_size.json"
+    old_ns = time.time_ns() - 60_000_000_000
+    os.utime(record, ns=(old_ns, old_ns))
+
+    moved_made = _cropped(tmp_path / "other", path, (10, 0, 0), (49, 39, 11))
+    moved = skeletonise(moved_made, segment(moved_made))
+    np.save(tmp_path / "run" / "tube_skeleton.npy", np.asarray(moved.skeleton))
+
+    resumed = _cropped(tmp_path, path, (10, 0, 0), (49, 39, 11), do_skeletonize=False)
+    loaded = skeletonise(resumed, segment(resumed))
+    assert np.array_equal(loaded.skeleton, moved.skeleton)
+    assert loaded.voxel_size_xyz == pytest.approx(TUBE_VOXEL_SIZE_XYZ)
+
+
+def test_the_braid_check_labels_by_slab_under_the_low_ram_option(tmp_path, monkeypatch):
+    import haemolynx.preprocessing as preprocessing_module
+
+    captured = []
+
+    def spy(*_args, **kwargs):
+        captured.append(kwargs.get("low_memory"))
+        return []
+
+    monkeypatch.setattr(preprocessing_module, "detect_braided_thick_vessel_components", spy)
+    mask, _fat_roi = plasma_labelled_object(8.0)
+    mask_path = _write_mask(tmp_path, mask)
+    for low_ram in (False, True):
+        settings = settings_for(
+            tmp_path / str(low_ram), mask_path, use_thick_vessel_skeletonisation=True,
+            detect_thick_vessel_braiding=True, use_memmap_loading=low_ram,
+        )
+        skeletonise(settings, segment(settings))
+    assert captured == [False, True]
+
+
+def test_a_loaded_skeleton_says_which_thick_vessel_tree_drew_it(tmp_path, caplog):
+    """The large-stack tree is drawn under the low-RAM option only, and the
+    thick region's cache key does not cover it: a skeleton made in low-RAM
+    mode with it, loaded in RAM, was bridged to the exact tree unsaid."""
+    import json
+    import logging
+
+    mask, _fat_roi = plasma_labelled_object(8.0)
+    settings = settings_for(
+        tmp_path, _write_mask(tmp_path, mask), use_thick_vessel_skeletonisation=True,
+        use_memmap_loading=True, memmap_directory=tmp_path / "mm",
+        skeleton_thick_vessel_large_stack_tree=True,
+    )
+    skeletonise(settings, segment(settings))
+    record = json.loads((tmp_path / "run" / "mask_voxel_size.json").read_text())
+    assert record["large_stack_thick_tree"] is True
+
+    def warnings_loading(**changes) -> list[str]:
+        caplog.clear()
+        loading = dict(settings, do_skeletonize=False, **changes)
+        with caplog.at_level(logging.WARNING, logger="haemolynx.pipeline.stages"):
+            skeletonise(loading, segment(loading))
+        return [r.getMessage() for r in caplog.records if "drew its thick vessels" in r.getMessage()]
+
+    assert warnings_loading() == []
+    (warning,) = warnings_loading(use_memmap_loading=False)
+    assert "the large-stack tree" in warning and "the exact tree" in warning
+    assert warnings_loading(use_memmap_loading=False, use_thick_vessel_skeletonisation=False) == []
+
+    # Without thickness-gated skeletonisation no tree drew it, and none is recorded.
+    plain = dict(settings, use_thick_vessel_skeletonisation=False, output_dir=tmp_path / "plain")
+    skeletonise(plain, segment(plain))
+    assert "large_stack_thick_tree" not in json.loads(
+        (tmp_path / "plain" / "mask_voxel_size.json").read_text()
+    )
+
+
+# --- second review pass ---------------------------------------------------------
+
+
+def test_a_low_ram_skeleton_loaded_is_a_copy_and_the_next_run_saves_over_it(tmp_path):
+    """The saved skeleton was mapped in place under the low-RAM option, and
+    the panel keeps a run's layers: on Windows the next run making a skeleton
+    did all the work, then could not save it over the mapped file."""
+    mask, _fat_roi = plasma_labelled_object(8.0)
+    mask_path = _write_mask(tmp_path, mask)
+    settings = settings_for(tmp_path, mask_path, use_memmap_loading=True, memmap_directory=tmp_path / "mm")
+    made = skeletonise(settings, segment(settings))
+    skeleton_path = tmp_path / "run" / "mask_skeleton.npy"
+
+    loaded = skeletonise({**settings, "do_skeletonize": False}, segment(settings))
+    assert isinstance(loaded.skeleton, np.memmap)
+    assert Path(loaded.skeleton.filename).resolve() != skeleton_path.resolve()
+    assert np.array_equal(loaded.skeleton, np.asarray(made.skeleton))
+
+    again = skeletonise(settings, segment(settings))  # `loaded` still held
+    assert np.array_equal(np.load(skeleton_path), np.asarray(again.skeleton))
+
+
+def test_a_skeleton_that_will_not_load_is_reported_as_one_to_make_again(tmp_path):
+    mask, _fat_roi = plasma_labelled_object(8.0)
+    mask_path = _write_mask(tmp_path, mask)
+    settings = settings_for(tmp_path, mask_path)
+    skeletonise(settings, segment(settings))
+    skeleton_path = tmp_path / "run" / "mask_skeleton.npy"
+    skeleton_path.write_bytes(skeleton_path.read_bytes()[:200])  # a save cut short
+
+    for low_ram in (False, True):
+        loaded = {**settings, "do_skeletonize": False, "use_memmap_loading": low_ram}
+        with pytest.raises(ValueError, match="cannot be read.*do_skeletonize"):
+            skeletonise(loaded, segment(loaded))
+
+
+def test_a_skeleton_save_stopped_part_way_leaves_the_last_one(tmp_path, monkeypatch):
+    mask, _fat_roi = plasma_labelled_object(8.0)
+    mask_path = _write_mask(tmp_path, mask)
+    settings = settings_for(tmp_path, mask_path)
+    first = skeletonise(settings, segment(settings))
+    skeleton_path = tmp_path / "run" / "mask_skeleton.npy"
+    real_save = np.save
+
+    def stopped(file, array, *args, **kwargs):
+        file.write(b"\x93NUMPY half")
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(np, "save", stopped)
+    with pytest.raises(KeyboardInterrupt):
+        skeletonise(settings, segment(settings))
+    monkeypatch.setattr(np, "save", real_save)
+    assert np.array_equal(np.load(skeleton_path), np.asarray(first.skeleton))
+
+
+def test_a_loaded_skeleton_takes_the_region_a_resumed_run_carries(tmp_path, monkeypatch):
+    """A loaded .haemorun carries its thick region (PipelineResume.thick_vessel_mask);
+    with none kept beside the skeleton it was found again, minutes of work."""
+    from haemolynx.pipeline.stages import thick_vessel_region_cache
+    from haemolynx.preprocessing import thick_vessels as module
+
+    mask, _fat_roi = plasma_labelled_object(8.0)
+    settings = settings_for(tmp_path, _write_mask(tmp_path, mask), use_thick_vessel_skeletonisation=True)
+    made = skeletonise(settings, segment(settings))
+    assert thick_vessel_region_cache(settings).discard()
+
+    real = module.thick_vessel_object_mask
+    monkeypatch.setattr(module, "thick_vessel_object_mask", _never_found)
+    loaded_settings = {**settings, "do_skeletonize": False}
+    loaded = skeletonise(
+        loaded_settings, segment(loaded_settings), thick_region=np.asarray(made.thick_vessel_mask)
+    )
+    assert np.array_equal(loaded.thick_vessel_mask, made.thick_vessel_mask)
+    # A carried region of another image's shape is not used: found again.
+    monkeypatch.setattr(module, "thick_vessel_object_mask", real)
+    other = skeletonise(loaded_settings, segment(loaded_settings), thick_region=np.ones((2, 2, 2), bool))
+    assert np.array_equal(other.thick_vessel_mask, made.thick_vessel_mask)
+
+
+def test_a_loaded_skeleton_made_from_another_mask_or_region_is_warned_about(tmp_path, caplog):
+    """The record kept the grid and the voxel size only: a skeleton made
+    before the segmentation clean-up or the thick-vessel settings changed was
+    loaded without a word, and graph building read another mask."""
+    import logging
+
+    mask, _fat_roi = plasma_labelled_object(8.0)
+    settings = settings_for(tmp_path, _write_mask(tmp_path, mask), use_thick_vessel_skeletonisation=True)
+    skeletonise(settings, segment(settings))
+
+    def warnings_loading(**changes):
+        loaded = {**settings, "do_skeletonize": False, **changes}
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger="haemolynx.pipeline.stages"):
+            skeletonise(loaded, segment(loaded))
+        return [r.getMessage() for r in caplog.records if "was made" in r.getMessage()]
+
+    assert warnings_loading() == []
+    assert any("another segmented mask" in m for m in warnings_loading(
+        segmentation_cleanup=True, segmentation_cleanup_close_gaps=True,
+    ))
+    assert any("other thick-vessel settings" in m for m in warnings_loading(
+        skeleton_thick_vessel_min_radius_um=5.0,
+    ))
+    assert any("other thick-vessel settings" in m for m in warnings_loading(
+        use_thick_vessel_skeletonisation=False,
+    ))
+
+
+def test_skeletonise_reports_its_steps_and_stops_at_one(tmp_path, monkeypatch):
+    """A cancelled panel run is stopped from its progress callback, which
+    Skeletonise never called: a cancel waited for the whole stage."""
+    from haemolynx.pipeline import stages as stages_module
+    from haemolynx.pipeline.stages import SKELETONISE_STEPS
+
+    mask, _fat_roi = plasma_labelled_object(8.0)
+    settings = settings_for(tmp_path, _write_mask(tmp_path, mask))
+
+    class Steps:
+        def __init__(self, stop_at=None):
+            self.labels, self.stop_at = [], stop_at
+
+        def step(self, label, total=None, next_step=None):
+            self.labels.append((label, total))
+            if label == self.stop_at:
+                raise KeyboardInterrupt
+
+    heard = Steps()
+    skeletonise(settings, segment(settings), progress=heard)
+    assert heard.labels == [(label, len(SKELETONISE_STEPS)) for label in SKELETONISE_STEPS]
+    loaded = Steps()
+    skeletonise({**settings, "do_skeletonize": False}, segment(settings), progress=loaded)
+    assert loaded.labels == [("Skeleton loaded", 1)]
+
+    def never(*_args, **_kwargs):
+        pytest.fail("skeletonised after the run was stopped")
+
+    monkeypatch.setattr(stages_module, "_skeletonize_loaded_mask", never)
+    with pytest.raises(KeyboardInterrupt):
+        skeletonise(settings, segment(settings), progress=Steps(stop_at=SKELETONISE_STEPS[0]))
+
+
+@pytest.mark.parametrize("thick", [False, True])
+def test_the_low_ram_stage_is_the_in_ram_one_with_one_plane_slabs(tmp_path, monkeypatch, thick):
+    """The stage-level low-RAM tests used volumes far below a slab, so every
+    slab join ran as one slab. With a slab of one plane each is crossed."""
+    from haemolynx.preprocessing import memmap_support
+    from haemolynx.preprocessing import skeleton as skeleton_module
+
+    mask, _fat_roi = plasma_labelled_object(8.0)
+    mask_path = _write_mask(tmp_path, mask)
+    in_ram = settings_for(tmp_path / "ram", mask_path, use_thick_vessel_skeletonisation=thick)
+    expected = skeletonise(in_ram, segment(in_ram))
+
+    plane = mask.shape[1] * mask.shape[2]
+    monkeypatch.setattr(memmap_support, "LOW_MEMORY_BLOCK_VOXELS", plane)
+    monkeypatch.setattr(skeleton_module, "LOW_MEMORY_BLOCK_VOXELS", plane)
+    low = settings_for(
+        tmp_path / "low", mask_path, use_thick_vessel_skeletonisation=thick,
+        use_memmap_loading=True, memmap_directory=tmp_path / "mm",
+    )
+    got = skeletonise(low, segment(low))
+    assert memmap_support.slab_step(mask.shape) == 1
+    assert np.array_equal(np.asarray(got.skeleton), np.asarray(expected.skeleton))
+    if thick:
+        assert np.array_equal(np.asarray(got.thick_vessel_mask), np.asarray(expected.thick_vessel_mask))
+    else:
+        assert got.thick_vessel_mask is None and expected.thick_vessel_mask is None
+
+
+class _Stop(Exception):
+    pass
+
+
+@pytest.mark.parametrize(
+    "setting, value, argument, expected",
+    [
+        ("skeleton_thick_vessel_min_radius_um", 5.5, "min_radius_um", 5.5),
+        ("skeleton_fill_mask_holes_before_thickness", False, "fill_mask_holes", False),
+        ("skeleton_thick_vessel_wall_absorption_um", 2.5, "wall_absorption_um", 2.5),
+        ("skeleton_thick_vessel_flake_filter_um", 3.5, "flake_filter_um", 3.5),
+        ("skeleton_thick_vessel_max_bridge_radius_multiple", 2.5, "max_bridge_radius_multiple", 2.5),
+        ("skeleton_thick_vessel_max_bridge_distance_um", 12.5, "max_bridge_distance_um", 12.5),
+        ("skeleton_thick_vessel_bridge_radius_smoothing_um", 4.5, "bridge_radius_smoothing_um", 4.5),
+        ("skeleton_thick_vessel_large_stack_tree", True, "large_stack_tree", True),
+        ("skeletonize_tile_large_components", True, "tile_large_components", True),
+        ("skeletonize_tile_max_voxels", 12_345, "tile_max_voxels", 12_345),
+        ("skeletonize_tile_halo_um", 7.0, "tile_halo_voxels", 7),
+    ],
+)
+def test_each_thick_vessel_setting_reaches_the_gated_skeletonisation(
+    tmp_path, monkeypatch, setting, value, argument, expected
+):
+    """Only the voxel-count bridge cap had a test of its wiring: any other
+    thick-vessel or tiling setting dropped on its way, or set to a constant,
+    passed every test (the optimiser's trials read the same builders)."""
+    import haemolynx.preprocessing as preprocessing_module
+
+    captured = {}
+
+    def spy(binary, **kwargs):
+        captured.update(kwargs)
+        raise _Stop
+
+    monkeypatch.setattr(preprocessing_module, "skeletonize_thickness_gated", spy)
+    mask, _fat_roi = plasma_labelled_object(8.0)
+    low_ram = setting in ("skeleton_thick_vessel_large_stack_tree", "skeletonize_tile_large_components",
+                          "skeletonize_tile_max_voxels", "skeletonize_tile_halo_um")
+    changes = {setting: value, "use_thick_vessel_skeletonisation": True}
+    if low_ram:
+        changes.update(use_memmap_loading=True, memmap_directory=tmp_path / "mm")
+    if setting.startswith("skeletonize_tile_") and setting != "skeletonize_tile_large_components":
+        changes["skeletonize_tile_large_components"] = True
+    settings = settings_for(tmp_path, _write_mask(tmp_path, mask), **changes)
+    with pytest.raises(_Stop):
+        skeletonise(settings, segment(settings))
+    assert captured[argument] == expected
+
+
+@pytest.mark.parametrize(
+    "setting, value, argument",
+    [
+        ("thick_vessel_braid_factor_limit", 3.5, "braid_factor_limit"),
+        ("thick_vessel_braid_min_occupied_slices", 7, "min_occupied_slices"),
+    ],
+)
+def test_each_braid_setting_reaches_the_braid_check(tmp_path, monkeypatch, setting, value, argument):
+    import haemolynx.preprocessing as preprocessing_module
+
+    captured = {}
+
+    def spy(*_args, **kwargs):
+        captured.update(kwargs)
+        return []
+
+    monkeypatch.setattr(preprocessing_module, "detect_braided_thick_vessel_components", spy)
+    mask, _fat_roi = plasma_labelled_object(8.0)
+    settings = settings_for(
+        tmp_path, _write_mask(tmp_path, mask), use_thick_vessel_skeletonisation=True,
+        detect_thick_vessel_braiding=True, **{setting: value},
+    )
+    skeletonise(settings, segment(settings))
+    assert captured[argument] == value

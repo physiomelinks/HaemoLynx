@@ -28,9 +28,13 @@ SMOKE_SCRIPT_PATH = Path(__file__).with_name("installed_package_smoke.py")
 
 
 def _packaged_modules() -> set[str]:
-    """Every module the source tree expects to ship, as wheel-relative paths."""
+    """Every module the source tree expects to ship, as wheel-relative paths.
+
+    Zip entry names always use forward slashes, whatever the platform building
+    the wheel spells its own separator as.
+    """
     return {
-        str(path.relative_to(PACKAGE_ROOT.parent))
+        path.relative_to(PACKAGE_ROOT.parent).as_posix()
         for path in PACKAGE_ROOT.rglob("*.py")
         if "__pycache__" not in path.parts
     }

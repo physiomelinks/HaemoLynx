@@ -6,7 +6,8 @@ editing a call site — so the examples read as a sequence of pipeline stages
 rather than a wall of keyword arguments.
 
 Precedence, lowest to highest: schema defaults, config file, explicit
-overrides (``--set name=value``).
+overrides (on the command line a ``--preset``, then ``--<setting-name> VALUE``
+flags; see :mod:`.cli`).
 """
 from __future__ import annotations
 
@@ -14,7 +15,17 @@ import inspect
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
-from .schema import ConfigError, Schema, Setting, _jsonify, section_key
+from .schema import (
+    PREREQUISITE_EQUALS,
+    PREREQUISITE_NOT_EQUALS,
+    PREREQUISITE_OFF,
+    ConfigError,
+    Schema,
+    Setting,
+    _jsonify,
+    parse_prerequisite,
+    section_key,
+)
 
 #: Threshold from the project convention: a call taking more than this many
 #: settings is passed the config dict instead of individual keyword arguments.
@@ -61,7 +72,9 @@ def load_config(
 
     flat = _flatten_sections(raw, schema, source=path)
     if overrides:
-        flat.update(overrides)
+        # In today's names first, so an override naming a retired setting
+        # beats the config's value of the setting that replaced it.
+        flat.update(schema.upgrade(overrides))
     try:
         return schema.validate(flat)
     except ConfigError as exc:
@@ -90,6 +103,14 @@ def _flatten_sections(
         else:
             flat[key] = value
     return flat
+
+
+def ensure_yaml_suffix(path: Path | str) -> Path:
+    """``config`` becomes ``config.yaml``; ``.yml`` / ``.yaml`` are left alone."""
+    path = Path(path)
+    if path.suffix.lower() in {".yaml", ".yml"}:
+        return path
+    return path.with_suffix(".yaml")
 
 
 def dump_config(
@@ -147,16 +168,24 @@ def _comment_lines(setting: Setting) -> list[str]:
         notes.append(f"range {low}..{high}")
     if setting.requires:
         notes.append(
-            "needs "
-            + " and ".join(
-                f"{name[1:]} off" if name.startswith("!") else name
-                for name in setting.requires
-            )
+            "needs " + " and ".join(_prerequisite_note(p) for p in setting.requires)
         )
     if setting.must_exist:
-        notes.append("must exist")
+        notes.append("must exist if set" if setting.optional_path else "must exist")
     suffix = f"  [{'; '.join(notes)}]" if notes else ""
     return [f"  # {setting.help}{suffix}"]
+
+
+def _prerequisite_note(prerequisite: str) -> str:
+    """How one ``requires`` entry reads in a config file's comment."""
+    name, test, expected = parse_prerequisite(prerequisite)
+    if test == PREREQUISITE_EQUALS:
+        return f"{name} = {expected}"
+    if test == PREREQUISITE_NOT_EQUALS:
+        return f"{name} not {expected}"
+    if test == PREREQUISITE_OFF:
+        return f"{name} off"
+    return name
 
 
 def _is_block(value: Any) -> bool:
@@ -171,10 +200,22 @@ def _is_block(value: Any) -> bool:
     return False
 
 
+#: PyYAML's default dump width (~80) folds a long plain scalar across lines.
+#: Paths on Windows routinely exceed that once FileEdit has absolutised them
+#: (`C:/Users/.../My Dataset/mask.tif`), and a fold at a space produces a
+#: second indented line that is no longer valid YAML when pasted after
+#: `name: ` by :func:`dump_config`. Loading that file then fails in napari.
+#: Disable wrapping for every dump we embed as a single token or block.
+_YAML_WIDTH = 10**9
+
+
 def _block(name: str, value: Any) -> str:
     yaml = _require_yaml()
     dumped = yaml.safe_dump(
-        {name: _jsonify(value)}, default_flow_style=False, sort_keys=False
+        {name: _jsonify(value)},
+        default_flow_style=False,
+        sort_keys=False,
+        width=_YAML_WIDTH,
     ).rstrip()
     return "\n".join(f"  {line}" for line in dumped.splitlines())
 
@@ -182,7 +223,10 @@ def _block(name: str, value: Any) -> str:
 def _scalar(value: Any) -> str:
     yaml = _require_yaml()
     return yaml.safe_dump(
-        _jsonify(value), default_flow_style=True, sort_keys=False
+        _jsonify(value),
+        default_flow_style=True,
+        sort_keys=False,
+        width=_YAML_WIDTH,
     ).strip().rstrip("...").strip()
 
 

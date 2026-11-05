@@ -23,17 +23,36 @@ from .constriction_strategy import (
     uniform_constriction_factors,
 )
 from .resistance import (
+    EQUIVALENT_RESISTANCE_EIGENDECOMPOSITION,
+    EQUIVALENT_RESISTANCE_SOLVERS,
+    EQUIVALENT_RESISTANCE_SPARSE,
+    FLOW_SOLVER_SPARSE,
     build_conductance_matrix_from_graph,
     calc_laplacian_from_conductance_matrix,
     calc_two_point_from_laplacian_matrix_nodeID,
+    calc_two_point_resistance_sparse,
 )
+from .viscosity import DEFAULT_HAEMATOCRIT
 
 
 def _compute_two_point_resistance(
     graph: nx.MultiGraph,
     source_node: int,
     target_node: int,
+    solver: str = EQUIVALENT_RESISTANCE_EIGENDECOMPOSITION,
 ) -> float:
+    if solver not in EQUIVALENT_RESISTANCE_SOLVERS:
+        raise ValueError(
+            f"Unknown equivalent resistance solver {solver!r}; "
+            f"expected one of {EQUIVALENT_RESISTANCE_SOLVERS}."
+        )
+    if solver == EQUIVALENT_RESISTANCE_SPARSE:
+        conductance, node_list = build_conductance_matrix_from_graph(
+            graph, solver=FLOW_SOLVER_SPARSE
+        )
+        return calc_two_point_resistance_sparse(
+            conductance, node_list, source_node, target_node
+        )
     conductance, _ = build_conductance_matrix_from_graph(graph)
     laplacian = calc_laplacian_from_conductance_matrix(conductance)
     return float(
@@ -63,12 +82,18 @@ def compare_baseline_vs_pericyte_constriction(
     constriction_spacing: float = 100.0,
     use_probabilistic_pericyte_constriction: bool = False,
     pericyte_constriction_probability: float = 1.0,
+    viscosity_law: str = "pries",
+    haematocrit: float = DEFAULT_HAEMATOCRIT,
+    diameter_basis: str = "plasma_column",
     max_assignment_distance_um: float | None = 3.0,
     min_pericyte_diameter_um: float | None = 5.0,
     max_pericyte_diameter_um: float | None = 12.0,
     axis_order: str = CANONICAL_AXIS_ORDER,
     rng: np.random.Generator | None = None,
     seed: int | None = None,
+    equivalent_resistance_solver: str = EQUIVALENT_RESISTANCE_EIGENDECOMPOSITION,
+    voxel_size_override_xyz=None,
+    voxel_size_policy: str = "auto",
 ) -> dict[str, Any]:
     """Compare effective resistance at baseline vs constricted settings.
 
@@ -81,6 +106,13 @@ def compare_baseline_vs_pericyte_constriction(
 
     Returns a summary dict and writes a human-readable CSV with one row per
     scenario plus a final delta row.
+
+    *equivalent_resistance_solver* is how each arm's two-point resistance is
+    found: ``"eigendecomposition"`` (the default) or ``"sparse"``, one sparse
+    solve -- see :func:`~haemolynx.haemodynamics.resistance.calc_two_point_resistance_sparse`.
+
+    *voxel_size_override_xyz* and *voxel_size_policy* are the run's, for the
+    pericyte mask's voxel size as every other path reads it.
     """
     source_node, target_node = resistance_node_pair
     if source_node not in graph.nodes or target_node not in graph.nodes:
@@ -110,6 +142,11 @@ def compare_baseline_vs_pericyte_constriction(
         "constriction_length": float(constriction_length),
         "constriction_spacing": float(constriction_spacing),
         "constriction_probability": float(pericyte_constriction_probability),
+        # The comparison's two arms must differ only in their constriction
+        # factor, so the viscosity law travels with the rest of the settings.
+        "viscosity_law": viscosity_law,
+        "haematocrit": float(haematocrit),
+        "diameter_basis": diameter_basis,
         "pericyte_mask_path": pericyte_mask_path,
         "pericyte_mask_h5_dataset_name": pericyte_mask_h5_dataset_name,
         "max_assignment_distance_um": max_assignment_distance_um,
@@ -117,6 +154,8 @@ def compare_baseline_vs_pericyte_constriction(
         "max_pericyte_diameter_um": max_pericyte_diameter_um,
         "axis_order": axis_order,
         "rng": generator,
+        "voxel_size_override_xyz": voxel_size_override_xyz,
+        "voxel_size_policy": voxel_size_policy,
     }
 
     graph_baseline, _strategy, baseline_resistance_results = (
@@ -145,6 +184,7 @@ def compare_baseline_vs_pericyte_constriction(
         graph_baseline,
         source_node=source_node,
         target_node=target_node,
+        solver=equivalent_resistance_solver,
     )
 
     graph_constricted, _strategy, constricted_resistance_results = (
@@ -163,6 +203,7 @@ def compare_baseline_vs_pericyte_constriction(
         graph_constricted,
         source_node=source_node,
         target_node=target_node,
+        solver=equivalent_resistance_solver,
     )
 
     delta = float(constricted_resistance - baseline_resistance)

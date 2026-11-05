@@ -1,0 +1,715 @@
+"""One image's settings in a batch run, and the batch's own checks
+(`pipeline/batch.py`)."""
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from haemolynx.io import BatchFolders, match_batch
+from haemolynx.pipeline import default_schema, preflight
+from haemolynx.pipeline import batch
+from haemolynx.pipeline.batch import (
+    NOT_WRITTEN_BY_A_BATCH,
+    WINDOWS_MAX_FILE_PATH,
+    WINDOWS_MAX_FOLDER_PATH,
+    WRITTEN_WHILE,
+    batch_file_roles,
+    batch_mask_sizes,
+    batch_preflight,
+    check_batch,
+    check_batch_item,
+    check_output_path_lengths,
+    default_output_root,
+    ilastik_output_paths,
+    item_settings,
+    output_paths,
+    settings_reading_folders,
+)
+
+
+@pytest.fixture(scope="module")
+def schema():
+    return default_schema()
+
+
+#: What a batch needs to choose each image's inlets and outlets: its own pair
+#: of large vessel masks (the paths stand for each image's, matched per image).
+MASKS_CHOOSE_INLETS = {
+    "automated_vessel_assignment": True,
+    "use_large_vessel_masks": True,
+    "inlets_outlets_from_vessel_masks": True,
+    "large_arteriole_mask_path": "arteriole.tif",
+    "large_venule_mask_path": "venule.tif",
+}
+
+
+@pytest.fixture
+def base(schema):
+    """Settings a batch takes: each image's large masks choose its inlets."""
+    return {**schema.defaults(), **MASKS_CHOOSE_INLETS}
+
+
+def _match(tmp_path: Path, *names: str, sizes=()):
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    for name in names:
+        (tmp_path / name).write_bytes(b"")
+    return match_batch(BatchFolders(tmp_path), sizes)
+
+
+def test_item_settings_change_only_the_inputs_and_outputs(tmp_path, base):
+    (match,) = _match(tmp_path / "in", "StackA_seg.tif", "StackA.tif")
+    out = tmp_path / "out"
+    settings = item_settings(base, match, out)
+    assert settings["input_path"] == tmp_path / "in" / "StackA_seg.tif"
+    assert settings["raw_image_path"] == tmp_path / "in" / "StackA.tif"
+    assert settings["output_dir"] == out / "StackA_seg"
+    assert settings["base_plot_dir"] == out / "StackA_seg" / "plots"
+    # Unset, it follows the output folder into the image's folder.
+    assert settings["perturbation_output_dir"] is None
+    configured = item_settings({**base, "perturbation_output_dir": "elsewhere"}, match, out)
+    assert configured["perturbation_output_dir"] == out / "StackA_seg" / "perturbations"
+    assert settings["mid_run_postprocessing"] is False
+    changed = {name for name in base if settings[name] != base[name]}
+    assert changed <= {
+        "input_path", "raw_image_path", "output_dir", "base_plot_dir",
+        "perturbation_output_dir", "sweep_output_dir", "ilastik_output_dir",
+    }
+
+
+def test_default_output_root_is_the_output_folder():
+    assert default_output_root({"output_dir": "outputs"}) == Path("outputs")
+    assert default_output_root({"output_dir": Path("outputs/run")}) == Path("outputs/run")
+    assert default_output_root({"output_dir": "."}) is None
+    assert default_output_root({"output_dir": ""}) is None
+    assert default_output_root({}) is None
+
+
+def test_mask_sizes_follow_the_roles_in_use(base):
+    assert batch_mask_sizes({**base, "automated_vessel_assignment": False}) == ()
+    on = {**base, "automated_vessel_assignment": True, "use_large_vessel_masks": True}
+    assert "large" in batch_mask_sizes(on)
+    assert "large" not in batch_mask_sizes({**on, "use_ilastik_large_vessel_segmentation": True})
+
+
+INLET_METHODS = ("edge_percent", "all_degree_1", "degree_1_from_inlet", "coordinates", "volume", "node_ids")
+
+
+def test_a_batch_takes_its_inlets_and_outlets_from_each_images_masks(base, schema):
+    assert check_batch(base, schema).errors == []
+    # The defaults: the Inlet and Outlet tabs' edge_percent, one rule for every image.
+    (error,) = check_batch(schema.defaults(), schema).errors
+    assert "inlet_node_selection_method 'edge_percent'" in error
+    assert "turn on automated_vessel_assignment and use_large_vessel_masks" in error
+    for method in INLET_METHODS:
+        tabs = {**base, "automated_vessel_assignment": False, "outlet_node_selection_method": method}
+        (error,) = check_batch(tabs, schema).errors
+        assert f"outlet_node_selection_method '{method}'" in error
+    (error,) = check_batch({**base, "inlets_outlets_from_vessel_masks": False}, schema).errors
+    assert error.endswith("turn on inlets_outlets_from_vessel_masks.")
+    # One mask and no venule mask tells no inlet from an outlet.
+    (error,) = check_batch({**base, "large_venule_mask_path": None}, schema).errors
+    assert "a venule mask beside its arteriole one (large)" in error
+    assert "inlets_outlets_from_vessel_masks" not in error
+    # Regression: under ilastik the fix is a venule classifier, not a file, and
+    # with the switch off as well both fixes were needed and one was named.
+    ilastik = {
+        **base, "large_venule_mask_path": None, "use_ilastik_large_vessel_segmentation": True,
+        "ilastik_venule_classifier_path": None,
+    }
+    (error,) = check_batch(ilastik, schema).errors
+    assert "a venule classifier beside its arteriole one (large)" in error
+    (error,) = check_batch({**base, "large_venule_mask_path": None, "inlets_outlets_from_vessel_masks": False}, schema).errors
+    assert "a venule mask beside its arteriole one" in error
+    assert error.endswith("and turn on inlets_outlets_from_vessel_masks.")
+    # The masks choosing, the tabs' methods are not read, whatever they hold.
+    for method in INLET_METHODS:
+        assert check_batch({**base, "inlet_node_selection_method": method}, schema).errors == []
+
+
+def test_each_images_own_masks_decide_whether_they_choose(base, schema, tmp_path):
+    # The panel's rows are empty in a batch, which reads as one global mask
+    # choosing no inlets; each image's own pair of masks chooses them.
+    rows_empty = {**base, "large_arteriole_mask_path": None, "large_venule_mask_path": None}
+    (match,) = _match(
+        tmp_path, "StackA_seg.tif", "StackA_large_arteriole.tif", "StackA_large_venule.tif", sizes=("large",)
+    )
+    assert match.settings()["large_venule_mask_path"] is not None
+    assert check_batch(rows_empty, schema).errors
+    assert check_batch(rows_empty, schema, match=match).errors == []
+    preflight_errors = batch_preflight(rows_empty, match, tmp_path / "out", schema).errors
+    assert not any("inlet_node_selection_method" in error for error in preflight_errors)
+    # An image whose venule mask was not found is refused on its own.
+    (alone,) = _match(tmp_path / "other", "StackB_seg.tif", "StackB_large_arteriole.tif", sizes=("large",))
+    (error,) = check_batch(rows_empty, schema, match=alone).errors
+    assert "a venule mask beside its arteriole one (large)" in error
+
+
+def test_the_large_tier_takes_each_images_mask_stumps(base, schema):
+    tier = {**base, "cut_network_at_large_vessel_volumes": False, "assign_large_vessel_branch_orders": True}
+    assert check_batch(tier, schema).errors == []
+    for method in INLET_METHODS:
+        (error,) = check_batch({**tier, "large_vessel_outlet_node_selection_method": method}, schema).errors
+        assert f"large_vessel_outlet_node_selection_method is '{method}'" in error
+        assert "choose mask_stump" in error
+    # With the network cut at the large vessels the tier does not run.
+    cut = {**tier, "cut_network_at_large_vessel_volumes": True}
+    assert check_batch({**cut, "large_vessel_outlet_node_selection_method": "volume"}, schema).errors == []
+
+
+def test_vessel_boundaries_by_position_are_refused(base, schema):
+    boundary = {**base, "arteriole_boundary_selection_method": "coordinates"}
+    # An arteriole boundary runs only with its list.
+    assert check_batch(boundary, schema).errors == []
+    boundary["arteriole_boundary_node_coordinates"] = [[1.0, 2.0, 3.0]]
+    (error,) = check_batch(boundary, schema).errors
+    assert "arteriole_boundary_selection_method is 'coordinates'" in error
+    assert "use_small_vessel_masks_for_boundary_assignment" in error
+    # The small masks choose them instead: the list is not read.
+    small = {
+        **boundary,
+        "use_small_vessel_masks_for_boundary_assignment": True,
+        "small_arteriole_mask_path": "small_arteriole.tif",
+        "small_venule_mask_path": "small_venule.tif",
+    }
+    assert check_batch(small, schema).errors == []
+
+
+def test_a_single_per_image_file_in_effect_is_refused(base, schema, tmp_path):
+    settings = {**base, "measurement_3d_to_cell_mask": True, "cell_mask_path": tmp_path / "cells.tif"}
+    assert any("cell_mask_path" in error for error in check_batch(settings, schema).errors)
+    # Set but not read: nothing to refuse.
+    settings["measurement_3d_to_cell_mask"] = False
+    assert not any("cell_mask_path" in error for error in check_batch(settings, schema).errors)
+
+
+def test_synthetic_runs_are_refused_and_ilastik_needs_a_batch_of_raw_images(base, schema, tmp_path):
+    assert check_batch({**base, "network_source": "synthetic"}, schema).errors
+    ilastik = {**base, "use_ilastik_segmentation": True}
+    segmented, raw = BatchFolders(tmp_path), BatchFolders(raw=tmp_path, from_raw=True)
+    (error,) = check_batch(ilastik, schema, segmented).errors
+    assert "matched in the segmented folder" in error
+    assert check_batch(ilastik, schema, raw).errors == []
+    (error,) = check_batch(base, schema, raw).errors
+    assert "neither use_ilastik_segmentation nor use_pixel_classifier_segmentation is on" in error
+
+
+def test_ilastik_vessel_masks_are_made_from_each_images_own_raw_image(base, schema, tmp_path):
+    from haemolynx.pipeline.checks import check_ilastik_vessel_mask_channels
+
+    on = {
+        **base,
+        "automated_vessel_assignment": True,
+        "use_large_vessel_masks": True,
+        "use_ilastik_large_vessel_segmentation": True,
+        "ilastik_arteriole_channels": (1,),
+        "ilastik_venule_classifier_path": "venule.ilp",
+    }
+    assert check_batch(on, schema).errors == []
+    seg = _folder(tmp_path / "seg", "StackA_seg.tif", "StackB_seg.tif")
+    _folder(tmp_path / "raw", "StackA.tif")
+    with_raw, without_raw = match_batch(BatchFolders(seg, raw=tmp_path / "raw"))
+    first = item_settings(on, with_raw, tmp_path / "out")
+    assert first["raw_image_path"] == tmp_path / "raw" / "StackA.tif"
+    assert first["ilastik_output_dir"] == tmp_path / "out" / "StackA_seg" / "segmentations"
+    # An image with no raw image has nothing for ilastik to segment.
+    (error,) = check_ilastik_vessel_mask_channels(item_settings(on, without_raw, tmp_path / "out")).errors
+    assert "raw_image_path is not set" in error
+
+
+# -- the other files read beside each image ---------------------------------------
+
+
+def _folder(folder: Path, *names: str) -> Path:
+    folder.mkdir(parents=True, exist_ok=True)
+    for name in names:
+        (folder / name).write_bytes(b"")
+    return folder
+
+
+def test_a_folder_of_cell_masks_gives_each_image_its_own(tmp_path, base, schema):
+    seg = _folder(tmp_path / "seg", "StackA_seg.tif", "StackB_seg.tif")
+    cells = _folder(tmp_path / "cells", "StackA_cells.tif", "StackB_cells.tif")
+    settings = {**base, "measurement_3d_to_cell_mask": True, "cell_mask_path": tmp_path / "one.tif"}
+    folders = BatchFolders(seg, cell=cells)
+    # The distances' vessel mask is read too: with no folder, the segmentation.
+    assert batch_file_roles(settings, schema) == ("cell", "vessel_3d")
+    first, second = match_batch(folders, roles=batch_file_roles(settings, schema))
+    assert item_settings(settings, first, tmp_path)["measurement_3d_vessel_mask_path"] is None
+    out = tmp_path / "out"
+    assert item_settings(settings, first, out)["cell_mask_path"] == cells / "StackA_cells.tif"
+    assert item_settings(settings, second, out)["cell_mask_path"] == cells / "StackB_cells.tif"
+    # The one file the panel holds is refused for every image, not with a folder.
+    assert any("give the batch a folder of cell masks" in e for e in check_batch(settings, schema).errors)
+    assert check_batch(settings, schema, folders).errors == []
+
+
+def test_a_folder_of_files_nothing_reads_warns(tmp_path, base, schema):
+    seg = _folder(tmp_path / "seg", "StackA_seg.tif")
+    folders = BatchFolders(seg, pericyte=_folder(tmp_path / "pericytes", "StackA_pericytes.tif"))
+    assert batch_file_roles(base, schema) == ()
+    report = check_batch(base, schema, folders)
+    assert report.errors == []
+    assert any("nothing in these settings reads pericyte_mask_path" in w for w in report.warnings)
+    (match,) = match_batch(folders, roles=batch_file_roles(base, schema))
+    assert match.files == {}
+
+
+def test_a_perturbations_mask_of_blocks_is_each_images_own(tmp_path, base, schema):
+    seg = _folder(tmp_path / "seg", "StackA_seg.tif")
+    blocks = _folder(tmp_path / "blocks", "StackA_blocks.tif")
+    one = tmp_path / "one_blocks.tif"
+    entry = {"name": "stall", "type": "capillary_block_mask", "overrides": {"capillary_block_mask_path": one}}
+    settings = {**base, "run_perturbations": True, "perturbations": [entry]}
+    # Read by the perturbation alone: with none, nothing reads the setting.
+    assert batch_file_roles(settings, schema) == ("capillary_block",)
+    assert batch_file_roles({**settings, "run_perturbations": False}, schema) == ()
+    (error,) = check_batch(settings, schema).errors
+    assert "perturbation 'stall' reads one mask of blocks, one_blocks.tif" in error
+    folders = BatchFolders(seg, capillary_block=blocks)
+    assert check_batch(settings, schema, folders).errors == []
+    (match,) = match_batch(folders, roles=("capillary_block",))
+    image = item_settings(settings, match, tmp_path / "out")
+    assert image["perturbations"][0]["overrides"]["capillary_block_mask_path"] == blocks / "StackA_blocks.tif"
+    assert image["capillary_block_mask_path"] == blocks / "StackA_blocks.tif"
+    assert entry["overrides"]["capillary_block_mask_path"] == one, "the panel's settings are untouched"
+
+
+def test_a_pericyte_sweep_reading_one_mask_is_refused_without_a_folder(base, schema, tmp_path):
+    entry = {
+        "name": "dilate",
+        "type": "pericyte_dilation_sweep",
+        "overrides": {"use_pericyte_mask_constriction": True, "pericyte_mask_path": tmp_path / "p.tif"},
+    }
+    settings = {**base, "run_perturbations": True, "perturbations": [entry]}
+    assert batch_file_roles(settings, schema) == ("pericyte",)
+    (error,) = check_batch(settings, schema).errors
+    assert "perturbation 'dilate' reads one pericyte mask" in error
+    folders = BatchFolders(tmp_path, pericyte=tmp_path / "pericytes")
+    assert check_batch(settings, schema, folders).errors == []
+    # The sweep reads the mask already: a folder of them turns nothing on.
+    assert settings_reading_folders(settings, schema, ["pericyte"]) == {}
+
+
+# -- a folder of other files turns on what reads them -------------------------------
+
+
+@pytest.mark.parametrize(
+    ("key", "turned"),
+    [
+        ("pericyte", {"use_pericyte_mask_constriction": True}),
+        ("cell", {"measurement_3d_to_cell_mask": True}),
+        ("vessel_3d", {"measurement_3d_to_cell_mask": True}),
+        ("tissue", {"measure_tissue_volume": True}),
+    ],
+)
+def test_a_folder_turns_on_the_switch_reading_its_files(base, schema, key, turned):
+    assert batch_file_roles(base, schema) == ()
+    assert settings_reading_folders(base, schema, [key]) == turned
+    assert key in batch_file_roles({**base, **turned}, schema)
+    assert settings_reading_folders({**base, **turned}, schema, [key]) == {}
+
+
+def test_a_folder_turns_on_every_switch_over_its_row_and_nothing_off(base, schema):
+    off = {**base, "run_haemodynamics": False}
+    assert settings_reading_folders(off, schema, ["pericyte"]) == {
+        "use_pericyte_mask_constriction": True,
+        "run_haemodynamics": True,
+    }
+    assert settings_reading_folders(base, schema, ["cell", "vessel_3d", "tissue"]) == {
+        "measurement_3d_to_cell_mask": True,
+        "measure_tissue_volume": True,
+    }
+    assert settings_reading_folders(base, schema, []) == {}
+    on = {**base, "measurement_3d_to_cell_mask": True, "measure_tissue_volume": True}
+    assert settings_reading_folders(on, schema, []) == {}
+
+
+def test_a_folder_of_masks_of_blocks_adds_a_perturbation_reading_them(base, schema, tmp_path):
+    turned = settings_reading_folders(base, schema, ["capillary_block"])
+    assert turned == {
+        "run_perturbations": True,
+        "perturbations": [{"name": "perturbation_1", "type": "capillary_block_mask", "overrides": {}}],
+    }
+    settings = {**base, **turned}
+    assert batch_file_roles(settings, schema) == ("capillary_block",)
+    # The entry names no mask of its own, so each image's reaches it.
+    seg = _folder(tmp_path / "seg", "StackA_seg.tif")
+    blocks = _folder(tmp_path / "blocks", "StackA_blocks.tif")
+    folders = BatchFolders(seg, capillary_block=blocks)
+    assert check_batch(settings, schema, folders).errors == []
+    (match,) = match_batch(folders, roles=batch_file_roles(settings, schema))
+    image = item_settings(settings, match, tmp_path / "out")
+    assert image["capillary_block_mask_path"] == blocks / "StackA_blocks.tif"
+    # Added after the user's own entries; one already there is not doubled.
+    sweep = {"name": "flow", "type": "pressure_sweep", "overrides": {}}
+    added = settings_reading_folders({**base, "perturbations": [sweep]}, schema, ["capillary_block"])
+    assert [(entry["name"], entry["type"]) for entry in added["perturbations"]] == [
+        ("flow", "pressure_sweep"),
+        ("perturbation_1", "capillary_block_mask"),
+    ]
+    stall = {"name": "stall", "type": "capillary_block_mask", "overrides": {}}
+    with_one = {**base, "perturbations": [stall]}
+    assert settings_reading_folders(with_one, schema, ["capillary_block"]) == {"run_perturbations": True}
+
+
+# -- a batch ilastik segments ------------------------------------------------------
+
+
+def test_an_ilastik_batch_runs_each_raw_image_into_a_folder_named_for_its_segmentation(
+    tmp_path, base
+):
+    from haemolynx.pipeline.stages import segmented_input_path
+
+    raw = _folder(
+        tmp_path / "raw",
+        "StackA_region.tif",
+        "StackB_region.tif",
+        "StackA_region_Simple Segmentation.tif",
+        "StackB_region_Probabilities.h5",
+    )
+    first, second = match_batch(BatchFolders(raw=raw, from_raw=True))
+    assert (first.raw, first.segmented, first.stem) == (raw / "StackA_region.tif", None, "StackA_region_segmented")
+    assert second.stem == "StackB_region_segmented"
+    out = tmp_path / "out"
+    # ilastik_output_dir left unset is still the image's own.
+    settings = item_settings({**base, "use_ilastik_segmentation": True, "ilastik_output_dir": None}, first, out)
+    assert settings["input_path"] is None
+    assert settings["raw_image_path"] == raw / "StackA_region.tif"
+    folder = out / "StackA_region_segmented"
+    assert settings["ilastik_output_dir"] == folder / "segmentations"
+    assert segmented_input_path(settings) == folder / "segmentations" / "StackA_region_segmented.tif"
+    # The run's outputs carry the stem of ilastik's segmentation: its folder's.
+    files, _folders = output_paths(settings)
+    assert folder.absolute() / "StackA_region_segmented_run_manifest.json" in files
+    assert folder.absolute() / "segmentations" / "StackA_region_segmented.tif.haemolynx.json" in files
+
+
+def test_mid_run_pause_and_skipped_stages_warn(base, schema):
+    report = check_batch({**base, "mid_run_postprocessing": True, "do_skeletonize": False}, schema)
+    assert any("cannot pause" in warning for warning in report.warnings)
+    assert any("do_skeletonize" in warning for warning in report.warnings)
+
+
+def test_a_match_problem_is_an_error_and_a_missing_raw_a_warning(tmp_path, base):
+    (match,) = _match(tmp_path, "StackA_seg.tif", sizes=["large"])
+    report = check_batch_item(match, {**base, "measure_diameters_from_raw_image": True})
+    assert report.errors == [f"No large vessel masks found in {tmp_path}."]
+    assert any("measured from the mask" in warning for warning in report.warnings)
+
+
+# -- output path lengths ---------------------------------------------------------
+
+LIMITS = (WINDOWS_MAX_FILE_PATH, WINDOWS_MAX_FOLDER_PATH)
+
+
+def _longest_file(settings) -> int:
+    files, _folders = output_paths(settings)
+    return max(len(str(path)) for path in files)
+
+
+def _settings_with_longest_file(tmp_path, base, length: int):
+    """One image's settings whose longest output file path is *length*
+    characters: the output folder's name padded to it."""
+    (match,) = _match(tmp_path / "seg", "StackA_region_Simple Segmentation.tif")
+    short = _longest_file(item_settings(base, match, tmp_path / "o"))
+    root = tmp_path / ("o" * (1 + length - short))
+    settings = item_settings(base, match, root)
+    assert _longest_file(settings) == length
+    return settings
+
+
+def test_an_output_file_path_past_windows_limit_is_an_error(tmp_path, base):
+    at_limit = _settings_with_longest_file(tmp_path, base, WINDOWS_MAX_FILE_PATH)
+    assert check_output_path_lengths(at_limit, limits=LIMITS).ok
+    past = _settings_with_longest_file(tmp_path, base, WINDOWS_MAX_FILE_PATH + 1)
+    report = check_output_path_lengths(past, limits=LIMITS)
+    (error,) = report.errors
+    assert f"{WINDOWS_MAX_FILE_PATH + 1}-character file path" in error
+    assert "_checkpoint_build_haemodynamic_model.pkl" in error
+    assert "long paths" in error
+
+
+def test_an_output_folder_past_windows_limit_is_an_error(tmp_path, base):
+    (match,) = _match(tmp_path / "seg", "StackA_seg.tif")
+    settings = item_settings(base, match, tmp_path / "out")
+    _files, folders = output_paths(settings)
+    assert Path(settings["output_dir"]).absolute() in folders
+    folder = max(len(str(path)) for path in folders)
+    assert check_output_path_lengths(settings, limits=(10_000, folder)).ok
+    (error,) = check_output_path_lengths(settings, limits=(10_000, folder - 1)).errors
+    assert f"{folder}-character folder path" in error
+
+
+def test_with_no_limit_any_path_passes(tmp_path, base, monkeypatch):
+    past = _settings_with_longest_file(tmp_path, base, 400)
+    monkeypatch.setattr(batch, "path_length_limits", lambda: None)
+    assert check_output_path_lengths(past).ok
+
+
+def test_the_paths_counted_are_the_files_these_settings_write(tmp_path, base):
+    (match,) = _match(tmp_path / "seg", "StackA_seg.tif")
+
+    def names(**changes):
+        files, _folders = output_paths(item_settings({**base, **changes}, match, tmp_path / "out"))
+        return {path.name for path in files}
+
+    plain = names(statistics=False, measurement_3d_to_cell_mask=False)
+    assert "StackA_seg_checkpoint_build_haemodynamic_model.pkl" in plain
+    assert "StackA_seg.haemorun.part" in plain
+    assert "StackA_seg_run_manifest.json" in plain
+    assert "StackA_seg_statistics.csv" not in plain
+    assert "StackA_seg_cell_to_vessel_3d_dual_distances_summary.csv" not in plain
+    # Written by hand in the panel, never by a batch.
+    assert not {name for name in plain if name.endswith(("_review.csv", "_connectivity.csv"))}
+    with_statistics = names(statistics=True)
+    assert "StackA_seg_betweenness_communities_edge_length.json" in with_statistics
+    assert "StackA_seg_cell_to_vessel_3d_dual_distances_summary.csv" in names(
+        measurement_3d_to_cell_mask=True
+    )
+
+
+def test_each_perturbations_folder_and_files_are_counted(tmp_path, base):
+    (match,) = _match(tmp_path / "seg", "StackA_seg.tif")
+    settings = item_settings(
+        {
+            **base,
+            "run_perturbations": True,
+            "statistics": True,
+            "perturbations": [{"name": "block10", "type": "capillary_block"}],
+        },
+        match,
+        tmp_path / "out",
+    )
+    files, folders = output_paths(settings)
+    own = (tmp_path / "out" / "StackA_seg" / "block10_capillary_block").absolute()
+    assert own in folders
+    assert own / "block10_summary.csv" in files
+    assert own / "block10_betweenness_communities_edge_flow.json" in files
+
+
+def test_the_written_while_table_names_real_files_and_settings(schema):
+    from haemolynx.pipeline.export_dictionary import FILES, RUN_FOLDER
+
+    run_suffixes = {
+        name[len("{stem}"):]
+        for entry in FILES
+        if entry.where == RUN_FOLDER
+        for name in entry.name.split(", ")
+        if name.startswith("{stem}_")
+    }
+    assert set(WRITTEN_WHILE) <= run_suffixes
+    assert set(NOT_WRITTEN_BY_A_BATCH) <= run_suffixes
+    assert all(setting in schema for setting in WRITTEN_WHILE.values())
+
+
+def test_long_paths_turned_on_lift_the_limit(monkeypatch):
+    import sys
+    import types
+
+    monkeypatch.setattr(sys, "platform", "linux")
+    assert batch.path_length_limits() is None
+
+    def registry(enabled):
+        class Key:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_exc):
+                return False
+
+        return types.SimpleNamespace(
+            HKEY_LOCAL_MACHINE=object(),
+            OpenKey=lambda *_args: Key(),
+            QueryValueEx=lambda _key, name: (enabled, 4),
+        )
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setitem(sys.modules, "winreg", registry(1))
+    assert batch.path_length_limits() is None
+    monkeypatch.setitem(sys.modules, "winreg", registry(0))
+    assert batch.path_length_limits() == LIMITS
+
+
+def test_batch_preflight_checks_the_paths_and_prints_nothing(tmp_path, base, schema, monkeypatch, capsys):
+    (match,) = _match(tmp_path / "seg", "StackA_seg.tif")
+    monkeypatch.setattr(batch, "path_length_limits", lambda: (40, 40))
+    report = batch_preflight(base, match, tmp_path / "out", schema)
+    assert any("Windows allows (40)" in error for error in report.errors)
+    # Once: the run's own preflight checks the paths now, the batch no longer.
+    assert sum("-character file path" in error for error in report.errors) == 1
+    assert capsys.readouterr().out == ""
+
+
+# -- a single run's output paths -------------------------------------------------
+
+
+def _single_run(tmp_path, base, folder_name: str = "out", **changes):
+    """A single run's settings as a config gives them: strings, never through
+    :func:`item_settings`."""
+    image = tmp_path / "in" / "StackA_seg.tif"
+    image.parent.mkdir(parents=True, exist_ok=True)
+    image.write_bytes(b"x")
+    return {
+        **base,
+        "input_path": str(image),
+        "output_dir": str(tmp_path / folder_name),
+        **changes,
+    }
+
+
+def _path_errors(report) -> list[str]:
+    return [error for error in report.errors if "Windows allows" in error]
+
+
+def test_preflight_refuses_a_single_runs_output_file_past_windows_limit(
+    tmp_path, base, schema, monkeypatch
+):
+    """Regression: a Stack A run ran for 8 minutes, then died at Export writing
+    a 266-character ``..._betweenness_communities_resistance.json``. A batch
+    refused such paths; a single run's preflight never asked."""
+    monkeypatch.setattr(batch, "path_length_limits", lambda: LIMITS)
+    short = _longest_file(_single_run(tmp_path, base, "o", statistics=True))
+    padded = "o" * (1 + WINDOWS_MAX_FILE_PATH - short)
+    at_limit = _single_run(tmp_path, base, padded, statistics=True)
+    assert _longest_file(at_limit) == WINDOWS_MAX_FILE_PATH
+    assert not _path_errors(preflight(at_limit, schema, echo=False))
+
+    past = _single_run(tmp_path, base, padded + "o", statistics=True)
+    (error,) = _path_errors(preflight(past, schema, echo=False))
+    assert f"{WINDOWS_MAX_FILE_PATH + 1}-character file path" in error
+    assert "StackA_seg_betweenness_communities_edge_length.json" in error
+    assert "shorter output folder" in error
+
+
+def test_preflight_is_quiet_about_path_lengths_while_long_paths_are_on(
+    tmp_path, base, schema, monkeypatch
+):
+    past = _single_run(tmp_path, base, "o" * 250, statistics=True)
+    monkeypatch.setattr(batch, "path_length_limits", lambda: None)
+    assert not _path_errors(preflight(past, schema, echo=False))
+    monkeypatch.setattr(batch, "path_length_limits", lambda: LIMITS)
+    errors = _path_errors(preflight(past, schema, echo=False))
+    assert any("-character file path" in error for error in errors)
+    assert any("-character folder path" in error for error in errors)
+
+
+def test_a_single_runs_files_are_its_stems_in_its_output_folder(tmp_path, base, monkeypatch):
+    """Relative paths, as a config holds them, from the folder the run starts in."""
+    monkeypatch.chdir(tmp_path)
+    settings = {
+        **base,
+        "input_path": "StackA_region_seg.tif",
+        "output_dir": "outputs/run",
+        "statistics": True,
+    }
+    files, folders = output_paths(settings)
+    folder = tmp_path / "outputs" / "run"
+    assert folder in folders
+    assert folder / "StackA_region_seg_betweenness_communities_resistance.json" in files
+    assert folder / "StackA_region_seg_run_manifest.json" in files
+    assert folder / "StackA_region_seg_vessels.vtp" in files
+    # Written by hand in the panel, or only for a synthetic network.
+    assert not [
+        path
+        for path in files
+        if path.name.endswith(("_review.csv", "_connectivity.csv", "_template_comparison.csv"))
+    ]
+    unmeasured, _folders = output_paths({**settings, "statistics": False})
+    assert not [path for path in unmeasured if "betweenness" in path.name]
+
+
+def test_ilastik_names_a_single_runs_outputs_and_writes_its_own(tmp_path, base):
+    seg = tmp_path / "seg"
+    settings = _single_run(
+        tmp_path,
+        base,
+        use_ilastik_segmentation=True,
+        raw_image_path=str(tmp_path / "in" / "StackA.tif"),
+        ilastik_output_dir=str(seg),
+        ilastik_output_suffix=".tif",
+    )
+    files, folders = output_paths(settings)
+    names = {path.name for path in files}
+    # The run's files carry the stem of the image ilastik makes, not input_path's.
+    assert "StackA_segmented_run_manifest.json" in names
+    assert "StackA_seg_run_manifest.json" not in names
+    assert {seg / "StackA_segmented.tif", seg / "StackA_segmented.tif.haemolynx.json"} <= set(files)
+    assert seg in folders
+    # With no raw image ilastik segments nothing and the run reads input_path.
+    without_raw = {path.name for path in output_paths({**settings, "raw_image_path": None})[0]}
+    assert "StackA_seg_run_manifest.json" in without_raw
+    assert not [name for name in without_raw if "_segmented." in name]
+
+
+def test_ilastik_vessel_mask_outputs_are_counted_by_role_and_class(tmp_path, base):
+    seg = tmp_path / "seg"
+    settings = _single_run(
+        tmp_path,
+        base,
+        automated_vessel_assignment=True,
+        use_large_vessel_masks=True,
+        use_ilastik_large_vessel_segmentation=True,
+        raw_image_path=str(tmp_path / "R.tif"),
+        ilastik_venule_classifier_path=None,
+        ilastik_output_dir=str(seg),
+        ilastik_output_suffix=".tif",
+    )
+
+    def names():
+        return {path.name for path in ilastik_output_paths(settings)}
+
+    # No venule classifier: the arteriole one segments one global mask.
+    assert names() == {"R_large_global_segmented.tif", "R_large_global_segmented.tif.haemolynx.json"}
+    settings["ilastik_venule_classifier_path"] = str(tmp_path / "ven.ilp")
+    # Both segment the run's raw image; chosen channels are written for ilastik first.
+    settings["ilastik_venule_channels"] = (2,)
+    assert names() == {
+        "R_large_arteriole_segmented.tif",
+        "R_large_arteriole_segmented.tif.haemolynx.json",
+        "R_large_venule_segmented.tif",
+        "R_large_venule_segmented.tif.haemolynx.json",
+        "R_large_venule_segmented_input.tif",
+    }
+    assert seg / "R_large_venule_segmented.tif.haemolynx.json" in output_paths(settings)[0]
+    assert seg / "channels" / "R_large_venule_segmented_input.tif" in output_paths(settings)[0]
+    # Left on under an unticked gate, the switch segments nothing.
+    settings["automated_vessel_assignment"] = False
+    assert names() == set()
+
+
+def test_a_synthetic_runs_template_comparison_is_counted(tmp_path, base):
+    settings = {
+        **base,
+        "network_source": "synthetic",
+        "synthetic_template_path": str(tmp_path / "StackA.haemorun"),
+        "output_dir": str(tmp_path / "out"),
+    }
+    names = {path.name for path in output_paths(settings)[0]}
+    assert "StackA_synthetic_template_comparison.csv" in names
+    assert "StackA_synthetic_run_manifest.json" in names
+    image_run = {path.name for path in output_paths(_single_run(tmp_path, base))[0]}
+    assert not [name for name in image_run if name.endswith("_template_comparison.csv")]
+
+
+def test_a_batch_opens_no_window_for_any_image(tmp_path, base):
+    """A plot or VTK window held the batch until someone closed it, image after image."""
+    from haemolynx.pipeline.batch import NO_WINDOWS
+
+    (match,) = _match(tmp_path / "in", "StackA_seg.tif", "StackA.tif")
+    watched = {**base, "interactive_plots": True, "show_plots_in_ide": True, "visualize_vtk": True}
+
+    settings = item_settings(watched, match, tmp_path / "out")
+
+    assert NO_WINDOWS == {"interactive_plots": False, "show_plots_in_ide": False, "visualize_vtk": False}
+    for name in NO_WINDOWS:
+        assert settings[name] is False, name
+
+
+def test_a_batch_says_one_voxel_size_override_is_every_images(base, schema):
+    def warned(settings):
+        return [w for w in check_batch(settings, schema).warnings if "one voxel size for every image" in w]
+
+    assert warned(base) == []
+    assert warned({**base, "voxel_size_policy": "override", "voxel_size_override_xyz": [1.0, 1.0, 2.0]})
+    assert warned({**base, "voxel_size_policy": "auto", "voxel_size_override_xyz": [1.0, 1.0, 2.0]})

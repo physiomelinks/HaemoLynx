@@ -107,6 +107,25 @@ def test_overrides_are_validated_like_everything_else(tmp_path):
         load_config(path, _schema(), overrides={"mode": "medium"})
 
 
+def test_an_override_naming_a_retired_setting_beats_the_files_new_one(tmp_path):
+    """A script still passing the old name: read into the new setting before
+    the file's value of it, rather than dropped because the file set the new
+    one -- which sent a run's outputs somewhere its caller never named."""
+    schema = Schema([
+        Setting(
+            "folder", "path", "out", "Where outputs go", "S",
+            migrates=("prefix",), migrate=lambda values: {"folder": Path(values["prefix"]).parent},
+        ),
+    ])
+    path = _write(tmp_path, "folder: from_file\n")
+    assert load_config(path, schema)["folder"] == Path("from_file")
+    assert load_config(path, schema, overrides={"prefix": "given/run"})["folder"] == Path("given")
+    assert load_config(path, schema, overrides={"folder": "given"})["folder"] == Path("given")
+    # A file still naming the old setting is read as before.
+    old = _write(tmp_path, "prefix: old/run\n")
+    assert load_config(old, schema)["folder"] == Path("old")
+
+
 # --- generating ------------------------------------------------------------
 
 
@@ -146,6 +165,112 @@ def test_a_generated_config_is_valid_yaml(tmp_path):
     text = dump_config(tmp_path / "generated.yaml", _schema()).read_text(encoding="utf-8")
     loaded = yaml.safe_load(text)
     assert loaded["output"]["diameters"] == {"B01": 5.0}
+
+
+# --- paths are written the same way on every platform ----------------------
+#
+# A `path` setting was serialised with `str(Path(...))`, which is the platform's
+# own separator, so the committed configs -- generated on Linux, with forward
+# slashes -- were rewritten wholesale the first time anyone ran
+# `examples/regenerate_configs.py` on Windows, and that rewrite then broke the
+# generator's own test back on Linux. Regenerating has to be platform-neutral.
+
+
+def test_a_path_setting_is_written_with_forward_slashes(tmp_path):
+    text = dump_config(
+        tmp_path / "generated.yaml",
+        _schema(),
+        values={"input_path": Path("examples") / "images" / "brain.tiff"},
+    ).read_text(encoding="utf-8")
+
+    assert "examples/images/brain.tiff" in text
+    assert "\\" not in text
+
+
+def test_a_path_written_with_forward_slashes_reads_back_as_the_same_path(tmp_path):
+    """Windows accepts forward slashes, so nothing is lost by writing them."""
+    original = Path("examples") / "images" / "brain.tiff"
+    path = dump_config(
+        tmp_path / "generated.yaml", _schema(), values={"input_path": original}
+    )
+    assert load_config(path, _schema())["input_path"] == original
+
+
+def test_regenerating_a_config_reproduces_it_byte_for_byte(tmp_path):
+    """The property the committed configs need: generating twice is a no-op."""
+    schema = _schema()
+    values = {"input_path": Path("examples") / "images" / "brain.tiff"}
+    first = dump_config(tmp_path / "first.yaml", schema, values=values)
+    second = dump_config(
+        tmp_path / "second.yaml", schema, values=load_config(first, schema)
+    )
+    assert second.read_text(encoding="utf-8") == first.read_text(encoding="utf-8")
+
+
+def test_an_absolute_path_keeps_its_drive_and_root(tmp_path):
+    """`C:/Users/...` is a valid Windows path; `C:Users/...` would not be."""
+    absolute = Path(tmp_path) / "images" / "brain.tiff"
+    path = dump_config(
+        tmp_path / "generated.yaml", _schema(), values={"input_path": absolute}
+    )
+    written = yaml.safe_load(path.read_text(encoding="utf-8"))["input"]["input_path"]
+
+    assert "\\" not in written
+    assert written == absolute.as_posix()
+    assert Path(written) == absolute
+    assert Path(written).is_absolute()
+
+
+def test_a_long_path_with_spaces_round_trips_through_dump_and_load(tmp_path):
+    """Napari save/load on Windows used to corrupt paths that contain spaces.
+
+    magicgui's FileEdit absolutises every path. A typical cloud-drive / user-data
+    path is far longer than PyYAML's default dump width, and when that path
+    also contains a space the dumper folded it onto a second indented line.
+    The hand-built config then contained invalid YAML, so "Save config..."
+    appeared to succeed and "Load config..." failed on the file just written.
+    """
+    absolute = (
+        tmp_path
+        / "CloudDrive"
+        / (
+            "Composite_01012026_StackA_chan2_25x_940nm_1040_dye3kda_xyz_"
+            "zstack_spot1_1p5z_region001_Simple Segmentation_arteriole.tiff"
+        )
+    )
+    absolute.parent.mkdir(parents=True, exist_ok=True)
+    absolute.write_bytes(b"")
+
+    path = dump_config(
+        tmp_path / "generated.yaml", _schema(), values={"input_path": absolute}
+    )
+    text = path.read_text(encoding="utf-8")
+
+    assert "\n  Segmentation_arteriole.tiff" not in text
+    assert "\\" not in text
+    # One line, full path — wrapping at the space was the Windows bug.
+    assert f"input_path: {absolute.as_posix()}" in text
+
+    loaded = load_config(path, _schema())["input_path"]
+    assert loaded == absolute
+    assert Path(loaded).is_absolute()
+
+
+def test_a_long_path_with_spaces_survives_a_gui_style_save_reload(tmp_path):
+    """The full dump -> load cycle the panel uses must not rewrite the path."""
+    absolute = (
+        tmp_path
+        / "My Dataset"
+        / ("x" * 80)
+        / "large arteriole mask.tiff"
+    )
+    schema = _schema()
+    saved = dump_config(
+        tmp_path / "panel_save.yaml", schema, values={"input_path": absolute}
+    )
+    # Re-parse the file bytes the way a later "Load config..." does.
+    assert yaml.safe_load(saved.read_text(encoding="utf-8")) is not None
+    assert load_config(saved, schema)["input_path"] == absolute
 
 
 # --- command line ----------------------------------------------------------
@@ -203,3 +328,21 @@ def test_settings_for_selects_the_named_subset():
 def test_settings_for_reports_names_that_are_not_present():
     with pytest.raises(ConfigError, match="Settings not present: nope"):
         settings_for(_schema().validate({}), ["mode", "nope"])
+
+
+def test_ensure_yaml_suffix_adds_yaml_when_missing():
+    from haemolynx.parsers import ensure_yaml_suffix
+
+    assert ensure_yaml_suffix("config") == Path("config.yaml")
+    assert ensure_yaml_suffix("config.yaml") == Path("config.yaml")
+    assert ensure_yaml_suffix("config.yml") == Path("config.yml")
+    assert ensure_yaml_suffix(Path("out") / "settings") == Path("out") / "settings.yaml"
+
+
+def test_a_generated_config_says_which_choice_a_setting_must_avoid(tmp_path):
+    schema = Schema([
+        Setting("mode", "choice", "fast", "Statistics detail", "S", choices=("fast", "full")),
+        Setting("depth", "int", 1, "Only read outside fast mode", "S", requires=("mode!=fast",)),
+    ])
+    text = dump_config(tmp_path / "c.yaml", schema).read_text(encoding="utf-8")
+    assert "needs mode not fast" in text

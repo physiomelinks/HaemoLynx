@@ -1,0 +1,268 @@
+"""Partitioning a vascular graph into communities/domains by modularity.
+
+Blinder et al.'s "cortical angiome" work shows the cortical vasculature
+organizes into spatially clustered, modular sub-networks ("vascular
+domains"), found by graph community/modularity detection --
+:func:`assign_vascular_communities` is that same style of partition, written
+onto the graph as an edge attribute so it can be used to colour the vessels
+layer, the way :func:`haemolynx.graph.branch_order.assign_branch_orders`
+writes ``branch_order``.
+
+:func:`communities_for_weighting` -- the actual partitioning step -- also
+backs :mod:`haemolynx.statistics.network_measures`'s own community-count
+summaries (``compute_communities_summary``, ``compute_weighted_communities_summary``),
+which import it from here rather than duplicating it: :mod:`haemolynx.statistics`
+already depends on :mod:`haemolynx.graph` (for
+:func:`haemolynx.graph.validate.assert_no_forbidden_edge_attributes`), never
+the other way round, so this module has no dependency on ``statistics``.
+"""
+from __future__ import annotations
+
+import warnings
+from dataclasses import dataclass
+from typing import Callable, Optional, Union
+
+import networkx as nx
+
+#: The four ways a vascular-community partition can be weighted -- shared by
+#: :func:`communities_for_weighting`/:func:`assign_vascular_communities` and
+#: ``pipeline.schema``'s own ``vascular_community_weighting`` choice, so the
+#: schema's ``choices`` tuple and this module's own validation never drift
+#: apart.
+COMMUNITY_WEIGHTINGS: tuple[str, ...] = ("topology", "resistance", "length", "flow")
+
+#: (source edge attribute, whether to invert it) for each weighting other
+#: than "topology": how strongly a vessel ties its two ends together, which
+#: modularity reads as an edge's weight (more is a closer tie). Resistance and
+#: length are distances, so a vessel ties by its conductance or 1/length; flow
+#: ties by |flow|. Parallel vessels' ties add, as conductances do. The same
+#: partition the statistics report's community counts quote for the weighting
+#: (:func:`haemolynx.statistics.network_measures.compute_betweenness_and_community_measurements`),
+#: whose betweenness reads the three as distances instead.
+_WEIGHTING_SOURCE_ATTR: dict[str, tuple[str, bool]] = {
+    "resistance": ("resistance", True),
+    "length": ("length", True),
+    "flow": ("flow_abs", False),
+}
+
+#: Above this many nodes, exact greedy-modularity partitioning is replaced by
+#: connected components -- same guard, same threshold, as
+#: ``statistics.network_measures``'s own community-summary functions.
+DEFAULT_MAX_NODES_EXACT = 1500
+
+#: An edge whose two endpoints fall in different communities gets this label
+#: instead of a domain id -- see :func:`assign_vascular_communities`.
+BOUNDARY_LABEL = "boundary"
+
+
+def greedy_modularity_partition(G: nx.Graph, weight: Optional[str] = None) -> list[frozenset]:
+    """``greedy_modularity_communities(G, weight=weight)``, with every node its
+    own community when no tie carries any weight: modularity divides by the
+    total, and networkx answers so only for an edgeless graph and only from
+    some release after 3.2. Before that (the floor is 2.8.8), and on ties that
+    all weigh 0 in every release, it raises ZeroDivisionError. Called through
+    ``nx.community`` so that a test counting partitions sees each one."""
+    if G.size(weight=weight) == 0:
+        return [frozenset([node]) for node in G]
+    return list(nx.community.greedy_modularity_communities(G, weight=weight))
+
+
+class DegenerateCommunityWeightingWarning(UserWarning):
+    """*weighting*'s source attribute is missing from every edge of a
+    non-empty graph, so the partition it produced is meaningless.
+
+    ``communities_for_weighting`` never raises for this -- an edge attribute
+    that is absent, ``None``, or non-positive on every edge (e.g.
+    ``"resistance"`` before haemodynamics has run) simply drops every edge
+    when building the weighted simple graph, leaving every node its own
+    singleton community. That looks like a normal result (a partition, not
+    an error) unless this warning names which weighting degenerated.
+    """
+
+
+def simple_graph_with_edge_attr(
+    G: Union[nx.Graph, nx.MultiGraph],
+    source_attr: str,
+    transform: Optional[Callable[[float], float]] = None,
+    target_attr: str = "analysis_weight",
+    combine: str = "min",
+) -> nx.Graph:
+    """Build a simple graph carrying one transformed edge attribute.
+
+    Parallel edges are collapsed by *combine*: ``"min"``, the smallest
+    transformed value, for a path-based distance; ``"sum"``, their total, for
+    a strength (two parallel vessels tie their ends as their conductances
+    add).
+    """
+    if combine not in ("min", "sum"):
+        raise ValueError(f"combine must be 'min' or 'sum'; got {combine!r}.")
+    is_mg = isinstance(G, (nx.MultiGraph, nx.MultiDiGraph))
+    G_s = nx.Graph()
+    G_s.add_nodes_from(G.nodes())
+
+    if transform is None:
+        transform = lambda x: x  # noqa: E731
+
+    edges = (
+        ((u, v, data) for u, v, _, data in G.edges(keys=True, data=True))
+        if is_mg
+        else G.edges(data=True)
+    )
+    best: dict = {}
+    for u, v, data in edges:
+        raw = data.get(source_attr)
+        if raw is None or raw <= 0:
+            continue
+        transformed = transform(raw)
+        if transformed is None or transformed <= 0:
+            continue
+        uv = (v, u) if (v, u) in best else (u, v)
+        if uv not in best:
+            best[uv] = float(transformed)
+        elif combine == "sum":
+            best[uv] += float(transformed)
+        elif transformed < best[uv]:
+            best[uv] = float(transformed)
+    for (u, v), val in best.items():
+        G_s.add_edge(u, v, **{target_attr: val})
+    return G_s
+
+
+def communities_for_weighting(
+    G: Union[nx.Graph, nx.MultiGraph],
+    weighting: str,
+    max_nodes_exact: int = DEFAULT_MAX_NODES_EXACT,
+) -> tuple[list[frozenset], str]:
+    """The node partition greedy modularity finds for *weighting*, and the
+    method name that produced it.
+
+    ``"topology"`` runs on the graph's own unweighted structure (a MultiGraph
+    is first collapsed to a simple graph -- ``greedy_modularity_communities``
+    needs one, and parallel edges carry no extra topological information for
+    it anyway). ``"resistance"``/``"length"``/``"flow"`` build a simple graph
+    carrying each vessel's tie -- its conductance, 1/length or |flow|, summed
+    over parallel vessels (see :func:`simple_graph_with_edge_attr`) -- and
+    run weighted modularity on it.
+
+    Above *max_nodes_exact*, falls back to connected components (fast and
+    stable, if not modular) -- same guard already used for the statistics
+    report's own community counts. Never raises on an edgeless graph: every
+    node is its own singleton community then (:func:`greedy_modularity_partition`),
+    which is what a weighting with no populated source attribute (e.g.
+    "resistance" before haemodynamics has run) degenerates to.
+    """
+    if weighting not in COMMUNITY_WEIGHTINGS:
+        raise ValueError(
+            f"Unknown weighting={weighting!r}; choose from {COMMUNITY_WEIGHTINGS}."
+        )
+
+    if weighting == "topology":
+        is_mg = isinstance(G, (nx.MultiGraph, nx.MultiDiGraph))
+        G_s = nx.Graph(G) if is_mg else G
+        weight_kwargs: dict = {}
+        exact_method = "greedy_modularity"
+    else:
+        source_attr, inverse = _WEIGHTING_SOURCE_ATTR[weighting]
+        transform = (lambda x: 1.0 / x) if inverse else None
+        G_s = simple_graph_with_edge_attr(
+            G, source_attr=source_attr, transform=transform, target_attr="analysis_weight",
+            combine="sum",
+        )
+        weight_kwargs = {"weight": "analysis_weight"}
+        exact_method = "greedy_modularity_weighted"
+        if G.number_of_edges() > 0 and G_s.number_of_edges() == 0:
+            warnings.warn(
+                f"weighting={weighting!r} found no usable {source_attr!r} value on "
+                "any edge, so its community partition is every node as its own "
+                "singleton -- run haemodynamics first, or choose a weighting "
+                "whose source attribute is already populated.",
+                DegenerateCommunityWeightingWarning,
+                stacklevel=2,
+            )
+
+    n_nodes = G_s.number_of_nodes()
+    if n_nodes == 0:
+        return [], exact_method
+    if n_nodes <= max_nodes_exact:
+        return greedy_modularity_partition(G_s, **weight_kwargs), exact_method
+    return list(nx.connected_components(G_s)), "connected_components_fallback"
+
+
+@dataclass(frozen=True)
+class VascularCommunitySummary:
+    """What :func:`assign_vascular_communities` did to one graph."""
+
+    community_count: int
+    #: Community sizes, largest first -- same order as the domain labels.
+    sizes: tuple[int, ...]
+    boundary_edge_count: int
+    method: str
+    weighting: str
+
+
+def assign_vascular_communities(
+    G: nx.MultiGraph,
+    *,
+    weighting: str = "topology",
+    max_nodes_exact: int = DEFAULT_MAX_NODES_EXACT,
+    attribute: str = "vascular_community",
+    communities: "tuple[list[frozenset], str] | None" = None,
+) -> VascularCommunitySummary:
+    """Partition *G* into vascular communities/domains and write each edge's
+    own domain onto ``attribute``.
+
+    Communities are ranked by size (largest first) and labelled ``"D01"``,
+    ``"D02"``, ... -- ``"D01"`` is always the network's largest domain,
+    matching ``branch_order``'s own zero-padded convention. Ranking by
+    ``(-len(community), min(community))`` rather than raw set order makes the
+    labelling deterministic across repeated calls, regardless of how
+    :func:`communities_for_weighting`'s own algorithm happens to order same-
+    size communities.
+
+    An edge whose two endpoints land in different communities -- a domain
+    boundary -- gets :data:`BOUNDARY_LABEL` instead of either endpoint's own
+    domain, so a boundary is a visible, distinct category rather than an
+    edge that arbitrarily looks like it belongs to one side.
+
+    *communities*, when given, is a ``(communities, method)`` pair already
+    produced by :func:`communities_for_weighting` for this *weighting* on
+    this graph -- lets a caller that partitioned *G* for the same weighting
+    elsewhere (e.g. the statistics report's own
+    :func:`~haemolynx.statistics.compute_betweenness_and_community_measurements`)
+    skip running greedy modularity on it a second time. Not validated
+    against *weighting*/*G*; passing a mismatched pair is the caller's error.
+    """
+    if weighting not in COMMUNITY_WEIGHTINGS:
+        raise ValueError(
+            f"Unknown weighting={weighting!r}; choose from {COMMUNITY_WEIGHTINGS}."
+        )
+    if communities is not None:
+        communities, method = communities
+    else:
+        communities, method = communities_for_weighting(G, weighting, max_nodes_exact)
+    ordered = sorted(communities, key=lambda community: (-len(community), min(community)))
+    width = max(2, len(str(len(ordered))))
+
+    node_to_label: dict = {}
+    for index, community in enumerate(ordered, start=1):
+        label = f"D{index:0{width}d}"
+        for node in community:
+            node_to_label[node] = label
+
+    boundary_edge_count = 0
+    for u, v, key in G.edges(keys=True):
+        label_u = node_to_label.get(u)
+        label_v = node_to_label.get(v)
+        if label_u is not None and label_u == label_v:
+            G[u][v][key][attribute] = label_u
+        else:
+            G[u][v][key][attribute] = BOUNDARY_LABEL
+            boundary_edge_count += 1
+
+    return VascularCommunitySummary(
+        community_count=len(ordered),
+        sizes=tuple(len(community) for community in ordered),
+        boundary_edge_count=boundary_edge_count,
+        method=method,
+        weighting=weighting,
+    )

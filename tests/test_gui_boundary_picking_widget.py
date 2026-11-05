@@ -18,9 +18,11 @@ pytest.importorskip("magicgui")
 
 from haemolynx.gui._widget import _clear_our_layers, settings_widget  # noqa: E402
 from haemolynx.gui.boundary_picking import (  # noqa: E402
+    BC_BOX_NAMES,
     BC_COORDINATES,
     BC_REGION_NAMES,
     ROLES,
+    boxes_name,
     regions_name,
     method_setting,
     rectangle_from_box,
@@ -59,12 +61,36 @@ def no_bands(widget):
 
 
 def drawn_for(viewer, role):
-    """Every vertex drawn for one role, from that role's own layer."""
-    name = regions_name(role)
+    """Every box vertex drawn for one role, from that role's own box layer."""
+    name = boxes_name(role)
     if name not in viewer.layers:
         return np.empty((0, 3))
-    shapes = [np.asarray(s) for s in viewer.layers[name].data]
-    return np.concatenate(shapes) if shapes else np.empty((0, 3))
+    return np.asarray(viewer.layers[name].data[0])
+
+
+def drag(layer, start, end, *, steps=4, view=None, up=None, displayed=(1, 2)):
+    """A press, a few moves and a release, through napari's own dispatch.
+
+    The same path a real mouse takes (`mouse_press_callbacks` and friends run
+    every callback on the layer, napari's drawing tool included), which is
+    what the crash lived in: two callbacks answering one drag.
+    """
+    from napari.utils._test_utils import read_only_mouse_event
+    from napari.utils.interactions import (
+        mouse_move_callbacks, mouse_press_callbacks, mouse_release_callbacks,
+    )
+
+    common = {"button": 1, "dims_displayed": list(displayed),
+              "view_direction": view, "up_direction": up}
+    mouse_press_callbacks(layer, read_only_mouse_event(
+        type="mouse_press", position=tuple(start), **common))
+    for t in np.linspace(0.0, 1.0, steps)[1:]:
+        point = np.asarray(start, dtype=float) + t * (
+            np.asarray(end, dtype=float) - np.asarray(start, dtype=float))
+        mouse_move_callbacks(layer, read_only_mouse_event(
+            type="mouse_move", is_dragging=True, position=tuple(point), **common))
+    mouse_release_callbacks(layer, read_only_mouse_event(
+        type="mouse_release", position=tuple(end), **common))
 
 
 # --- what a config describes, drawn ------------------------------------------
@@ -145,6 +171,7 @@ def test_clear_layers_takes_the_picking_layers_with_it(panel):
 
     assert BC_COORDINATES not in viewer.layers
     assert all(name not in viewer.layers for name in BC_REGION_NAMES)
+    assert all(name not in viewer.layers for name in BC_BOX_NAMES)
 
 
 # --- the colours, which were wrong before ------------------------------------
@@ -321,17 +348,6 @@ def test_assigning_a_selected_point_to_another_role_moves_it_between_settings(pa
 # --- what cannot be done, said rather than silently failing ------------------
 
 
-def test_drawing_a_region_is_refused_in_the_3d_view(panel):
-    """napari forces a Shapes layer out of edit mode when ndisplay is 3."""
-    widget, viewer, bc = panel
-    viewer.dims.ndisplay = 3
-
-    bc.draw()
-
-    assert "2D" in widget._haemolynx_report()
-    assert regions_name("outlet") not in viewer.layers
-
-
 def test_snapping_before_a_run_says_why_rather_than_doing_nothing(panel):
     widget, viewer, bc = panel
     rows_of(widget)["inlet_node_coordinates"].value = [[1.0, 2.0, 3.0]]
@@ -408,8 +424,9 @@ def test_the_controls_sit_on_the_boundaries_tab(panel):
 # --- a region reads as the volume it is --------------------------------------
 
 
-def test_a_region_is_drawn_as_a_box_not_a_flat_rectangle(panel):
-    """A rectangle on one slice says nothing about how deep the box goes."""
+def test_a_region_is_drawn_as_a_translucent_solid_box(panel):
+    """A rectangle on one slice says nothing about how deep the box goes, and
+    a Shapes layer cannot draw a box in 3D -- so the box is a Surface."""
     widget, viewer, bc = panel
     no_bands(widget)
     rows_of(widget)["outlet_node_volumes"].value = [A_BOX]
@@ -417,19 +434,35 @@ def test_a_region_is_drawn_as_a_box_not_a_flat_rectangle(panel):
     bc.show()
 
     regions = viewer.layers[regions_name("outlet")]
-    assert list(regions.shape_type).count("rectangle") == 1
-    assert list(regions.shape_type).count("line") == 12
-    drawn = np.concatenate([np.asarray(s) for s in regions.data], axis=0)
-    assert drawn[:, 0].min() == pytest.approx(A_BOX[0][0])
-    assert drawn[:, 0].max() == pytest.approx(A_BOX[1][0])
+    assert list(regions.shape_type) == ["rectangle"], "only the editable handle"
+    boxes = viewer.layers[boxes_name("outlet")]
+    assert isinstance(boxes, napari.layers.Surface)
+    vertices, faces = np.asarray(boxes.data[0]), np.asarray(boxes.data[1])
+    assert vertices.shape == (8, 3) and faces.shape == (12, 3)
+    assert vertices.min(axis=0) == pytest.approx(A_BOX[0])
+    assert vertices.max(axis=0) == pytest.approx(A_BOX[1])
+    assert boxes.opacity < 1.0, "translucent, so what is inside shows through"
+    assert tuple(boxes.scale) == (1.0, 1.0, 1.0), "microns, like the settings"
 
 
-def test_the_outline_survives_a_second_show(panel):
-    """Growing a Shapes layer through `.data` turns every shape into a polygon.
+def test_each_box_of_a_role_has_a_colour_of_its_own(panel):
+    widget, viewer, bc = panel
+    no_bands(widget)
+    rows_of(widget)["outlet_node_volumes"].value = [
+        A_BOX, [[0.0, 0.0, 0.0], [20.0, 20.0, 20.0]], [[30.0, 0.0, 0.0], [50.0, 20.0, 20.0]],
+    ]
 
-    The box would quietly flatten back into thirteen polygons on the second
-    draw, so `shape_type` has to be re-applied on update, not only on add.
-    """
+    bc.show()
+
+    boxes = viewer.layers[boxes_name("outlet")]
+    colours = np.asarray(boxes.vertex_colors)
+    per_box = [tuple(np.round(colours[8 * i], 4)) for i in range(3)]
+    assert len(set(per_box)) == 3, "three boxes, three shades"
+    for i in range(3):
+        assert np.allclose(colours[8 * i: 8 * i + 8], colours[8 * i]), "one colour per box"
+
+
+def test_the_boxes_survive_a_second_show(panel):
     widget, viewer, bc = panel
     no_bands(widget)
     rows_of(widget)["outlet_node_volumes"].value = [A_BOX]
@@ -439,14 +472,12 @@ def test_the_outline_survives_a_second_show(panel):
     bc.show()
 
     for role in ("inlet", "outlet"):
-        regions = viewer.layers[regions_name(role)]
-        assert len(regions.data) == 13, "one box per role, in its own layer"
-        assert list(regions.shape_type).count("line") == 12
-        assert list(regions.shape_type).count("rectangle") == 1
+        assert list(viewer.layers[regions_name(role)].shape_type) == ["rectangle"]
+        assert len(drawn_for(viewer, role)) == 8, "one box per role, in its own layer"
 
 
-def test_reading_the_regions_back_counts_boxes_not_segments(panel):
-    """Thirteen shapes are one region; a sync that missed that would multiply."""
+def test_reading_the_regions_back_counts_each_region_once(panel):
+    """A sync that read the box back as well as the rectangle would multiply."""
     widget, viewer, bc = panel
     rows_of(widget)["outlet_node_volumes"].value = [A_BOX]
     bc.show()
@@ -542,8 +573,9 @@ def test_editing_one_role_does_not_wipe_another(panel):
     values = widget._haemolynx_values()
     assert len(values["outlet_node_volumes"]) == 1
     assert len(values["inlet_node_volumes"]) == 1
-    assert len(viewer.layers[regions_name("outlet")].data) == 13
-    assert len(viewer.layers[regions_name("inlet")].data) == 13
+    assert len(viewer.layers[regions_name("outlet")].data) == 1
+    assert len(viewer.layers[regions_name("inlet")].data) == 1
+    assert len(drawn_for(viewer, "outlet")) == len(drawn_for(viewer, "inlet")) == 8
 
 
 def test_a_setting_sits_below_the_method_that_asks_for_it(panel):
@@ -570,10 +602,128 @@ def test_there_is_one_sub_tab_per_role(panel):
     widget, viewer, bc = panel
     tabs = bc.state.tabs
 
-    assert tabs.count() == 4
-    assert [tabs.tabText(i) for i in range(4)] == [
-        "Inlet", "Outlet", "Arteriole", "Venule"
+    assert tabs.count() == len(ROLES)
+    assert [tabs.tabText(i) for i in range(tabs.count())] == [
+        "Inlet", "Outlet", "Arteriole", "Venule",
+        "Large vessel inlet", "Large vessel outlet",
     ]
+
+
+def _role_tab_enabled(bc):
+    tabs = bc.state.tabs
+    return {ROLES[i]: tabs.isTabEnabled(i) for i in range(tabs.count())}
+
+
+def test_large_auto_greys_inlet_and_outlet_role_tabs(panel):
+    """Large-vessel automated assignment disables Inlet/Outlet; keeps A/V."""
+    widget, viewer, bc = panel
+    rows = rows_of(widget)
+    tabs = bc.state.tabs
+
+    # A venule mask too: an arteriole mask alone is one global mask, which
+    # chooses no inlets or outlets.
+    rows["large_venule_mask_path"].value = "large_venule_mask.tif"
+    rows["automated_vessel_assignment"].value = True
+    rows["use_large_vessel_masks"].value = True
+    rows["use_small_vessel_masks_for_boundary_assignment"].value = False
+
+    enabled = _role_tab_enabled(bc)
+    assert enabled["inlet"] is False
+    assert enabled["outlet"] is False
+    assert enabled["arteriole_boundary"] is True
+    assert enabled["venule_boundary"] is True
+    # Grey out, do not hide: tab bar entries remain present.
+    assert tabs.isTabVisible(0) is True
+    assert tabs.isTabVisible(1) is True
+    assert tabs.count() == len(ROLES)
+
+
+def test_small_auto_greys_arteriole_and_venule_role_tabs(panel):
+    widget, viewer, bc = panel
+    rows = rows_of(widget)
+    tabs = bc.state.tabs
+
+    rows["automated_vessel_assignment"].value = True
+    rows["use_small_vessel_masks_for_boundary_assignment"].value = True
+
+    enabled = _role_tab_enabled(bc)
+    assert enabled["arteriole_boundary"] is False
+    assert enabled["venule_boundary"] is False
+    # Only the large masks choose inlets and outlets, and they are off.
+    assert enabled["inlet"] is True
+    assert enabled["outlet"] is True
+    assert tabs.isTabVisible(2) is True
+    assert tabs.isTabVisible(3) is True
+    assert tabs.count() == len(ROLES)
+
+
+def test_both_autos_off_enables_every_role_tab(panel):
+    """large_vessel_inlet/outlet stay disabled here -- they gate on
+    assign_large_vessel_branch_orders, not either of these two flags; see
+    test_large_vessel_network_mode_toggles_the_new_role_tabs below."""
+    widget, viewer, bc = panel
+    rows = rows_of(widget)
+
+    rows["automated_vessel_assignment"].value = False
+    rows["use_small_vessel_masks_for_boundary_assignment"].value = False
+
+    enabled = _role_tab_enabled(bc)
+    assert enabled == {
+        "inlet": True,
+        "outlet": True,
+        "arteriole_boundary": True,
+        "venule_boundary": True,
+        "large_vessel_inlet": False,
+        "large_vessel_outlet": False,
+    }
+
+
+def test_large_vessel_network_mode_toggles_the_new_role_tabs(panel):
+    """Inverted polarity: greyed while the feature is off, enabled once on --
+    the opposite of the automated-assignment gates above."""
+    widget, viewer, bc = panel
+    rows = rows_of(widget)
+
+    enabled = _role_tab_enabled(bc)
+    assert enabled["large_vessel_inlet"] is False
+    assert enabled["large_vessel_outlet"] is False
+
+    rows["automated_vessel_assignment"].value = True
+    rows["use_large_vessel_masks"].value = True
+    rows["large_venule_mask_path"].value = "large_venule_mask.tif"
+    rows["cut_network_at_large_vessel_volumes"].value = False
+    rows["assign_large_vessel_branch_orders"].value = True
+
+    enabled = _role_tab_enabled(bc)
+    assert enabled["large_vessel_inlet"] is True
+    assert enabled["large_vessel_outlet"] is True
+
+
+def test_unticking_the_large_masks_hands_the_inlets_back_to_their_tabs(panel):
+    """Regression: unticking "Use large vessel masks" hid every large-vessel
+    row but kept their values, so the Inlet and Outlet tabs stayed greyed
+    (the masks no longer loaded "chose" them) and the large-vessel tabs
+    stayed open."""
+    widget, viewer, bc = panel
+    rows = rows_of(widget)
+    rows["automated_vessel_assignment"].value = True
+    rows["use_large_vessel_masks"].value = True
+    rows["large_venule_mask_path"].value = "large_venule_mask.tif"
+    rows["inlets_outlets_from_vessel_masks"].value = True
+    rows["cut_network_at_large_vessel_volumes"].value = False
+    rows["assign_large_vessel_branch_orders"].value = True
+    enabled = _role_tab_enabled(bc)
+    assert not enabled["inlet"] and not enabled["outlet"]
+    assert enabled["large_vessel_inlet"] and enabled["large_vessel_outlet"]
+    assert not rows["inlets_outlets_from_vessel_masks"].native.isHidden()
+
+    rows["use_large_vessel_masks"].value = False
+
+    enabled = _role_tab_enabled(bc)
+    assert enabled["inlet"] and enabled["outlet"]
+    assert not enabled["large_vessel_inlet"] and not enabled["large_vessel_outlet"]
+    # The switch reads the large masks, so it goes with them.
+    assert rows["inlets_outlets_from_vessel_masks"].native.isHidden()
 
 
 def test_choosing_a_sub_tab_chooses_the_role(panel):
@@ -734,7 +884,7 @@ def test_each_role_has_its_own_copy_of_a_control(panel, control):
     widget, viewer, bc = panel
     natives = {getattr(bc.actions[role], control).native for role in ROLES}
 
-    assert len(natives) == 4
+    assert len(natives) == len(ROLES)
     page = bc.state.tabs.widget(1)
     own = getattr(bc.actions["outlet"], control).native
     assert own in page.findChildren(type(own))
@@ -773,7 +923,8 @@ def test_a_method_only_shows_the_controls_it_can_use(panel):
     rows_of(widget)["venule_boundary_selection_method"].value = "edge_percent"
 
     assert bc.state.actions["inlet"] == {"pick", "move", "assign"}
-    assert bc.state.actions["outlet"] == {"draw", "depth", "move", "assign", "clear"}
+    # A volume role inserts a box rather than drawing one.
+    assert bc.state.actions["outlet"] == {"insert_box", "box_choice", "box_size", "box_colour", "box_step", "box_move", "box_scan", "box_nodes", "use_node", "remove_box"}
     assert bc.state.actions["venule_boundary"] == set(), "nothing to point at"
 
 
@@ -822,9 +973,7 @@ def test_a_region_drawn_into_an_empty_layer_reaches_its_role(panel):
 
 
 def test_redrawing_over_a_hand_drawn_region_keeps_it(panel):
-    """A Shapes layer applies the types it already holds to whatever data it is
-    given next, so a box outline handed to a layer holding one rectangle raised
-    -- after emptying itself, which lost the region."""
+    """Showing again must neither lose a hand-drawn region nor add to it."""
     widget, viewer, bc = panel
     no_bands(widget)
     rows_of(widget)["outlet_node_selection_method"].value = "volume"
@@ -837,7 +986,8 @@ def test_redrawing_over_a_hand_drawn_region_keeps_it(panel):
 
     bc.show()
 
-    assert len(viewer.layers[regions_name("outlet")].data) == 13
+    assert len(viewer.layers[regions_name("outlet")].data) == 1
+    assert len(drawn_for(viewer, "outlet")) == 8
     assert widget._haemolynx_values()["outlet_node_volumes"] == before
 
 
@@ -867,13 +1017,13 @@ def test_the_depth_slider_resizes_this_roles_regions(panel):
 
 
 def test_the_drawn_box_follows_the_slider(panel):
-    """The outline is drawn from the settings, so it only moves once they do."""
+    """The box is drawn from the settings, so it only moves once they do."""
     widget, viewer, bc = panel
     draw_a_region(widget, viewer, bc)
 
     bc.actions["outlet"].depth.value = 6.0
 
-    drawn = np.concatenate([np.asarray(s) for s in viewer.layers[regions_name("outlet")].data])
+    drawn = drawn_for(viewer, "outlet")
     assert drawn[:, 0].min() == pytest.approx(7.0)
     assert drawn[:, 0].max() == pytest.approx(13.0)
 
@@ -896,9 +1046,7 @@ def test_a_selected_region_is_the_one_that_resizes(panel):
     widget, viewer, bc = panel
     draw_a_region(widget, viewer, bc, z=10.0)
     draw_a_region(widget, viewer, bc, z=30.0)
-    handles = [i for i, part in enumerate(viewer.layers[regions_name("outlet")].features["part"])
-               if part == "handle"]
-    viewer.layers[regions_name("outlet")].selected_data = {handles[0]}
+    viewer.layers[regions_name("outlet")].selected_data = {0}
 
     bc.actions["outlet"].depth.value = 8.0
 
@@ -993,7 +1141,7 @@ def test_edge_percent_draws_the_band_it_will_select_from(panel):
 
     bc.show()
 
-    assert regions_name("inlet") in viewer.layers
+    assert boxes_name("inlet") in viewer.layers
     drawn = drawn_for(viewer, "inlet")
     image_y = float(viewer.layers["stack"].extent.world[1][1])
     assert drawn[:, 1].min() == pytest.approx(0.0)
@@ -1068,11 +1216,13 @@ def test_a_band_goes_away_with_the_method_that_made_it(panel):
     widget, viewer, bc = panel
     rows_of(widget)["inlet_node_selection_method"].value = "edge_percent"
     bc.show()
-    assert len(drawn_for(viewer, "inlet")) == 24, "twelve two-point edges"
+    assert len(drawn_for(viewer, "inlet")) == 8, "one box"
+    assert regions_name("inlet") not in viewer.layers, "and nothing to edit"
 
     rows_of(widget)["inlet_node_selection_method"].value = "all_degree_1"
 
     assert not len(drawn_for(viewer, "inlet"))
+    assert boxes_name("inlet") not in viewer.layers
 
 
 def test_a_shared_row_with_no_page_is_not_a_window(panel):
@@ -1191,7 +1341,7 @@ def test_reassigning_a_region_moves_it_to_the_other_roles_layer(panel):
     rows_of(widget)["inlet_node_volumes"].value = [A_BOX]
     bc.show()
     inlet = viewer.layers[regions_name("inlet")]
-    inlet.selected_data = {list(inlet.features["part"]).index("handle")}
+    inlet.selected_data = {0}
 
     bc.role.value = "outlet"
     bc.assign()
@@ -1199,3 +1349,842 @@ def test_reassigning_a_region_moves_it_to_the_other_roles_layer(panel):
     assert widget._haemolynx_values()["inlet_node_volumes"] == []
     assert len(widget._haemolynx_values()["outlet_node_volumes"]) == 1
     assert regions_name("outlet") in viewer.layers
+
+
+# --- several regions, drawn with napari's own tool ---------------------------
+
+
+def start_drawing(widget, viewer, bc, role="outlet"):
+    no_bands(widget)
+    rows_of(widget)[method_setting(role)].value = "volume"
+    bc.actions[role].draw.changed()
+    return viewer.layers[regions_name(role)], float(viewer.dims.point[0])
+
+
+def test_drawing_a_second_region_keeps_the_first_and_adds_the_second(panel):
+    """The reported failure. A drag callback redrew the layer from the settings
+    when the mouse came up -- before napari's rectangle tool had finished, so
+    the rectangle just drawn was wiped, and the tool was left holding a
+    selection whose box no longer existed (`_selected_box` None, the TypeError
+    on the next drag)."""
+    widget, viewer, bc = panel
+    regions, z = start_drawing(widget, viewer, bc)
+
+    drag(regions, (z, 10.0, 10.0), (z, 50.0, 60.0))
+    drag(regions, (z, 100.0, 100.0), (z, 150.0, 160.0))
+    drag(regions, (z, 60.0, 170.0), (z, 90.0, 200.0))
+
+    boxes = widget._haemolynx_values()["outlet_node_volumes"]
+    assert len(boxes) == 3
+    assert [box[0][1:] for box in boxes] == [[10.0, 10.0], [100.0, 100.0], [60.0, 170.0]]
+    assert len(regions.data) == 3
+    assert regions.mode == "add_rectangle", "still drawing: a fourth is one drag away"
+
+
+def test_the_rectangle_just_drawn_is_left_as_napari_left_it(panel):
+    """Rewriting the layer the tool works on resets its selection underneath
+    it; a layer that already says what the settings say is not rewritten."""
+    widget, viewer, bc = panel
+    regions, z = start_drawing(widget, viewer, bc)
+    drag(regions, (z, 10.0, 10.0), (z, 50.0, 60.0))
+    drag(regions, (z, 100.0, 100.0), (z, 150.0, 160.0))
+
+    assert regions.selected_data == {1}, "napari selects what it has just drawn"
+    assert regions._selected_box is not None
+
+
+def test_every_region_drawn_shows_as_its_own_box(panel):
+    widget, viewer, bc = panel
+    regions, z = start_drawing(widget, viewer, bc)
+
+    drag(regions, (z, 10.0, 10.0), (z, 50.0, 60.0))
+    drag(regions, (z, 100.0, 100.0), (z, 150.0, 160.0))
+
+    vertices = drawn_for(viewer, "outlet")
+    assert len(vertices) == 16, "two boxes, eight corners each"
+    colours = np.asarray(viewer.layers[boxes_name("outlet")].vertex_colors)
+    assert not np.allclose(colours[0], colours[8]), "and each in its own shade"
+
+
+def test_the_boxes_appearing_do_not_take_the_tool_away(panel):
+    """napari makes a newly added layer the active one, and mouse events go to
+    the active layer: the first box appearing would have ended the drawing."""
+    widget, viewer, bc = panel
+    regions, z = start_drawing(widget, viewer, bc)
+
+    drag(regions, (z, 10.0, 10.0), (z, 50.0, 60.0))
+
+    assert viewer.layers.selection.active is regions
+
+
+def test_a_boundary_edit_does_not_rebuild_the_rest_of_the_view(panel, monkeypatch):
+    """What made picking lag: every edit went through `_apply_layers`, which
+    also rebuilds the vessel tube mesh and re-runs the Z-depth filter."""
+    import haemolynx.gui._widget as panel_module
+
+    calls = []
+    monkeypatch.setattr(panel_module, "_sync_vessel_tubes",
+                        lambda *a, **k: calls.append("tubes"))
+    widget, viewer, bc = panel
+    regions, z = start_drawing(widget, viewer, bc)
+
+    drag(regions, (z, 10.0, 10.0), (z, 50.0, 60.0))
+    rows_of(widget)["outlet_node_volumes"].value = [A_BOX]
+    bc.show()
+
+    assert calls == []
+
+
+def test_clearing_while_drawing_empties_the_layer_rather_than_keeping_it(panel):
+    """The layer a tool is on is kept -- but emptied, or the next edit would
+    read its rectangles straight back into the setting that was just cleared."""
+    widget, viewer, bc = panel
+    regions, z = start_drawing(widget, viewer, bc)
+    drag(regions, (z, 10.0, 10.0), (z, 50.0, 60.0))
+
+    bc.actions["outlet"].clear.changed()
+    drag(regions, (z, 100.0, 100.0), (z, 150.0, 160.0))
+
+    boxes = widget._haemolynx_values()["outlet_node_volumes"]
+    assert len(boxes) == 1 and boxes[0][0][1:] == [100.0, 100.0]
+
+
+# --- drawing a region in the 3D view -----------------------------------------
+
+#: napari's default 3D camera looks down z with y up the screen.
+VIEW_DOWN_Z = {"view": (1.0, 0.0, 0.0), "up": (0.0, -1.0, 0.0), "displayed": (0, 1, 2)}
+
+
+def start_drawing_in_3d(widget, viewer, bc, role="outlet"):
+    no_bands(widget)
+    rows_of(widget)[method_setting(role)].value = "volume"
+    viewer.dims.ndisplay = 3
+    bc.actions[role].draw.changed()
+    return viewer.layers[regions_name(role)]
+
+
+def test_draw_is_offered_in_the_3d_view(panel):
+    widget, viewer, bc = panel
+    rows_of(widget)["outlet_node_selection_method"].value = "volume"
+
+    viewer.dims.ndisplay = 3
+
+    assert bc.actions["outlet"].draw.enabled is True
+
+
+def test_a_drag_in_3d_adds_a_box_through_the_whole_stack(panel):
+    widget, viewer, bc = panel
+    regions = start_drawing_in_3d(widget, viewer, bc)
+
+    drag(regions, (59.0, 20.0, 30.0), (59.0, 80.0, 120.0), **VIEW_DOWN_Z)
+
+    (lo, hi), = widget._haemolynx_values()["outlet_node_volumes"]
+    extent = viewer.layers["stack"].extent.world
+    assert lo[1:] == pytest.approx([20.0, 30.0]) and hi[1:] == pytest.approx([80.0, 120.0])
+    assert lo[0] == pytest.approx(float(extent[0][0]), abs=1e-3)
+    assert hi[0] == pytest.approx(float(extent[1][0]), abs=1e-3)
+    assert len(drawn_for(viewer, "outlet")) == 8, "and shows as a box"
+
+
+def test_several_boxes_can_be_drawn_in_3d(panel):
+    widget, viewer, bc = panel
+    regions = start_drawing_in_3d(widget, viewer, bc)
+    drag(regions, (59.0, 20.0, 30.0), (59.0, 80.0, 120.0), **VIEW_DOWN_Z)
+
+    bc.actions["outlet"].draw.changed()
+    drag(regions, (59.0, 120.0, 130.0), (59.0, 180.0, 200.0), **VIEW_DOWN_Z)
+
+    assert len(widget._haemolynx_values()["outlet_node_volumes"]) == 2
+    assert len(drawn_for(viewer, "outlet")) == 16
+
+
+def test_the_view_holds_still_while_a_box_is_dragged_out(panel):
+    """The camera follows the active layer's `mouse_pan`; a drag that also
+    turned the view would draw a box nobody aimed."""
+    widget, viewer, bc = panel
+    regions = start_drawing_in_3d(widget, viewer, bc)
+
+    assert viewer.layers.selection.active is regions
+    assert regions.mouse_pan is False
+
+    drag(regions, (59.0, 20.0, 30.0), (59.0, 80.0, 120.0), **VIEW_DOWN_Z)
+
+    assert regions.mouse_pan is True, "the mouse goes back to the camera"
+    assert bc.draw_in_3d not in regions.mouse_drag_callbacks
+
+
+def test_a_click_in_3d_without_a_drag_adds_nothing_and_says_so(panel):
+    widget, viewer, bc = panel
+    regions = start_drawing_in_3d(widget, viewer, bc)
+
+    drag(regions, (59.0, 20.0, 30.0), (59.0, 20.0, 30.0), **VIEW_DOWN_Z)
+
+    assert widget._haemolynx_values()["outlet_node_volumes"] == []
+    assert "no box" in widget._haemolynx_report()
+    assert regions.mouse_pan is True
+
+
+def test_going_back_to_2d_gives_the_mouse_back(panel):
+    widget, viewer, bc = panel
+    regions = start_drawing_in_3d(widget, viewer, bc)
+
+    viewer.dims.ndisplay = 2
+
+    assert bc.state.draw3d is None
+    assert bc.draw_in_3d not in regions.mouse_drag_callbacks
+
+
+def test_a_box_drawn_in_3d_can_be_trimmed_with_the_depth_slider(panel):
+    widget, viewer, bc = panel
+    regions = start_drawing_in_3d(widget, viewer, bc)
+    drag(regions, (59.0, 20.0, 30.0), (59.0, 80.0, 120.0), **VIEW_DOWN_Z)
+
+    bc.actions["outlet"].depth.value = 20.0
+
+    (lo, hi), = widget._haemolynx_values()["outlet_node_volumes"]
+    assert hi[0] - lo[0] == pytest.approx(20.0)
+    assert lo[1:] == pytest.approx([20.0, 30.0]), "across the screen it stays put"
+
+
+# --- node IDs, picked by clicking the graph -----------------------------------
+
+
+#: A Y on the z = 20 um plane: terminal 0, junction 1, terminals 2 and 3.
+Y_NODES = {0: (20.0, 40.0, 100.0), 1: (20.0, 80.0, 100.0),
+           2: (20.0, 120.0, 60.0), 3: (20.0, 120.0, 140.0)}
+
+
+def with_graph(viewer, bc):
+    """The nodes and vessels layers a '3. Graph' run leaves, from the real converter."""
+    import networkx as nx
+    from types import SimpleNamespace
+
+    from haemolynx.gui._widget import _apply_layers
+    from haemolynx.gui.results import ResultLayers
+
+    graph = nx.MultiGraph()
+    for node, pos in Y_NODES.items():
+        graph.add_node(node, pos=np.asarray(pos))
+    for u, v in ((0, 1), (1, 2), (1, 3)):
+        graph.add_edge(u, v, key=0, length=1.0, voxels=[list(Y_NODES[u]), list(Y_NODES[v])])
+    results = ResultLayers()
+    _apply_layers(viewer, results.stage_finished("build_network", SimpleNamespace(
+        graph=graph,
+        volume=SimpleNamespace(image=None, skeleton=None, voxel_size_xyz=(1.0, 1.0, 1.0),
+                               voxel_size_zyx=(1.0, 1.0, 1.0)),
+        large_arteriole_mask=None, large_venule_mask=None,
+        small_arteriole_mask=None, small_venule_mask=None,
+    )))
+    # The real converter, not a stand-in: what the tab reads off it is `graph`.
+    bc.state.results = results
+    viewer.dims.ndisplay = 2
+    viewer.dims.set_point(0, 20.0)
+    return graph
+
+
+def click(viewer, position, *, drag_to_pixel=None):
+    """A left press and release through napari's own viewer dispatch."""
+    from napari.utils._test_utils import read_only_mouse_event
+    from napari.utils.interactions import (
+        mouse_move_callbacks, mouse_press_callbacks, mouse_release_callbacks,
+    )
+
+    common = {"button": 1, "dims_displayed": [1, 2]}
+    mouse_press_callbacks(viewer, read_only_mouse_event(
+        type="mouse_press", position=tuple(position), pos=np.array([100.0, 100.0]),
+        **common))
+    if drag_to_pixel is not None:
+        mouse_move_callbacks(viewer, read_only_mouse_event(
+            type="mouse_move", is_dragging=True, position=tuple(position),
+            pos=np.asarray(drag_to_pixel, dtype=float), **common))
+    mouse_release_callbacks(viewer, read_only_mouse_event(
+        type="mouse_release", position=tuple(position),
+        pos=np.asarray(drag_to_pixel if drag_to_pixel is not None else (100.0, 100.0)),
+        **common))
+
+
+def by_node_ids(widget, role="inlet"):
+    from haemolynx.gui.boundary_picking import method_setting
+
+    rows_of(widget)[method_setting(role)].value = "node_ids"
+
+
+def test_choosing_node_ids_offers_its_own_row_and_buttons(panel):
+    widget, viewer, bc = panel
+    by_node_ids(widget, "venule_boundary")
+
+    # The box tools are the volume method's alone.
+    assert bc.state.actions["venule_boundary"] == {"pick_nodes", "clear_nodes"}
+    assert rows_of(widget)["venule_boundary_node_ids"] in list(bc.holders["venule_boundary"])
+    assert bc.actions["venule_boundary"].pick_nodes in list(bc.holders["venule_boundary"])
+
+
+def test_picking_nodes_before_a_graph_exists_says_why(panel):
+    widget, viewer, bc = panel
+    by_node_ids(widget)
+
+    bc.pick_nodes()
+
+    assert "run at least '3. Graph'" in widget._haemolynx_report()
+    assert bc.state.node_pick is None
+
+
+def test_a_click_on_a_node_lists_it_and_marks_it(panel):
+    from haemolynx.gui.boundary_picking import BC_NODE_IDS
+    from haemolynx.gui.results import NODES
+
+    widget, viewer, bc = panel
+    with_graph(viewer, bc)
+    by_node_ids(widget)
+
+    bc.pick_nodes()
+    assert bc.state.node_pick == "inlet"
+    assert bc.actions["inlet"].pick_nodes.text == "Stop picking nodes"
+    assert viewer.layers[NODES].visible, "the nodes have to be seen to be clicked"
+    assert viewer.layers.selection.active is viewer.layers[NODES], (
+        "active, so the status bar names the node under the cursor"
+    )
+
+    click(viewer, Y_NODES[2])
+
+    assert widget._haemolynx_values()["inlet_node_ids"] == [2]
+    assert "Added node 2 to inlet" in widget._haemolynx_report()
+    marked = viewer.layers[BC_NODE_IDS]
+    assert np.allclose(marked.data, [Y_NODES[2]])
+    assert list(marked.features["role"]) == ["inlet"]
+
+
+def test_clicking_a_listed_node_again_takes_it_off(panel):
+    from haemolynx.gui.boundary_picking import BC_NODE_IDS
+
+    widget, viewer, bc = panel
+    with_graph(viewer, bc)
+    by_node_ids(widget)
+    bc.pick_nodes()
+
+    click(viewer, Y_NODES[0])
+    click(viewer, Y_NODES[3])
+    click(viewer, Y_NODES[0])
+
+    assert widget._haemolynx_values()["inlet_node_ids"] == [3]
+    click(viewer, Y_NODES[3])
+    assert widget._haemolynx_values()["inlet_node_ids"] == []
+    assert BC_NODE_IDS not in viewer.layers, "nothing listed, nothing marked"
+
+
+def test_a_junction_can_be_clicked_for_a_vessel_boundary(panel):
+    widget, viewer, bc = panel
+    with_graph(viewer, bc)
+    by_node_ids(widget, "arteriole_boundary")
+    bc.role.value = "arteriole_boundary"
+
+    bc.pick_nodes()
+    click(viewer, Y_NODES[1])
+
+    assert widget._haemolynx_values()["arteriole_boundary_node_ids"] == [1]
+
+
+def test_a_drag_turns_the_view_and_picks_nothing(panel):
+    widget, viewer, bc = panel
+    with_graph(viewer, bc)
+    by_node_ids(widget)
+    bc.pick_nodes()
+
+    click(viewer, Y_NODES[2], drag_to_pixel=(160.0, 100.0))
+
+    assert widget._haemolynx_values()["inlet_node_ids"] == []
+
+
+def test_a_click_on_empty_space_says_so(panel):
+    widget, viewer, bc = panel
+    with_graph(viewer, bc)
+    by_node_ids(widget)
+    bc.pick_nodes()
+
+    click(viewer, (20.0, 200.0, 10.0))
+
+    assert widget._haemolynx_values()["inlet_node_ids"] == []
+    assert "No node under that click" in widget._haemolynx_report()
+
+
+def test_pressing_the_button_again_gives_clicks_back_to_the_camera(panel):
+    widget, viewer, bc = panel
+    with_graph(viewer, bc)
+    by_node_ids(widget)
+
+    bc.pick_nodes()
+    assert bc.pick_node_click in viewer.mouse_drag_callbacks
+    bc.pick_nodes()
+
+    assert bc.state.node_pick is None
+    assert bc.pick_node_click not in viewer.mouse_drag_callbacks
+    assert bc.actions["inlet"].pick_nodes.text == "Pick nodes in the viewer"
+    click(viewer, Y_NODES[2])
+    assert widget._haemolynx_values()["inlet_node_ids"] == []
+
+
+def test_moving_the_method_off_node_ids_stops_picking(panel):
+    widget, viewer, bc = panel
+    with_graph(viewer, bc)
+    by_node_ids(widget)
+    bc.pick_nodes()
+
+    rows_of(widget)["inlet_node_selection_method"].value = "coordinates"
+
+    assert bc.state.node_pick is None
+    assert bc.pick_node_click not in viewer.mouse_drag_callbacks
+
+
+def test_clicks_follow_the_role_page_being_looked_at(panel):
+    widget, viewer, bc = panel
+    with_graph(viewer, bc)
+    by_node_ids(widget, "inlet")
+    by_node_ids(widget, "outlet")
+    bc.pick_nodes()
+
+    bc.role.value = "outlet"
+    click(viewer, Y_NODES[3])
+
+    values = widget._haemolynx_values()
+    assert values["outlet_node_ids"] == [3]
+    assert values["inlet_node_ids"] == []
+    assert bc.actions["outlet"].pick_nodes.text == "Stop picking nodes"
+    assert bc.actions["inlet"].pick_nodes.text == "Pick nodes in the viewer"
+
+    rows_of(widget)["venule_boundary_selection_method"].value = "edge_percent"
+    bc.role.value = "venule_boundary"
+    assert bc.state.node_pick is None, "a page that does not pick nodes takes none"
+
+
+def test_clearing_a_roles_node_ids(panel):
+    widget, viewer, bc = panel
+    by_node_ids(widget)
+    rows_of(widget)["inlet_node_ids"].value = [0, 2]
+
+    bc.clear_nodes()
+
+    assert widget._haemolynx_values()["inlet_node_ids"] == []
+
+
+def test_typed_node_ids_are_marked_when_shown(panel):
+    """Picking is one way in; the row is the other, and the layer follows it."""
+    from haemolynx.gui.boundary_picking import BC_NODE_IDS
+
+    widget, viewer, bc = panel
+    with_graph(viewer, bc)
+    by_node_ids(widget, "outlet")
+    rows_of(widget)["outlet_node_ids"].value = [3, 42]
+
+    bc.show()
+
+    assert np.allclose(viewer.layers[BC_NODE_IDS].data, [Y_NODES[3]])
+    report = widget._haemolynx_report()
+    assert "Not in the current graph: outlet [42]" in report
+
+
+def test_node_ids_the_method_will_not_read_are_called_out(panel):
+    widget, viewer, bc = panel
+    rows_of(widget)["outlet_node_selection_method"].value = "edge_percent"
+    rows_of(widget)["outlet_node_ids"].value = [3]
+
+    bc.show()
+
+    assert "1 outlet node ID(s) but outlet_node_selection_method is 'edge_percent'" in (
+        widget._haemolynx_report()
+    )
+
+
+def test_a_near_miss_in_3d_takes_the_node_it_was_aimed_at(panel):
+    """A dot a few microns across is a few pixels in a whole-volume 3D view;
+    a click 5 um off it at zoom 1 (8 px of slack) still takes it, and one
+    40 um away takes nothing."""
+    from napari.utils._test_utils import read_only_mouse_event
+    from napari.utils.interactions import mouse_press_callbacks, mouse_release_callbacks
+
+    widget, viewer, bc = panel
+    with_graph(viewer, bc)
+    by_node_ids(widget)
+    viewer.dims.ndisplay = 3
+    viewer.scene.camera.zoom = 1.0
+    bc.pick_nodes()
+
+    def click_3d(position):
+        common = {"button": 1, "dims_displayed": [0, 1, 2],
+                  "view_direction": [1.0, 0.0, 0.0], "pos": np.array([5.0, 5.0])}
+        mouse_press_callbacks(viewer, read_only_mouse_event(
+            type="mouse_press", position=tuple(position), **common))
+        mouse_release_callbacks(viewer, read_only_mouse_event(
+            type="mouse_release", position=tuple(position), **common))
+
+    z, y, x = Y_NODES[2]
+    click_3d((0.0, y + 5.0, x))
+    assert widget._haemolynx_values()["inlet_node_ids"] == [2]
+
+    click_3d((0.0, y + 40.0, x))
+    assert widget._haemolynx_values()["inlet_node_ids"] == [2]
+    assert "No node under that click" in widget._haemolynx_report()
+
+
+# --- the volume method: insert a box, move it, choose a node in it ------------
+
+
+def _box_panel(panel, method="volume"):
+    """The panel with a small graph, automation off and the inlet on *method*.
+
+    Open end 1 sits at (20, 50, 60); junction 2 just beside it; 3 far away.
+    """
+    import networkx as nx
+    from types import SimpleNamespace
+
+    widget, viewer, bc = panel
+    no_bands(widget)
+    rows_of(widget)["automated_vessel_assignment"].value = False
+    rows_of(widget)["inlet_node_selection_method"].value = method
+    graph = nx.MultiGraph()
+    for node, pos in {1: (20, 50, 60), 2: (22, 52, 62), 3: (40, 150, 150),
+                      4: (19, 47, 58)}.items():
+        graph.add_node(node, pos=np.asarray(pos, dtype=float))
+    graph.add_edges_from([(1, 2), (2, 3), (2, 4), (4, 3)])
+    bc.state.results = SimpleNamespace(graph=graph)
+    bc.role.value = "inlet"
+    viewer.dims.ndisplay = 2
+    viewer.dims.set_point(0, 20.0)
+    viewer.scene.camera.center = (20.0, 50.0, 60.0)
+    return widget, viewer, bc
+
+
+def _table_ids(bc, role="inlet"):
+    table = bc.actions[role].box_nodes.table
+    return [table.item(r, 0).text() for r in range(table.rowCount())]
+
+
+def test_insert_a_box_puts_a_10um_box_in_the_middle_of_the_view(panel):
+    from haemolynx.gui.boundary_picking import BC_BOX_NODES
+
+    widget, viewer, bc = _box_panel(panel)
+    bc.insert_box()
+
+    assert rows_of(widget)["inlet_node_volumes"].value == [
+        [[15.0, 45.0, 55.0], [25.0, 55.0, 65.0]]
+    ]
+    assert _table_ids(bc) == [], "nothing is scanned until Scan is pressed"
+    bc.actions["inlet"].box_scan.changed()
+    # Every node in the box is listed, the open end first.
+    assert _table_ids(bc) == ["1", "2", "4"]
+    assert bc.actions["inlet"].box_nodes.table.item(0, 2).text() == "open end"
+    drawn = viewer.layers[BC_BOX_NODES]
+    assert len(drawn.data) == 3
+    assert drawn.size[0] > drawn.size[1], "the open end is drawn larger"
+    # The region and its box are drawn like any other volume.
+    assert regions_name("inlet") in viewer.layers and boxes_name("inlet") in viewer.layers
+
+
+def test_box_size_and_arrows_edit_the_box(panel):
+    widget, viewer, bc = _box_panel(panel)
+    bc.insert_box()
+    action = bc.actions["inlet"]
+
+    action.box_size[2].value = 30.0          # x
+    bc.flush_boxes()                          # what the settle timer does
+    assert rows_of(widget)["inlet_node_volumes"].value == [
+        [[15.0, 45.0, 45.0], [25.0, 55.0, 75.0]]
+    ]
+    action.box_step.value = 100.0
+    action.box_move["right"].changed()
+    bc.flush_boxes()
+    assert rows_of(widget)["inlet_node_volumes"].value == [
+        [[15.0, 45.0, 145.0], [25.0, 55.0, 175.0]]
+    ]
+    bc.scan_box()
+    assert _table_ids(bc) == [], "moved off the vessel end"
+    action.box_move["left"].changed()
+    action.box_move["forward"].changed()      # through the slices: z
+    bc.flush_boxes()
+    assert rows_of(widget)["inlet_node_volumes"].value == [
+        [[115.0, 45.0, 45.0], [125.0, 55.0, 75.0]]
+    ]
+
+
+def test_choosing_a_node_from_the_box_makes_it_the_inlet(panel):
+    from haemolynx.gui.boundary_picking import BC_NODE_IDS
+
+    widget, viewer, bc = _box_panel(panel)
+    bc.insert_box()
+    bc.scan_box()
+    bc.actions["inlet"].box_nodes.table.selectRow(0)
+    bc.actions["inlet"].use_node.changed()
+
+    assert rows_of(widget)["inlet_node_ids"].value == [1]
+    assert rows_of(widget)["inlet_node_selection_method"].value == "node_ids"
+    assert BC_NODE_IDS in viewer.layers
+    # The box tools are the volume method's alone, so they go with it.
+    assert "insert_box" not in bc.state.actions["inlet"]
+    assert "now one of inlet's nodes" in widget._haemolynx_report()
+    # Under node_ids the box is how the node was found, not a pick left unread.
+    bc.show()
+    assert "Not used" not in widget._haemolynx_report()
+
+
+def test_use_node_without_a_selection_says_so(panel):
+    widget, viewer, bc = _box_panel(panel)
+    bc.insert_box()
+    bc.use_node()
+    assert rows_of(widget)["inlet_node_ids"].value == []
+    assert rows_of(widget)["inlet_node_selection_method"].value == "volume"
+
+
+def test_several_boxes_and_remove(panel):
+    widget, viewer, bc = _box_panel(panel)
+    bc.insert_box()
+    viewer.scene.camera.center = (20.0, 150.0, 150.0)
+    bc.insert_box()
+    action = bc.actions["inlet"]
+    assert list(action.box_choice.choices) == ["Box 1", "Box 2"]
+    assert action.box_choice.value == "Box 2"
+    bc.scan_box()
+    assert _table_ids(bc) == []                      # nothing near (150, 150)
+
+    action.box_choice.value = "Box 1"
+    bc.scan_box()
+    assert _table_ids(bc) == ["1", "2", "4"]
+    action.remove_box.changed()
+    assert len(rows_of(widget)["inlet_node_volumes"].value) == 1
+    assert rows_of(widget)["inlet_node_volumes"].value[0][0][1] == 145.0
+
+
+def test_without_a_graph_the_box_list_says_to_run_graph_first(panel):
+    widget, viewer, bc = _box_panel(panel)
+    bc.state.results = None
+    bc.insert_box()
+    bc.scan_box()
+    assert _table_ids(bc) == []
+    assert "3. Graph" in bc.actions["inlet"].box_nodes.note.value
+
+
+def test_box_nodes_go_when_the_role_leaves_the_box_method(panel):
+    from haemolynx.gui.boundary_picking import BC_BOX_NODES
+
+    widget, viewer, bc = _box_panel(panel)
+    bc.insert_box()
+    bc.scan_box()
+    assert BC_BOX_NODES in viewer.layers
+    rows_of(widget)["inlet_node_selection_method"].value = "coordinates"
+    assert BC_BOX_NODES not in viewer.layers
+
+
+def test_show_draws_no_inlet_outlet_band_while_the_masks_choose(panel):
+    """The bands an unused edge_percent method describes are not what a run
+    picks while the large-vessel masks choose the inlets and outlets; drawing
+    them made the masks' choice look wrong. The run's own picks are shown."""
+    from haemolynx.gui._widget import _apply_layers
+    from haemolynx.gui.results import BOUNDARY_NODES, LayerSpec, StageLayers
+
+    widget, viewer, bc = panel
+    rows = rows_of(widget)
+    rows["inlet_node_selection_method"].value = "edge_percent"
+    rows["outlet_node_selection_method"].value = "edge_percent"
+    rows["automated_vessel_assignment"].value = True
+    rows["use_large_vessel_masks"].value = True
+    rows["large_venule_mask_path"].value = "large_venule_mask.tif"
+    rows["inlets_outlets_from_vessel_masks"].value = True
+    _apply_layers(viewer, StageLayers(
+        stage="assign_boundaries", title="Boundaries", note="",
+        layers=(LayerSpec(
+            kind="points", name=BOUNDARY_NODES,
+            data=np.asarray([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]]),
+            features={"role": np.asarray(["inlet", "inlet", "outlet"], dtype=object)},
+            options={"visible": False},
+        ),),
+    ))
+
+    bc.show()
+
+    assert boxes_name("inlet") not in viewer.layers
+    assert boxes_name("outlet") not in viewer.layers
+    report = widget._haemolynx_report()
+    assert "inlet band" not in report
+    assert "2 inlet(s) and 1 outlet(s)" in report
+    assert viewer.layers[BOUNDARY_NODES].visible
+
+    # Choosing them by hand again draws the band that will be used.
+    rows["inlets_outlets_from_vessel_masks"].value = False
+    bc.show()
+    assert boxes_name("inlet") in viewer.layers
+    assert "chosen by the large-vessel masks" not in widget._haemolynx_report()
+
+
+def test_box_lists_nodes_of_the_network_boundaries_runs_on(panel):
+    """After a run the network on screen is the final one -- cut at the large
+    vessels, pruned. A boundary node is chosen for the next Boundaries run, so
+    the box lists the '3. Graph' network, where a large vessel's end still is."""
+    import networkx as nx
+    from types import SimpleNamespace
+
+    widget, viewer, bc = _box_panel(panel)
+    built = nx.MultiGraph()
+    built.add_node(77, pos=np.asarray((20.0, 50.0, 60.0)))   # cut away later
+    built.add_node(78, pos=np.asarray((40.0, 150.0, 150.0)))
+    built.add_edge(77, 78)
+    checkpoints = widget._haemolynx_checkpoints
+    checkpoints.get = lambda stage: SimpleNamespace(graph=built) if stage == "build_network" else None
+
+    bc.insert_box()
+    bc.scan_box()
+
+    assert _table_ids(bc) == ["77"]
+    bc.actions["inlet"].box_nodes.table.selectRow(0)
+    bc.use_node()
+    assert rows_of(widget)["inlet_node_ids"].value == [77]
+
+
+def test_clicking_the_arrows_moves_the_box_at_once_and_writes_it_once_settled(panel):
+    """Each press only moves the role's own rectangle and 3D box; the setting,
+    the node list and the box's nodes follow once the presses stop -- writing
+    the row per press redrew every boundary layer twice, which lagged."""
+    widget, viewer, bc = _box_panel(panel)
+    bc.insert_box()
+    bc.show()
+    before = rows_of(widget)["inlet_node_volumes"].value
+    action = bc.actions["inlet"]
+    action.box_step.value = 100.0
+    for _ in range(3):
+        action.box_move["right"].changed()
+
+    rectangle = np.asarray(viewer.layers[regions_name("inlet")].data[0])
+    assert rectangle[:, 2].min() == pytest.approx(355.0), "drawn where it now is"
+    assert rows_of(widget)["inlet_node_volumes"].value == before, "not written yet"
+
+    bc.flush_boxes()
+    assert rows_of(widget)["inlet_node_volumes"].value == [
+        [[15.0, 45.0, 355.0], [25.0, 55.0, 365.0]]
+    ]
+    assert _table_ids(bc) == [], "settling never scans"
+
+
+def test_moving_off_the_nodes_empties_the_box_nodes_layer_in_place(panel):
+    """Removing a layer rebuilds napari's scene graph and forces a garbage
+    collection -- the half-second pause after each move. The layer is kept
+    and emptied instead."""
+    from haemolynx.gui.boundary_picking import BC_BOX_NODES
+
+    widget, viewer, bc = _box_panel(panel)
+    bc.insert_box()
+    bc.scan_box()
+    drawn = viewer.layers[BC_BOX_NODES]
+    assert len(drawn.data) == 3
+
+    bc.actions["inlet"].box_step.value = 100.0
+    bc.move_box("right")
+    # Moved since the scan: the old nodes are cleared, the same layer kept.
+    assert viewer.layers[BC_BOX_NODES] is drawn and len(drawn.data) == 0
+    assert "Scan" in bc.actions["inlet"].box_nodes.note.value
+    bc.move_box("left")
+    assert len(drawn.data) == 0, "not scanned again until asked"
+    bc.scan_box()
+    assert viewer.layers[BC_BOX_NODES] is drawn and len(drawn.data) == 3
+    assert drawn.size[0] > drawn.size[1], "the open end still drawn larger"
+
+
+def test_clicking_a_listed_node_marks_it_and_centres_the_view_on_it(panel):
+    from haemolynx.gui.boundary_picking import BC_BOX_NODES, CHOSEN_BOX_NODE_COLOUR
+
+    widget, viewer, bc = _box_panel(panel)
+    bc.insert_box()
+    bc.scan_box()
+    viewer.scene.camera.center = (0.0, 0.0, 0.0)
+    table = bc.actions["inlet"].box_nodes.table
+    table.selectRow(1)                                   # node 2, a junction
+
+    drawn = viewer.layers[BC_BOX_NODES]
+    assert tuple(np.round(drawn.face_color[1], 3)) == CHOSEN_BOX_NODE_COLOUR
+    assert drawn.size[1] == max(drawn.size)
+    centre = np.asarray(viewer.scene.camera.center)[-2:]
+    assert np.allclose(centre, [52.0, 62.0])             # node 2's (y, x)
+    assert viewer.dims.point[0] == pytest.approx(22.0, abs=1.0)   # its slice
+    assert "Node 2" in widget._haemolynx_report()
+
+
+def _drawn_on_the_slice_shown(viewer, layer, box) -> bool:
+    """Whether *layer*'s one rectangle is drawn on the slice shown: in 2D,
+    ``get_value`` hit-tests only the shapes on the current slice. (The private
+    list of those shapes was renamed in napari 0.9.)"""
+    centre = np.mean(np.asarray(box, dtype=float), axis=0)
+    position = (viewer.dims.point[0], centre[1], centre[2])
+    return len(layer.data) == 1 and layer.get_value(position, world=True) == (0, None)
+
+
+def test_in_2d_back_and_forward_take_the_view_with_the_box(panel):
+    """A 2D box is drawn on the slice through its centre, so moving it through
+    the slices left the slice being looked at, and it vanished. The view now
+    goes with it."""
+    widget, viewer, bc = _box_panel(panel)
+    bc.insert_box()
+    bc.show()
+    flat = viewer.layers[regions_name("inlet")]
+    bc.actions["inlet"].box_step.value = 10.0
+
+    bc.actions["inlet"].box_move["forward"].changed()
+    bc.flush_boxes()
+
+    assert rows_of(widget)["inlet_node_volumes"].value == [
+        [[25.0, 45.0, 55.0], [35.0, 55.0, 65.0]]
+    ]
+    assert viewer.dims.point[0] == pytest.approx(30.0, abs=1.0)
+    box = rows_of(widget)["inlet_node_volumes"].value[0]
+    assert _drawn_on_the_slice_shown(viewer, flat, box), "the rectangle is on the slice shown"
+
+    bc.actions["inlet"].box_move["back"].changed()
+    bc.actions["inlet"].box_move["back"].changed()
+    bc.flush_boxes()
+    assert viewer.dims.point[0] == pytest.approx(10.0, abs=1.0)
+    box = rows_of(widget)["inlet_node_volumes"].value[0]
+    assert _drawn_on_the_slice_shown(viewer, flat, box)
+
+
+def test_a_roles_boxes_can_be_given_a_colour_of_their_own(panel):
+    widget, viewer, bc = _box_panel(panel)
+    bc.insert_box()
+    bc.show()
+    before = rows_of(widget)["inlet_node_volumes"].value
+
+    bc.set_box_colour("inlet", (0.1, 0.2, 0.9))
+
+    solid = viewer.layers[boxes_name("inlet")]
+    assert np.allclose(np.asarray(solid.vertex_colors)[:, :3], (0.1, 0.2, 0.9))
+    flat = viewer.layers[regions_name("inlet")]
+    assert np.allclose(flat.edge_color[:, :3], (0.1, 0.2, 0.9))
+    assert "rgb(26, 51, 230)" in bc.actions["inlet"].box_colour.native.styleSheet()
+    assert rows_of(widget)["inlet_node_volumes"].value == before, "display only"
+
+    # It holds through a redraw and a move, and other roles keep theirs.
+    bc.actions["inlet"].box_move["right"].changed()
+    bc.flush_boxes()
+    bc.redraw()
+    assert np.allclose(viewer.layers[regions_name("inlet")].edge_color[:, :3], (0.1, 0.2, 0.9))
+    assert np.allclose(np.asarray(viewer.layers[boxes_name("inlet")].vertex_colors)[:, :3],
+                       (0.1, 0.2, 0.9))
+    assert "outlet" not in bc.state.box_colour
+
+
+def test_in_3d_a_press_moves_only_the_3d_box_until_the_presses_stop(panel):
+    """Each layer change makes napari recompute the whole scene, so a press in
+    3D touches only the translucent box; the flat rectangle follows once."""
+    widget, viewer, bc = _box_panel(panel)
+    bc.insert_box()
+    bc.show()
+    viewer.dims.ndisplay = 3
+    viewer.scene.camera.angles = (0, 0, 0)           # looking down -z, -y up the screen
+    solid = viewer.layers[boxes_name("inlet")]
+    flat = viewer.layers[regions_name("inlet")]
+    flat_before = np.asarray(flat.data[0]).copy()
+    bc.actions["inlet"].box_step.value = 7.0
+
+    bc.actions["inlet"].box_move["back"].changed()     # towards you: +z
+
+    assert np.asarray(solid.data[0])[:, 0].min() == pytest.approx(22.0)
+    assert np.allclose(np.asarray(flat.data[0]), flat_before), "rectangle not yet"
+    bc.flush_boxes()
+    assert np.asarray(flat.data[0])[0, 0] == pytest.approx(27.0)   # its z centre
+    assert rows_of(widget)["inlet_node_volumes"].value == [
+        [[22.0, 45.0, 55.0], [32.0, 55.0, 65.0]]
+    ]

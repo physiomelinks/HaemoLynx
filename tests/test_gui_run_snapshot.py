@@ -1,0 +1,863 @@
+"""Saving and loading a finished GUI pipeline run, without Qt."""
+from __future__ import annotations
+
+from pathlib import Path
+from types import SimpleNamespace
+
+import numpy as np
+import pytest
+
+from haemolynx.gui.results import ResultLayers, StageLayers
+from haemolynx.gui.run_snapshot import (
+    DEFAULT_FILENAME,
+    FORMAT,
+    NOTHING_TO_SAVE,
+    SUFFIX,
+    VERSION,
+    RunSnapshotError,
+    apply_snapshot_to_checkpoints,
+    apply_snapshot_to_results,
+    can_capture,
+    capture_run,
+    default_run_path,
+    ensure_run_suffix,
+    read_run_snapshot,
+    replay_groups,
+    write_run_snapshot,
+)
+from haemolynx.gui.stage_checkpoints import StageCheckpoints
+from test_gui_results import a_graph, built, network
+
+
+def _group(stage: str, title: str | None = None) -> StageLayers:
+    return StageLayers(stage=stage, title=title or stage, note=f"done {stage}")
+
+
+def _recorded(tmp_path: Path) -> tuple[StageCheckpoints, ResultLayers, dict]:
+    checkpoints = StageCheckpoints()
+    results = built()
+    settings = {
+        "input_path": tmp_path / "stack.tif",
+        "output_dir": tmp_path / "out",
+        "do_graph_building": True,
+    }
+    (tmp_path / "out").mkdir()
+    checkpoints.record(
+        "skeletonise",
+        _group("skeletonise", "2. Skeletonise"),
+        results,
+        settings=settings,
+    )
+    results.stage_finished("build_network", network(a_graph(resistance=4.0)))
+    checkpoints.record(
+        "build_network",
+        _group("build_network", "3. Graph"),
+        results,
+        settings=settings,
+    )
+    return checkpoints, results, settings
+
+
+def test_ensure_run_suffix_adds_haemorun():
+    assert ensure_run_suffix("run") == Path("run.haemorun")
+    assert ensure_run_suffix("run.haemorun") == Path("run.haemorun")
+    assert ensure_run_suffix(Path("out") / "stack") == Path("out") / "stack.haemorun"
+
+
+def test_default_run_path_is_the_image_stem_in_the_output_folder(tmp_path):
+    path = default_run_path(
+        {"input_path": tmp_path / "stack.tif", "output_dir": tmp_path / "out"}
+    )
+    assert Path(path) == tmp_path / "out" / f"stack{SUFFIX}"
+    assert default_run_path({"input_path": tmp_path / "stack.tif"}) == f"stack{SUFFIX}"
+    assert default_run_path({"output_dir": tmp_path / "out"}) == str(
+        tmp_path / "out" / f"haemolynx-run{SUFFIX}"
+    )
+    assert default_run_path({}) == DEFAULT_FILENAME
+
+
+def test_empty_checkpoints_cannot_be_captured():
+    assert can_capture(StageCheckpoints()) is False
+    with pytest.raises(RunSnapshotError, match="Nothing to save"):
+        capture_run(
+            checkpoints=StageCheckpoints(),
+            results=ResultLayers(),
+            settings={},
+        )
+
+
+def test_a_recorded_run_round_trips_through_a_file(tmp_path):
+    checkpoints, results, settings = _recorded(tmp_path)
+    snapshot = capture_run(
+        checkpoints=checkpoints,
+        results=results,
+        settings=settings,
+        skip_toggle_snapshot={"do_graph_building": True},
+        show_results=True,
+        show_steps=False,
+        report="Finished: 4 nodes.",
+    )
+    assert snapshot.stages == ("skeletonise", "build_network")
+    assert snapshot.last_tab_title == "3. Graph"
+
+    path = write_run_snapshot(tmp_path / "saved", snapshot)
+    assert path.suffix == SUFFIX
+    loaded = read_run_snapshot(path)
+
+    assert loaded.settings["do_graph_building"] is True
+    assert loaded.skip_toggle_snapshot == {"do_graph_building": True}
+    assert loaded.stages == snapshot.stages
+    assert loaded.results_state is not None
+    assert loaded.results_state["graph"].number_of_nodes() == 4
+    assert loaded.checkpoints[-1].graph.number_of_edges() == 3
+    assert loaded.report == "Finished: 4 nodes."
+
+
+def test_loading_replaces_live_checkpoints_and_results(tmp_path):
+    checkpoints, results, settings = _recorded(tmp_path)
+    snapshot = capture_run(
+        checkpoints=checkpoints, results=results, settings=settings
+    )
+    path = write_run_snapshot(tmp_path / "run.haemorun", snapshot)
+
+    fresh_checks = StageCheckpoints()
+    fresh_results = ResultLayers()
+    apply_snapshot_to_checkpoints(fresh_checks, read_run_snapshot(path))
+    apply_snapshot_to_results(fresh_results, read_run_snapshot(path))
+
+    assert fresh_checks.stages == ("skeletonise", "build_network")
+    assert fresh_results._graph is not None
+    assert fresh_results._graph.number_of_nodes() == 4
+    assert fresh_results.colour_options()
+    groups = replay_groups(read_run_snapshot(path))
+    assert [group.stage for group in groups] == ["skeletonise", "build_network"]
+
+
+def test_a_wrong_file_is_rejected(tmp_path):
+    path = tmp_path / "nope.haemorun"
+    path.write_bytes(b"not a snapshot")
+    with pytest.raises(RunSnapshotError):
+        read_run_snapshot(path)
+
+
+def test_a_foreign_pickle_is_rejected(tmp_path):
+    import gzip
+    import pickle
+
+    path = tmp_path / "other.haemorun"
+    with gzip.open(path, "wb") as handle:
+        pickle.dump({"format": "something.else", "version": VERSION}, handle)
+    with pytest.raises(RunSnapshotError, match="not a HaemoLynx run snapshot"):
+        read_run_snapshot(path)
+
+
+def test_a_damaged_run_file_reports_the_real_error_not_the_gzip_header(tmp_path):
+    """A gzip file that fails to unpickle must say why, not "invalid load key '\\x1f'"."""
+    import gzip
+    import pickle
+
+    path = tmp_path / "cut.haemorun"
+    data = gzip.compress(pickle.dumps({"format": "x", "blob": b"0" * 10_000}))
+    path.write_bytes(data[: len(data) // 2])
+    with pytest.raises(RunSnapshotError) as caught:
+        read_run_snapshot(path)
+    message = str(caught.value)
+    assert "invalid load key" not in message
+    assert "EOFError" in message or "Compressed file ended" in message
+
+
+def test_an_uncompressed_run_file_still_loads(tmp_path):
+    import pickle
+
+    path = tmp_path / "plain.haemorun"
+    path.write_bytes(pickle.dumps({"format": "not ours"}))
+    with pytest.raises(RunSnapshotError, match="not a HaemoLynx run snapshot"):
+        read_run_snapshot(path)
+
+
+def test_format_and_version_are_stable():
+    assert FORMAT == "haemolynx.run"
+    assert VERSION == 1
+    assert NOTHING_TO_SAVE.startswith("Nothing to save")
+
+
+def test_result_layers_state_round_trips():
+    results = built(a_graph(flow_abs=1.5))
+    state = results.export_state()
+    fresh = ResultLayers()
+    fresh.load_state(state)
+    assert fresh._graph is not None
+    assert fresh._graph is not results._graph
+    assert np.allclose(
+        list(fresh._graph.edges(data=True))[0][2]["flow_abs"], 1.5
+    )
+    assert fresh.emitted == results.emitted
+    assert fresh._voxel_size_zyx == results._voxel_size_zyx
+
+
+def test_result_layers_state_round_trips_the_thick_vessel_mask():
+    """A resumed/reloaded run must not silently disable the thick/thin
+    debug toggle for a run that genuinely used thickness-gated
+    skeletonisation -- results._thick_vessel_mask has no per-stage-output
+    equivalent the way the skeleton array itself does, so it must travel
+    through export_state/load_state explicitly."""
+    thick = np.zeros((4, 4, 4), dtype=bool)
+    thick[0, 0, 0] = True
+    results = ResultLayers()
+    results.stage_finished(
+        "skeletonise",
+        SimpleNamespace(
+            image=np.zeros((4, 4, 4)),
+            skeleton=np.zeros((4, 4, 4), dtype=bool),
+            voxel_size_xyz=(1.0, 1.0, 1.0),
+            voxel_size_zyx=(1.0, 1.0, 1.0),
+            thick_vessel_mask=thick,
+        ),
+    )
+
+    fresh = ResultLayers()
+    fresh.load_state(results.export_state())
+
+    assert fresh._thick_vessel_mask is not None
+    np.testing.assert_array_equal(fresh._thick_vessel_mask, thick)
+
+
+def test_apply_snapshot_to_results_restores_the_thick_vessel_mask_from_checkpoints():
+    """The older, results_state-less fallback path (built straight from the
+    last StageCheckpoint) must carry the mask forward too."""
+    from haemolynx.gui.run_snapshot import RunSnapshot
+    from haemolynx.gui.stage_checkpoints import StageCheckpoint
+
+    thick = np.zeros((3, 3, 3), dtype=bool)
+    thick[1, 1, 1] = True
+    checkpoint = StageCheckpoint(
+        stage="skeletonise", title="skeletonise", group=_group("skeletonise"),
+        thick_vessel_mask=thick,
+    )
+    snapshot = RunSnapshot(settings={}, results_state=None, checkpoints=(checkpoint,))
+    fresh = ResultLayers()
+
+    apply_snapshot_to_results(fresh, snapshot)
+
+    assert fresh._thick_vessel_mask is not None
+    np.testing.assert_array_equal(fresh._thick_vessel_mask, thick)
+
+
+def test_the_module_imports_no_gui():
+    import ast
+    import os
+    import subprocess
+    import sys
+
+    repo = Path(__file__).resolve().parents[1]
+    probe = (
+        "import sys; import haemolynx.gui.run_snapshot; "
+        "print([m for m in sys.modules if m.split('.')[0] in "
+        "{'napari', 'magicgui', 'qtpy', 'PyQt6', 'PyQt5', 'PySide6'}])"
+    )
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(repo / "src")
+    result = subprocess.run(
+        [sys.executable, "-c", probe], capture_output=True, text=True, env=env, check=False
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "[]", result.stdout
+    source = repo / "src" / "haemolynx" / "gui" / "run_snapshot.py"
+    tree = ast.parse(source.read_text(encoding="utf-8"))
+    imported = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported.update(alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imported.add(node.module.split(".")[0])
+    assert not imported & {"napari", "magicgui", "qtpy"}
+
+
+def test_a_saved_run_leaves_the_live_stage_outputs_behind(tmp_path):
+    """The stored volumes and network are this session's; a loaded run has
+    none and loads its skeleton instead (see write_resume_artefacts)."""
+    from haemolynx.pipeline.stages import SegmentedInputs
+
+    checkpoints, results, settings = _recorded(tmp_path)
+    checkpoints.record(
+        "segment", _group("segment"), results, settings=settings,
+        output=SegmentedInputs(image_path=tmp_path / "stack.tif", output_dir=tmp_path / "out"),
+    )
+    assert checkpoints.get("segment").output is not None
+
+    snapshot = capture_run(checkpoints=checkpoints, results=results, settings=settings)
+
+    assert all(item.output is None for item in snapshot.checkpoints)
+
+
+def test_loading_a_run_leaves_graph_building_and_skeleton_files_alone(tmp_path):
+    """Loading used to write the saved run's last graph over
+    {stem}_graph.pkl -- graph building's own output -- and claim it and an
+    existing skeleton as this session's, so the next Clear deleted both."""
+    from haemolynx.gui.run_snapshot import write_resume_artefacts
+
+    checkpoints, results, settings = _recorded(tmp_path)
+    snapshot = capture_run(checkpoints=checkpoints, results=results, settings=settings)
+    graph_pkl = tmp_path / "out" / "stack_graph.pkl"
+    graph_pkl.write_bytes(b"what graph building made")
+    skeleton = tmp_path / "out" / "stack_skeleton.npy"
+    np.save(skeleton, np.zeros((2, 2, 2), dtype=bool))
+    loaded = StageCheckpoints()
+
+    write_resume_artefacts(snapshot, settings, loaded)
+
+    assert graph_pkl.read_bytes() == b"what graph building made"
+    assert loaded.session_artefact_paths == ()
+
+
+def test_a_run_whose_output_folder_cannot_be_made_here_still_loads(tmp_path):
+    """A run saved on a Linux server names /home/<user>/outputs, which a Mac
+    cannot create; Load run crashed on it instead of skipping the optional
+    resume skeleton."""
+    from haemolynx.gui.run_snapshot import write_resume_artefacts
+
+    checkpoints, results, settings = _recorded(tmp_path)
+    snapshot = capture_run(checkpoints=checkpoints, results=results, settings=settings)
+    blocker = tmp_path / "not_a_folder"
+    blocker.write_text("a file where the output folder's parent should be")
+    elsewhere = dict(settings, output_dir=blocker / "outputs")
+    loaded = StageCheckpoints()
+
+    note = write_resume_artefacts(snapshot, elsewhere, loaded)
+
+    assert note is not None and str(blocker / "outputs") in note
+    assert "set the output folder" in note
+    assert loaded.session_artefact_paths == ()
+    # Where the folder can be made, nothing is reported.
+    assert write_resume_artefacts(snapshot, settings, StageCheckpoints()) is None
+
+
+def test_a_run_from_another_machine_is_pointed_at_this_ones_files(tmp_path):
+    """A run saved on the server names /home/<user>/... paths; loading it here
+    finds the same files beside the run file and moves the outputs next to it."""
+    from pathlib import PurePosixPath
+
+    from haemolynx.gui.run_snapshot import RunSnapshot, relocate_run_paths
+
+    resources = tmp_path / "resources" / "masks"
+    resources.mkdir(parents=True)
+    (tmp_path / "resources" / "stack.tiff").write_bytes(b"image")
+    (resources / "Large_arteriole.tiff").write_bytes(b"mask")
+    here = tmp_path / "already_here.tif"
+    here.write_bytes(b"raw")
+    blocker = tmp_path / "server_home"
+    blocker.write_text("a file, so nothing can be created under it")
+    server = blocker / "colleague"
+    settings = {
+        "input_path": PurePosixPath(server / "data" / "stack.tiff"),
+        "large_arteriole_mask_path": str(server / "segs" / "Large_arteriole.tiff"),
+        "raw_image_path": here,
+        "ilastik_classifier_path": server / "classifiers" / "nowhere.ilp",
+        "output_dir": server / "outputs",
+        "base_plot_dir": server / "project" / "outputs",
+        "sweep_output_dir": tmp_path / "writable" / "sweep",
+        "verbose_logging": True,
+    }
+    snapshot = RunSnapshot(settings=settings, results_state={"settings": dict(settings)})
+
+    moved = relocate_run_paths(snapshot, tmp_path / "run.haemorun")
+
+    got = snapshot.settings
+    assert Path(got["input_path"]) == tmp_path / "resources" / "stack.tiff"
+    assert isinstance(got["input_path"], Path)  # a path stays a path, a string a string
+    assert got["large_arteriole_mask_path"] == str(resources / "Large_arteriole.tiff")
+    assert got["raw_image_path"] == here                      # already works
+    assert got["ilastik_classifier_path"] == server / "classifiers" / "nowhere.ilp"  # nothing to find
+    assert got["output_dir"] == tmp_path / "outputs"
+    assert got["base_plot_dir"] == tmp_path / "outputs"
+    assert got["sweep_output_dir"] == tmp_path / "writable" / "sweep"  # can be made here
+    assert snapshot.results_state["settings"]["output_dir"] == tmp_path / "outputs"
+    assert {m.name for m in moved} == {
+        "input_path", "large_arteriole_mask_path", "output_dir", "base_plot_dir",
+    }
+
+
+def test_a_run_saved_before_the_output_folder_loads_into_one_here(tmp_path):
+    """Its vtk_output_prefix named files inside the run's folder: moved beside
+    the run file as a prefix, it reads as that folder."""
+    from haemolynx.gui.run_snapshot import RunSnapshot, relocate_run_paths
+    from haemolynx.pipeline import default_schema
+
+    blocker = tmp_path / "server_home"
+    blocker.write_text("a file, so nothing can be created under it")
+    snapshot = RunSnapshot(settings={"vtk_output_prefix": str(blocker / "outputs" / "run")})
+
+    moved = relocate_run_paths(snapshot, tmp_path / "run.haemorun")
+
+    assert [m.name for m in moved] == ["vtk_output_prefix"]
+    assert Path(default_schema().upgrade(snapshot.settings)["output_dir"]) == tmp_path / "outputs"
+
+
+def test_relocation_prefers_the_file_nearest_the_run(tmp_path):
+    from haemolynx.gui.run_snapshot import RunSnapshot, relocate_run_paths
+
+    (tmp_path / "a" / "b").mkdir(parents=True)
+    (tmp_path / "a" / "b" / "stack.tiff").write_bytes(b"deep")
+    (tmp_path / "a" / "stack.tiff").write_bytes(b"near")
+    snapshot = RunSnapshot(settings={"input_path": "/nowhere/stack.tiff"})
+    relocate_run_paths(snapshot, tmp_path / "run.haemorun")
+    assert snapshot.settings["input_path"] == str(tmp_path / "a" / "stack.tiff")
+
+
+def test_a_synthetic_run_loads_under_its_templates_stem_and_finds_its_template(tmp_path):
+    """A synthetic run saved on the server names its template there; loading
+    it here finds the template beside the run file, as an image run's input
+    is found, and writes no resume skeleton (a synthetic run has none)."""
+    from pathlib import PurePosixPath
+
+    from haemolynx.gui.run_snapshot import RunSnapshot, relocate_run_paths, write_resume_artefacts
+    from haemolynx.pipeline.naming import run_stem
+
+    (tmp_path / "templates").mkdir()
+    (tmp_path / "templates" / "stack_a.haemorun").write_bytes(b"template")
+    blocker = tmp_path / "server_home"
+    blocker.write_text("a file, so nothing can be created under it")
+    settings = {
+        "network_source": "synthetic",
+        "synthetic_template_path": PurePosixPath(blocker / "runs" / "stack_a.haemorun"),
+        "output_dir": blocker / "outputs",
+    }
+    snapshot = RunSnapshot(settings=settings, results_state={"settings": dict(settings)})
+
+    moved = relocate_run_paths(snapshot, tmp_path / "stack_a_synthetic.haemorun")
+
+    assert {m.name for m in moved} == {"synthetic_template_path", "output_dir"}
+    assert Path(snapshot.settings["synthetic_template_path"]) == tmp_path / "templates" / "stack_a.haemorun"
+    assert run_stem(snapshot.settings) == "stack_a_synthetic"
+    loaded = StageCheckpoints()
+    assert write_resume_artefacts(snapshot, snapshot.settings, loaded) is None
+    assert not (tmp_path / "outputs" / "stack_a_synthetic_skeleton.npy").exists()
+    assert loaded.session_artefact_paths == ()
+
+
+# --- a run paused for post-processing, and runs saved before that stage existed ----------
+
+
+def _paused_after_haemodynamics(tmp_path):
+    checkpoints, results, settings = _recorded(tmp_path)
+    for stage in ("assign_boundaries", "assign_diameters", "build_haemodynamic_model", "solve"):
+        checkpoints.record(stage, _group(stage), results, settings=settings)
+    return checkpoints, results, settings
+
+
+def test_a_paused_run_is_saved_and_loaded_paused(tmp_path):
+    checkpoints, results, settings = _paused_after_haemodynamics(tmp_path)
+    snapshot = capture_run(
+        checkpoints=checkpoints, results=results, settings=settings,
+        paused_after="solve",
+    )
+
+    loaded = read_run_snapshot(write_run_snapshot(tmp_path / "paused", snapshot))
+
+    assert loaded.paused_after == "solve"
+    assert loaded.stages[-1] == "solve", "no Post processing stand-in for a paused run"
+
+
+def test_a_run_paused_before_haemodynamics_is_not_loaded_paused(tmp_path):
+    """Saved while Post processing came before Haemodynamics: there is no solve
+    for Continue to pick up from, so the run is picked up from Haemodynamics."""
+    checkpoints, results, settings = _recorded(tmp_path)
+    for stage in ("assign_boundaries", "assign_diameters"):
+        checkpoints.record(stage, _group(stage), results, settings=settings)
+    snapshot = capture_run(
+        checkpoints=checkpoints, results=results, settings=settings,
+        paused_after="assign_diameters",
+    )
+
+    loaded = read_run_snapshot(write_run_snapshot(tmp_path / "old", snapshot))
+
+    assert loaded.paused_after is None
+
+
+def test_a_finished_run_is_not_loaded_paused(tmp_path):
+    checkpoints, results, settings = _recorded(tmp_path)
+    snapshot = capture_run(checkpoints=checkpoints, results=results, settings=settings)
+    loaded = read_run_snapshot(write_run_snapshot(tmp_path / "done", snapshot))
+    assert loaded.paused_after is None
+
+
+def _through(stages):
+    checkpoints = StageCheckpoints()
+    results = built()
+    for stage in stages:
+        checkpoints.record(stage, _group(stage), results)
+    return checkpoints.records()
+
+
+#: A whole run's stages as they were recorded before Post processing existed.
+_BEFORE_POST_PROCESSING = (
+    "assign_boundaries", "assign_diameters", "build_haemodynamic_model", "solve",
+    "run_perturbations", "export_results",
+)
+
+
+def test_a_run_saved_before_post_processing_existed_gets_its_checkpoint():
+    """An unedited network passes Post processing untouched, so its end-of-tab
+    state is the solve's own -- which "Run from this stage" on Perturbations
+    needs."""
+    from haemolynx.gui.run_snapshot import with_post_process_checkpoint
+
+    upgraded = with_post_process_checkpoint(_through(_BEFORE_POST_PROCESSING))
+
+    assert [c.stage for c in upgraded] == [
+        "assign_boundaries", "assign_diameters", "build_haemodynamic_model", "solve",
+        "post_process", "run_perturbations", "export_results",
+    ]
+    stand_in = upgraded[4]
+    assert stand_in.title == "7. Post processing"
+    assert stand_in.graph is upgraded[3].graph
+
+
+def test_a_run_saved_with_post_processing_before_haemodynamics_is_reordered():
+    """Its Post processing checkpoint held the network before the solve; the
+    solve's, which already has the edits, stands in for it after the solve."""
+    from haemolynx.gui.run_snapshot import with_post_process_checkpoint
+
+    old = _through((
+        "assign_boundaries", "assign_diameters", "post_process",
+        "build_haemodynamic_model", "solve", "run_perturbations", "export_results",
+    ))
+    upgraded = with_post_process_checkpoint(old)
+
+    assert [c.stage for c in upgraded] == [
+        "assign_boundaries", "assign_diameters", "build_haemodynamic_model", "solve",
+        "post_process", "run_perturbations", "export_results",
+    ]
+    assert upgraded[4].graph is upgraded[3].graph is old[4].graph
+
+
+def test_an_old_pause_keeps_its_edits_on_diameters():
+    """Paused before Haemodynamics with the edits brought in line: "Run from
+    this stage" on Haemodynamics starts from Diameters' checkpoint, so that is
+    where the edited network goes."""
+    from haemolynx.gui.run_snapshot import with_post_process_checkpoint
+
+    old = _through(("assign_boundaries", "assign_diameters", "post_process"))
+    upgraded = with_post_process_checkpoint(old)
+
+    assert [c.stage for c in upgraded] == ["assign_boundaries", "assign_diameters"]
+    assert upgraded[1].graph is old[2].graph
+    assert upgraded[1].group is old[1].group
+
+
+def test_a_run_that_stopped_at_the_solve_or_has_the_stage_is_left_alone():
+    from haemolynx.gui.run_snapshot import with_post_process_checkpoint
+
+    for stopped in (
+        ("assign_boundaries", "assign_diameters"),
+        ("assign_diameters", "build_haemodynamic_model", "solve"),
+        ("assign_diameters", "build_haemodynamic_model", "solve", "post_process"),
+        (*_BEFORE_POST_PROCESSING[:4], "post_process", *_BEFORE_POST_PROCESSING[4:]),
+    ):
+        current = _through(stopped)
+        assert with_post_process_checkpoint(current) == tuple(current), stopped
+
+
+# --- Manual loop review's decisions ------------------------------------------------
+
+from haemolynx.gui.post_processing import KEPT, SIDE_DELETED, LoopReview  # noqa: E402
+
+
+def _reviews():
+    return (
+        LoopReview((1.0, 2.0, 3.0), 25.0, KEPT, time="2026-10-09T15:00:00"),
+        LoopReview((4.0, 5.0, 6.0), 40.0, SIDE_DELETED, side=2, time="2026-10-09T15:01:00"),
+    )
+
+
+def test_a_runs_loop_reviews_are_saved_and_loaded_with_it(tmp_path):
+    checkpoints, results, settings = _recorded(tmp_path)
+    snapshot = capture_run(
+        checkpoints=checkpoints, results=results, settings=settings, loop_reviews=_reviews()
+    )
+
+    loaded = read_run_snapshot(write_run_snapshot(tmp_path / "reviewed", snapshot))
+
+    assert loaded.loop_reviews == _reviews()
+
+
+def test_a_run_saved_before_loop_review_loads_with_none_and_a_bad_entry_is_left_out(tmp_path):
+    import gzip
+    import pickle
+
+    checkpoints, results, settings = _recorded(tmp_path)
+    path = write_run_snapshot(
+        tmp_path / "old", capture_run(checkpoints=checkpoints, results=results, settings=settings)
+    )
+    with gzip.open(path, "rb") as handle:
+        payload = pickle.load(handle)
+    del payload["loop_reviews"]
+    with gzip.open(path, "wb") as handle:
+        pickle.dump(payload, handle)
+    assert read_run_snapshot(path).loop_reviews == ()
+
+    payload["loop_reviews"] = [_reviews()[0].as_dict(), {"decision": KEPT}, "garbage"]
+    with gzip.open(path, "wb") as handle:
+        pickle.dump(payload, handle)
+    assert read_run_snapshot(path).loop_reviews == _reviews()[:1]
+
+
+# --- the other review lists' decisions -----------------------------------------
+
+from haemolynx.gui.post_processing import ReviewDecision  # noqa: E402
+
+
+def _decisions():
+    return (
+        ReviewDecision("dead_ends", (1.0, 2.0, 3.0), KEPT, time="2026-10-09T16:00:00"),
+        ReviewDecision("close_junctions", (4.0, 5.0, 6.0), "merged", time="2026-10-09T16:01:00"),
+    )
+
+
+def test_a_runs_review_decisions_are_saved_and_loaded_with_it(tmp_path):
+    checkpoints, results, settings = _recorded(tmp_path)
+    snapshot = capture_run(
+        checkpoints=checkpoints, results=results, settings=settings,
+        loop_reviews=_reviews(), review_decisions=_decisions(),
+    )
+
+    loaded = read_run_snapshot(write_run_snapshot(tmp_path / "reviewed", snapshot))
+
+    assert loaded.review_decisions == _decisions()
+    assert loaded.loop_reviews == _reviews()
+
+
+def test_a_run_saved_before_the_review_lists_loads_with_no_decisions(tmp_path):
+    import gzip
+    import pickle
+
+    checkpoints, results, settings = _recorded(tmp_path)
+    path = write_run_snapshot(
+        tmp_path / "old", capture_run(checkpoints=checkpoints, results=results, settings=settings)
+    )
+    with gzip.open(path, "rb") as handle:
+        payload = pickle.load(handle)
+    del payload["review_decisions"]
+    with gzip.open(path, "wb") as handle:
+        pickle.dump(payload, handle)
+    assert read_run_snapshot(path).review_decisions == ()
+
+    payload["review_decisions"] = [_decisions()[1].as_dict(), {"kind": "dead_ends"}, None]
+    with gzip.open(path, "wb") as handle:
+        pickle.dump(payload, handle)
+    assert read_run_snapshot(path).review_decisions == _decisions()[1:]
+
+
+# --- how long a save takes ---------------------------------------------------
+
+
+def _skeletonised(results: ResultLayers, shape=(16, 16, 16)) -> tuple[np.ndarray, np.ndarray]:
+    """A skeletonise stage with a thick-vessel mask and a pre-cleanup
+    segmentation, the volumes a run keeps on both its checkpoints and its
+    results; returns those two."""
+    rng = np.random.default_rng(0)
+    image = np.zeros(shape, dtype=np.uint8)
+    image[4:12, 4:12, 4:12] = 1
+    thick = rng.random(shape) > 0.5
+    raw = rng.random(shape) > 0.5
+    results.stage_finished(
+        "skeletonise",
+        SimpleNamespace(
+            image=image,
+            skeleton=np.zeros(shape, dtype=bool),
+            voxel_size_xyz=(1.0, 1.0, 1.0),
+            voxel_size_zyx=(1.0, 1.0, 1.0),
+            thick_vessel_mask=thick,
+            raw_segmented_image=raw,
+        ),
+    )
+    return thick, raw
+
+
+def test_a_volume_the_checkpoints_and_results_share_is_saved_once(tmp_path):
+    """The results state used to copy the thick-vessel mask and the
+    pre-cleanup segmentation, so the file held, and compressed, each twice."""
+    checkpoints = StageCheckpoints()
+    results = ResultLayers()
+    thick, raw = _skeletonised(results)
+    checkpoints.record("skeletonise", _group("skeletonise"), results)
+
+    loaded = read_run_snapshot(
+        write_run_snapshot(
+            tmp_path / "shared",
+            capture_run(checkpoints=checkpoints, results=results, settings={}),
+        )
+    )
+
+    checkpoint = loaded.checkpoints[0]
+    assert loaded.results_state["thick_vessel_mask"] is checkpoint.thick_vessel_mask
+    assert loaded.results_state["raw_segmented_image"] is checkpoint.raw_segmented_image
+    np.testing.assert_array_equal(checkpoint.thick_vessel_mask, thick)
+    np.testing.assert_array_equal(checkpoint.raw_segmented_image, raw)
+    fresh = ResultLayers()
+    apply_snapshot_to_results(fresh, loaded)
+    np.testing.assert_array_equal(fresh._thick_vessel_mask, thick)
+    np.testing.assert_array_equal(fresh._raw_segmented_image, raw)
+
+
+def test_capturing_a_run_does_not_copy_the_checkpoints_graphs_again(tmp_path):
+    """Each checkpoint's graph is its own copy from the moment it is recorded,
+    and nothing writes to it, so a save reads it as it is -- copying every
+    stage's graph again was a pickle round trip per stage on the GUI thread.
+    The live graph, which edits do write to, is still copied."""
+    checkpoints, results, settings = _recorded(tmp_path)
+
+    snapshot = capture_run(checkpoints=checkpoints, results=results, settings=settings)
+
+    for saved, live in zip(snapshot.checkpoints, checkpoints.records()):
+        assert saved.graph is live.graph
+    assert snapshot.results_state["graph"] is not results._graph
+    results._graph.add_edge(0, 99)
+    assert not snapshot.results_state["graph"].has_node(99)
+
+
+def test_a_run_is_not_written_at_gzips_slowest_level(tmp_path):
+    """Level 9, gzip's default, took 12.6 s to write one Stack A-sized binary
+    mask against 0.44 s at level 1. A gzip header records which it was."""
+    checkpoints = StageCheckpoints()
+    results = ResultLayers()
+    _skeletonised(results, shape=(64, 64, 64))
+    checkpoints.record("skeletonise", _group("skeletonise"), results)
+
+    path = write_run_snapshot(
+        tmp_path / "fast", capture_run(checkpoints=checkpoints, results=results, settings={})
+    )
+
+    header = path.read_bytes()[:10]
+    assert header[:2] == b"\x1f\x8b"
+    fastest, slowest = 4, 2  # the XFL byte, RFC 1952
+    assert header[8] == fastest
+    assert header[8] != slowest
+    # Still compressed: the two random masks are 2 x 262 KB raw, a bit each.
+    assert path.stat().st_size < 0.25 * 2 * 64 ** 3
+
+
+def test_a_save_that_fails_leaves_the_run_already_saved_there(tmp_path):
+    """The file is written beside its name and moved over it when complete,
+    so a failed save (or a panel closed mid-save) does not leave half a run
+    where a whole one was."""
+    checkpoints, results, settings = _recorded(tmp_path)
+    good = capture_run(checkpoints=checkpoints, results=results, settings=settings,
+                       report="the good one")
+    path = write_run_snapshot(tmp_path / "run", good)
+
+    bad = capture_run(
+        checkpoints=checkpoints, results=results,
+        settings={**settings, "unpicklable": lambda: None},
+    )
+    with pytest.raises(Exception):
+        write_run_snapshot(path, bad)
+
+    assert read_run_snapshot(path).report == "the good one"
+    assert [p.name for p in tmp_path.iterdir() if p.name.startswith("run")] == ["run.haemorun"]
+
+
+# --- what the run was made with, and the rows changed since --------------------
+
+
+def test_a_saved_run_keeps_the_settings_it_was_made_with_and_the_rows_changed_since(tmp_path):
+    """Regression: the file kept the rows as they were when it was saved, so
+    a row changed after the run -- the next image's path -- was saved as what
+    made it, and a template or a Run-from read it so."""
+    checkpoints, results, settings = _recorded(tmp_path)
+    rows = {**settings, "input_path": tmp_path / "next_image.tif", "verbose_logging": True}
+
+    snapshot = capture_run(
+        checkpoints=checkpoints, results=results, settings=settings, panel_values=rows
+    )
+    loaded = read_run_snapshot(write_run_snapshot(tmp_path / "saved", snapshot))
+
+    assert loaded.settings == settings
+    assert loaded.edited_since_run == {
+        "input_path": tmp_path / "next_image.tif", "verbose_logging": True,
+    }
+    assert loaded.panel_values == rows
+    # Saved with no changes since the run, it records none.
+    unchanged = capture_run(checkpoints=checkpoints, results=results, settings=settings, panel_values=dict(settings))
+    assert unchanged.edited_since_run == {}
+
+
+def test_a_windows_path_is_relocated_on_linux_and_a_mac(tmp_path, monkeypatch):
+    r"""Regression: read on Linux or a Mac, C:\...\raw.tif was one file name,
+    backslashes and all, so the raw image beside the run was never found and
+    an output folder on C: was made under the working folder."""
+    from haemolynx.gui import run_snapshot
+    from haemolynx.gui.run_snapshot import RunSnapshot, relocate_run_paths
+
+    monkeypatch.setattr(run_snapshot, "_WINDOWS_PATHS_ARE_FOREIGN", True)
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "raw.tif").write_bytes(b"raw")
+    snapshot = RunSnapshot(
+        settings={
+            "raw_image_path": r"C:\Users\harvey\data\raw.tif",
+            "large_arteriole_mask_path": r"\\server\share\masks\raw.tif",
+            "output_dir": r"C:\Users\harvey\outputs",
+        },
+    )
+
+    moved = relocate_run_paths(snapshot, tmp_path / "run.haemorun")
+
+    assert snapshot.settings["raw_image_path"] == str(tmp_path / "data" / "raw.tif")
+    assert snapshot.settings["large_arteriole_mask_path"] == str(tmp_path / "data" / "raw.tif")
+    assert snapshot.settings["output_dir"] == str(tmp_path / "outputs")
+    assert {m.name for m in moved} == {"raw_image_path", "large_arteriole_mask_path", "output_dir"}
+
+
+def test_ilastiks_output_is_relocated_with_ilastiks_folder(tmp_path):
+    """Regression: input_path (ilastik's segmentation) and ilastik_output_dir
+    were moved apart -- the input found by name under the run's folder, the
+    folder moved into outputs/ -- so the run no longer took the input for
+    ilastik's output and segmented the raw image again."""
+    from haemolynx.gui.run_snapshot import RunSnapshot, relocate_run_paths
+
+    blocker = tmp_path / "server_home"
+    blocker.write_text("a file, so nothing can be created under it")
+    (tmp_path / "outputs" / "ilastik").mkdir(parents=True)
+    (tmp_path / "outputs" / "ilastik" / "claudin_segmented.tif").write_bytes(b"mask")
+    (tmp_path / "old_copy").mkdir()
+    (tmp_path / "old_copy" / "claudin_segmented.tif").write_bytes(b"another")
+    server = blocker / "harvey"
+    snapshot = RunSnapshot(
+        settings={
+            "input_path": str(server / "ilastik" / "claudin_segmented.tif"),
+            "ilastik_output_dir": str(server / "ilastik"),
+        },
+    )
+
+    relocate_run_paths(snapshot, tmp_path / "run.haemorun")
+
+    assert snapshot.settings["ilastik_output_dir"] == str(tmp_path / "outputs" / "ilastik")
+    assert snapshot.settings["input_path"] == str(tmp_path / "outputs" / "ilastik" / "claudin_segmented.tif")
+
+
+def test_an_input_found_beside_the_run_takes_ilastiks_folder_with_it(tmp_path):
+    from haemolynx.gui.run_snapshot import RunSnapshot, relocate_run_paths
+
+    (tmp_path / "segmentations").mkdir()
+    (tmp_path / "segmentations" / "claudin_segmented.tif").write_bytes(b"mask")
+    snapshot = RunSnapshot(
+        settings={
+            "input_path": str(tmp_path / "gone" / "segmentations" / "claudin_segmented.tif"),
+            # A folder that can be made here, so not moved by itself.
+            "ilastik_output_dir": str(tmp_path / "gone" / "segmentations"),
+        },
+    )
+
+    relocate_run_paths(snapshot, tmp_path / "run.haemorun")
+
+    assert snapshot.settings["input_path"] == str(tmp_path / "segmentations" / "claudin_segmented.tif")
+    assert snapshot.settings["ilastik_output_dir"] == str(tmp_path / "segmentations")
+
+
+def test_the_rows_changed_since_the_run_are_relocated_too(tmp_path):
+    from haemolynx.gui.run_snapshot import RunSnapshot, relocate_run_paths
+
+    (tmp_path / "next.tif").write_bytes(b"next")
+    snapshot = RunSnapshot(settings={}, edited_since_run={"input_path": "/home/harvey/next.tif"})
+    relocate_run_paths(snapshot, tmp_path / "run.haemorun")
+    assert snapshot.edited_since_run["input_path"] == str(tmp_path / "next.tif")

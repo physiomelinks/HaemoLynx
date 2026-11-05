@@ -244,14 +244,11 @@ def test_points_carry_their_role_in_settings_order():
 
 
 def test_regions_carry_their_role_and_their_own_depth():
-    """Every shape of a region is tagged, handle and outline alike, so the
-    colouring covers the whole box and the sync can tell them apart."""
+    """One rectangle per region, tagged with the role and the depth it stands for."""
     spec = specs_for(CONFIGURED)[1]
     assert set(spec.features["role"]) == {"outlet"}
-    assert list(spec.features["depth"]) == pytest.approx([600.0] * 13)
-    handles = [i for i, part in enumerate(spec.features["part"]) if part == "handle"]
-    assert len(handles) == 1
-    assert spec.options["shape_type"][handles[0]] == "rectangle"
+    assert list(spec.features["depth"]) == pytest.approx([600.0])
+    assert list(spec.options["shape_type"]) == ["rectangle"]
 
 
 def test_the_picking_layers_never_collide_with_a_runs_layers():
@@ -388,39 +385,188 @@ def test_importing_it_does_not_drag_in_a_gui():
 # --- a region is drawn as the box it stands for, not just a rectangle --------
 
 
-def test_a_region_is_drawn_as_a_box_not_a_flat_rectangle():
-    """The rectangle is the handle; the twelve segments are the box.
-
-    A rectangle alone is planar, so on its own it says nothing about how deep
-    a region is -- which is the whole of what a volume box adds.
-    """
+def test_the_regions_layer_holds_only_the_rectangles():
+    """Nothing but the editable rectangles: the box outline used to be twelve
+    more shapes per region in this layer, rebuilt on every edit, underneath
+    napari's own drawing tool -- which is what made drawing a second region
+    lose it (and crash with `_selected_box` None)."""
     from haemolynx.gui.boundary_picking import region_shapes
 
-    picks = BoundaryPicks.from_settings({"outlet_node_volumes": [list(A_BOX)]})
-    _data, kinds, features = region_shapes(picks)
+    picks = BoundaryPicks.from_settings(
+        {"outlet_node_volumes": [list(A_BOX), [[0.0, 0.0, 0.0], [10.0, 10.0, 10.0]]]}
+    )
+    data, kinds, features = region_shapes(picks)
 
-    assert kinds.count("rectangle") == 1, "one editable handle per region"
-    assert kinds.count("line") == 12, "the twelve edges of the box"
-    assert list(features["part"]).count("handle") == 1
-    assert set(features["role"]) == {"outlet"}
-
-
-def test_the_outline_spans_the_boxs_full_depth():
-    from haemolynx.gui.boundary_picking import box_outline
-
-    edges = box_outline(*A_BOX)
-    corners = np.concatenate(edges, axis=0)
-    assert corners[:, 0].min() == pytest.approx(A_BOX[0][0])
-    assert corners[:, 0].max() == pytest.approx(A_BOX[1][0])
-    assert corners[:, 2].max() == pytest.approx(A_BOX[1][2])
+    assert kinds == ["rectangle", "rectangle"], "one editable rectangle per region"
+    assert [len(corners) for corners in data] == [4, 4]
+    assert set(features) == {"role", "depth"}
 
 
-def test_every_outline_segment_lies_along_one_axis():
-    """An edge of a box changes in exactly one coordinate."""
-    from haemolynx.gui.boundary_picking import box_outline
+def test_a_box_is_a_closed_solid_of_its_own():
+    from haemolynx.gui.boundary_picking import box_mesh
 
-    for edge in box_outline(*A_BOX):
-        assert int(np.count_nonzero(edge[0] != edge[1])) == 1
+    vertices, faces, owner = box_mesh([A_BOX])
+
+    assert vertices.shape == (8, 3) and faces.shape == (12, 3)
+    assert vertices.min(axis=0) == pytest.approx(A_BOX[0])
+    assert vertices.max(axis=0) == pytest.approx(A_BOX[1])
+    assert set(owner) == {0}
+    # Closed: every edge of the triangulated surface is shared by exactly two
+    # triangles, so there is no hole to see through.
+    edges = {}
+    for tri in faces:
+        for a, b in ((tri[0], tri[1]), (tri[1], tri[2]), (tri[2], tri[0])):
+            edges[frozenset((int(a), int(b)))] = edges.get(frozenset((int(a), int(b))), 0) + 1
+    assert set(edges.values()) == {2}
+
+
+def test_every_face_of_a_box_points_outwards():
+    """Flat shading lights a face by its normal; an inward one reads as a hole."""
+    from haemolynx.gui.boundary_picking import box_mesh
+
+    vertices, faces, _owner = box_mesh([A_BOX])
+    centre = vertices.mean(axis=0)
+    for tri in faces:
+        p = vertices[tri]
+        normal = np.cross(p[1] - p[0], p[2] - p[0])
+        assert np.dot(normal, p.mean(axis=0) - centre) > 0
+
+
+def test_each_box_keeps_its_own_vertices():
+    """So each can carry a colour of its own."""
+    from haemolynx.gui.boundary_picking import box_mesh
+
+    vertices, faces, owner = box_mesh([A_BOX, ([0, 0, 0], [1, 1, 1])])
+
+    assert vertices.shape == (16, 3)
+    assert list(owner) == [0] * 8 + [1] * 8
+    assert set(owner[faces[12:]].ravel()) == {1}
+    assert box_mesh([])[0].shape == (0, 3)
+
+
+def test_each_box_of_a_role_gets_a_different_shade_of_its_colour():
+    from haemolynx.gui.boundary_picking import box_colours
+
+    green = dict(role_colours())["inlet"]
+    shades = box_colours(green, 3)
+
+    assert len({tuple(round(v, 6) for v in shade) for shade in shades}) == 3
+    for shade in shades:
+        # Still green: the role stays readable whichever box it is.
+        assert shade[1] == max(shade[:3])
+    assert box_colours(green, 1) == [tuple(green)], "a lone box is the role's colour"
+
+
+def test_the_boxes_of_a_role_are_its_band_its_regions_and_a_box_being_drawn():
+    from haemolynx.gui.boundary_picking import band_boxes, role_boxes
+
+    values = {"boundary_axis": 1, "inlet_node_selection_method": "edge_percent",
+              "boundary_first_percent": 10.0, "outlet_node_volumes": [list(A_BOX)]}
+    bands = band_boxes(values, *FULL_IMAGE)
+    dragging = ([1.0, 2.0, 3.0], [4.0, 5.0, 6.0])
+
+    boxes = role_boxes(BoundaryPicks.from_settings(values), bands,
+                       extra={"outlet": [dragging]})
+
+    assert set(boxes) == {"inlet", "outlet"}
+    band_lo, band_hi = bands["inlet"]
+    assert boxes["inlet"] == [(list(band_lo), list(band_hi))]
+    assert len(boxes["outlet"]) == 2
+    assert boxes["outlet"][1] == ([1.0, 2.0, 3.0], [4.0, 5.0, 6.0])
+
+
+# --- a box dragged out in the 3D view ---------------------------------------
+
+#: napari's default 3D camera looks down z with y up the screen.
+DOWN_Z = ((1.0, 0.0, 0.0), (0.0, -1.0, 0.0))
+EXTENT = ([0.0, 0.0, 0.0], [100.0, 200.0, 300.0])
+
+
+def test_looking_down_z_a_drag_is_its_rectangle_through_the_whole_stack():
+    from haemolynx.gui.boundary_picking import box_from_view_drag
+
+    lo, hi = box_from_view_drag([50.0, 20.0, 30.0], [50.0, 80.0, 120.0],
+                                *DOWN_Z, *EXTENT)
+
+    assert lo == pytest.approx([0.0, 20.0, 30.0])
+    assert hi == pytest.approx([100.0, 80.0, 120.0])
+
+
+def test_the_drag_direction_does_not_matter():
+    from haemolynx.gui.boundary_picking import box_from_view_drag
+
+    forwards = box_from_view_drag([50.0, 20.0, 30.0], [50.0, 80.0, 120.0], *DOWN_Z, *EXTENT)
+    backwards = box_from_view_drag([50.0, 80.0, 120.0], [50.0, 20.0, 30.0], *DOWN_Z, *EXTENT)
+
+    assert forwards == backwards
+
+
+def test_looking_down_x_the_box_runs_through_the_whole_width():
+    """Whichever axis the camera looks down is the one the box spans entirely."""
+    from haemolynx.gui.boundary_picking import box_from_view_drag
+
+    lo, hi = box_from_view_drag([10.0, 20.0, 150.0], [60.0, 90.0, 150.0],
+                                (0.0, 0.0, 1.0), (-1.0, 0.0, 0.0), *EXTENT)
+
+    assert lo == pytest.approx([10.0, 20.0, 0.0])
+    assert hi == pytest.approx([60.0, 90.0, 300.0])
+
+
+def test_the_region_depth_trims_a_z_view_box_about_the_stacks_middle():
+    from haemolynx.gui.boundary_picking import box_from_view_drag
+
+    lo, hi = box_from_view_drag([50.0, 20.0, 30.0], [50.0, 80.0, 120.0],
+                                *DOWN_Z, *EXTENT, depth=40.0)
+
+    assert (lo[0], hi[0]) == pytest.approx((30.0, 70.0))
+
+
+def test_a_drag_is_clipped_to_the_image():
+    from haemolynx.gui.boundary_picking import box_from_view_drag
+
+    lo, hi = box_from_view_drag([50.0, -40.0, 250.0], [50.0, 80.0, 400.0], *DOWN_Z, *EXTENT)
+
+    assert lo == pytest.approx([0.0, 0.0, 250.0])
+    assert hi == pytest.approx([100.0, 80.0, 300.0])
+
+
+def test_a_click_without_a_drag_or_off_the_image_makes_no_box():
+    from haemolynx.gui.boundary_picking import box_from_view_drag
+
+    assert box_from_view_drag([50.0, 20.0, 30.0], [50.0, 20.0, 30.0], *DOWN_Z, *EXTENT) is None
+    assert box_from_view_drag([50.0, 20.0, 30.0], [50.0, 20.0, 90.0], *DOWN_Z, *EXTENT) is None
+    assert box_from_view_drag([50.0, 500.0, 30.0], [50.0, 600.0, 90.0], *DOWN_Z, *EXTENT) is None
+
+
+def test_at_an_angle_the_box_holds_the_whole_dragged_rectangle():
+    """Not an exact box -- the smallest axis-aligned one around the rectangle."""
+    from haemolynx.gui.boundary_picking import box_from_view_drag
+
+    view = np.array([1.0, 0.2, 0.1])
+    view /= np.linalg.norm(view)
+    up = np.array([0.0, -1.0, 0.3])
+    up -= np.dot(up, view) * view
+    up /= np.linalg.norm(up)
+    right = np.cross(view, up)
+    # Both ends of a drag lie in the plane facing the camera, as napari's
+    # 3D cursor positions do.
+    start = np.array([50.0, 100.0, 150.0])
+    corners = [start + a * right + b * up for a in (0.0, 60.0) for b in (0.0, 40.0)]
+    lo, hi = box_from_view_drag(start, corners[-1], view, up, *EXTENT)
+
+    assert lo[0] == pytest.approx(0.0) and hi[0] == pytest.approx(100.0)
+    for point in corners:
+        assert lo[1] - 1e-3 <= point[1] <= hi[1] + 1e-3
+        assert lo[2] - 1e-3 <= point[2] <= hi[2] + 1e-3
+
+
+def test_a_dragged_box_is_plain_floats_a_row_can_read_back():
+    from haemolynx.gui.boundary_picking import box_from_view_drag
+
+    box = box_from_view_drag(np.array([50.0, 20.0, 30.0]), np.array([50.0, 80.0, 120.0]),
+                             *DOWN_Z, *EXTENT)
+    assert all(type(v) is float for corner in box for v in corner)
+    assert ast.literal_eval(str(box)) == box
 
 
 def test_a_flat_region_still_draws_its_rectangle():
@@ -444,6 +590,7 @@ def test_a_method_shows_only_what_it_reads():
         {
             "inlet_node_selection_method": "coordinates",
             "outlet_node_selection_method": "volume",
+            "large_vessel_outlet_node_selection_method": "degree_1_from_inlet",
             "arteriole_boundary_selection_method": "all_degree_1",
             "venule_boundary_selection_method": "degree_1_from_inlet",
         }
@@ -453,6 +600,10 @@ def test_a_method_shows_only_what_it_reads():
     assert "boundary_distance_from_inlet_node" in wanted
     # `all_degree_1` takes every terminal, so it configures nothing.
     assert "arteriole_boundary_node_coordinates" not in wanted
+    # And a vessel boundary is only ever a list: no distance row for it alone.
+    assert "boundary_distance_from_inlet_node" not in visible_settings(
+        {"venule_boundary_selection_method": "degree_1_from_inlet"}
+    )
     assert "inlet_node_volumes" not in wanted
     assert "boundary_axis" not in wanted
 
@@ -462,18 +613,18 @@ def test_the_band_settings_appear_for_any_role_that_uses_them():
     only asks for the percentage at its own end of the axis."""
     from haemolynx.gui.boundary_picking import visible_settings
 
-    wanted = visible_settings({"venule_boundary_selection_method": "edge_percent"})
+    wanted = visible_settings({"outlet_node_selection_method": "edge_percent"})
     assert {"boundary_axis", "boundary_last_percent"} <= wanted
     assert "boundary_first_percent" not in wanted
 
-    both = visible_settings({"venule_boundary_selection_method": "edge_percent",
+    both = visible_settings({"outlet_node_selection_method": "edge_percent",
                              "inlet_node_selection_method": "edge_percent"})
     assert {"boundary_axis", "boundary_first_percent", "boundary_last_percent"} <= both
 
 
 @pytest.mark.parametrize(
     "method", ["coordinates", "volume", "edge_percent", "all_degree_1",
-               "degree_1_from_inlet"]
+               "degree_1_from_inlet", "node_ids"]
 )
 def test_every_method_the_schema_allows_is_accounted_for(method):
     """A method with no rule would silently show nothing."""
@@ -509,6 +660,7 @@ def test_a_roles_settings_start_with_the_method_that_chooses_them(role):
         BOUNDARY_ROLE_SETTINGS[role]["method"],
         coordinate_setting(role),
         volume_setting(role),
+        BOUNDARY_ROLE_SETTINGS[role]["node_ids"],
         f"{role}_nodes",
     }
     for name in mine:
@@ -546,12 +698,105 @@ def test_between_them_the_pages_place_every_boundary_setting():
 @pytest.mark.parametrize(
     "role,title",
     [("inlet", "Inlet"), ("outlet", "Outlet"),
-     ("arteriole_boundary", "Arteriole"), ("venule_boundary", "Venule")],
+     ("arteriole_boundary", "Arteriole"), ("venule_boundary", "Venule"),
+     ("large_vessel_inlet", "Large vessel inlet"),
+     ("large_vessel_outlet", "Large vessel outlet")],
 )
 def test_a_role_reads_as_a_tab_name(role, title):
     from haemolynx.gui.boundary_picking import role_title
 
     assert role_title(role) == title
+
+
+# --- automated assignment greys role sub-tabs (logic, no Qt) -----------------
+
+
+def test_both_autos_off_keeps_every_role_manual_controls_enabled():
+    """Excludes LARGE_VESSEL_NETWORK_ROLES: those two have their own gate,
+    assign_large_vessel_branch_orders, not either auto flag -- see
+    test_large_vessel_network_mode_gates_the_new_roles below."""
+    from haemolynx.gui.boundary_picking import (
+        LARGE_VESSEL_NETWORK_ROLES,
+        ROLES,
+        role_manual_controls_enabled,
+    )
+
+    values = {
+        "automated_vessel_assignment": False,
+        "use_small_vessel_masks_for_boundary_assignment": False,
+    }
+    for role in ROLES:
+        if role in LARGE_VESSEL_NETWORK_ROLES:
+            continue
+        assert role_manual_controls_enabled(role, values) is True, role
+
+
+def test_large_vessel_network_mode_gates_the_new_roles():
+    """Inverted polarity from LARGE_AUTO_ROLES/SMALL_AUTO_ROLES: these two grey
+    while the feature is *off*, since there is nothing to override yet."""
+    from haemolynx.gui.boundary_picking import (
+        LARGE_VESSEL_NETWORK_ROLES,
+        role_manual_controls_enabled,
+    )
+
+    on = {
+        "automated_vessel_assignment": True,
+        "use_large_vessel_masks": True,
+        "cut_network_at_large_vessel_volumes": False,
+        "assign_large_vessel_branch_orders": True,
+    }
+    off = {**on, "assign_large_vessel_branch_orders": False}
+    # Left on under an unticked gate: hidden, so off.
+    hidden = {**on, "use_large_vessel_masks": False}
+    for role in LARGE_VESSEL_NETWORK_ROLES:
+        assert role_manual_controls_enabled(role, {}) is False, role
+        assert role_manual_controls_enabled(role, off) is False, role
+        assert role_manual_controls_enabled(role, hidden) is False, role
+        assert role_manual_controls_enabled(role, on) is True, role
+
+
+def test_large_auto_disables_inlet_and_outlet_only():
+    """``automated_vessel_assignment`` is large-vessel inlet/outlet assignment."""
+    from haemolynx.gui.boundary_picking import role_manual_controls_enabled
+
+    values = {
+        "automated_vessel_assignment": True,
+        "use_large_vessel_masks": True,
+        "use_small_vessel_masks_for_boundary_assignment": False,
+    }
+    assert role_manual_controls_enabled("inlet", values) is False
+    assert role_manual_controls_enabled("outlet", values) is False
+    assert role_manual_controls_enabled("arteriole_boundary", values) is True
+    assert role_manual_controls_enabled("venule_boundary", values) is True
+
+
+def test_small_auto_disables_arteriole_and_venule():
+    """Small-vessel masks grey A/V; without the large masks nothing chooses
+    the inlets and outlets, so I/O stay open."""
+    from haemolynx.gui.boundary_picking import role_manual_controls_enabled
+
+    values = {
+        "automated_vessel_assignment": True,
+        "use_large_vessel_masks": False,
+        "use_small_vessel_masks_for_boundary_assignment": True,
+    }
+    assert role_manual_controls_enabled("inlet", values) is True
+    assert role_manual_controls_enabled("outlet", values) is True
+    assert role_manual_controls_enabled("arteriole_boundary", values) is False
+    assert role_manual_controls_enabled("venule_boundary", values) is False
+
+
+def test_small_flag_left_on_under_unticked_automated_assignment_greys_nothing():
+    """Regression: the small-mask switch, hidden under an unticked automated
+    assignment, still greyed the Arteriole and Venule tabs."""
+    from haemolynx.gui.boundary_picking import role_manual_controls_enabled
+
+    values = {
+        "automated_vessel_assignment": False,
+        "use_small_vessel_masks_for_boundary_assignment": True,
+    }
+    for role in ("inlet", "outlet", "arteriole_boundary", "venule_boundary"):
+        assert role_manual_controls_enabled(role, values) is True, role
 
 
 # --- coordinates that fall outside the image ---------------------------------
@@ -605,9 +850,6 @@ def test_an_inlet_role_reads_the_first_percentage():
     assert settings_for_method("inlet", "edge_percent") == (
         "boundary_axis", "boundary_first_percent",
     )
-    assert settings_for_method("arteriole_boundary", "edge_percent") == (
-        "boundary_axis", "boundary_first_percent",
-    )
 
 
 def test_an_outlet_role_reads_the_last_percentage():
@@ -617,9 +859,31 @@ def test_an_outlet_role_reads_the_last_percentage():
     assert settings_for_method("outlet", "edge_percent") == (
         "boundary_axis", "boundary_last_percent",
     )
-    assert settings_for_method("venule_boundary", "edge_percent") == (
-        "boundary_axis", "boundary_last_percent",
-    )
+
+
+
+@pytest.mark.parametrize("method", ["edge_percent", "degree_1_from_inlet", "all_degree_1"])
+def test_a_method_that_chooses_no_vessel_boundary_shows_no_rows_and_draws_no_band(method):
+    """Regression: the arteriole and venule boundaries are only ever a list
+    (coordinates, boxes or node IDs) -- any other method the run reads as no
+    boundary -- yet the panel showed the band or distance rows for them and
+    drew an arteriole band that chose nothing. Now it says so instead."""
+    from haemolynx.gui.boundary_picking import band_boxes, group_for, settings_for_method
+
+    values = {
+        "inlet_node_selection_method": "edge_percent",
+        "outlet_node_selection_method": "node_ids",
+        "arteriole_boundary_selection_method": method,
+        "venule_boundary_selection_method": "coordinates",
+        "boundary_axis": 1,
+        "boundary_first_percent": 10.0,
+        "boundary_last_percent": 10.0,
+    }
+
+    assert settings_for_method("arteriole_boundary", method) == ()
+    assert set(band_boxes(values, (0, 0, 0), (10, 10, 10))) == {"inlet"}
+    assert "Arteriole boundary: " + method + " chooses no nodes" in group_for(values).note
+    assert "Venule boundary" not in group_for(values).note
 
 
 def test_the_percentage_split_matches_the_selector():
@@ -744,30 +1008,16 @@ def test_a_nonsense_axis_draws_nothing_rather_than_raising():
 
 def test_a_band_is_drawn_as_a_box_with_no_handle():
     """It is not a region anyone typed, so there is nothing to drag and
-    nothing for the settings to read back out of it."""
-    from haemolynx.gui.boundary_picking import BAND, band_boxes, region_shapes
+    nothing for the settings to read back out of it: a box, no rectangle."""
+    from haemolynx.gui.boundary_picking import band_boxes, region_shapes, role_boxes
 
     values = {"boundary_axis": 1, "inlet_node_selection_method": "edge_percent",
               "boundary_first_percent": 10.0}
     bands = band_boxes(values, *FULL_IMAGE)
-    _data, kinds, features = region_shapes(BoundaryPicks.from_settings(values), bands)
+    picks = BoundaryPicks.from_settings(values)
 
-    assert kinds == ["line"] * 12
-    assert set(features["part"]) == {BAND}
-    assert set(features["role"]) == {"inlet"}
-
-
-def test_a_band_and_a_configured_region_can_be_drawn_together():
-    from haemolynx.gui.boundary_picking import band_boxes, region_shapes
-
-    values = {"boundary_axis": 1, "inlet_node_selection_method": "edge_percent",
-              "boundary_first_percent": 10.0, "outlet_node_volumes": [list(A_BOX)]}
-    bands = band_boxes(values, *FULL_IMAGE)
-    _data, kinds, features = region_shapes(BoundaryPicks.from_settings(values), bands)
-
-    assert kinds.count("rectangle") == 1, "only the configured region is editable"
-    assert kinds.count("line") == 24
-    assert list(features["part"]).count("handle") == 1
+    assert region_shapes(picks)[0] == []
+    assert len(role_boxes(picks, bands)["inlet"]) == 1
 
 
 def test_the_span_of_the_terminals_needs_a_graph():
@@ -840,29 +1090,376 @@ def test_a_region_layer_holds_only_its_own_roles_shapes():
 
     for role in ("inlet", "outlet"):
         assert set(specs[regions_name(role)].features["role"]) == {role}
-        assert len(specs[regions_name(role)].data) == 13
+        assert len(specs[regions_name(role)].data) == 1
 
 
-def test_a_band_goes_in_its_roles_layer_too():
-    from haemolynx.gui.boundary_picking import band_boxes
-
+def test_a_band_makes_no_editable_layer():
+    """It is drawn as a box only; the regions layer is for what can be edited."""
     values = {"boundary_axis": 1, "outlet_node_selection_method": "edge_percent",
               "boundary_last_percent": 10.0}
-    names = [spec.name
-             for spec in specs_for(values, band_boxes(values, [0, 0, 0], [9.0, 9.0, 9.0]))]
 
-    assert names == [BC_COORDINATES, regions_name("outlet")]
+    assert [spec.name for spec in specs_for(values)] == [BC_COORDINATES]
 
 
 def test_the_layer_names_say_which_role_they_are():
+    from haemolynx.gui.boundary_picking import BC_BOX_NAMES, boxes_name
+
     assert regions_name("inlet") == "HaemoLynx BC inlet regions"
     assert regions_name("arteriole_boundary") == "HaemoLynx BC arteriole regions"
+    assert boxes_name("inlet") == "HaemoLynx BC inlet boxes"
     assert len(set(BC_REGION_NAMES)) == len(ROLES)
+    assert len(set(BC_BOX_NAMES) | set(BC_REGION_NAMES)) == 2 * len(ROLES)
+    assert set(BC_BOX_NAMES) <= BC_LAYER_NAMES
 
 
 def test_every_picking_layer_is_named_in_one_place():
     """`_clear_our_layers` and the "is this ours?" check both read this."""
-    from haemolynx.gui.boundary_picking import BC_LAYER_NAMES
+    from haemolynx.gui.boundary_picking import (
+        BC_BOX_NAMES, BC_BOX_NODES, BC_LAYER_NAMES, BC_NODE_IDS,
+    )
 
-    assert BC_LAYER_NAMES == {BC_COORDINATES, *BC_REGION_NAMES}
+    assert BC_LAYER_NAMES == {
+        BC_COORDINATES, BC_NODE_IDS, BC_BOX_NODES, *BC_REGION_NAMES, *BC_BOX_NAMES,
+    }
     assert BC_LAYER_NAMES.isdisjoint(LAYER_NAMES), "never a run's own layer"
+
+
+# --- node IDs: picked by clicking a node, drawn where the graph has it -------
+
+
+def _y_graph():
+    """Terminal 0 -- junction 1 -- terminals 2 and 3."""
+    import networkx as nx
+
+    graph = nx.MultiGraph()
+    for node, pos in {0: (0.0, 0.0, 0.0), 1: (0.0, 10.0, 0.0),
+                      2: (0.0, 20.0, -5.0), 3: (0.0, 20.0, 5.0)}.items():
+        graph.add_node(node, pos=np.asarray(pos))
+    graph.add_edges_from([(0, 1), (1, 2), (1, 3)])
+    return graph
+
+
+def test_the_node_ids_method_shows_its_own_list():
+    from haemolynx.gui.boundary_picking import node_id_setting, visible_settings
+
+    wanted = visible_settings({"venule_boundary_selection_method": "node_ids"})
+
+    assert node_id_setting("venule_boundary") == "venule_boundary_node_ids"
+    assert "venule_boundary_node_ids" in wanted
+    assert "venule_boundary_node_coordinates" not in wanted
+    assert "inlet_node_ids" not in visible_settings(
+        {"inlet_node_selection_method": "coordinates"}
+    )
+
+
+def test_clicking_a_node_adds_it_and_clicking_it_again_takes_it_off():
+    from haemolynx.gui.boundary_picking import toggle_node_id
+
+    added, said = toggle_node_id({"inlet_node_ids": [3]}, "inlet", np.int64(7))
+    assert added == {"inlet_node_ids": [3, 7]}
+    assert type(added["inlet_node_ids"][1]) is int, "a numpy int would break the row"
+    assert "Added node 7" in said
+
+    removed, said = toggle_node_id(added, "inlet", 7)
+    assert removed == {"inlet_node_ids": [3]}
+    assert "Removed node 7" in said
+
+
+def test_a_node_another_role_lists_moves_rather_than_being_listed_twice():
+    from haemolynx.gui.boundary_picking import toggle_node_id
+
+    proposed, said = toggle_node_id(
+        {"inlet_node_ids": [4, 9], "outlet_node_ids": [1]}, "outlet", 9
+    )
+
+    assert proposed == {"inlet_node_ids": [4], "outlet_node_ids": [1, 9]}
+    assert "moved from inlet" in said
+
+
+def test_toggling_keeps_an_entry_it_cannot_read():
+    """The report box names it; a click must not quietly delete it."""
+    from haemolynx.gui.boundary_picking import toggle_node_id
+
+    proposed, _ = toggle_node_id({"inlet_node_ids": [[1, 2]]}, "inlet", 5)
+
+    assert proposed == {"inlet_node_ids": [[1, 2], 5]}
+
+
+def test_listed_node_ids_are_read_and_summarised():
+    picks = BoundaryPicks.from_settings(
+        {"inlet_node_ids": [3, "3", 4.0], "venule_boundary_node_ids": 12,
+         "outlet_node_ids": [[1, 2]]}
+    )
+
+    assert picks.node_ids["inlet"] == (3, 4), "the same node written twice is one"
+    assert picks.node_ids["venule_boundary"] == (12,), "a bare ID is a list of one"
+    assert any("outlet_node_ids[0]" in problem for problem in picks.problems)
+    assert "inlet node IDs [3, 4]" in picks.summary()
+
+
+def test_no_node_ids_no_node_ids_layer():
+    from haemolynx.gui.boundary_picking import BC_NODE_IDS
+
+    assert BC_NODE_IDS not in [spec.name for spec in specs_for(CONFIGURED, _y_graph())]
+
+
+def test_listed_nodes_are_drawn_where_the_graph_has_them():
+    from haemolynx.gui.boundary_picking import BC_NODE_IDS
+
+    values = {"inlet_node_ids": [0], "arteriole_boundary_node_ids": [1]}
+    spec = {s.name: s for s in specs_for(values, _y_graph())}[BC_NODE_IDS]
+
+    assert spec.data.tolist() == [[0.0, 0.0, 0.0], [0.0, 10.0, 0.0]]
+    assert spec.features["role"].tolist() == ["inlet", "arteriole_boundary"]
+    assert spec.features["node_id"].tolist() == [0, 1]
+    assert spec.scale == (1.0, 1.0, 1.0), "node pos is physical microns already"
+    assert spec.colour_cycle == role_colours()
+
+
+def test_without_a_graph_the_ids_are_listed_but_not_placed():
+    from haemolynx.gui.boundary_picking import BC_NODE_IDS
+
+    values = {"inlet_node_ids": [0]}
+    spec = {s.name: s for s in specs_for(values)}[BC_NODE_IDS]
+
+    assert spec.data.shape == (0, 3)
+    assert "once a run has built the graph" in group_for(values).note
+
+
+def test_ids_the_graph_lacks_are_named_in_the_report():
+    values = {"outlet_node_ids": [2, 77]}
+
+    note = group_for(values, graph=_y_graph()).note
+
+    assert "Not in the current graph: outlet [77]" in note
+    assert "pick them again" in note
+
+
+def test_the_result_layers_expose_the_graph_the_tab_picks_from():
+    """`_boundary_controls` reads `results.graph`; it used to find nothing,
+    because the converter only kept `_graph`, so snapping never had a graph."""
+    from types import SimpleNamespace
+
+    from haemolynx.gui.results import ResultLayers
+
+    graph = _y_graph()
+    results = ResultLayers()
+    assert results.graph is None
+    results.stage_finished("build_network", SimpleNamespace(graph=graph, volume=None))
+
+    assert results.graph is graph
+
+
+# --- inserting a box and choosing a node from it ------------------------------
+
+
+def test_a_box_is_inserted_round_a_centre_at_the_default_size():
+    from haemolynx.gui.boundary_picking import (
+        DEFAULT_BOX_SIZE_UM, box_around, box_centre, box_size,
+    )
+
+    box = box_around((20.0, 50.0, 60.0))
+    assert DEFAULT_BOX_SIZE_UM == (10.0, 10.0, 10.0)
+    assert box == [[15.0, 45.0, 55.0], [25.0, 55.0, 65.0]]
+    assert box_centre(box) == [20.0, 50.0, 60.0] and box_size(box) == [10.0, 10.0, 10.0]
+    with pytest.raises(ValueError):
+        box_around((1.0, 2.0), (10.0, 10.0, 10.0))
+
+
+def test_resizing_keeps_the_centre():
+    from haemolynx.gui.boundary_picking import box_around, box_centre, resize_box
+
+    box = resize_box(box_around((20.0, 50.0, 60.0)), (4.0, 30.0, 2.0))
+    assert box == [[18.0, 35.0, 59.0], [22.0, 65.0, 61.0]]
+    assert box_centre(box) == [20.0, 50.0, 60.0]
+
+
+@pytest.mark.parametrize(
+    "displayed, direction, shift",
+    [
+        # The usual XY view: x across, y down the screen, z the slices.
+        ((1, 2), "right", (0, 0, 5)),
+        ((1, 2), "left", (0, 0, -5)),
+        ((1, 2), "up", (0, -5, 0)),   # napari draws rows downwards
+        ((1, 2), "down", (0, 5, 0)),
+        ((1, 2), "forward", (5, 0, 0)),
+        ((1, 2), "back", (-5, 0, 0)),
+        # An XZ view: x across, z down, y through the slices.
+        ((0, 2), "up", (-5, 0, 0)),
+        ((0, 2), "forward", (0, 5, 0)),
+        # 3D: back/forward go along z.
+        ((0, 1, 2), "forward", (5, 0, 0)),
+        ((0, 1, 2), "right", (0, 0, 5)),
+    ],
+)
+def test_moving_a_box_follows_the_screen(displayed, direction, shift):
+    from haemolynx.gui.boundary_picking import box_around, move_box
+
+    box = box_around((20.0, 50.0, 60.0))
+    moved = move_box(box, direction, 5.0, displayed)
+    assert np.allclose(np.asarray(moved) - np.asarray(box), [shift, shift])
+
+
+def test_move_box_refuses_an_unknown_direction():
+    from haemolynx.gui.boundary_picking import box_around, move_box
+
+    with pytest.raises(ValueError, match="direction"):
+        move_box(box_around((0, 0, 0)), "sideways", 1.0)
+
+
+def _box_graph():
+    """Open end 1 at the centre, junction 2 near it, 4 on the box's face, 3 outside."""
+    import networkx as nx
+
+    G = nx.MultiGraph()
+    for node, pos in {1: (20, 50, 60), 2: (21, 52, 61), 3: (40, 90, 90), 4: (25, 50, 60),
+                      5: (20, 54, 64)}.items():
+        G.add_node(node, pos=np.asarray(pos, dtype=float))
+    G.add_edges_from([(1, 2), (2, 3), (2, 4), (4, 3), (5, 3)])
+    return G
+
+
+def test_nodes_in_box_lists_open_ends_first_then_by_distance():
+    from haemolynx.gui.boundary_picking import box_around, box_node_rows, nodes_in_box
+
+    found = nodes_in_box(_box_graph(), box_around((20.0, 50.0, 60.0)))
+    # 3 is outside; 4 sits on the box's face and counts.
+    assert [n.node_id for n in found] == [1, 5, 2, 4]
+    assert [n.open_end for n in found] == [True, True, False, False]
+    rows = box_node_rows(found)
+    assert rows[0] == ("1", "1", "open end", "20.0", "50.0", "60.0")
+    assert rows[2][:3] == ("2", "3", "")
+    assert nodes_in_box(None, box_around((0, 0, 0))) == []
+
+
+def test_box_nodes_are_drawn_yellow_and_open_ends_larger():
+    from haemolynx.gui.boundary_picking import (
+        BC_BOX_NODES, box_around, box_nodes_spec, nodes_in_box,
+    )
+
+    found = nodes_in_box(_box_graph(), box_around((20.0, 50.0, 60.0)))
+    spec = box_nodes_spec(found)
+    assert spec.name == BC_BOX_NODES and len(spec.data) == 4
+    sizes = np.asarray(spec.options["size"])
+    assert sizes[0] > sizes[2] and sizes[1] == sizes[0]
+    assert np.allclose(spec.options["face_color"][:, :3], [1.0, 0.9, 0.0])
+    assert not np.allclose(spec.options["border_color"][0], spec.options["border_color"][2])
+    assert list(spec.features["node_id"]) == [1, 5, 2, 4]
+
+
+def test_using_a_node_lists_it_and_switches_the_role_to_node_ids():
+    from haemolynx.gui.boundary_picking import use_node_for_role
+
+    values = {"inlet_node_selection_method": "volume", "inlet_node_ids": [7],
+              "outlet_node_ids": [3]}
+    proposed, message = use_node_for_role(values, "inlet", 3)
+    assert proposed["inlet_node_ids"] == [7, 3]
+    assert proposed["outlet_node_ids"] == []          # one node, one role
+    assert proposed["inlet_node_selection_method"] == "node_ids"
+    assert "3" in message
+
+    already = {"inlet_node_selection_method": "node_ids", "inlet_node_ids": [3]}
+    assert use_node_for_role(already, "inlet", 3) == ({}, "Node 3 is already one of inlet's nodes.")
+    assert use_node_for_role(values, "inlet", None)[0] == {}
+
+
+@pytest.mark.parametrize(
+    "point, displayed, camera, expected",
+    [
+        ((12.0, 0.0, 0.0), (1, 2), (0.0, 40.0, 70.0), [12.0, 40.0, 70.0]),
+        ((12.0, 5.0, 0.0), (0, 2), (0.0, 30.0, 70.0), [30.0, 5.0, 70.0]),
+        ((0.0, 0.0, 0.0), (0, 1, 2), (8.0, 40.0, 70.0), [8.0, 40.0, 70.0]),
+        # A 4D viewer: the leading (time) axis is dropped.
+        ((3.0, 12.0, 0.0, 0.0), (2, 3), (0.0, 40.0, 70.0), [12.0, 40.0, 70.0]),
+    ],
+)
+def test_view_centre_takes_the_camera_on_screen_and_the_slice_off_it(
+    point, displayed, camera, expected
+):
+    from haemolynx.gui.boundary_picking import view_centre_zyx
+
+    assert view_centre_zyx(point, displayed, camera) == expected
+
+
+@pytest.mark.parametrize(
+    "view, up, direction, shift",
+    [
+        # napari's default 3D camera looks down -z with -y up the screen: it
+        # reads like the 2D view, so right is +x and up is -y; forward goes
+        # away from you, along the line of sight.
+        ((-1, 0, 0), (0, -1, 0), "right", (0, 0, 5)),
+        ((-1, 0, 0), (0, -1, 0), "up", (0, -5, 0)),
+        ((-1, 0, 0), (0, -1, 0), "forward", (-5, 0, 0)),
+        ((-1, 0, 0), (0, -1, 0), "back", (5, 0, 0)),
+        # Turned to look along +y with -z up the screen.
+        ((0, 1, 0), (-1, 0, 0), "right", (0, 0, 5)),
+        ((0, 1, 0), (-1, 0, 0), "up", (-5, 0, 0)),
+        ((0, 1, 0), (-1, 0, 0), "forward", (0, 5, 0)),
+        # At an angle, exactly along the camera's directions -- not the
+        # nearest image axis, which made forward/back slide sideways.
+        # right = cross(view, up) = (-0.8, 0, 0.6).
+        ((-0.6, 0.0, -0.8), (0.0, -1.0, 0.0), "right", (-4, 0, 3)),
+        ((-0.6, 0.0, -0.8), (0.0, -1.0, 0.0), "forward", (-3, 0, -4)),
+        ((-0.6, 0.0, -0.8), (0.0, -1.0, 0.0), "back", (3, 0, 4)),
+    ],
+)
+def test_moving_a_box_in_3d_follows_the_camera(view, up, direction, shift):
+    from haemolynx.gui.boundary_picking import box_around, move_box
+
+    box = box_around((20.0, 50.0, 60.0))
+    moved = move_box(box, direction, 5.0, (0, 1, 2), view_direction=view, up_direction=up)
+    assert np.allclose(np.asarray(moved) - np.asarray(box), [shift, shift])
+
+
+def test_the_chosen_box_node_is_cyan_and_largest():
+    from haemolynx.gui.boundary_picking import (
+        CHOSEN_BOX_NODE_COLOUR, box_around, box_node_styles, nodes_in_box,
+    )
+
+    found = nodes_in_box(_box_graph(), box_around((20.0, 50.0, 60.0)))
+    sizes, faces, rims = box_node_styles(found, chosen=2)
+    assert sizes[2] == max(sizes) and sizes[2] > sizes[0] > sizes[3]
+    assert tuple(faces[2]) == CHOSEN_BOX_NODE_COLOUR
+    assert tuple(faces[0]) != CHOSEN_BOX_NODE_COLOUR
+    plain, *_ = box_node_styles(found)
+    assert plain[2] < sizes[2]
+
+
+def test_a_synthetic_network_greys_every_role_with_its_own_note():
+    from haemolynx.gui.boundary_picking import (
+        DISABLED_ROLE_TOOLTIP,
+        ROLES,
+        SYNTHETIC_CHOOSES_NOTE,
+        role_disabled_note,
+        role_manual_controls_enabled,
+    )
+
+    synthetic = {"network_source": "synthetic", "automated_vessel_assignment": False}
+    for role in ROLES:
+        assert role_manual_controls_enabled(role, synthetic) is False, role
+        assert role_disabled_note(role, synthetic) == SYNTHETIC_CHOOSES_NOTE
+    image = {"network_source": "segmented_image", "automated_vessel_assignment": False}
+    assert role_manual_controls_enabled("inlet", image) is True
+    assert role_disabled_note("inlet", image) == DISABLED_ROLE_TOOLTIP["inlet"]
+
+
+def test_a_node_an_edit_added_is_not_taken_as_a_boundary_node_id():
+    """Regression: a click read the network on screen, where an edit on the
+    Post processing tab may have added nodes the Boundaries stage never has,
+    so the ID it listed stopped the next run from Boundaries. A terminal the
+    large-vessel cut made is no such node: the cut makes it again."""
+    import networkx as nx
+
+    from haemolynx.gui.boundary_picking import node_made_after_boundaries
+
+    boundaries = nx.MultiGraph()
+    boundaries.add_edge(0, 1)
+    shown = nx.MultiGraph()
+    shown.add_edge(0, 1)
+    shown.add_edge(1, 7)                      # drawn on the Post processing tab
+    shown.add_node(8, cut_from_large_vessel="arteriole")
+
+    assert node_made_after_boundaries(7, boundaries, shown)
+    assert not node_made_after_boundaries(1, boundaries, shown)
+    assert not node_made_after_boundaries(8, boundaries, shown)
+    assert not node_made_after_boundaries(7, None, shown)

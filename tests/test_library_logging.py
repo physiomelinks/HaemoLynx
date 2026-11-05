@@ -13,21 +13,21 @@ import sys
 from pathlib import Path
 
 import networkx as nx
-import pytest
 
 from haemolynx.haemodynamics.poiseuille import PoiseuilleModel
 from haemolynx.parsers import Schema, Setting, configure_console_logging, print_settings
-from haemolynx.parsers.cli import CONSOLE_LOG_FORMAT
+from haemolynx.parsers.cli import CONSOLE_LOG_FORMAT, TIMESTAMPED_CONSOLE_LOG_FORMAT
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1] / "src" / "haemolynx"
 
-#: The command line is allowed to print: everything these two modules write is
+#: The command line is allowed to print: everything these modules write is
 #: the answer to a flag the user typed (`--list-settings`, `--list-presets`,
-#: the pre-run checklist), so it belongs on stdout whether or not the caller
-#: has configured logging.
+#: the pre-run checklist, a batch's checks and summary), so it belongs on
+#: stdout whether or not the caller has configured logging.
 MODULES_THAT_MAY_PRINT = {
     Path("parsers/cli.py"),
     Path("parsers/checks.py"),
+    Path("gui/batch_run_cli.py"),
 }
 
 
@@ -156,9 +156,53 @@ def test_configure_console_logging_sends_records_to_stdout() -> None:
         root.handlers.clear()
         configure_console_logging(verbose=True)
         assert root.level == logging.DEBUG
+
+        root.handlers.clear()
+        configure_console_logging(timestamps=True)
+        assert root.handlers[-1].formatter._fmt == TIMESTAMPED_CONSOLE_LOG_FORMAT
+        assert TIMESTAMPED_CONSOLE_LOG_FORMAT.startswith("%(asctime)s ")
+        assert TIMESTAMPED_CONSOLE_LOG_FORMAT.endswith(CONSOLE_LOG_FORMAT)
     finally:
         root.handlers[:] = original_handlers
         root.setLevel(original_level)
+
+
+class _Cp1252Stream:
+    """A stdout stand-in whose encoding cannot represent Greek letters."""
+
+    encoding = "cp1252"
+
+    def __init__(self) -> None:
+        self.written: list[str] = []
+
+    def write(self, text: str) -> int:
+        text.encode(self.encoding)
+        self.written.append(text)
+        return len(text)
+
+    def flush(self) -> None:
+        return None
+
+
+def test_console_logging_replaces_characters_the_console_cannot_encode() -> None:
+    from haemolynx.parsers.cli import _ConsoleHandler
+
+    stream = _Cp1252Stream()
+    handler = _ConsoleHandler(stream)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    record = logging.LogRecord(
+        name="haemolynx",
+        level=logging.INFO,
+        pathname="",
+        lineno=0,
+        msg="resistance / (π * diameter^4) in μm",
+        args=(),
+        exc_info=None,
+    )
+    handler.emit(record)
+    assert stream.written
+    assert "diameter^4" in stream.written[0]
+    stream.written[0].encode("cp1252")
 
 
 def test_list_settings_writes_to_stdout(capsys) -> None:

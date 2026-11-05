@@ -15,6 +15,7 @@ from __future__ import annotations
 import warnings
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 napari = pytest.importorskip("napari")
@@ -22,9 +23,14 @@ pytest.importorskip("magicgui")
 
 from haemolynx.gui._widget import (  # noqa: E402
     DISPLAY_SETTINGS_OFF_IN_NAPARI,
+    FORCED_HIDDEN_SETTINGS,
+    OURS,
+    ROW_LABEL_MAX_WIDTH,
+    forced_hidden_value,
     settings_widget,
 )
-from haemolynx.gui.tabs import STAGES  # noqa: E402
+from haemolynx.gui.progress import TOTAL_STAGES  # noqa: E402
+from haemolynx.gui.tabs import tab_titles  # noqa: E402
 from haemolynx.pipeline import default_schema  # noqa: E402
 from haemolynx.pipeline.progress import (  # noqa: E402
     STAGE_FINISHED,
@@ -73,27 +79,36 @@ def test_the_panel_builds_with_no_viewer():
     assert settings_widget(napari_viewer=None) is not None
 
 
-def test_there_is_one_tab_per_stage(panel):
+def test_there_is_one_tab_per_stage_that_opens_one(panel):
+    """Not one per stage: `solve` shows its rows on the haemodynamics tab.
+
+    Post processing is one of them now, between Haemodynamics and
+    Perturbations, not a page appended after the stages.
+    """
     from qtpy.QtWidgets import QTabWidget
+
+    from haemolynx.gui._widget import POST_PROCESSING_TAB
 
     widget, _viewer = panel
     tab_widget = widget.findChild(QTabWidget)
     assert tab_widget is not None
-    assert tab_widget.count() == len(STAGES)
-    assert [tab_widget.tabText(i) for i in range(tab_widget.count())] == [
-        stage.title for stage in STAGES
-    ]
+    titles = [tab_widget.tabText(i) for i in range(tab_widget.count())]
+    assert titles == list(tab_titles())
+    assert titles.count(POST_PROCESSING_TAB) == 1
+    assert titles.index(POST_PROCESSING_TAB) == titles.index("6. Haemodynamics") + 1
 
 
 def test_a_long_tab_asks_for_far_less_room_than_its_contents_need(panel):
-    """The Diameters tab has 39 rows; it must scroll, not stretch the window.
+    """A tab with more rows than fit must scroll, not stretch the window.
 
     What matters is not that every tab asks for the same height -- a scroll
     area's hint does vary a little -- but that a tab asks for much less than
     the rows inside it would need, so napari sizes the dock to the panel rather
-    than to 39 spin boxes.
+    than to every spin box on its longest tab.
     """
     from qtpy.QtWidgets import QScrollArea, QTabWidget
+
+    from haemolynx.gui._widget import TAB_SCROLL_HINT_HEIGHT
 
     widget, _viewer = panel
     tab_widget = widget.findChild(QTabWidget)
@@ -103,7 +118,7 @@ def test_a_long_tab_asks_for_far_less_room_than_its_contents_need(panel):
         assert isinstance(page, QScrollArea), "each tab must be scrollable"
         content_height = page.widget().sizeHint().height()
         tallest_content = max(tallest_content, content_height)
-        assert page.sizeHint().height() <= content_height + 40, (
+        assert page.sizeHint().height() <= TAB_SCROLL_HINT_HEIGHT + 8, (
             f"tab {tab_widget.tabText(index)} asks for "
             f"{page.sizeHint().height()}px for {content_height}px of content"
         )
@@ -113,9 +128,47 @@ def test_a_long_tab_asks_for_far_less_room_than_its_contents_need(panel):
         tab_widget.widget(index).sizeHint().height()
         for index in range(tab_widget.count())
     )
-    assert tallest_content > 800, "the fixture no longer has a long tab to test"
+    # Relative to the hint, not a pixel count: wrapped row labels and the
+    # tab 8 reorganisation have each made the longest tab shorter. Twice the
+    # hint is still a tab that could not fit without scrolling, which is all
+    # the check below needs.
+    assert tallest_content > 2 * TAB_SCROLL_HINT_HEIGHT, (
+        "the fixture no longer has a long tab to test"
+    )
     assert asked < tallest_content / 2, (
         f"the tallest tab asks for {asked}px against {tallest_content}px of content"
+    )
+
+
+def test_the_panel_does_not_demand_more_height_than_a_1080p_work_area(panel):
+    """Windows cannot honour a min height taller than the usable screen.
+
+    A 1920x1200 Dell with a taskbar leaves ~1009px of client height. Qt then
+    warns ``QWindowsWindow::setGeometry`` if the main window minimum is 1057
+    because the dock's size hint was the full tab contents. Tabs must report a
+    bounded hint and the panel's own minimum must stay below that work area.
+    """
+    from qtpy.QtWidgets import QScrollArea, QTabWidget
+
+    from haemolynx.gui._widget import TAB_SCROLL_HINT_HEIGHT
+
+    widget, _viewer = panel
+    tab_widget = widget.findChild(QTabWidget)
+    for index in range(tab_widget.count()):
+        page = tab_widget.widget(index)
+        assert isinstance(page, QScrollArea)
+        assert page.sizeHint().height() <= TAB_SCROLL_HINT_HEIGHT + 8, (
+            f"tab {tab_widget.tabText(index)} asks for {page.sizeHint().height()}px"
+        )
+
+    # Menu, title bar and taskbar take the rest of a 1080p screen.
+    assert widget.minimumSizeHint().height() < 900, (
+        f"panel minimum height {widget.minimumSizeHint().height()}px "
+        "will not fit a 1080p work area"
+    )
+    assert widget.sizeHint().height() < 900, (
+        f"panel size hint {widget.sizeHint().height()}px "
+        "will not fit a 1080p work area"
     )
 
 
@@ -133,22 +186,22 @@ def test_an_untouched_panel_reads_back_the_schema_defaults(panel):
         resolved = schema.validate(values)
 
     assert [str(w.message) for w in caught] == []
-    expected = schema.validate(
-        {
-            setting.name: DISPLAY_SETTINGS_OFF_IN_NAPARI.get(
-                setting.name, setting.default
-            )
-            for setting in schema
-        }
-    )
+    defaults = {
+        setting.name: DISPLAY_SETTINGS_OFF_IN_NAPARI.get(setting.name, setting.default)
+        for setting in schema
+    }
+    for name in FORCED_HIDDEN_SETTINGS:
+        defaults[name] = forced_hidden_value(name, defaults)
+    expected = schema.validate(defaults)
     assert resolved == expected
 
 
 def test_the_panel_does_not_set_a_setting_nothing_will_read(panel):
     """Switching a display setting off must not earn an ineffective warning.
 
-    `hold_ide_plots_open` only does anything while `show_plots_in_ide` is on,
-    so turning it off as well made the schema warn on an untouched panel.
+    `hold_ide_plots_open` only does anything while Produce IDE plots and
+    `show_plots_in_ide` are on, so turning those nested rows off as well
+    made the schema warn on an untouched panel.
     """
     widget, _viewer = panel
     schema = default_schema()
@@ -161,11 +214,76 @@ def test_the_panel_does_not_set_a_setting_nothing_will_read(panel):
 
 
 def test_the_settings_that_open_a_browser_start_off(panel):
-    """`show_plots_in_ide` makes plotly open a web browser mid-run."""
+    """Produce IDE plots starts off so napari does not write Plotly HTML."""
     widget, _viewer = panel
     values = widget._haemolynx_values()
     for name, expected in DISPLAY_SETTINGS_OFF_IN_NAPARI.items():
         assert values[name] == expected, f"{name} should start {expected}"
+    assert values["show_plots_in_ide"] is False
+    assert values["interactive_plots"] is False
+
+
+def _show_tab(widget, text):
+    from qtpy.QtWidgets import QApplication
+
+    tabs = widget._haemolynx_tabs
+    for index in range(tabs.count()):
+        if text in tabs.tabText(index):
+            tabs.setCurrentIndex(index)
+            QApplication.processEvents()
+            return
+    raise AssertionError(f"no tab containing {text!r}")
+
+
+def test_forced_hidden_export_settings_have_no_row_but_keep_their_value(panel):
+    """flow_direction_colouring and flow_arrow_scale are not per-run
+    decisions, so they get no row -- but they must still read back their
+    forced value, and a stale/loaded value must not stick with no visible
+    control to fix it."""
+    widget, _viewer = panel
+    widget.show()
+    rows = widget._haemolynx_rows()
+    _show_tab(widget, "Additional measurements")
+
+    values = widget._haemolynx_values()
+    assert "compute_vascular_communities" not in FORCED_HIDDEN_SETTINGS
+    for name in FORCED_HIDDEN_SETTINGS:
+        assert rows[name].visible is False, name
+        assert values[name] == forced_hidden_value(name, values), name
+
+
+def test_vascular_communities_are_a_real_row_independent_of_statistics(panel):
+    """compute_vascular_communities is its own visible checkbox in its own
+    "Vascular communities" box on tab 8: it can be switched on with
+    Statistics off, and its weighting row appears only once it is on."""
+    from qtpy.QtWidgets import QApplication, QGroupBox
+
+    widget, _viewer = panel
+    widget.show()
+    rows = widget._haemolynx_rows()
+    _show_tab(widget, "Additional measurements")
+
+    box = widget.findChild(QGroupBox, "haemolynx_section_vascular_communities")
+    assert box is not None
+    assert box.title() == "Vascular communities"
+
+    values = widget._haemolynx_values()
+    assert values["statistics"] is False
+    assert values["compute_vascular_communities"] is False
+    assert rows["compute_vascular_communities"].visible is True
+    assert rows["vascular_community_weighting"].visible is False
+
+    rows["compute_vascular_communities"].value = True
+    QApplication.processEvents()
+    values = widget._haemolynx_values()
+    assert values["compute_vascular_communities"] is True  # sticks with Statistics off
+    assert values["statistics"] is False
+    assert rows["vascular_community_weighting"].visible is True
+    assert rows["vascular_community_weighting"].enabled is True
+
+    rows["compute_vascular_communities"].value = False
+    QApplication.processEvents()
+    assert rows["vascular_community_weighting"].visible is False
 
 
 def test_the_input_path_starts_empty(panel):
@@ -215,11 +333,33 @@ def test_a_layer_with_a_scale_sets_the_voxel_size(panel):
 # wiring: that the panel has bars at all, and that an event moves them.
 
 
-def test_the_panel_has_a_bar_for_the_stages_and_one_for_the_steps(panel):
+def test_the_panel_has_exactly_the_stage_step_group_and_candidate_bars(panel):
+    """Named, not counted: a bare ``== N`` count would silently go stale the
+    next time a feature adds its own progress bars, the way "Optimise
+    settings"'s own group/candidate pair once did to this test. Comparing
+    the found widgets against the named bars themselves catches that --
+    both a missing wiring (a named bar absent from the panel) and a stray
+    extra bar nothing here expects."""
     from qtpy.QtWidgets import QProgressBar
 
     widget, _viewer = panel
-    assert len(widget.findChildren(QProgressBar)) == 2
+    bars = widget._haemolynx_progress
+    optimise_bars = widget._haemolynx_optimise_bars
+    optimise_fwhm_bars = widget._haemolynx_optimise_fwhm_bars
+    optimise_endothelial_bars = widget._haemolynx_optimise_endothelial_bars
+
+    found = set(widget.findChildren(QProgressBar))
+    expected = {
+        bars.stage_bar,
+        bars.step_bar,
+        optimise_bars.group_bar,
+        optimise_bars.candidate_bar,
+        optimise_fwhm_bars.group_bar,
+        optimise_fwhm_bars.candidate_bar,
+        optimise_endothelial_bars.group_bar,
+        optimise_endothelial_bars.candidate_bar,
+    }
+    assert found == expected
 
 
 def test_the_bars_are_hidden_until_a_run_starts(panel):
@@ -237,7 +377,7 @@ def test_starting_a_run_shows_an_empty_stage_bar(panel):
 
     assert not bars.stage_bar.isHidden()
     assert bars.stage_bar.value() == 0
-    assert bars.stage_bar.maximum() == len(STAGES)
+    assert bars.stage_bar.maximum() == TOTAL_STAGES
 
 
 def test_a_finished_stage_moves_the_stage_bar(panel):
@@ -251,12 +391,12 @@ def test_a_finished_stage_moves_the_stage_bar(panel):
             stage="build_network",
             title="3. Graph",
             index=2,
-            total=len(STAGES),
+            total=TOTAL_STAGES,
         )
     )
 
     assert bars.stage_bar.value() == 3
-    assert bars.stage_bar.maximum() == len(STAGES)
+    assert bars.stage_bar.maximum() == TOTAL_STAGES
 
 
 def test_a_graph_build_step_moves_the_second_bar(panel):
@@ -271,7 +411,7 @@ def test_a_graph_build_step_moves_the_second_bar(panel):
             stage="build_network",
             title="3. Graph",
             index=2,
-            total=len(STAGES),
+            total=TOTAL_STAGES,
             step="collapse_node_clusters",
             step_index=4,
             step_total=11,
@@ -293,13 +433,13 @@ def test_a_finished_run_fills_the_stage_bar_and_drops_the_step_bar(panel):
             stage="build_network",
             title="3. Graph",
             index=2,
-            total=len(STAGES),
+            total=TOTAL_STAGES,
         )
     )
 
     bars.finish()
 
-    assert bars.stage_bar.value() == bars.stage_bar.maximum() == len(STAGES)
+    assert bars.stage_bar.value() == bars.stage_bar.maximum() == TOTAL_STAGES
     assert bars.step_bar.isHidden()
 
 
@@ -314,7 +454,7 @@ def test_a_failed_run_leaves_the_bar_where_it_stopped(panel):
             stage="skeletonise",
             title="2. Skeletonise",
             index=1,
-            total=len(STAGES),
+            total=TOTAL_STAGES,
         )
     )
 
@@ -329,7 +469,7 @@ def test_a_failed_run_leaves_the_bar_where_it_stopped(panel):
 
 @pytest.mark.slow
 def test_the_panel_runs_the_pipeline_on_the_open_layer(make_napari_viewer, tmp_path):
-    """The whole path: layer -> settings -> eight stages -> a graph."""
+    """The whole path: layer -> settings -> every stage -> a graph."""
     from haemolynx.pipeline import resolve_settings, run_pipeline_stages
 
     viewer = make_napari_viewer()
@@ -337,7 +477,7 @@ def test_the_panel_runs_the_pipeline_on_the_open_layer(make_napari_viewer, tmp_p
     widget = settings_widget(napari_viewer=viewer)
 
     values = widget._haemolynx_values()
-    values["vtk_output_prefix"] = tmp_path / "run"
+    values["output_dir"] = tmp_path
     values["plot_dir"] = tmp_path / "plots"
     values["statistics"] = False
     # Inlets from one end of the volume and outlets from the other. Both set to
@@ -373,7 +513,7 @@ def test_a_run_from_the_panel_opens_no_browser(make_napari_viewer, tmp_path, mon
     widget = settings_widget(napari_viewer=viewer)
 
     values = widget._haemolynx_values()
-    values["vtk_output_prefix"] = tmp_path / "run"
+    values["output_dir"] = tmp_path
     values["plot_dir"] = tmp_path / "plots"
     values["statistics"] = False
     values["inlet_node_selection_method"] = "volume"
@@ -524,6 +664,116 @@ def test_loading_a_config_naming_a_missing_image_still_fails_the_run_checks(
     assert any("input_path" in message for message in result.errors)
 
 
+def test_loading_a_config_with_a_long_spaced_path_round_trips(
+    make_napari_viewer, tmp_path
+):
+    """Save then Load must keep an absolutised Windows-style path intact.
+
+    This is the failure mode behind the napari "config won't load" report on
+    Windows: FileEdit stores `C:/Users/.../My Dataset/mask.tif`, dump folded
+    it at the space, and the next Load hit a YAML scanner error.
+    """
+    from haemolynx.parsers import dump_config
+
+    make_napari_viewer()
+    panel = settings_widget()
+    schema = default_schema()
+
+    absolute = (
+        tmp_path
+        / "CloudDrive"
+        / (
+            "Composite_01012026_StackA_chan2_25x_940nm_1040_dye3kda_xyz_"
+            "zstack_spot1_1p5z_region001_Simple Segmentation_arteriole.tiff"
+        )
+    )
+    absolute.parent.mkdir(parents=True, exist_ok=True)
+    absolute.write_bytes(b"")
+
+    saved = tmp_path / "panel_roundtrip.yaml"
+    dump_config(
+        saved,
+        schema,
+        values={**{s.name: s.default for s in schema}, "input_path": absolute},
+    )
+    assert "\n  Segmentation_arteriole.tiff" not in saved.read_text(encoding="utf-8")
+
+    panel._haemolynx_load_config(saved)
+
+    assert "Could not load" not in panel._haemolynx_report()
+    assert Path(panel._haemolynx_values()["input_path"]) == absolute
+
+
+def test_panel_save_config_round_trips_long_paths_with_spaces(
+    make_napari_viewer, tmp_path
+):
+    """The panel's Save path must write YAML the same Load can read back.
+
+    Exercises ``_haemolynx_save_config`` (what "Save config..." calls after the
+    file dialogue) with FileEdit-absolutised Windows paths containing spaces.
+    """
+    make_napari_viewer()
+    panel = settings_widget()
+    rows = panel._haemolynx_rows()
+
+    absolute = (
+        tmp_path
+        / "CloudDrive"
+        / (
+            "Composite_01012026_StackA_chan2_25x_940nm_1040_dye3kda_xyz_"
+            "zstack_spot1_1p5z_region001_Simple Segmentation_.tiff"
+        )
+    )
+    absolute.parent.mkdir(parents=True, exist_ok=True)
+    absolute.write_bytes(b"")
+    arteriole = absolute.with_name(
+        absolute.name.replace("_.tiff", "_arteriole.tiff")
+    )
+    arteriole.write_bytes(b"")
+
+    rows["input_path"].value = absolute
+    rows["automated_vessel_assignment"].value = True
+    rows["use_large_vessel_masks"].value = True
+    rows["large_arteriole_mask_path"].value = arteriole
+
+    saved = tmp_path / "from_panel.yaml"
+    assert panel._haemolynx_save_config(saved) is True
+    assert "Could not save" not in panel._haemolynx_report()
+    text = saved.read_text(encoding="utf-8")
+    assert "\n  Segmentation_.tiff" not in text
+    assert "\n  Segmentation_arteriole.tiff" not in text
+
+    panel._haemolynx_load_config(saved)
+    assert "Could not load" not in panel._haemolynx_report()
+    assert Path(panel._haemolynx_values()["input_path"]) == absolute
+    assert Path(panel._haemolynx_values()["large_arteriole_mask_path"]) == arteriole
+
+
+def test_panel_save_config_adds_a_yaml_suffix(make_napari_viewer, tmp_path):
+    make_napari_viewer()
+    panel = settings_widget()
+    dest = tmp_path / "my_settings"
+    assert panel._haemolynx_save_config(dest) is True
+    written = tmp_path / "my_settings.yaml"
+    assert written.is_file()
+    assert "Wrote" in panel._haemolynx_report()
+    assert written.name in panel._haemolynx_report()
+
+
+def test_loading_a_config_for_a_different_schema_reports_instead_of_raising(
+    make_napari_viewer,
+):
+    """simple_network_config.yaml is not a pipeline config; say so in the panel."""
+    make_napari_viewer()
+    panel = settings_widget()
+
+    panel._haemolynx_load_config(REPO_ROOT / "examples" / "simple_network_config.yaml")
+
+    report = panel._haemolynx_report()
+    assert report.startswith("Could not load"), report
+    assert "inlet_pressure_pa" in report
+
+
 # --- the About widget --------------------------------------------------------
 
 
@@ -637,7 +887,7 @@ def test_the_run_checks_pass_on_a_config_loaded_over_an_open_layer(
     panel._haemolynx_load_config(RESISTANCE_CONFIG)
 
     rows = panel._haemolynx_rows()
-    rows["vtk_output_prefix"].value = tmp_path / "run"
+    rows["output_dir"].value = tmp_path
     rows["base_plot_dir"].value = tmp_path / "plots"
 
     settings = resolve_settings(
@@ -679,6 +929,33 @@ def test_a_config_still_applies_everything_other_than_the_input(
 
     for name in ("min_stub_length", "inlet_p_bc", "skeleton_bridge_gap_size"):
         assert values[name] == on_file[name], name
+
+
+def test_showing_our_own_mask_layer_does_not_hijack_the_input(make_napari_viewer):
+    """A run's own results layers must never become the next run's input.
+
+    `vessel_mask_volume_layers` shows the large-vessel masks as Image-kind
+    layers (results.py). Adding any Image layer used to be treated as "the
+    user just dropped this in, use it as input" -- so showing those masks
+    silently repointed input_path at the mask's own exported file. Without a
+    full napari restart to wipe that state, every later run then used the
+    mask instead of the real segmentation. Only a layer the user actually
+    brings in should ever become the input.
+    """
+    import numpy as np
+
+    viewer = make_napari_viewer()
+    viewer.open(str(FIXTURE))
+    panel = settings_widget(napari_viewer=viewer)
+    assert Path(panel._haemolynx_values()["input_path"]) == FIXTURE
+
+    viewer.add_image(
+        np.zeros((4, 4, 4), dtype=np.float32),
+        name="HaemoLynx - large venule mask",
+        metadata={OURS: {"kind": "image"}},
+    )
+
+    assert Path(panel._haemolynx_values()["input_path"]) == FIXTURE
 
 
 # --- an adopted layer is put in the same frame as the results ----------------
@@ -781,3 +1058,494 @@ def test_scaling_the_layer_does_not_change_what_the_run_is_told(
     values = panel._haemolynx_values()
     assert values["voxel_size_override_xyz"] is None
     assert values["voxel_size_policy"] != "override"
+
+
+def test_shared_ilastik_reparent_does_not_spawn_floating_windows(panel, tmp_path):
+    """Shared ilastik rows move between Input and Boundaries.
+
+    Showing a magicgui row with no Qt parent opens a top-level window next to
+    napari. Toggling the host must never leave those rows visible while
+    unparented — the same class of bug as Boundaries ``place_shared``.
+
+    While the host tab is not current, magicgui may keep ``visible`` False
+    even though the row is correctly parented; switch to that tab before
+    asserting the rows appear.
+    """
+    from qtpy.QtWidgets import QApplication
+
+    from haemolynx.gui.form import SHARED_ILASTIK_SETTINGS
+
+    widget, _viewer = panel
+    widget.show()
+    rows = widget._haemolynx_rows()
+    tabs = widget._haemolynx_tabs
+    before = {id(w) for w in QApplication.topLevelWidgets() if w.isVisible()}
+
+    def assert_no_new_windows() -> None:
+        QApplication.processEvents()
+        appeared = [
+            w
+            for w in QApplication.topLevelWidgets()
+            if w.isVisible() and id(w) not in before
+        ]
+        assert appeared == []
+
+    def assert_hosted_and_embedded() -> None:
+        for name in SHARED_ILASTIK_SETTINGS:
+            native = rows[name].native
+            assert native.parent() is not None, name
+            assert not native.isWindow(), name
+
+    def select_tab(title_substring: str) -> None:
+        for index in range(tabs.count()):
+            if title_substring in tabs.tabText(index):
+                tabs.setCurrentIndex(index)
+                QApplication.processEvents()
+                return
+        raise AssertionError(f"no tab containing {title_substring!r}")
+
+    # The block's own Advanced button open, so every shared row can show.
+    widget._haemolynx_advanced["shared:ilastik"].toggle(True)
+    # The main ilastik hosts the rows only with a raw image to segment.
+    import numpy as np
+    import tifffile
+
+    raw = tmp_path / "raw.tif"
+    tifffile.imwrite(raw, np.zeros((4, 8, 8), dtype=np.uint8))
+    rows["raw_image_path"].value = raw
+    rows["use_ilastik_segmentation"].value = True
+    QApplication.processEvents()
+    select_tab("Input")
+    assert_hosted_and_embedded()
+    for name in SHARED_ILASTIK_SETTINGS:
+        assert rows[name].visible is True, name
+    assert_no_new_windows()
+
+    rows["use_ilastik_segmentation"].value = False
+    QApplication.processEvents()
+    for name in SHARED_ILASTIK_SETTINGS:
+        assert rows[name].visible is False, name
+    assert_no_new_windows()
+
+    rows["automated_vessel_assignment"].value = True
+    rows["use_large_vessel_masks"].value = True
+    rows["use_ilastik_large_vessel_segmentation"].value = True
+    QApplication.processEvents()
+    assert_hosted_and_embedded()
+    assert_no_new_windows()
+    select_tab("Boundaries")
+    assert_hosted_and_embedded()
+    for name in SHARED_ILASTIK_SETTINGS:
+        assert rows[name].visible is True, name
+    assert_no_new_windows()
+
+    rows["use_ilastik_segmentation"].value = True
+    QApplication.processEvents()
+    select_tab("Input")
+    assert_hosted_and_embedded()
+    for name in SHARED_ILASTIK_SETTINGS:
+        assert rows[name].visible is True, name
+    assert_no_new_windows()
+
+    rows["use_ilastik_segmentation"].value = False
+    rows["use_ilastik_large_vessel_segmentation"].value = False
+    QApplication.processEvents()
+    for name in SHARED_ILASTIK_SETTINGS:
+        assert rows[name].visible is False, name
+    assert_no_new_windows()
+
+
+def test_the_edt_diameters_have_no_mask_box_of_their_own(panel):
+    """The EDT widths read the segmented image on the Input tab; a second
+    path box for them carried other datasets' masks into runs."""
+    widget, _viewer = panel
+    rows = widget._haemolynx_rows()
+    assert "use_edt_diameter_crosscheck" in rows
+    assert "edt_mask_path" not in rows
+
+
+def test_thick_vessel_threshold_overrides_show_auto_placeholder_and_nest(panel):
+    """The two threshold overrides hint 'auto' when empty and hide with their parent.
+
+    Regression for a GUI request: an empty box for these two used to give no
+    indication of what would actually be used. While the Skeletonise tab is
+    not current, magicgui may keep ``visible`` False regardless of prerequisite
+    state, so the tab must be selected before the nesting assertions mean
+    anything (see ``test_shared_ilastik_knobs_...`` above).
+    """
+    from qtpy.QtWidgets import QApplication, QTabWidget
+
+    widget, _viewer = panel
+    widget.show()
+    rows = widget._haemolynx_rows()
+    tabs = widget.findChild(QTabWidget)
+    for index in range(tabs.count()):
+        if "Skeletonise" in tabs.tabText(index):
+            tabs.setCurrentIndex(index)
+            QApplication.processEvents()
+            break
+    else:
+        raise AssertionError("no tab containing 'Skeletonise'")
+
+    wall = rows["skeleton_thick_vessel_wall_absorption_um"]
+    flake = rows["skeleton_thick_vessel_flake_filter_um"]
+
+    assert wall.value == "" and flake.value == ""
+    assert wall.native.placeholderText() == "auto"
+    assert flake.native.placeholderText() == "auto"
+
+    rows["use_thick_vessel_skeletonisation"].value = False
+    QApplication.processEvents()
+    assert wall.visible is False
+    assert flake.visible is False
+    assert rows["skeleton_thick_vessel_min_radius_um"].visible is False
+    assert rows["skeleton_fill_mask_holes_before_thickness"].visible is False
+
+    rows["use_thick_vessel_skeletonisation"].value = True
+    QApplication.processEvents()
+    # Both overrides sit behind the thick-vessel Advanced button.
+    assert wall.visible is False
+    widget._haemolynx_advanced["skeletonise:use_thick_vessel_skeletonisation"].toggle(True)
+    QApplication.processEvents()
+    assert wall.visible is True
+    assert flake.visible is True
+    assert rows["skeleton_thick_vessel_min_radius_um"].visible is True
+    assert rows["skeleton_fill_mask_holes_before_thickness"].visible is True
+
+
+def test_cartwheel_hub_guard_knobs_nest_under_its_own_toggle(panel):
+    """The cartwheel hub guard's own knob hides with its toggle, on the
+    "3. Graph" tab -- same live-Qt check as
+    test_thick_vessel_threshold_overrides_show_auto_placeholder_and_nest
+    above, for a group that used to only grey out instead of hide. The hub
+    size and tangent length, which direction-aware merging reads too, stay
+    shown and editable with the guard off.
+
+    While the Graph tab is not current, magicgui may keep ``visible`` False
+    regardless of prerequisite state, so the tab must be selected before
+    the nesting assertions mean anything (see that test's own note).
+    """
+    from qtpy.QtWidgets import QApplication, QTabWidget
+
+    widget, _viewer = panel
+    widget.show()
+    rows = widget._haemolynx_rows()
+    tabs = widget.findChild(QTabWidget)
+    for index in range(tabs.count()):
+        if "Graph" in tabs.tabText(index):
+            tabs.setCurrentIndex(index)
+            QApplication.processEvents()
+            break
+    else:
+        raise AssertionError("no tab containing 'Graph'")
+
+    guard_only = rows["cartwheel_hub_max_radial_dispersion"]
+    shared = [rows["cartwheel_hub_min_degree"], rows["cartwheel_hub_tangent_length_um"]]
+
+    # The guard is one of the Graph tab's Checks, behind its Advanced button.
+    widget._haemolynx_advanced["build_network:box:pipeline_stages"].toggle(True)
+    rows["detect_cartwheel_hub_artifacts"].value = False
+    rows["cluster_collapse_method"].value = "direction_aware"
+    QApplication.processEvents()
+    assert guard_only.visible is False
+    for row in shared:
+        assert row.visible is True and row.enabled is True
+
+    rows["detect_cartwheel_hub_artifacts"].value = True
+    QApplication.processEvents()
+    for row in (guard_only, *shared):
+        assert row.visible is True
+
+
+def test_the_fwhm_same_edge_window_box_can_be_emptied(panel):
+    """Empty, the window is sized by each vessel's width; a spin box could
+    not be emptied, so the panel could never choose that."""
+    widget, _viewer = panel
+    rows = widget._haemolynx_rows()
+    row = rows["fwhm_same_edge_arc_window_um"]
+    assert row.native.placeholderText() == "by vessel width"
+    assert widget._haemolynx_values()["fwhm_same_edge_arc_window_um"] == 3.0
+
+    row.value = ""
+    assert widget._haemolynx_values()["fwhm_same_edge_arc_window_um"] is None
+    row.value = "4.5"
+    assert widget._haemolynx_values()["fwhm_same_edge_arc_window_um"] == 4.5
+
+
+def test_perturbation_output_dir_nests_under_run_perturbations(panel):
+    """perturbation_output_dir hides with its own toggle, on the
+    "8. Perturbations" tab -- same live-Qt check as the cartwheel-hub-guard
+    test above, and same reason the tab must be selected first."""
+    from qtpy.QtWidgets import QApplication, QTabWidget
+
+    widget, _viewer = panel
+    widget.show()
+    rows = widget._haemolynx_rows()
+    tabs = widget.findChild(QTabWidget)
+    for index in range(tabs.count()):
+        if "Perturbations" in tabs.tabText(index):
+            tabs.setCurrentIndex(index)
+            QApplication.processEvents()
+            break
+    else:
+        raise AssertionError("no tab containing 'Perturbations'")
+
+    output_dir = rows["perturbation_output_dir"]
+    widget._haemolynx_advanced["run_perturbations:run_perturbations"].toggle(True)
+
+    rows["run_perturbations"].value = False
+    QApplication.processEvents()
+    assert output_dir.visible is False
+
+    rows["run_perturbations"].value = True
+    QApplication.processEvents()
+    assert output_dir.visible is True
+
+
+def test_thick_vessel_row_relabels_when_large_vessel_network_mode_is_on(panel):
+    """Once thick-vessel skeletonisation and the large-vessel-network mode
+    are both on, the checkbox's own action is no longer "thick vessel
+    skeletonisation" -- it becomes "also segment large vessels". Turning
+    either back off must revert the label."""
+    from qtpy.QtWidgets import QApplication
+
+    widget, _viewer = panel
+    widget.show()
+    rows = widget._haemolynx_rows()
+    original_label = rows["use_thick_vessel_skeletonisation"].label
+
+    rows["use_thick_vessel_skeletonisation"].value = True
+    rows["use_large_vessel_masks"].value = True
+    rows["automated_vessel_assignment"].value = True
+    # A venule mask too: an arteriole mask alone is one global mask, which
+    # gives no Large_Art/Large_Ven tier.
+    rows["large_venule_mask_path"].value = "large_venule_mask.tif"
+    rows["cut_network_at_large_vessel_volumes"].value = False
+    QApplication.processEvents()
+    assert rows["use_thick_vessel_skeletonisation"].label == original_label
+
+    rows["assign_large_vessel_branch_orders"].value = True
+    QApplication.processEvents()
+    assert rows["use_thick_vessel_skeletonisation"].label == "Also segment large vessels"
+
+    rows["assign_large_vessel_branch_orders"].value = False
+    QApplication.processEvents()
+    assert rows["use_thick_vessel_skeletonisation"].label == original_label
+
+
+def test_large_vessel_network_mode_survives_thick_vessel_skeletonisation_turning_off(panel):
+    """assign_large_vessel_branch_orders (keep large arteriole/venule mask
+    material in the network as Large_Art/Large_Ven, instead of cutting it
+    away) does not need thickness-gated skeletonisation specifically --
+    graph.large_vessel_network works purely off mask overlap, regardless
+    of which method produced the graph's centrelines. Turning thickness
+    gating off (e.g. to compare it against plain Lee on a dataset where it
+    hurts coverage) must leave large-vessel-network mode exactly as the
+    user left it, not silently clear it."""
+    from qtpy.QtWidgets import QApplication
+
+    widget, _viewer = panel
+    widget.show()
+    rows = widget._haemolynx_rows()
+
+    rows["use_thick_vessel_skeletonisation"].value = True
+    rows["use_large_vessel_masks"].value = True
+    rows["automated_vessel_assignment"].value = True
+    rows["assign_large_vessel_branch_orders"].value = True
+    QApplication.processEvents()
+    assert bool(rows["assign_large_vessel_branch_orders"].value) is True
+
+    rows["use_thick_vessel_skeletonisation"].value = False
+    QApplication.processEvents()
+
+    assert bool(rows["assign_large_vessel_branch_orders"].value) is True
+    assert rows["assign_large_vessel_branch_orders"].enabled is True
+
+
+
+
+# --- every tab fits the dock ------------------------------------------------
+
+
+def _settle(widget, index):
+    from qtpy.QtWidgets import QApplication
+
+    widget._haemolynx_tabs.setCurrentIndex(index)
+    for _ in range(5):
+        QApplication.processEvents()
+
+
+def test_every_tab_fits_the_narrowest_panel(panel):
+    """A tab scrolls up and down only, so a page wider than its viewport is
+    clipped on the right. magicgui made every label Fixed at its one-line
+    width and pinned each container's label column to its widest label
+    (hidden rows included), and a dropdown to its longest choice: Input,
+    Diameters and Perturbations were all wider than the dock."""
+    widget, _viewer = panel
+    perturbations = widget._haemolynx_perturbations
+    for index, perturbation_type in enumerate(
+        ("capillary_block", "arteriole_and_pericyte_diameter_change")
+    ):
+        perturbations.add()
+        perturbations.choose_type(index, perturbation_type)
+    widget.resize(1, 900)
+    widget.show()
+    tabs = widget._haemolynx_tabs
+    for index in range(tabs.count()):
+        _settle(widget, index)
+        scroller = tabs.widget(index)
+        assert scroller.widget().width() <= scroller.viewport().width(), tabs.tabText(index)
+
+
+def test_long_row_labels_wrap_and_keep_their_height(panel):
+    """A capped label wraps rather than widening the row, and reserves the
+    lines it wraps to rather than being clipped to one."""
+    from qtpy.QtWidgets import QLabel
+
+    widget, _viewer = panel
+    widget.show()
+    # Longer than the cap on its own, whatever else shares its box.
+    label = next(
+        label
+        for label in widget.findChildren(QLabel)
+        if label.text().startswith("Segmentation cleanup reconnect max bridge distance")
+    )
+    assert label.wordWrap()
+    assert label.minimumWidth() <= ROW_LABEL_MAX_WIDTH
+    assert label.minimumHeight() >= label.heightForWidth(ROW_LABEL_MAX_WIDTH)
+
+
+def test_perturbation_rows_are_not_squashed(panel):
+    """The Perturbations page is never laid out shorter than its rows: a
+    short dock scrolls the tab instead of overlapping the rows."""
+    from qtpy.QtWidgets import QWidget
+
+    widget, _viewer = panel
+    perturbations = widget._haemolynx_perturbations
+    perturbations.add()
+    perturbations.choose_type(0, "capillary_block")
+    widget.resize(480, 400)
+    widget.show()
+    tabs = widget._haemolynx_tabs
+    index = next(i for i in range(tabs.count()) if "Perturbations" in tabs.tabText(i))
+    _settle(widget, index)
+    page = tabs.widget(index).widget()
+    # Rows and the containers holding them: each is at least as tall as
+    # its own layout says its contents need.
+    laid_out = [w for w in page.findChildren(QWidget) if w.isVisible() and w.layout()]
+    assert laid_out
+    for row in laid_out:
+        assert row.height() >= row.layout().minimumSize().height(), row
+
+
+@pytest.mark.gui
+def test_the_raw_image_rows_grey_out_on_every_tab_while_no_raw_image_is_entered(panel, tmp_path):
+    """Input: channel, stain and the ilastik switch; Diameters: measuring
+    from the raw image. Greyed, in view, saying what to set -- and back as
+    soon as a raw image is entered. The segmented-image row stays whatever
+    the ilastik box says while there is nothing for ilastik to segment."""
+    import tifffile
+    from qtpy.QtWidgets import QApplication
+
+    widget, _viewer = panel
+    widget.show()
+    widget._haemolynx_expand_advanced()
+    rows = widget._haemolynx_rows()
+    raw_rows = (
+        "raw_image_channel",
+        "raw_image_stain",
+        "use_ilastik_segmentation",
+        "measure_diameters_from_raw_image",
+    )
+
+    # A row on a tab that is not current reads as not visible whatever its
+    # gates say, so each tab is shown before its rows are read.
+    def shown(name: str) -> bool:
+        _show_tab(widget, "Diameters" if name.startswith("measure") else "Input")
+        return bool(rows[name].visible)
+
+    rows["raw_image_path"].value = ""
+    rows["run_haemodynamics"].value = True
+    QApplication.processEvents()
+    for name in raw_rows:
+        assert shown(name) is True, name
+        assert rows[name].enabled is False, name
+        assert 'Not used while "Raw image path" is not set' in rows[name].tooltip, name
+    assert shown("input_path") is True
+    assert rows["input_path"].enabled is True
+
+    rows["use_ilastik_segmentation"].value = True
+    QApplication.processEvents()
+    assert shown("input_path") is True
+    assert shown("ilastik_classifier_path") is False
+
+    raw = tmp_path / "raw.tif"
+    tifffile.imwrite(raw, np.zeros((2, 4, 4), dtype=np.uint8))
+    rows["raw_image_path"].value = str(raw)
+    QApplication.processEvents()
+    for name in raw_rows:
+        assert rows[name].enabled is True, name
+        assert "'raw_image_path'" not in rows[name].tooltip, name
+    assert shown("input_path") is False
+    assert shown("ilastik_classifier_path") is True
+
+
+# --- the checks off the panel's thread ------------------------------------------
+
+
+def test_run_checks_runs_off_the_panels_thread_and_reports(panel, qtbot, monkeypatch):
+    """Regression: the checks ran on the panel's thread, which froze while
+    the quality score read the whole image or a template was loaded."""
+    import threading
+    from types import SimpleNamespace
+
+    import haemolynx.gui._widget as widget_module
+
+    widget, _viewer = panel
+    threads = []
+
+    def checks(settings, schema):
+        threads.append(threading.current_thread())
+        return SimpleNamespace(ok=False, errors=["input_path does not exist"], warnings=["one warning"])
+
+    monkeypatch.setattr(widget_module, "preflight", checks)
+    widget._haemolynx_run_checks()
+    qtbot.waitUntil(lambda: "FAILED" in widget._haemolynx_report(), timeout=20000)
+
+    assert threads and threads[0] is not threading.main_thread()
+    assert widget._haemolynx_report() == "FAILED: input_path does not exist\nwarning: one warning"
+    qtbot.waitUntil(lambda: widget._haemolynx_check_button.enabled, timeout=5000)
+
+
+def test_a_run_whose_checks_read_the_image_checks_off_the_panels_thread(panel, qtbot, monkeypatch, tmp_path):
+    import threading
+    from types import SimpleNamespace
+
+    import haemolynx.gui._widget as widget_module
+    from haemolynx.gui.run_state import CHECKS_FAILED_NOTHING_RUN
+
+    widget, _viewer = panel
+    rows = widget._haemolynx_rows()
+    rows["input_path"].value = tmp_path / "stack.tif"
+    rows["output_dir"].value = tmp_path / "out"
+    rows["min_acceptable_segmentation_quality"].value = 5.0
+    threads, ran = [], []
+    verdict = {"ok": False}
+
+    def checks(settings, schema):
+        threads.append(threading.current_thread())
+        return SimpleNamespace(ok=verdict["ok"], errors=[], warnings=[])
+
+    monkeypatch.setattr(widget_module, "preflight", checks)
+    monkeypatch.setattr(widget_module, "run_pipeline_stages", lambda *a, **k: ran.append(1))
+
+    widget._haemolynx_run()
+    qtbot.waitUntil(lambda: widget._haemolynx_report() == CHECKS_FAILED_NOTHING_RUN, timeout=20000)
+    assert threads[-1] is not threading.main_thread() and not ran
+    qtbot.waitUntil(lambda: widget._haemolynx_run_button.enabled, timeout=5000)
+
+    verdict["ok"] = True
+    widget._haemolynx_run()
+    qtbot.waitUntil(lambda: bool(ran), timeout=20000)
+    qtbot.waitUntil(lambda: not widget._haemolynx_run_state.running, timeout=20000)
+    assert threads[-1] is not threading.main_thread()

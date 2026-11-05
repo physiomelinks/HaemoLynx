@@ -1,6 +1,7 @@
 """The settings schema: coercion, validation, and the GUI contract."""
 from __future__ import annotations
 
+import warnings
 from pathlib import Path
 
 import pytest
@@ -10,7 +11,10 @@ from haemolynx.parsers import (
     IneffectiveSettingWarning,
     Schema,
     Setting,
+    parse_prerequisite,
+    prerequisite_name,
 )
+from haemolynx.parsers.schema import describe_unmet_prerequisite, is_prerequisite_met
 
 
 def _schema() -> Schema:
@@ -106,11 +110,47 @@ def test_a_setting_whose_prerequisite_is_off_warns_but_still_loads():
     assert resolved["mask_path"] == Path("art.tif")
 
 
+def test_the_ineffective_warning_also_reaches_the_haemolynx_logger(caplog):
+    """warnings.warn alone never reaches the GUI's own run log: it only
+
+    listens to the "haemolynx" logger (gui.run_log.attach), so this used to
+    be visible only to someone watching stderr. It must also go through
+    logging, at the same level, so the GUI's log dock shows it like any
+    other pipeline warning.
+    """
+    with caplog.at_level("WARNING", logger="haemolynx.parsers.schema"):
+        with pytest.warns(IneffectiveSettingWarning):
+            _schema().validate({"mask_path": "art.tif"})
+    assert any("nothing will read it" in record.message for record in caplog.records)
+
+
 def test_ineffective_settings_can_be_listed_without_running_validation():
     values = _schema().validate({"use_masks": True, "mask_path": "art.tif"})
     assert _schema().ineffective_settings(values) == []
     values["use_masks"] = False
     assert len(_schema().ineffective_settings(values)) == 1
+
+
+def test_always_effective_suppresses_the_ineffective_warning():
+    """A setting genuinely read by more than one feature -- one gated by its
+    own `requires`, one not -- must not warn just because the gated feature
+    is off; the value can still be doing something."""
+    schema = Schema(
+        [
+            Setting("use_masks", "bool", False, "Assign boundaries from masks", "Boundaries"),
+            Setting(
+                "mask_path", "path", None, "Arteriole mask", "Boundaries",
+                requires=("use_masks",), always_effective=True,
+            ),
+        ],
+        title="Test schema",
+    )
+    import warnings as warnings_mod
+
+    with warnings_mod.catch_warnings():
+        warnings_mod.simplefilter("error", IneffectiveSettingWarning)
+        resolved = schema.validate({"mask_path": "art.tif"})
+    assert resolved["mask_path"] == Path("art.tif")
 
 
 def test_a_setting_whose_prerequisite_is_on_is_accepted():
@@ -143,12 +183,78 @@ def test_requires_must_name_a_setting_in_the_schema():
         Schema([Setting("a", "int", 1, "Only", "S", requires=("missing",))])
 
 
-def test_requires_must_name_a_bool():
-    with pytest.raises(ConfigError, match="which is not a bool"):
+def test_requires_must_name_a_bool_or_a_path():
+    with pytest.raises(ConfigError, match="which is not a bool or a path"):
         Schema([
             Setting("gate", "int", 1, "Not a flag", "S"),
             Setting("a", "int", 1, "Dependent", "S", requires=("gate",)),
         ])
+
+
+def _path_gated_schema() -> Schema:
+    return Schema([
+        Setting("raw", "path", None, "The raw image", "S"),
+        Setting("channel", "int", None, "Its channel", "S", requires=("raw",)),
+        Setting("mask", "path", None, "A mask instead", "S", requires=("!raw",)),
+    ])
+
+
+def test_a_path_prerequisite_is_met_while_the_path_is_set():
+    """A ``requires`` entry may name a path: an input the run reads only when
+    given one (the raw image) gates what reads it the way a toggle does."""
+    from haemolynx.parsers.schema import is_active, is_prerequisite_met
+
+    schema = _path_gated_schema()
+    assert not is_prerequisite_met("raw", {"raw": None})
+    assert not is_prerequisite_met("raw", {"raw": ""})
+    assert not is_prerequisite_met("raw", {})
+    assert is_prerequisite_met("raw", {"raw": "stack.tif"})
+    assert is_prerequisite_met("!raw", {"raw": None})
+    assert not is_prerequisite_met("!raw", {"raw": "stack.tif"})
+    assert is_active(schema["channel"], {"raw": "stack.tif"})
+    assert not is_active(schema["channel"], {"raw": None})
+    assert is_active(schema["mask"], {"raw": None})
+
+
+def test_an_unmet_path_prerequisite_reads_as_not_set():
+    from haemolynx.parsers.schema import describe_unmet_prerequisite
+
+    assert describe_unmet_prerequisite("raw", kind="path") == "'raw' is not set"
+    assert describe_unmet_prerequisite("!raw", kind="path") == "'raw' is set"
+    assert describe_unmet_prerequisite("flag") == "'flag' is false"
+    assert describe_unmet_prerequisite("!flag", kind="bool") == "'flag' is true"
+
+
+def test_what_an_out_of_effect_switch_would_replace_is_read_after_all():
+    """``mask`` applies while the ilastik switch is not in effect. Ticked
+    with no raw image to segment, the switch does nothing and the mask is
+    what the run reads, so no warning about it."""
+    schema = Schema([
+        Setting("raw", "path", None, "The raw image", "S"),
+        Setting("use_ilastik", "bool", False, "Segment it", "S", requires=("raw",)),
+        Setting("mask", "path", None, "A segmented image instead", "S",
+                requires=("!use_ilastik",)),
+    ])
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", IneffectiveSettingWarning)
+        schema.validate({"raw": None, "use_ilastik": False, "mask": "m.tif"})
+        with pytest.warns(IneffectiveSettingWarning, match="'use_ilastik' is set to True"):
+            schema.validate({"raw": None, "use_ilastik": True, "mask": "m.tif"})
+
+    with pytest.warns(IneffectiveSettingWarning, match="'mask'.*while 'use_ilastik' is true"):
+        schema.validate({"raw": "stack.tif", "use_ilastik": True, "mask": "m.tif"})
+
+
+def test_a_value_behind_an_unset_path_is_reported_as_unread():
+    schema = _path_gated_schema()
+
+    with pytest.warns(IneffectiveSettingWarning, match="while 'raw' is not set"):
+        schema.validate({"channel": 1})
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        schema.validate({"raw": "stack.tif", "channel": 1})
 
 
 def test_a_default_that_breaks_its_own_rules_fails_at_import():
@@ -264,3 +370,251 @@ def test_container_defaults_are_not_shared_between_calls():
     second = schema.defaults()
     assert second["edges"] == [[0, 1]]
     assert second["table"] == {"B01": 5.0}
+
+
+def test_validated_containers_are_new_not_the_defaults_or_the_callers():
+    """Values built from ``setting.default`` are the schema's own lists, and a
+    stage fills some in place (``inlet_nodes``). Regression test: validate
+    passed them through, so one pipeline run's inlet nodes became the default
+    every later caller read."""
+    schema = Schema([
+        Setting("inlet_nodes", "any", [], "Inlets", "S"),
+        Setting("edges", "any", [[0, 1]], "Custom edges", "S"),
+        Setting("table", "mapping", {"B01": [5.0]}, "Diameters", "S"),
+    ])
+    resolved = schema.validate({setting.name: setting.default for setting in schema})
+    resolved["inlet_nodes"][:] = [2, 4, 5]
+    resolved["edges"][0].append(9)
+    resolved["table"]["B01"].append(6.0)
+    assert schema["inlet_nodes"].default == []
+    assert schema["edges"].default == [[0, 1]]
+    assert schema["table"].default == {"B01": [5.0]}
+
+    mine = [[7, 8]]
+    resolved = schema.validate({"edges": mine})
+    resolved["edges"][0].append(9)
+    assert mine == [[7, 8]]
+    assert resolved["edges"] == [[7, 8, 9]]
+
+
+# --- the four forms of a prerequisite ----------------------------------------
+
+
+@pytest.mark.parametrize(
+    "rule, parsed",
+    [
+        ("use_masks", ("use_masks", "on", None)),
+        ("!use_masks", ("use_masks", "off", None)),
+        ("mode=full", ("mode", "equals", "full")),
+        ("mode!=fast", ("mode", "not_equals", "fast")),
+    ],
+)
+def test_every_prerequisite_form_parses_to_its_setting_and_test(rule, parsed):
+    assert parse_prerequisite(rule) == parsed
+    assert prerequisite_name(rule) == parsed[0]
+
+
+def test_a_not_equals_prerequisite_holds_for_every_other_choice():
+    assert is_prerequisite_met("mode!=fast", {"mode": "full"})
+    assert not is_prerequisite_met("mode!=fast", {"mode": "fast"})
+    assert describe_unmet_prerequisite("mode!=fast") == "'mode' is 'fast'"
+
+
+def _mode_schema(rule: str) -> Schema:
+    return Schema([
+        Setting("mode", "choice", "fast", "Statistics detail", "S", choices=("fast", "full")),
+        Setting("depth", "int", 1, "Only read outside fast mode", "S", requires=(rule,)),
+    ])
+
+
+def test_a_setting_read_by_every_choice_but_one_warns_under_that_one():
+    schema = _mode_schema("mode!=fast")
+    with pytest.warns(IneffectiveSettingWarning, match="'mode' is 'fast'"):
+        schema.validate({"depth": 3})
+    assert schema.ineffective_settings({"mode": "full", "depth": 3}) == []
+
+
+def test_a_not_equals_prerequisite_must_name_a_choice_and_one_of_its_values():
+    with pytest.raises(ConfigError, match="which is not one of"):
+        _mode_schema("mode!=slow")
+    with pytest.raises(ConfigError, match="is not a choice"):
+        Schema([
+            Setting("gate", "bool", False, "A flag", "S"),
+            Setting("a", "int", 1, "Dependent", "S", requires=("gate!=x",)),
+        ])
+
+
+# --- renamed values and retired settings ----------------------------------------
+
+
+def _handling(**extra) -> Setting:
+    """A choice that took over a retired toggle and renamed one of its values."""
+    return Setting(
+        "handling", "choice", "keep", "What to do", "S",
+        choices=("keep", "drop"),
+        value_aliases={"None": "keep"},
+        replaces={"drop_old": {True: "drop"}},
+        **extra,
+    )
+
+
+def test_a_former_spelling_of_a_value_reads_as_the_current_one():
+    setting = _handling()
+    assert setting.coerce("None") == "keep"
+    assert setting.coerce("drop") == "drop"
+    with pytest.raises(ConfigError, match="allowed values"):
+        setting.coerce("nothing")
+
+
+def test_an_unhashable_value_is_no_alias_and_fails_as_itself():
+    with pytest.raises(ConfigError, match="allowed values"):
+        _handling().coerce(["keep"])
+
+
+@pytest.mark.parametrize(
+    "values, expected",
+    [
+        ({"drop_old": True}, "drop"),
+        # An old value with no entry says nothing.
+        ({"drop_old": False}, "keep"),
+        # Saved while both existed: the new one at its default, so the old decides.
+        ({"drop_old": True, "handling": "keep"}, "drop"),
+        ({"drop_old": True, "handling": "None"}, "drop"),
+        # A value of the new one's own is not overridden.
+        ({"drop_old": False, "handling": "drop"}, "drop"),
+    ],
+)
+def test_a_retired_setting_is_read_into_the_one_that_replaced_it(values, expected):
+    resolved = Schema([_handling()]).validate(values)
+    assert resolved["handling"] == expected
+    assert "drop_old" not in resolved
+
+
+def test_upgrade_renames_and_nothing_else():
+    schema = Schema([_handling(), Setting("n", "int", 1, "A number", "S")])
+    assert schema.upgrade({"drop_old": True, "handling": "None", "n": "x", "stray": 3}) == {
+        "handling": "drop",
+        # Not checked: that is validate's job.
+        "n": "x",
+        "stray": 3,
+    }
+
+
+def test_a_misspelt_retired_name_is_still_unknown():
+    with pytest.raises(ConfigError, match="Unknown setting 'drop_older'"):
+        Schema([_handling()]).validate({"drop_older": True})
+
+
+def test_what_old_values_are_read_as_must_be_valid():
+    with pytest.raises(ConfigError, match="allowed values"):
+        Setting(
+            "handling", "choice", "keep", "What to do", "S",
+            choices=("keep", "drop"), value_aliases={"None": "toss"},
+        )
+    with pytest.raises(ConfigError, match="allowed values"):
+        Setting(
+            "handling", "choice", "keep", "What to do", "S",
+            choices=("keep", "drop"), replaces={"drop_old": {True: "toss"}},
+        )
+
+
+def test_a_retired_name_must_be_retired_and_replaced_once():
+    with pytest.raises(ConfigError, match="still in the schema"):
+        Schema([_handling(), Setting("drop_old", "bool", False, "Old toggle", "S")])
+    with pytest.raises(ConfigError, match="replaced by both"):
+        Schema([
+            _handling(),
+            Setting("other", "bool", False, "Other", "S", replaces={"drop_old": {True: True}}),
+        ])
+    with pytest.raises(ConfigError, match="cannot replace itself"):
+        Setting("x", "bool", False, "X", "S", replaces={"x": {True: True}})
+
+
+def test_a_subset_keeps_what_its_settings_replace():
+    schema = Schema([_handling(), Setting("n", "int", 1, "A number", "S")]).subset(["handling"])
+    assert schema.validate({"drop_old": True})["handling"] == "drop"
+
+
+def test_a_setting_retired_outright_still_loads_and_is_dropped(caplog):
+    """`replaces` with an empty table: the old name is accepted, its value
+    read into nothing, and the log says so."""
+    schema = Schema([
+        Setting("cleanup", "bool", True, "Clean up", "S", replaces={"workers": {}}),
+    ])
+    with caplog.at_level("INFO", logger="haemolynx.parsers.schema"):
+        resolved = schema.validate({"workers": 8, "cleanup": False})
+    assert resolved == {"cleanup": False}
+    assert any("'workers' is retired" in r.message and "no longer read" in r.message for r in caplog.records)
+
+
+# --- retired settings that move together ------------------------------------------
+
+
+def _image_settings() -> list[Setting]:
+    """One image path and channel that took over two retired pairs: the
+    pair in use moves across whole, never one half of each."""
+
+    def migrate(values):
+        for path, channel in (("used_path", "used_channel"), ("spare_path", "spare_channel")):
+            if values.get(path):
+                return {"image": values[path], "channel": values.get(channel)}
+        return {}
+
+    return [
+        Setting("image", "path", None, "The image", "S",
+                migrates=("used_path", "used_channel", "spare_path", "spare_channel"), migrate=migrate),
+        Setting("channel", "int", None, "Its channel", "S"),
+    ]
+
+
+@pytest.mark.parametrize(
+    "values, image, channel",
+    [
+        ({"used_path": "a.tif", "used_channel": 1, "spare_path": "b.tif", "spare_channel": 0}, "a.tif", 1),
+        # The first pair unset: the second moves across with its own channel.
+        ({"used_path": None, "used_channel": 3, "spare_path": "b.tif", "spare_channel": 0}, "b.tif", 0),
+        # A value of the new setting's own is not overridden.
+        ({"used_path": "a.tif", "used_channel": 1, "image": "c.tif"}, "c.tif", 1),
+    ],
+)
+def test_retired_settings_that_move_together_are_read_by_one_function(values, image, channel):
+    resolved = Schema(_image_settings()).validate(values)
+    assert str(resolved["image"]).endswith(image)
+    assert resolved["channel"] == channel
+    assert not {"used_path", "used_channel", "spare_path", "spare_channel"} & set(resolved)
+
+
+def test_a_migration_needs_both_halves_and_its_names_retired_once():
+    with pytest.raises(ConfigError, match="both migrates"):
+        Setting("image", "path", None, "The image", "S", migrates=("old",))
+    with pytest.raises(ConfigError, match="still in the schema"):
+        Schema([*_image_settings(), Setting("used_path", "path", None, "Old", "S")])
+    with pytest.raises(ConfigError, match="replaced by both"):
+        Schema([*_image_settings(), Setting("x", "path", None, "X", "S", replaces={"used_path": {}})])
+
+
+def test_a_migration_survives_building_a_schema_from_another_schemas_settings():
+    """How the examples extend the pipeline's schema."""
+    schema = Schema(list(Schema(_image_settings())) + [Setting("n", "int", 1, "A number", "S")])
+    assert str(schema.validate({"spare_path": "b.tif"})["image"]).endswith("b.tif")
+
+
+def test_the_network_source_choices_are_the_graph_packages():
+    """The schema repeats the literals (it stays importable without numpy)."""
+    from haemolynx.graph.boundaries import NETWORK_SOURCES, NETWORK_SOURCE_SEGMENTED_IMAGE
+    from haemolynx.pipeline import default_schema
+
+    setting = default_schema()["network_source"]
+    assert setting.kind == "choice"
+    assert setting.choices == NETWORK_SOURCES
+    assert setting.default == NETWORK_SOURCE_SEGMENTED_IMAGE
+    assert default_schema()["synthetic_template_source"].choices == ("statistics", "graph")
+
+
+def test_a_missing_gate_reads_as_the_default_a_caller_gives():
+    assert is_prerequisite_met("mode=full", {}) is False
+    assert is_prerequisite_met("mode=full", {}, default="full") is True
+    assert is_prerequisite_met("mode!=full", {}, default="full") is False
+    assert is_prerequisite_met("mode=full", {"mode": "fast"}, default="full") is False
+    assert is_prerequisite_met("switch", {}, default=True) is True
+    assert is_prerequisite_met("!switch", {}, default=True) is False

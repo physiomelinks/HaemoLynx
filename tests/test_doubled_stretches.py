@@ -1,0 +1,525 @@
+"""Stretches of centreline doubled in one lumen, rewired by their shape
+(``graph.doubled_stretches``): a dead end beside a vessel is cut back, a fork
+is zipped, a stretch inside an edge is cut out and its ends joined to the
+centreline kept. Nothing is deleted whole, nothing cut off, and a
+thick-vessel bridge is never touched."""
+from __future__ import annotations
+
+import networkx as nx
+import numpy as np
+import pytest
+
+from haemolynx.graph import diagnose_lumen_artefacts, diagnose_parallel_duplicates_in_lumen
+from haemolynx.graph.assemble import consolidate_lumen, lumen_cleanup
+from haemolynx.graph.doubled_stretches import doubled_stretches, resolve_doubled_stretches
+from haemolynx.graph.thick_vessel_junctions import IS_ZERO_RESISTANCE
+from haemolynx.preprocessing import MaskSupport
+
+from lumen_artefact_fixtures import (
+    VOXEL_SIZE,
+    capsule,
+    dead_end_beside_vessel,
+    fork_that_parts,
+    polyline_graph,
+    strand_through_a_trunk,
+    two_strands_in_one_lumen,
+)
+
+
+def _support(mask):
+    return MaskSupport(mask, VOXEL_SIZE)
+
+
+def _doubled_um(G, mask):
+    report = diagnose_lumen_artefacts(G, mask, voxel_size_zyx=VOXEL_SIZE, image_face_margin_um=0.0)
+    return report["duplicated_centreline_um"]
+
+
+def _pairs(G, mask):
+    return diagnose_parallel_duplicates_in_lumen(G, mask, voxel_size_zyx=VOXEL_SIZE)["duplicate_pair_count"]
+
+
+def _cleanup(mask, min_stub_length=10.0, multiple=3.0, **switches):
+    return lumen_cleanup(mask, VOXEL_SIZE, image_shape=mask.shape,
+                         min_stub_length=min_stub_length, min_stub_length_radius_multiple=multiple, **switches)
+
+
+def _length(G):
+    return sum(d["length"] for _u, _v, d in G.edges(data=True))
+
+
+def test_a_dead_end_beside_its_vessel_is_cut_back_to_where_it_leaves_it():
+    mask, G, tip, junction = dead_end_beside_vessel()
+    before = _doubled_um(G, mask)
+    G = resolve_doubled_stretches(G, _support(mask))
+    assert not G.has_node(tip)
+    trunk_ends = {(7.0, 7.0, 0.0), (7.0, 7.0, 59.0)}
+    (stub,) = [n for n in G.neighbors(junction) if G.degree[n] == 1 and n not in trunk_ends]
+    # Cut back to within a lumen radius or so of the junction it leaves.
+    assert np.linalg.norm(np.asarray(G.nodes[stub]["pos"]) - np.asarray(junction)) < 10.0
+    assert _doubled_um(G, mask) < 0.2 * before
+    # The trunk is untouched.
+    assert G.has_edge(junction, (7.0, 7.0, 59.0)) and G.has_edge((7.0, 7.0, 0.0), junction)
+
+
+def test_the_clean_up_then_prunes_what_is_left_of_that_dead_end():
+    mask, G, _tip, _junction = dead_end_beside_vessel()
+    G = consolidate_lumen(G, _cleanup(mask))
+    assert G.number_of_edges() == 1
+    assert {float(np.asarray(G.nodes[n]["pos"])[1]) for n in G.nodes} == {7.0}
+
+
+def test_a_fork_is_zipped_up_to_where_its_edges_part():
+    mask, G, (trunk_end, tip_a, tip_b) = fork_that_parts()
+    G = resolve_doubled_stretches(G, _support(mask))
+    parting = [n for n in G.nodes if G.degree[n] == 3]
+    assert len(parting) == 1
+    where = np.asarray(G.nodes[parting[0]]["pos"])
+    assert 30.0 < where[2] < 42.0  # where the two branches leave the wide lumen
+    for tip in (tip_a, tip_b):
+        assert nx.shortest_path(G, trunk_end, tip)[-2] == parting[0]
+    assert _pairs(G, mask) == 0
+    assert nx.cycle_basis(nx.Graph(G)) == []
+
+
+def test_a_strand_through_a_trunk_is_cut_out_and_its_branches_joined_to_the_trunk():
+    mask, G, (tip_a, tip_b, end_a, end_b) = strand_through_a_trunk()
+    assert nx.number_connected_components(G) == 2
+    before = _doubled_um(G, mask)
+    G = resolve_doubled_stretches(G, _support(mask))
+    assert nx.number_connected_components(G) == 1
+    # The trunk still runs end to end, and each branch now hangs off it.
+    assert nx.has_path(G, end_a, end_b)
+    for tip in (tip_a, tip_b):
+        assert nx.has_path(G, tip, end_a)
+    assert _doubled_um(G, mask) < 0.2 * before
+    assert nx.cycle_basis(nx.Graph(G)) == []
+
+
+def test_resolving_shortens_the_centreline_and_repeating_settles():
+    for build in (fork_that_parts, strand_through_a_trunk):
+        mask, G, _ends = build()
+        length = _length(G)
+        G = resolve_doubled_stretches(G, _support(mask))
+        assert _length(G) < length
+        cleanup = _cleanup(mask, min_stub_length=0.0, multiple=0.0)
+        once = consolidate_lumen(G, cleanup)
+        twice = consolidate_lumen(once.copy(), cleanup)
+        assert sorted(map(str, once.edges(keys=True))) == sorted(map(str, twice.edges(keys=True)))
+
+
+@pytest.mark.parametrize("rewire", [False, True])
+def test_the_pair_rule_still_decides_whole_pairs_and_the_stretch_step_what_it_leaves(rewire):
+    """The strand through the trunk is a pair with it (half of it beside the
+    trunk): the pair rule decides that the strand goes, and takes it out by
+    rewiring (1d, ``lumen_cleanup_rewire_pairs``, on by default), its
+    branches staying joined to the trunk -- or, off, whole, as before; what
+    the rule leaves -- a stretch shorter than half an edge -- is the stretch
+    step's. Both end with the trunk drawn once and nothing cut off."""
+    mask, G, (tip_a, tip_b, end_a, end_b) = strand_through_a_trunk()
+    assert _pairs(G, mask) == 1
+    G = consolidate_lumen(G, _cleanup(mask, min_stub_length=0.0, multiple=0.0, rewire_pairs=rewire))
+    assert nx.has_path(G, end_a, end_b)
+    assert (G.has_node(tip_a) and nx.has_path(G, tip_a, end_a)) is rewire
+    assert (G.has_node(tip_b) and nx.has_path(G, tip_b, end_a)) is rewire
+    assert _pairs(G, mask) == 0
+    assert _doubled_um(G, mask) < 5.0
+
+
+def test_a_thick_vessel_bridge_is_never_a_stretch_nor_a_partner():
+    mask, G = two_strands_in_one_lumen()
+    assert doubled_stretches(G, _support(mask))
+    for u, v, key in list(G.edges(keys=True))[:1]:
+        G.edges[u, v, key][IS_ZERO_RESISTANCE] = True
+    assert doubled_stretches(G, _support(mask)) == []
+    edges = sorted(map(str, G.edges(keys=True)))
+    resolve_doubled_stretches(G, _support(mask))
+    assert sorted(map(str, G.edges(keys=True))) == edges
+
+
+def test_a_stretch_shorter_than_the_minimum_is_left_alone():
+    mask, G, _tip, _junction = dead_end_beside_vessel()
+    support = _support(mask)
+    assert doubled_stretches(G, support, min_run_um=100.0) == []
+    edges = sorted(map(str, G.edges(keys=True)))
+    resolve_doubled_stretches(G, support, min_run_um=100.0)
+    assert sorted(map(str, G.edges(keys=True))) == edges
+
+
+def test_the_middle_edge_goes_when_it_lies_wholly_beside_one_carrying_a_branch():
+    mask = capsule(np.zeros((15, 45, 70), dtype=bool), (7, 7, -10), (7, 7, 60), 6)
+    capsule(mask, (7, 9, 57), (7, 40, 57), 2)
+    G = polyline_graph([
+        [(7, 7, 2), (7, 6, 12), (7, 6, 57)],
+        [(7, 7, 2), (7, 9, 12), (7, 9, 57)],
+        [(7, 9, 57), (7, 40, 57)],
+    ])
+    G = consolidate_lumen(G, _cleanup(mask))
+    assert nx.number_connected_components(G) == 1
+    assert G.has_node((7.0, 40.0, 57.0))
+    assert _pairs(G, mask) == 0
+
+
+def test_evidence_beyond_the_mask_keeps_a_stretch_apart():
+    """A caller with evidence the mask lacks (the raw image) says which
+    stretches are two vessels: those are left alone, the rest resolved."""
+    mask, G, _tip, _junction = dead_end_beside_vessel()
+    support = _support(mask)
+    asked = []
+
+    def two_vessels(run):
+        asked.append(run)
+        return True
+
+    edges = sorted(map(str, G.edges(keys=True)))
+    resolve_doubled_stretches(G, support, keep_apart=two_vessels)
+    assert asked and sorted(map(str, G.edges(keys=True))) == edges
+    resolve_doubled_stretches(G, support, keep_apart=lambda run: False)
+    assert sorted(map(str, G.edges(keys=True))) != edges
+
+
+def test_the_clean_up_hands_the_evidence_to_the_pair_rule_and_the_stretch_step():
+    mask, G = two_strands_in_one_lumen()
+    cleanup = lumen_cleanup(mask, VOXEL_SIZE, image_shape=mask.shape, min_stub_length=0.0,
+                            min_stub_length_radius_multiple=0.0, keep_apart=lambda what: True)
+    assert cleanup.keep_apart is not None
+    G = consolidate_lumen(G, cleanup)
+    assert G.number_of_edges() == 2  # the pair stays: two vessels by the evidence
+
+
+# --- the clean-up settles: no round zips a fork back ---------------------------
+
+
+def test_a_fork_is_zipped_only_where_its_edges_part_at_a_similar_distance():
+    from haemolynx.graph.doubled_stretches import _part_together
+
+    assert _part_together(10.0, 12.0, 1.0)
+    assert _part_together(10.0, 5.0, 1.0) and _part_together(10.0, 20.0, 1.0)
+    assert not _part_together(10.0, 4.9, 1.0) and not _part_together(10.0, 20.1, 1.0)
+    assert not _part_together(0.5, 0.5, 1.0)  # shorter than the minimum shared stretch
+
+
+def test_the_memo_remembers_where_zips_put_junctions_and_a_second_pass_changes_nothing():
+    mask, G, _ends = fork_that_parts()
+    support = _support(mask)
+    memo = {}
+    resolve_doubled_stretches(G, support, memo=memo)
+    assert memo["zipped_at"], "the zip recorded the junction it left"
+    edges = sorted(map(str, G.edges(keys=True)))
+    resolve_doubled_stretches(G, support, memo=memo)
+    assert sorted(map(str, G.edges(keys=True))) == edges
+
+
+def test_a_zip_that_would_put_the_junction_back_where_one_was_is_refused():
+    """A fork is not zipped to a junction a previous round's zip left behind:
+    the memo holds that place and the zip is refused, so no round undoes
+    the one before (Stack A's forks moved to and fro to the round limit)."""
+    from haemolynx.graph.doubled_stretches import _Editor
+
+    mask, G, (trunk_end, _a, _b) = fork_that_parts()
+    support = _support(mask)
+    resolve_doubled_stretches(G, support)
+    (landed,) = [n for n in G.nodes if G.degree[n] == 3]
+    place = _Editor.place(G.nodes[landed]["pos"])
+
+    mask, G, _ends = fork_that_parts()
+    resolve_doubled_stretches(G, _support(mask), memo={"zipped_at": {place}})
+    # The fork may still be zipped the other way round (the other edge kept,
+    # its parting vertex a few um away), but never onto the remembered place.
+    assert all(_Editor.place(G.nodes[n]["pos"]) != place for n in G.nodes if G.degree[n] == 3)
+
+
+# --- the finder judges only what changed between rounds ----------------------
+
+
+def test_with_a_memo_an_unchanged_graph_is_not_judged_again_and_gives_the_same_runs(monkeypatch):
+    import haemolynx.graph.doubled_stretches as module
+
+    mask, G, _ends = strand_through_a_trunk()
+    support = _support(mask)
+    judged = []
+    original = module._judge_edge
+
+    def counting(*args, **kwargs):
+        judged.append(args[:3])
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(module, "_judge_edge", counting)
+    memo = {}
+    first = doubled_stretches(G, support, memo=memo)
+    assert judged and memo["edges"]
+    judged.clear()
+    second = doubled_stretches(G, support, memo=memo)
+    assert judged == [], "nothing changed, so no edge is judged again"
+    assert [(r.edge, r.partner, r.start, r.stop) for r in second] == [(r.edge, r.partner, r.start, r.stop) for r in first]
+
+
+def test_with_a_memo_an_edge_near_a_change_is_judged_again_and_one_far_away_is_not(monkeypatch):
+    import haemolynx.graph.doubled_stretches as module
+
+    mask, G, _ends = strand_through_a_trunk()
+    # A capillary far from the trunk, on its own: judged once, then never again.
+    capsule(mask, (7, 38, 60), (7, 38, 79), 1.5)
+    G.add_node("far_a", pos=np.array([7.0, 38.0, 61.0]))
+    G.add_node("far_b", pos=np.array([7.0, 38.0, 78.0]))
+    G.add_edge("far_a", "far_b", voxels=[(7.0, 38.0, 61.0), (7.0, 38.0, 78.0)], length=17.0)
+    support = _support(mask)
+    judged = []
+    original = module._judge_edge
+
+    def counting(*args, **kwargs):
+        judged.append((args[0], args[1]))
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(module, "_judge_edge", counting)
+    memo = {}
+    doubled_stretches(G, support, memo=memo)
+    judged.clear()
+    # Move the strand a little: the strand and the trunk are judged again, the far capillary is not.
+    strand = next(e for e in G.edges(keys=True) if (7.0, 37.0, 10.0) in e[:2])
+    G.edges[strand]["voxels"] = [tuple(p[:2]) + (p[2] + 0.3,) for p in G.edges[strand]["voxels"]]
+    again = doubled_stretches(G, support, memo=memo)
+    assert again
+    assert ("far_a", "far_b") not in judged and ("far_b", "far_a") not in judged
+    assert len(judged) >= 1
+
+
+def test_a_thick_vessel_taper_is_never_a_stretch_nor_a_partner():
+    """The thin vessel a thick one narrows into runs inside the thick lumen
+    from the thick centreline's end (``THICK_TAPER``, set by the split): the
+    stretch step rewired it as a second strand, and the curved vessels round
+    it came back as straight lines (Stack A, S25, 2026-10-13)."""
+    from haemolynx.graph.thick_vessel_junctions import THICK_TAPER
+
+    mask, G = two_strands_in_one_lumen()
+    for u, v, key in list(G.edges(keys=True))[:1]:
+        G.edges[u, v, key][THICK_TAPER] = True
+    assert doubled_stretches(G, _support(mask)) == []
+    edges = sorted(map(str, G.edges(keys=True)))
+    resolve_doubled_stretches(G, _support(mask))
+    assert sorted(map(str, G.edges(keys=True))) == edges
+
+
+# --- a thick vessel's centreline: the strand that stays -------------------------
+
+
+def _rows_between(G, x0, x1):
+    points = np.vstack([np.asarray(d["voxels"], dtype=float) for *_e, d in G.edges(data=True)])
+    inside = (points[:, 2] > x0) & (points[:, 2] < x1)
+    return sorted(set(np.round(points[inside, 1]).tolist()))
+
+
+def test_the_strand_on_a_thick_vessels_centreline_is_kept_and_the_other_rejoined_to_it():
+    """Rewiring by the wall alone, the clean-up took the stretch on the thick
+    centreline tree as often as not (Stack A, 2026-10-15). The strand through
+    the trunk is, here, the one on the tree: the trunk's own stretch beside
+    it is cut out instead, and its two ends joined to the strand."""
+    from test_lumen_loops import _on_row
+
+    mask, G, (_tip_a, _tip_b, end_a, end_b) = strand_through_a_trunk()
+    plain = resolve_doubled_stretches(G.copy(), _support(mask))
+    assert _rows_between(plain, 20, 40) == [20.0]
+
+    G = resolve_doubled_stretches(G, _support(mask), along_centreline=_on_row(23))
+    assert _rows_between(G, 20, 40) == [23.0]
+    assert nx.is_connected(G) and nx.has_path(G, end_a, end_b)
+    assert _doubled_um(G, mask) < 1.0
+
+
+def test_a_dead_end_on_a_thick_vessels_centreline_is_not_cut_back():
+    from test_lumen_loops import _on_row
+
+    mask, G, tip, _junction = dead_end_beside_vessel()
+    assert not resolve_doubled_stretches(G.copy(), _support(mask)).has_node(tip)
+
+    length = _length(G)
+    G = resolve_doubled_stretches(G, _support(mask), along_centreline=_on_row(10))
+    assert G.has_node(tip) and _length(G) == pytest.approx(length)
+
+
+@pytest.mark.parametrize("build", [dead_end_beside_vessel, fork_that_parts, strand_through_a_trunk])
+def test_with_no_thick_centreline_near_every_stretch_is_resolved_as_before(build):
+    """Far from any thick vessel the stretch step decides as it always did."""
+    mask, G, *_ends = build()
+    plain = resolve_doubled_stretches(G.copy(), _support(mask))
+    nowhere = resolve_doubled_stretches(G.copy(), _support(mask), along_centreline=lambda points: 0.0)
+    assert sorted(map(str, nowhere.edges())) == sorted(map(str, plain.edges()))
+    assert _length(nowhere) == pytest.approx(_length(plain))
+
+
+def test_a_stretch_with_no_length_on_the_tree_is_never_on_it():
+    """Regression: a partner stretch narrowed to one point has no length, and
+    "at least half of it on the tree" held for it (0 >= 0) -- every capillary
+    beside one, far from any thick vessel, was taken for the wall side and
+    rewired: on Stack A, 2.7 mm of vessel lost."""
+    from haemolynx.graph.doubled_stretches import _mostly_on
+
+    nowhere = lambda points: 0.0
+    everywhere = lambda points: float(np.linalg.norm(np.diff(points, axis=0), axis=1).sum())
+    point = np.array([[7.0, 7.0, 10.0]])
+    line = np.array([[7.0, 7.0, 10.0], [7.0, 7.0, 20.0]])
+    assert not _mostly_on(nowhere, point)
+    assert not _mostly_on(everywhere, point)
+    assert not _mostly_on(nowhere, line)
+    assert _mostly_on(everywhere, line)
+    assert not _mostly_on(lambda points: 4.0, line) and _mostly_on(lambda points: 5.0, line)
+
+
+# --- 1d: a pair taken out by rewiring; joins closing a loop in one lumen ------
+
+
+def _strand_from_a_junction(*, pair: bool):
+    """A trunk 12 um wide along x and a capillary leaving it. The capillary
+    starts at a junction inside the trunk's lumen -- joined to the trunk's
+    end by a short edge, with a branch of its own leaving there -- runs
+    beside the trunk's centreline and leaves by a side branch to a tip. With
+    *pair* it runs beside the trunk for most of its length (the pair rule's
+    case), without for under half (the stretch step's). Joined to the trunk
+    at the junction, it would close a loop inside the trunk's lumen. Returns
+    ``(mask, G, ends)``: the capillary's tip, the junction, the trunk's ends."""
+    leaves = 46 if pair else 30
+    mask = capsule(np.zeros((15, 45, 80), dtype=bool), (7, 20, -10), (7, 20, 90), 6)
+    capsule(mask, (7, 23, 4), (7, 38, 4), 2)
+    capsule(mask, (7, 23, leaves), (7, 38, leaves + 4), 2)
+    capillary = [(7, 23, 4), (7, 23, leaves), (7, 37, leaves + 4)]
+    if not pair:
+        capsule(mask, (7, 37, leaves + 4), (7, 37, 78), 2)
+        capillary.append((7, 37, 78))
+    G = polyline_graph([
+        [(7, 20, 0), (7, 20, 79)],
+        capillary,
+        [(7, 23, 4), (7, 20, 0)],
+        [(7, 23, 4), (7, 37, 4)],
+    ])
+    ends = [tuple(float(c) for c in p) for p in (capillary[-1], (7, 23, 4), (7, 20, 0), (7, 20, 79))]
+    return mask, G, ends
+
+
+def _no_lumen_test(monkeypatch):
+    """The join guard switched off: every loop reads as round tissue."""
+    import haemolynx.graph.doubled_stretches as module
+
+    monkeypatch.setattr(module, "loop_inside_one_lumen", lambda loop, support: False)
+
+
+def test_a_pair_with_a_remainder_is_rewired_at_the_parting_points_not_deleted():
+    """Regression for PLAN_clean_graph.md 1d: the pair rule deleted the edge
+    nearer the wall whole, and with it whatever lay beyond the stretch it
+    doubled -- here both branches of the capillary, vessel by grids D-F more
+    often than not. Rewired, only the stretch goes: each branch is joined to
+    the trunk where it leaves it."""
+    from haemolynx.graph.lumen_loops import remove_parallel_edges_in_lumen
+
+    mask, G, (tip_a, tip_b, end_a, end_b) = strand_through_a_trunk()
+    support = _support(mask)
+    deleted = remove_parallel_edges_in_lumen(G.copy(), support, rewire=False)
+    assert not deleted.has_node(tip_a) and not deleted.has_node(tip_b)
+
+    G = remove_parallel_edges_in_lumen(G, support, rewire=True)
+    assert G.graph["parallel_lumen_edges_rewired"] == 1
+    assert G.graph["parallel_lumen_edges_removed"] == 0
+    assert nx.is_connected(G) and nx.cycle_basis(nx.Graph(G)) == []
+    assert nx.has_path(G, end_a, end_b)
+    for tip, leaves_at in ((tip_a, 14.0), (tip_b, 46.0)):
+        (joined,) = G.neighbors(tip)
+        where = np.asarray(G.nodes[joined]["pos"], dtype=float)
+        assert where[1] == pytest.approx(20.0) and abs(where[2] - leaves_at) < 4.0
+    # Only the stretch went: the trunk and both branches (14.6 um each, plus
+    # the chord across to the trunk's centreline) are all there.
+    assert 69.0 + 2 * 14.5 < _length(G) < 69.0 + 2 * (14.5 + 4.0)
+    assert _pairs(G, mask) == 0
+
+
+def test_a_pair_with_nothing_beyond_its_stretch_is_deleted_as_before():
+    from haemolynx.graph.lumen_loops import remove_parallel_edges_in_lumen
+
+    mask, G = two_strands_in_one_lumen()
+    G = remove_parallel_edges_in_lumen(G, _support(mask))
+    assert G.number_of_edges() == 1
+    assert G.graph["parallel_lumen_edges_removed"] == 1
+    assert G.graph["parallel_lumen_edges_rewired"] == 0
+
+
+def test_a_join_closing_a_loop_inside_one_lumen_is_not_made_when_a_pair_is_rewired(monkeypatch):
+    """The capillary's junction lies in the trunk's lumen, joined to the
+    trunk's end already: joined to the trunk again where the capillary
+    leaves it, it closes a ring inside the lumen, the kind the earlier
+    rewiring attempts made. That join is not made; the branch is."""
+    from haemolynx.graph.lumen_loops import remove_parallel_edges_in_lumen
+
+    mask, G, (tip, junction, end_a, end_b) = _strand_from_a_junction(pair=True)
+    support = _support(mask)
+    assert _pairs(G, mask) == 1
+    with monkeypatch.context() as patch:
+        _no_lumen_test(patch)
+        unguarded = remove_parallel_edges_in_lumen(G.copy(), support, rewire=True)
+    assert len(nx.cycle_basis(nx.Graph(unguarded))) == 1
+
+    G = remove_parallel_edges_in_lumen(G, support, rewire=True)
+    assert G.graph["parallel_lumen_edges_rewired"] == 1
+    assert nx.cycle_basis(nx.Graph(G)) == []
+    assert nx.is_connected(G)
+    assert G.has_edge(junction, end_a)
+    route = nx.shortest_path(G, tip, end_b)
+    assert all(abs(float(np.asarray(G.nodes[n]["pos"])[1]) - 20.0) < 0.5 for n in route[1:])
+    assert _pairs(G, mask) == 0
+
+
+def test_a_rejoin_closing_a_loop_inside_one_lumen_is_refused(monkeypatch):
+    """The stretch step's rejoin the same way: the capillary runs beside the
+    trunk for under half its length, so it is no pair, and the stretch is
+    cut out of it. Its far part is joined to the trunk where it leaves; the
+    part at the junction is not, since that would close a ring inside the
+    trunk's lumen -- the junction is joined to the trunk already."""
+    import haemolynx.graph.doubled_stretches as module
+
+    mask, G, (tip, junction, end_a, end_b) = _strand_from_a_junction(pair=False)
+    support = _support(mask)
+    assert _pairs(G, mask) == 0
+    before = _doubled_um(G, mask)
+    with monkeypatch.context() as patch:
+        _no_lumen_test(patch)
+        unguarded = resolve_doubled_stretches(G.copy(), support, guard_joins=True)
+    assert len(nx.cycle_basis(nx.Graph(unguarded))) == 1
+    # On by default (Harvey, 2026-10-26); off, the rejoin is made as before,
+    # closing the ring.
+    assert module.GUARD_REJOINS is True
+    as_before = resolve_doubled_stretches(G.copy(), support, guard_joins=False)
+    assert len(nx.cycle_basis(nx.Graph(as_before))) == 1
+
+    G = resolve_doubled_stretches(G, support)
+    assert nx.cycle_basis(nx.Graph(G)) == []
+    assert nx.is_connected(G) and nx.has_path(G, tip, end_b)
+    assert G.has_edge(junction, end_a)
+    assert _doubled_um(G, mask) < 0.3 * before
+
+    # Where neither part could be joined, the stretch is left as it was.
+    G = _strand_from_a_junction(pair=False)[1]
+    edges = sorted(map(str, G.edges(keys=True)))
+    monkeypatch.setattr(module, "_join_closes_loop_in_one_lumen", lambda *args: True)
+    resolve_doubled_stretches(G, support, guard_joins=True)
+    assert sorted(map(str, G.edges(keys=True))) == edges
+
+
+def test_what_a_rewire_left_is_deleted_not_rewired_again():
+    """Regression: on Stack A a rewire made the next round's pair, round after
+    round, and the clean-up ran to its round limit. A join a rewire made is
+    marked (``REWIRED``), and the pair rule deletes such an edge instead."""
+    from haemolynx.graph.doubled_stretches import REWIRED
+    from haemolynx.graph.lumen_loops import remove_parallel_edges_in_lumen
+
+    mask, G, (tip_a, tip_b, _end_a, _end_b) = strand_through_a_trunk()
+    support = _support(mask)
+    rewired = remove_parallel_edges_in_lumen(G.copy(), support, rewire=True)
+    joins = [(u, v) for u, v, d in rewired.edges(data=True) if d.get(REWIRED)]
+    assert {tip_a, tip_b} <= {n for edge in joins for n in edge}
+    assert not any(d.get(REWIRED) for *_e, d in rewired.edges(data=True) if abs(d["voxels"][0][1] - 20.0) < 0.5
+                   and abs(d["voxels"][-1][1] - 20.0) < 0.5)
+
+    for u, v, key in G.edges(keys=True):
+        if tip_a in (u, v):
+            G.edges[u, v, key][REWIRED] = True
+    again = remove_parallel_edges_in_lumen(G, support, rewire=True)
+    assert again.graph["parallel_lumen_edges_rewired"] == 0
+    assert again.graph["parallel_lumen_edges_removed"] == 1
+    assert not again.has_node(tip_a)

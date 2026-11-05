@@ -1,4 +1,4 @@
-"""Tests for io/automated_vessel_assignment.py — vessel-mask loading and validation.
+"""Tests for io/vessel_masks.py — vessel-mask loading and validation.
 
 Despite the module name this is I/O: it resolves mask paths, optionally runs
 ilastik, loads the masks and checks they line up with the main image. The checks
@@ -11,7 +11,9 @@ here — metadata is physical ``(x, y, z)``, dilation needs per-array-axis
 from __future__ import annotations
 
 import inspect
+import os
 import sys
+import time
 from pathlib import Path
 
 import numpy as np
@@ -28,6 +30,7 @@ from haemolynx.io import (
     load_large_vessel_masks,
     vessel_mask_arguments,
 )
+from haemolynx.io.vessel_masks import _assert_voxel_sizes_match_main_image
 
 # Coarse z, fine x — the usual confocal case, and all three spacings differ.
 VOXEL_SIZE_XYZ = (0.4, 0.5, 2.0)
@@ -129,17 +132,33 @@ def test_a_mask_path_supplied_while_masks_are_disabled_is_an_error() -> None:
         load_large_vessel_masks(False, "arteriole.tif", None)
 
 
-def test_supplying_only_one_of_the_two_masks_is_an_error(tmp_path: Path) -> None:
-    """Arteriole-only would leave every terminal node an inflow with nowhere to drain."""
+def test_the_arteriole_mask_alone_comes_back_as_a_global_mask(tmp_path: Path) -> None:
+    """With no venule mask the arteriole/global row is one mask of every
+    vessel, so there is no venule mask or voxel size to return."""
     arteriole_path = tmp_path / "arteriole.tif"
-    _write_mask_tif(arteriole_path, (4, 5, 6))
+    volume = np.zeros((4, 5, 6), dtype=np.uint8)
+    volume[1, 2, 3] = 1
+    _write_mask_with_voxel_size(arteriole_path, volume)
 
-    with pytest.raises(ValueError, match="or provide neither"):
-        load_large_vessel_masks(True, arteriole_path, None)
+    mask, venule, mask_voxel, venule_voxel = load_large_vessel_masks(True, arteriole_path, None)
+
+    assert bool(mask[1, 2, 3]) and int(mask.sum()) == 1
+    assert venule is None and venule_voxel is None
+    assert mask_voxel == VOXEL_SIZE_XYZ
+
+
+def test_a_venule_mask_without_the_arteriole_global_one_is_an_error(tmp_path: Path) -> None:
+    """The global mask goes in the arteriole/global row; a venule mask alone
+    is most likely the arteriole one in the wrong row."""
+    venule_path = tmp_path / "venule.tif"
+    _write_mask_tif(venule_path, (4, 5, 6))
+
+    with pytest.raises(ValueError, match="arteriole/global mask path is missing"):
+        load_large_vessel_masks(True, None, venule_path)
 
 
 def test_enabling_masks_without_any_paths_is_an_error() -> None:
-    with pytest.raises(ValueError, match="mask paths are missing"):
+    with pytest.raises(ValueError, match="mask path is missing"):
         load_large_vessel_masks(True, None, None)
 
 
@@ -212,6 +231,36 @@ def test_masks_matching_the_main_image_voxel_size_are_accepted(tmp_path: Path) -
     assert venule_voxel == VOXEL_SIZE_XYZ
 
 
+def test_voxel_size_check_tolerates_floating_point_round_off() -> None:
+    """Regression: this used to compare with rtol=0, atol=0 -- bit-exact
+
+    equality across three independently-loaded floats. Physically identical
+    spacing that merely round-trips through a different loader's own
+    division can differ by a ULP or two; that must not fail the check that a
+    genuine mismatch (a different axis order, a different acquisition) still
+    does.
+    """
+    base = VOXEL_SIZE_XYZ
+    almost_equal = tuple(v * (1.0 + 1e-9) for v in base)
+    _assert_voxel_sizes_match_main_image(
+        main_voxel_size_xyz=base,
+        arteriole_voxel_size_xyz=almost_equal,
+        venule_voxel_size_xyz=base,
+        mask_role="large",
+    )
+
+
+def test_voxel_size_check_still_rejects_a_real_mismatch() -> None:
+    genuinely_different = tuple(v * 1.05 for v in VOXEL_SIZE_XYZ)
+    with pytest.raises(ValueError, match="Voxel-size mismatch"):
+        _assert_voxel_sizes_match_main_image(
+            main_voxel_size_xyz=VOXEL_SIZE_XYZ,
+            arteriole_voxel_size_xyz=genuinely_different,
+            venule_voxel_size_xyz=VOXEL_SIZE_XYZ,
+            mask_role="large",
+        )
+
+
 def test_a_mask_whose_z_and_x_spacings_are_swapped_is_rejected(tmp_path: Path) -> None:
     """The classic silent failure: same numbers, wrong axes, identical for cubic voxels.
 
@@ -253,6 +302,131 @@ def test_two_masks_that_disagree_with_each_other_are_rejected(tmp_path: Path) ->
             venule_mask_path=venule_path,
             image_shape=(4, 5, 6),
             main_voxel_size_xyz=VOXEL_SIZE_XYZ,
+        )
+
+
+def test_voxel_size_override_applies_when_mask_metadata_is_missing(
+    tmp_path: Path,
+) -> None:
+    """Masks without ImageJ tags used to stay at (1,1,1) and fail the main check.
+
+    The main image resolves ``voxel_size_override_xyz`` under ``auto`` when its
+    own metadata is incomplete; large/small masks must use the same override
+    rather than comparing the fallback ones against the overridden main size.
+    """
+    shape = (4, 5, 6)
+    arteriole_path = tmp_path / "arteriole.tif"
+    venule_path = tmp_path / "venule.tif"
+    _write_mask_tif(arteriole_path, shape)
+    _write_mask_tif(venule_path, shape)
+
+    _a, _v, arteriole_voxel, venule_voxel = load_and_validate_vessel_masks(
+        mask_role="large",
+        enabled=True,
+        use_ilastik=False,
+        arteriole_mask_path=arteriole_path,
+        venule_mask_path=venule_path,
+        image_shape=shape,
+        main_voxel_size_xyz=VOXEL_SIZE_XYZ,
+        voxel_size_override_xyz=VOXEL_SIZE_XYZ,
+        voxel_size_policy="auto",
+    )
+
+    assert arteriole_voxel == VOXEL_SIZE_XYZ
+    assert venule_voxel == VOXEL_SIZE_XYZ
+
+
+@pytest.mark.parametrize("mask_role", ["large", "small"])
+def test_loaded_masks_and_voxel_size_check_are_logged_for_every_role(
+    tmp_path: Path, caplog, mask_role: str
+) -> None:
+    """The confirmation logging (loaded shapes, resolved voxel sizes, and
+    "Voxel-size check passed") used to be written only for mask_role="large"
+    -- a "small" role run applied the exact same override correctly but
+    never said so, leaving no way to tell from the log whether it had
+    (this is the wiring test_voxel_size_override_applies_when_mask_metadata_
+    is_missing above already pins for the value itself; this pins that
+    every role reports it)."""
+    shape = (4, 5, 6)
+    arteriole_path = tmp_path / "arteriole.tif"
+    venule_path = tmp_path / "venule.tif"
+    _write_mask_tif(arteriole_path, shape)
+    _write_mask_tif(venule_path, shape)
+
+    with caplog.at_level("INFO", logger="haemolynx.io.vessel_masks"):
+        load_and_validate_vessel_masks(
+            mask_role=mask_role,
+            enabled=True,
+            use_ilastik=False,
+            arteriole_mask_path=arteriole_path,
+            venule_mask_path=venule_path,
+            image_shape=shape,
+            main_voxel_size_xyz=VOXEL_SIZE_XYZ,
+            voxel_size_override_xyz=VOXEL_SIZE_XYZ,
+            voxel_size_policy="auto",
+        )
+
+    messages = [record.message for record in caplog.records]
+    assert any(
+        f"Loaded {mask_role}-vessel masks" in m and str(shape) in m for m in messages
+    ), messages
+    assert any(
+        f"{mask_role.capitalize()}-vessel mask voxel sizes" in m
+        and str(VOXEL_SIZE_XYZ) in m
+        for m in messages
+    ), messages
+    assert any("Voxel-size check passed" in m for m in messages), messages
+
+
+def test_voxel_size_policy_override_forces_mask_units_even_with_complete_metadata(
+    tmp_path: Path,
+) -> None:
+    """``override`` must win over complete but wrong mask metadata, as for main."""
+    shape = (4, 5, 6)
+    arteriole_path = tmp_path / "arteriole.tif"
+    venule_path = tmp_path / "venule.tif"
+    wrong = (1.0, 1.0, 1.0)
+    _write_mask_with_voxel_size(arteriole_path, np.zeros(shape, dtype=np.uint8), wrong)
+    _write_mask_with_voxel_size(venule_path, np.zeros(shape, dtype=np.uint8), wrong)
+
+    _a, _v, arteriole_voxel, venule_voxel = load_and_validate_vessel_masks(
+        mask_role="small",
+        enabled=True,
+        use_ilastik=False,
+        arteriole_mask_path=arteriole_path,
+        venule_mask_path=venule_path,
+        image_shape=shape,
+        main_voxel_size_xyz=VOXEL_SIZE_XYZ,
+        voxel_size_override_xyz=VOXEL_SIZE_XYZ,
+        voxel_size_policy="override",
+    )
+
+    assert arteriole_voxel == VOXEL_SIZE_XYZ
+    assert venule_voxel == VOXEL_SIZE_XYZ
+
+
+def test_auto_policy_still_rejects_complete_mask_metadata_that_disagrees(
+    tmp_path: Path,
+) -> None:
+    """Under ``auto``, reliable mask metadata still wins over the override."""
+    shape = (4, 5, 6)
+    arteriole_path = tmp_path / "arteriole.tif"
+    venule_path = tmp_path / "venule.tif"
+    wrong = (1.0, 1.0, 1.0)
+    _write_mask_with_voxel_size(arteriole_path, np.zeros(shape, dtype=np.uint8), wrong)
+    _write_mask_with_voxel_size(venule_path, np.zeros(shape, dtype=np.uint8), wrong)
+
+    with pytest.raises(ValueError, match="Voxel-size mismatch"):
+        load_and_validate_vessel_masks(
+            mask_role="large",
+            enabled=True,
+            use_ilastik=False,
+            arteriole_mask_path=arteriole_path,
+            venule_mask_path=venule_path,
+            image_shape=shape,
+            main_voxel_size_xyz=VOXEL_SIZE_XYZ,
+            voxel_size_override_xyz=VOXEL_SIZE_XYZ,
+            voxel_size_policy="auto",
         )
 
 
@@ -298,6 +472,127 @@ def test_zero_dilation_leaves_the_mask_exactly_as_loaded(tmp_path: Path) -> None
     dilated = _load_dilated(tmp_path, 0.0)
     assert int(dilated.sum()) == 1
     assert bool(dilated[4, 4, 4])
+
+
+def test_loader_removes_subthreshold_mask_components(tmp_path: Path) -> None:
+    """Volume filtering runs after load (and would run after dilation when set)."""
+    shape = (16, 16, 16)
+    arteriole = np.zeros(shape, dtype=np.uint8)
+    venule = np.zeros(shape, dtype=np.uint8)
+    arteriole[1, 1, 1] = 1
+    arteriole[8:11, 8:11, 8:11] = 1  # 27 voxels
+    venule[2, 2, 2] = 1
+    venule[10:12, 10:12, 10:12] = 1  # 8 voxels
+
+    arteriole_path = tmp_path / "arteriole.tif"
+    venule_path = tmp_path / "venule.tif"
+    _write_mask_with_voxel_size(arteriole_path, arteriole, voxel_size_xyz=(1.0, 1.0, 1.0))
+    _write_mask_with_voxel_size(venule_path, venule, voxel_size_xyz=(1.0, 1.0, 1.0))
+
+    cleaned_a, cleaned_v, _, _ = load_and_validate_vessel_masks(
+        mask_role="large",
+        enabled=True,
+        use_ilastik=False,
+        arteriole_mask_path=arteriole_path,
+        venule_mask_path=venule_path,
+        image_shape=shape,
+        main_voxel_size_xyz=(1.0, 1.0, 1.0),
+        min_component_volume_um3=5.0,
+        remove_small_opposite_attached_components=False,
+    )
+
+    assert int(np.count_nonzero(cleaned_a)) == 27
+    assert int(np.count_nonzero(cleaned_v)) == 8
+    assert not cleaned_a[1, 1, 1]
+    assert not cleaned_v[2, 2, 2]
+
+
+def test_one_two_label_masks_stay_sparse_under_default_volume_filters(
+    tmp_path: Path,
+) -> None:
+    """Regression: ``1/2`` masks must not become all-True then wipe the venule.
+
+    Harvey-style vessel masks often use background=1 / foreground=2 with no
+    zero. A raw ``astype(bool)`` / ``> 0`` cast fills the arteriole; with the
+    default opposite-attached cleanup every venule component then sits at
+    distance 0 from that solid opposite mask and is removed. Automated
+    inlet/outlet assignment and the napari mask layers both read these arrays,
+    so the failure shows up as a solid arteriole, a blank venule, and missing
+    outlets -- not as a colormap issue.
+    """
+    from haemolynx.graph import select_terminal_nodes_from_large_vessel_masks
+    from haemolynx.gui.results import MASK_LAYERS, vessel_mask_volume_layers
+    import networkx as nx
+
+    shape = (20, 20, 20)
+    # Arteriole: 1/2 encoding (no zero). Correct binarisation keeps the 8^3 blob;
+    # a raw bool cast fills the volume.
+    arteriole = np.ones(shape, dtype=np.uint8)
+    arteriole[2:10, 2:10, 2:10] = 2  # 512 voxels
+    # Venule: ordinary 0/1, sized to survive the 200 um^3 min-volume filter but
+    # still be eligible for opposite-attached cleanup (<= 250 um^3) if the
+    # arteriole were wrongly solid.
+    venule = np.zeros(shape, dtype=np.uint8)
+    venule[12:18, 12:18, 12:18] = 1  # 216 voxels
+
+    arteriole_path = tmp_path / "arteriole.tif"
+    venule_path = tmp_path / "venule.tif"
+    _write_mask_with_voxel_size(arteriole_path, arteriole, voxel_size_xyz=(1.0, 1.0, 1.0))
+    _write_mask_with_voxel_size(venule_path, venule, voxel_size_xyz=(1.0, 1.0, 1.0))
+
+    cleaned_a, cleaned_v, _, _ = load_and_validate_vessel_masks(
+        mask_role="large",
+        enabled=True,
+        use_ilastik=False,
+        arteriole_mask_path=arteriole_path,
+        venule_mask_path=venule_path,
+        image_shape=shape,
+        main_voxel_size_xyz=(1.0, 1.0, 1.0),
+        # Schema defaults after e344137: volume filter + opposite-attached ON.
+        min_component_volume_um3=200.0,
+        remove_small_opposite_attached_components=True,
+        opposite_attached_max_component_volume_um3=250.0,
+        opposite_attached_max_distance_microns=3.0,
+    )
+
+    assert cleaned_a is not None and cleaned_v is not None
+    assert cleaned_a.dtype == bool and cleaned_v.dtype == bool
+    assert not bool(np.all(cleaned_a)), "arteriole must not fill the volume"
+    assert int(np.count_nonzero(cleaned_a)) == 512
+    assert int(np.count_nonzero(cleaned_v)) == 216
+    assert bool(cleaned_a[5, 5, 5]) and not bool(cleaned_a[0, 0, 0])
+    assert bool(cleaned_v[15, 15, 15]) and not bool(cleaned_v[0, 0, 0])
+
+    graph = nx.MultiGraph()
+    graph.add_node(0, pos=(5.0, 5.0, 5.0))  # inside arteriole
+    graph.add_node(1, pos=(15.0, 15.0, 15.0))  # inside venule
+    graph.add_node(2, pos=(10.0, 10.0, 10.0))  # junction
+    graph.add_edge(0, 2)
+    graph.add_edge(1, 2)
+    inlets, outlets = select_terminal_nodes_from_large_vessel_masks(
+        graph,
+        cleaned_a,
+        cleaned_v,
+        voxel_size_zyx=(1.0, 1.0, 1.0),
+    )
+    assert inlets == [0]
+    assert outlets == [1]
+
+    layers = vessel_mask_volume_layers(
+        {
+            "large_arteriole_mask": cleaned_a,
+            "large_venule_mask": cleaned_v,
+        },
+        voxel_size_zyx=(1.0, 1.0, 1.0),
+    )
+    by_name = {spec.name: spec for spec in layers}
+    art_layer = by_name[MASK_LAYERS["large_arteriole_mask"]]
+    ven_layer = by_name[MASK_LAYERS["large_venule_mask"]]
+    assert not bool(np.all(art_layer.data > 0.5))
+    assert int(np.count_nonzero(art_layer.data > 0.5)) == 512
+    assert int(np.count_nonzero(ven_layer.data > 0.5)) == 216
+    assert np.array_equal(art_layer.data > 0.5, cleaned_a)
+    assert np.array_equal(ven_layer.data > 0.5, cleaned_v)
 
 
 # --- small-role wiring is not just the large role with a prefix -------------
@@ -348,13 +643,21 @@ LARGE_SETTINGS = {
     "large_arteriole_mask_path": "large_a.tif",
     "large_venule_mask_path": "large_v.tif",
     "large_vessel_mask_dilation_microns": 2.5,
+    "large_vessel_min_component_volume_um3": 200.0,
+    "large_vessel_remove_small_opposite_attached_components": True,
+    "large_vessel_opposite_attached_max_component_volume_um3": 250.0,
+    "large_vessel_opposite_attached_max_distance_microns": 3.0,
+    "exclude_smaller_overlapping_volumes": False,
     "use_small_vessel_masks_for_boundary_assignment": False,
     "small_arteriole_mask_path": "small_a.tif",
     "small_venule_mask_path": "small_v.tif",
+    "small_vessel_min_component_volume_um3": 50.0,
     "ilastik_output_dir": "out",
     "ilastik_output_suffix": ".tif",
     "ilastik_executable": "/usr/bin/ilastik",
     "image_axis_order": "xyz",
+    "voxel_size_override_xyz": [0.4, 0.4, 1.0],
+    "voxel_size_policy": "override",
 }
 
 
@@ -373,7 +676,43 @@ def test_the_large_role_picks_the_large_paths_and_the_dilation() -> None:
     assert arguments["arteriole_mask_path"] == "large_a.tif"
     assert arguments["venule_mask_path"] == "large_v.tif"
     assert arguments["dilation_microns"] == 2.5
+    assert arguments["min_component_volume_um3"] == 200.0
+    assert arguments["remove_small_opposite_attached_components"] is True
+    assert arguments["opposite_attached_max_component_volume_um3"] == 250.0
+    assert arguments["opposite_attached_max_distance_microns"] == 3.0
+    assert arguments["exclude_smaller_overlapping_volumes"] is False
     assert arguments["axis_order"] == "xyz"
+    assert arguments["voxel_size_override_xyz"] == [0.4, 0.4, 1.0]
+    assert arguments["voxel_size_policy"] == "override"
+
+
+def test_under_auto_masks_without_axis_labels_follow_the_segmented_image(tmp_path: Path) -> None:
+    """An ilastik HDF5 stored (x, y, z) says so in its axistags; the masks
+    beside it, written without labels, are read in its order."""
+    import json
+
+    h5py = pytest.importorskip("h5py")
+    image = tmp_path / "image.h5"
+    with h5py.File(image, "w") as handle:
+        dataset = handle.create_dataset("data", data=np.zeros((6, 5, 7), dtype=np.uint8))
+        dataset.attrs["axistags"] = json.dumps(
+            {"axes": [{"key": key, "typeFlags": 2, "resolution": 0, "description": ""}
+                      for key in "xyz"]}
+        )
+    settings = {**LARGE_SETTINGS, "image_axis_order": "auto", "input_path": image}
+    arguments = vessel_mask_arguments(settings, "large")
+    assert arguments["axis_order"] == "auto:xyz"
+
+    volume_xyz = np.zeros((6, 5, 7), dtype=np.uint8)
+    volume_xyz[5, 0, 3] = 1  # x = 5, y = 0, z = 3
+    arteriole_path, venule_path = tmp_path / "arteriole.tif", tmp_path / "venule.tif"
+    tifffile.imwrite(arteriole_path, volume_xyz)
+    tifffile.imwrite(venule_path, volume_xyz)
+    arteriole, _venule, _av, _vv = load_large_vessel_masks(
+        True, arteriole_path, venule_path, axis_order=arguments["axis_order"]
+    )
+    assert arteriole.shape == (7, 5, 6)
+    assert bool(arteriole[3, 0, 5])
 
 
 def test_the_small_role_picks_the_small_paths_and_has_no_dilation() -> None:
@@ -385,8 +724,12 @@ def test_the_small_role_picks_the_small_paths_and_has_no_dilation() -> None:
     assert arguments["enabled"] is False
     assert arguments["arteriole_mask_path"] == "small_a.tif"
     assert arguments["venule_mask_path"] == "small_v.tif"
+    assert arguments["min_component_volume_um3"] == 50.0
     assert "dilation_microns" not in arguments
-
+    assert "remove_small_opposite_attached_components" not in arguments
+    assert "exclude_smaller_overlapping_volumes" not in arguments
+    assert arguments["voxel_size_override_xyz"] == [0.4, 0.4, 1.0]
+    assert arguments["voxel_size_policy"] == "override"
 
 def test_settings_absent_from_the_config_are_left_to_their_defaults() -> None:
     """Passing them as None would override the loader's own defaults with nothing."""
@@ -398,3 +741,352 @@ def test_settings_absent_from_the_config_are_left_to_their_defaults() -> None:
 def test_an_unknown_mask_role_is_rejected() -> None:
     with pytest.raises(ValueError, match="mask_role must be 'large' or 'small'"):
         vessel_mask_arguments(LARGE_SETTINGS, "medium")
+
+
+@pytest.mark.parametrize("reuse", [True, False])
+def test_vessel_mask_ilastik_runs_honour_the_reuse_setting(tmp_path, monkeypatch, reuse) -> None:
+    """Both mask segmentations reuse a current output exactly as the main one does."""
+    from haemolynx.io import vessel_masks as module
+
+    shape = (3, 4, 5)
+    seen = []
+
+    def fake_run(**kwargs):
+        seen.append((kwargs["reuse_existing"], Path(kwargs["input_image_path"]).name, kwargs["channels"]))
+        _write_mask_with_voxel_size(kwargs["output_path"], np.zeros(shape, dtype=np.uint8))
+        return Path(kwargs["output_path"])
+
+    monkeypatch.setattr(module, "run_ilastik_headless_segmentation", fake_run)
+    for name in ("raw.tif", "art.ilp", "ven.ilp"):
+        (tmp_path / name).write_bytes(b"x")
+    settings = {
+        "use_large_vessel_masks": True,
+        "use_ilastik_large_vessel_segmentation": True,
+        "raw_image_path": tmp_path / "raw.tif",
+        "ilastik_arteriole_channels": (1, 2),
+        "ilastik_venule_channels": (2,),
+        "ilastik_arteriole_classifier_path": tmp_path / "art.ilp",
+        "ilastik_venule_classifier_path": tmp_path / "ven.ilp",
+        "ilastik_output_dir": tmp_path / "seg",
+        "ilastik_reuse_existing_output": reuse,
+    }
+    arguments = vessel_mask_arguments(settings, "large")
+    assert arguments["ilastik_reuse_existing_output"] is reuse
+
+    (tmp_path / "seg").mkdir()
+    load_and_validate_vessel_masks(
+        **arguments,
+        arteriole_mask_path=None,
+        venule_mask_path=None,
+        image_shape=shape,
+        main_voxel_size_xyz=VOXEL_SIZE_XYZ,
+    )
+    # Both classifiers segment the run's raw image, each its own channels.
+    assert seen == [(reuse, "raw.tif", (1, 2)), (reuse, "raw.tif", (2,))]
+
+
+def test_ilastik_vessel_masks_need_the_raw_image(tmp_path) -> None:
+    (tmp_path / "art.ilp").write_bytes(b"x")
+    with pytest.raises(ValueError, match="raw_image_path must be set"):
+        load_and_validate_vessel_masks(
+            mask_role="small", enabled=True, use_ilastik=True,
+            arteriole_mask_path=None, venule_mask_path=None,
+            image_shape=(3, 4, 5), main_voxel_size_xyz=VOXEL_SIZE_XYZ,
+            raw_image_path=None,
+            ilastik_arteriole_classifier_path=tmp_path / "art.ilp",
+            ilastik_output_dir=tmp_path,
+        )
+
+
+# --- ilastik outputs named by role ------------------------------------------------
+
+
+def test_the_two_classifiers_run_on_one_raw_stack_write_two_outputs(tmp_path, monkeypatch) -> None:
+    """Regression: both outputs were `{stem}_segmented`, so the venule run
+    overwrote the arteriole's and the masks loaded identical (or, reusing
+    existing output, the venule run read the arteriole's back)."""
+    from haemolynx.io import vessel_masks as module
+
+    shape = (3, 4, 5)
+    outputs: dict[str, Path] = {}
+
+    def fake_run(**kwargs):
+        outputs[Path(kwargs["classifier_path"]).stem] = Path(kwargs["output_path"])
+        _write_mask_with_voxel_size(kwargs["output_path"], np.zeros(shape, dtype=np.uint8))
+        return Path(kwargs["output_path"])
+
+    monkeypatch.setattr(module, "run_ilastik_headless_segmentation", fake_run)
+    for name in ("raw.tif", "art.ilp", "ven.ilp"):
+        (tmp_path / name).write_bytes(b"x")
+    (tmp_path / "seg").mkdir()
+    for mask_role in ("large", "small"):
+        load_and_validate_vessel_masks(
+            mask_role=mask_role, enabled=True, use_ilastik=True,
+            arteriole_mask_path=None, venule_mask_path=None,
+            image_shape=shape, main_voxel_size_xyz=VOXEL_SIZE_XYZ,
+            raw_image_path=tmp_path / "raw.tif",
+            ilastik_arteriole_classifier_path=tmp_path / "art.ilp",
+            ilastik_venule_classifier_path=tmp_path / "ven.ilp",
+            ilastik_output_dir=tmp_path / "seg",
+        )
+        assert outputs["art"].name == f"raw_{mask_role}_arteriole_segmented.tif"
+        assert outputs["ven"].name == f"raw_{mask_role}_venule_segmented.tif"
+    assert len({p.name for p in outputs.values()}) == 2
+
+
+# --- a mask without spacing takes the main image's --------------------------------
+
+
+def test_a_mask_without_voxel_metadata_takes_the_main_images_spacing(tmp_path: Path) -> None:
+    """An ilastik export carries no spacing; it used to run on (1, 1, 1) and
+    fail the alignment check against the very image it was segmented from."""
+    shape = (4, 5, 6)
+    _write_mask_tif(tmp_path / "arteriole.tif", shape)
+    _write_mask_tif(tmp_path / "venule.tif", shape)
+
+    _a, _v, arteriole_voxel, venule_voxel = load_and_validate_vessel_masks(
+        mask_role="large", enabled=True, use_ilastik=False,
+        arteriole_mask_path=tmp_path / "arteriole.tif", venule_mask_path=tmp_path / "venule.tif",
+        image_shape=shape, main_voxel_size_xyz=VOXEL_SIZE_XYZ,
+    )
+
+    assert arteriole_voxel == VOXEL_SIZE_XYZ
+    assert venule_voxel == VOXEL_SIZE_XYZ
+
+
+def test_metadata_only_policy_still_refuses_a_mask_without_spacing(tmp_path: Path) -> None:
+    shape = (4, 5, 6)
+    _write_mask_tif(tmp_path / "arteriole.tif", shape)
+    _write_mask_tif(tmp_path / "venule.tif", shape)
+
+    with pytest.raises(ValueError, match="complete metadata"):
+        load_and_validate_vessel_masks(
+            mask_role="large", enabled=True, use_ilastik=False,
+            arteriole_mask_path=tmp_path / "arteriole.tif", venule_mask_path=tmp_path / "venule.tif",
+            image_shape=shape, main_voxel_size_xyz=VOXEL_SIZE_XYZ,
+            voxel_size_policy="metadata_only",
+        )
+
+
+# --- the masks loaded last are reused ---------------------------------------------
+
+
+def _backdate(path: Path, seconds: float = 60) -> None:
+    """Stand in for a mask written long before the run that loads it: one
+    modified in the last few seconds is never remembered."""
+    mtime_ns = time.time_ns() - int(seconds * 1_000_000_000)
+    os.utime(path, ns=(mtime_ns, mtime_ns))
+
+
+def _loader_call(tmp_path: Path, **options):
+    return dict(
+        mask_role="large", enabled=True, use_ilastik=False,
+        arteriole_mask_path=tmp_path / "arteriole.tif", venule_mask_path=tmp_path / "venule.tif",
+        image_shape=(4, 5, 6), main_voxel_size_xyz=VOXEL_SIZE_XYZ, **options,
+    )
+
+
+def test_the_same_files_and_settings_are_loaded_once_per_process(tmp_path: Path, monkeypatch) -> None:
+    """A run reads its masks in skeletonise (the thick-vessel restriction)
+    and again in build_network; the second read, and a repeated run, reuse
+    the cleaned masks."""
+    from haemolynx.io import vessel_masks as module
+    from haemolynx.io import clear_vessel_mask_cache
+
+    clear_vessel_mask_cache()
+    volume = np.zeros((4, 5, 6), dtype=np.uint8)
+    volume[1:3, 1:3, 1:3] = 1
+    _write_mask_with_voxel_size(tmp_path / "arteriole.tif", volume)
+    _write_mask_with_voxel_size(tmp_path / "venule.tif", np.zeros_like(volume))
+    _backdate(tmp_path / "arteriole.tif")
+    _backdate(tmp_path / "venule.tif")
+    loads = []
+    real = module._load_mask_image
+
+    def counted(path, **kwargs):
+        loads.append(Path(path).name)
+        return real(path, **kwargs)
+
+    monkeypatch.setattr(module, "_load_mask_image", counted)
+
+    first = load_and_validate_vessel_masks(**_loader_call(tmp_path))
+    second = load_and_validate_vessel_masks(**_loader_call(tmp_path))
+
+    assert loads == ["arteriole.tif", "venule.tif"], "the second call loaded nothing"
+    assert np.array_equal(first[0], second[0]) and first[2:] == second[2:]
+    assert second[0] is not first[0]
+    first[0][:] = True
+    assert not load_and_validate_vessel_masks(**_loader_call(tmp_path))[0].all(), "a fresh array each time"
+
+    load_and_validate_vessel_masks(**_loader_call(tmp_path, dilation_microns=1.0))
+    assert len(loads) == 4, "a cleanup setting changed: loaded again"
+    _write_mask_with_voxel_size(tmp_path / "arteriole.tif", np.zeros_like(volume))
+    _backdate(tmp_path / "arteriole.tif", seconds=30)  # a new mtime, past the window
+    load_and_validate_vessel_masks(**_loader_call(tmp_path, dilation_microns=1.0))
+    assert len(loads) == 6, "a file changed: loaded again"
+
+
+def test_a_mask_rewrite_that_keeps_mtime_and_size_returns_the_new_mask(tmp_path: Path) -> None:
+    """Regression (2026-10-15): ilastik re-run over its own output rewrites a
+    mask at the same size, and a rewrite in the same file-clock tick keeps the
+    mtime too (92 in 200 back-to-back TIFF writes on NTFS; FAT32 ticks every
+    2 s), so the (path, mtime, size) key handed back the old mask. Both writes
+    are pinned to one identical, recent mtime to make the collision certain."""
+    from haemolynx.io import clear_vessel_mask_cache
+
+    clear_vessel_mask_cache()
+    mtime_ns = time.time_ns()
+    old = np.zeros((4, 5, 6), dtype=np.uint8)
+    old[1:3, 1:3, 1:3] = 1
+    new = np.zeros_like(old)
+    new[0:2, 2:4, 3:5] = 1
+    venule = tmp_path / "venule.tif"
+    arteriole = tmp_path / "arteriole.tif"
+    _write_mask_with_voxel_size(venule, np.zeros_like(old))
+    _backdate(venule)
+
+    try:
+        _write_mask_with_voxel_size(arteriole, old)
+        os.utime(arteriole, ns=(mtime_ns, mtime_ns))
+        first = load_and_validate_vessel_masks(**_loader_call(tmp_path))[0]
+        size = arteriole.stat().st_size
+        _write_mask_with_voxel_size(arteriole, new)
+        os.utime(arteriole, ns=(mtime_ns, mtime_ns))
+        assert arteriole.stat().st_size == size, "the rewrite must keep the size to collide"
+        second = load_and_validate_vessel_masks(**_loader_call(tmp_path))[0]
+    finally:
+        clear_vessel_mask_cache()
+
+    assert np.array_equal(first, old.astype(bool))
+    assert np.array_equal(second, new.astype(bool))
+
+
+#: The masks every clean-up setting below changes, (z, y, x) voxels of
+#: VOXEL_SIZE_XYZ (2.0 x 0.5 x 0.4 um, 0.4 um3 each).
+CLEANUP_SHAPE = (6, 12, 16)
+
+
+def _write_masks_every_cleanup_changes(tmp_path: Path) -> None:
+    """An arteriole and a venule mask holding one case for each clean-up:
+    a speck (component volume), a two-voxel arteriole piece against the
+    venule (minority swap, opposite-attached removal), one a voxel short of
+    it (attach distance) and one lying inside a venule piece (overlap). No
+    voxel size of their own, so they take the image's, and a downsample's
+    source voxel size, under the auto policy."""
+    arteriole = np.zeros(CLEANUP_SHAPE, dtype=np.uint8)
+    venule = np.zeros(CLEANUP_SHAPE, dtype=np.uint8)
+    arteriole[0:3, 0:5, 0:6] = 1  # the arteriole, 90 voxels
+    arteriole[5, 11, 15] = 1  # a speck
+    venule[0:3, 6:12, 8:16] = 1  # the venule, 144 voxels
+    arteriole[1, 5, 10:12] = 1  # against the venule, 0.5 um from it
+    arteriole[1, 8, 6] = 1  # a voxel short of the venule, 0.8 um from it
+    venule[4:6, 0:3, 0:3] = 1  # a venule piece, 18 voxels
+    arteriole[4:6, 0:2, 0:2] = 1  # lying inside it
+    for name, volume in (("arteriole.tif", arteriole), ("venule.tif", venule)):
+        tifffile.imwrite(tmp_path / name, volume)
+        _backdate(tmp_path / name)
+
+
+def _cleanup_call(tmp_path: Path, **options):
+    return {**_loader_call(tmp_path), "image_shape": CLEANUP_SHAPE, **options}
+
+
+def _crop_box(start_x: int):
+    from haemolynx.io.crop import CropBox
+
+    return CropBox((0, 0, start_x), (6, 12, start_x + 8), CLEANUP_SHAPE)
+
+
+def _downsample_z(factor: int):
+    """Blocks of *factor* planes in z: 3 and 4 both reduce the 6 planes to 2,
+    on the image's grid of VOXEL_SIZE_XYZ either way, but group them apart."""
+    from haemolynx.io.downsample import Downsample
+
+    return Downsample(factor, (factor, 1, 1), CLEANUP_SHAPE, (2.0 / factor, 0.5, 0.4))
+
+
+_SWAP_ON = {"swap_minority_components": True}
+_OPPOSITE_ON = {
+    "remove_small_opposite_attached_components": True,
+    "opposite_attached_max_component_volume_um3": 5.0,
+}
+
+#: (setting, the settings it is changed from, its new value).
+CLEANUP_CHANGES = [
+    ("dilation_microns", {}, 1.0),
+    ("min_component_volume_um3", {}, 1.0),
+    ("swap_minority_components", {}, True),
+    ("swap_max_size_ratio", _SWAP_ON, 0.001),
+    ("swap_min_contact_fraction", _SWAP_ON, 0.99),
+    (
+        "remove_small_opposite_attached_components",
+        {"opposite_attached_max_component_volume_um3": 5.0},
+        True,
+    ),
+    ("opposite_attached_max_component_volume_um3", _OPPOSITE_ON, 1.0),
+    ("opposite_attached_max_distance_microns", _OPPOSITE_ON, 0.6),
+    ("exclude_smaller_overlapping_volumes", {}, True),
+    ("crop", {"crop": _crop_box(0), "image_shape": (6, 12, 8)}, _crop_box(8)),
+    ("downsample", {"downsample": _downsample_z(3), "image_shape": (2, 12, 16)}, _downsample_z(4)),
+]
+
+
+@pytest.mark.parametrize(
+    "name, base, changed", CLEANUP_CHANGES, ids=[name for name, _base, _changed in CLEANUP_CHANGES]
+)
+def test_a_changed_cleanup_setting_loads_the_masks_again(
+    tmp_path: Path, monkeypatch, name, base, changed
+) -> None:
+    """Every setting that changes the cleaned masks is in the cache key. One
+    left out hands back the masks cleaned the old way -- the same files, so
+    nothing else in the key differs -- and here each change alters the masks,
+    so that is a wrong answer, not only a load saved."""
+    from haemolynx.io import vessel_masks as module
+    from haemolynx.io import clear_vessel_mask_cache
+
+    _write_masks_every_cleanup_changes(tmp_path)
+    clear_vessel_mask_cache()
+    expected = load_and_validate_vessel_masks(**_cleanup_call(tmp_path, **{**base, name: changed}))
+    clear_vessel_mask_cache()
+    loads = []
+    real = module._load_mask_image
+
+    def counted(path, **kwargs):
+        loads.append(Path(path).name)
+        return real(path, **kwargs)
+
+    monkeypatch.setattr(module, "_load_mask_image", counted)
+    try:
+        first = load_and_validate_vessel_masks(**_cleanup_call(tmp_path, **base))
+        load_and_validate_vessel_masks(**_cleanup_call(tmp_path, **base))
+        assert len(loads) == 2, "the same settings again: served from the cache"
+        second = load_and_validate_vessel_masks(**_cleanup_call(tmp_path, **{**base, name: changed}))
+    finally:
+        clear_vessel_mask_cache()
+
+    assert len(loads) == 4, f"{name} changed: loaded again"
+    assert not (
+        np.array_equal(first[0], expected[0]) and np.array_equal(first[1], expected[1])
+    ), f"the change of {name} alters these masks"
+    assert np.array_equal(second[0], expected[0])
+    assert np.array_equal(second[1], expected[1])
+    assert second[2:] == expected[2:]
+
+
+def test_a_changed_voxel_size_override_is_not_served_from_the_cache(tmp_path: Path) -> None:
+    """The override is read before the masks are checked against the image:
+    masks said to be twice as coarse as it are refused, not handed back as
+    the ones remembered from a load without the override."""
+    from haemolynx.io import clear_vessel_mask_cache
+
+    _write_masks_every_cleanup_changes(tmp_path)
+    clear_vessel_mask_cache()
+    try:
+        first = load_and_validate_vessel_masks(**_cleanup_call(tmp_path))
+        assert first[2] == VOXEL_SIZE_XYZ, "no spacing of their own: the image's"
+        with pytest.raises(ValueError, match="Voxel-size mismatch"):
+            load_and_validate_vessel_masks(
+                **_cleanup_call(tmp_path, voxel_size_override_xyz=(0.8, 1.0, 4.0))
+            )
+    finally:
+        clear_vessel_mask_cache()

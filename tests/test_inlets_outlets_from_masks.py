@@ -1,0 +1,191 @@
+"""Keeping the large-vessel masks while choosing the inlets and outlets by hand.
+
+automated_vessel_assignment used to do two jobs at once: drive the
+large-vessel treatment from the arteriole/venule masks, and take over the
+inlets and outlets -- greying the Inlet and Outlet tabs, and overwriting
+whatever was set there. inlets_outlets_from_vessel_masks now holds the second
+job alone, so a run can keep its masks and set its inlets and outlets.
+"""
+from __future__ import annotations
+
+import pytest
+
+from haemolynx.graph import inlets_outlets_from_vessel_masks
+from haemolynx.gui.boundary_picking import role_manual_controls_enabled
+from haemolynx.pipeline.checks import check_manual_inlets_outlets_while_masks_choose
+from haemolynx.pipeline.stages import assign_boundaries
+
+from test_large_vessel_network_mode import (
+    _assign_boundaries_settings,
+    _chain_with_large_vessel_masks,
+    _network_for_large_vessel_mode,
+)
+
+
+@pytest.mark.parametrize(
+    "automated, large, switch, expected",
+    [
+        (True, True, True, True),
+        (True, True, False, False),
+        (True, False, True, False),
+        (False, True, True, False),
+        (False, False, False, False),
+    ],
+)
+def test_the_masks_choose_only_with_every_switch_on(automated, large, switch, expected):
+    """The large masks choose the inlets only while they are in use: with
+    "Use large vessel masks" unticked there are no masks to choose from."""
+    settings = {"automated_vessel_assignment": automated,
+                "use_large_vessel_masks": large,
+                "inlets_outlets_from_vessel_masks": switch}
+    assert inlets_outlets_from_vessel_masks(settings) is expected
+
+
+def test_a_config_without_the_new_switch_keeps_its_old_behaviour():
+    assert inlets_outlets_from_vessel_masks(
+        {"automated_vessel_assignment": True, "use_large_vessel_masks": True}
+    ) is True
+
+
+@pytest.mark.parametrize("role", ["inlet", "outlet"])
+def test_the_inlet_and_outlet_tabs_open_when_the_masks_do_not_choose(role):
+    masks_choose = {"automated_vessel_assignment": True,
+                    "use_large_vessel_masks": True,
+                    "inlets_outlets_from_vessel_masks": True}
+    by_hand = {**masks_choose, "inlets_outlets_from_vessel_masks": False}
+    assert not role_manual_controls_enabled(role, masks_choose)
+    assert role_manual_controls_enabled(role, by_hand)
+    assert role_manual_controls_enabled(role, {"automated_vessel_assignment": False})
+    # Regression: unticking "Use large vessel masks" left these tabs greyed.
+    assert role_manual_controls_enabled(role, {**masks_choose, "use_large_vessel_masks": False})
+
+
+def test_preflight_warns_when_hand_picked_inlets_would_be_ignored():
+    picked = {"automated_vessel_assignment": True,
+              "use_large_vessel_masks": True,
+              "inlets_outlets_from_vessel_masks": True,
+              "inlet_node_ids": [3], "outlet_node_volumes": [[[0, 0, 0], [1, 1, 1]]]}
+    warnings = check_manual_inlets_outlets_while_masks_choose(picked).warnings
+    assert len(warnings) == 1
+    assert "inlet_node_ids, outlet_node_volumes" in warnings[0]
+    assert "inlets_outlets_from_vessel_masks off" in warnings[0]
+    picked["inlets_outlets_from_vessel_masks"] = False
+    assert not check_manual_inlets_outlets_while_masks_choose(picked).warnings
+
+
+def test_preflight_warns_of_hand_picked_inlet_coordinates_too():
+    picked = {"automated_vessel_assignment": True,
+              "use_large_vessel_masks": True,
+              "inlets_outlets_from_vessel_masks": True,
+              "inlet_node_coordinates": [(1.0, 2.0, 3.0)]}
+    warnings = check_manual_inlets_outlets_while_masks_choose(picked).warnings
+    assert len(warnings) == 1 and "inlet_node_coordinates" in warnings[0]
+
+
+def test_with_the_switch_on_the_masks_still_choose(tmp_path):
+    G, arteriole, venule = _chain_with_large_vessel_masks()
+    settings = _assign_boundaries_settings(plot_dir=tmp_path)
+
+    assign_boundaries(settings, _network_for_large_vessel_mode(G, arteriole, venule, tmp_path))
+
+    assert settings["inlet_nodes"] == [0] and settings["outlet_nodes"] == [9]
+
+
+def test_the_masks_choosing_leave_the_inlet_and_outlet_tabs_coordinates_as_they_are(tmp_path):
+    """Regression: the nodes the masks chose were written into the Inlet and
+    Outlet tabs' coordinates, so the same settings run again with the masks
+    off took them as hand-picked inlets and outlets."""
+    G, arteriole, venule = _chain_with_large_vessel_masks()
+    mine = {"inlet_node_coordinates": [(3.0, 5.0, 5.0)], "outlet_node_coordinates": [(6.0, 5.0, 5.0)]}
+    settings = _assign_boundaries_settings(plot_dir=tmp_path, **mine)
+
+    assign_boundaries(settings, _network_for_large_vessel_mode(G, arteriole, venule, tmp_path))
+
+    assert settings["inlet_nodes"] == [0] and settings["outlet_nodes"] == [9]
+    assert {name: settings[name] for name in mine} == mine
+
+
+def test_with_the_switch_off_and_no_large_tier_the_masks_choose_no_terminals(tmp_path, monkeypatch):
+    """Their terminals were found, through every dilation step, only to be
+    counted in the log."""
+    import haemolynx.graph as graph_package
+
+    def refuse(*_args, **_kwargs):
+        raise AssertionError("the masks' terminals were chosen though nothing reads them")
+
+    for name in (
+        "select_terminal_nodes_from_large_vessel_masks_progressive_dilation",
+        "select_terminal_nodes_from_large_vessel_masks_progressive_dilation_confidence",
+    ):
+        monkeypatch.setattr(graph_package, name, refuse)
+    G, arteriole, venule = _chain_with_large_vessel_masks()
+    for legacy in (True, False):
+        settings = _assign_boundaries_settings(
+            plot_dir=tmp_path,
+            assign_large_vessel_branch_orders=False,
+            automated_vessel_assignment_use_legacy_mode=legacy,
+            inlets_outlets_from_vessel_masks=False,
+            inlet_node_selection_method="node_ids",
+            inlet_node_ids=[3],
+            outlet_node_selection_method="node_ids",
+            outlet_node_ids=[6],
+        )
+
+        assign_boundaries(settings, _network_for_large_vessel_mode(G.copy(), arteriole, venule, tmp_path))
+
+        assert settings["inlet_nodes"] == [3] and settings["outlet_nodes"] == [6]
+
+
+def test_with_the_switch_off_the_hand_picked_inlets_are_used_and_the_masks_kept(tmp_path):
+    G, arteriole, venule = _chain_with_large_vessel_masks()
+    settings = _assign_boundaries_settings(
+        plot_dir=tmp_path,
+        inlets_outlets_from_vessel_masks=False,
+        inlet_node_selection_method="node_ids",
+        inlet_node_ids=[3],
+        outlet_node_selection_method="node_ids",
+        outlet_node_ids=[6],
+    )
+
+    boundaries = assign_boundaries(
+        settings, _network_for_large_vessel_mode(G, arteriole, venule, tmp_path)
+    )
+
+    assert settings["inlet_nodes"] == [3] and settings["outlet_nodes"] == [6]
+    assert boundaries.resistance_node_pair == (3, 6)
+    # The masks still drive the large-vessel treatment: its own inlet/outlet
+    # come from them, and the edges inside them stay in the network.
+    assert settings["large_vessel_inlet_nodes"] == [0]
+    assert settings["large_vessel_outlet_nodes"] == [9]
+    assert boundaries.graph.number_of_edges() == G.number_of_edges()
+    # Nothing the user set is overwritten with the masks' choice.
+    assert settings["inlet_node_coordinates"] == []
+    assert settings["outlet_node_coordinates"] == []
+
+
+def test_a_venule_mask_with_no_stump_names_the_tab_to_pick_the_outlet_on(tmp_path):
+    """A large venule mask that never reaches the image's edge has no stump:
+    the run says where to choose the outlet instead of only that none was found."""
+    G, arteriole, venule = _chain_with_large_vessel_masks()
+    venule[:] = False
+    venule[5:7, 4:6, 4:6] = True        # inside the image, touching no face
+    settings = _assign_boundaries_settings(plot_dir=tmp_path)
+
+    with pytest.raises(ValueError, match="Large vessel outlet") as caught:
+        assign_boundaries(settings, _network_for_large_vessel_mode(G, arteriole, venule, tmp_path))
+    assert "no stump" in str(caught.value)
+
+
+def test_picking_the_large_vessel_outlet_by_node_id_runs(tmp_path):
+    G, arteriole, venule = _chain_with_large_vessel_masks()
+    venule[:] = False
+    venule[5:7, 4:6, 4:6] = True
+    settings = _assign_boundaries_settings(
+        plot_dir=tmp_path,
+        large_vessel_outlet_node_selection_method="node_ids",
+        large_vessel_outlet_node_ids=[9],
+    )
+
+    assign_boundaries(settings, _network_for_large_vessel_mode(G, arteriole, venule, tmp_path))
+
+    assert settings["inlet_nodes"] == [0] and settings["outlet_nodes"] == [9]

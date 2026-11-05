@@ -1,0 +1,1273 @@
+"""Per-stage checkpoints for reverting a napari tab without a full re-run.
+
+Pure: no napari, no Qt. The widget tests that press the button live in
+`test_gui_stage_checkpoints_widget.py`, marked `gui`.
+"""
+from __future__ import annotations
+
+import pickle
+from pathlib import Path
+from types import SimpleNamespace
+
+import numpy as np
+import pytest
+
+from haemolynx.gui.results import ResultLayers, StageLayers, LayerSpec, SKELETON
+from haemolynx.gui.stage_checkpoints import (
+    StageCheckpoint,
+    StageCheckpoints,
+    can_revert_from,
+    checkpoint_pickle_path,
+    discard_cached_artefacts,
+    previous_tab,
+    resume_from_edit,
+    restore_message,
+    revert_target_stage,
+    skeleton_resume_path,
+    skip_settings_for_resume,
+    stages_before,
+    tab_end_stage,
+    tab_start_stage,
+)
+from haemolynx.gui.tabs import tab_titles
+from haemolynx.pipeline.stages import TOPOLOGY_STEP
+from test_gui_results import a_graph, built, network
+
+
+def _group(stage: str, title: str | None = None) -> StageLayers:
+    return StageLayers(stage=stage, title=title or stage, note=f"done {stage}")
+
+
+def _settings(tmp_path: Path, stem: str = "stack") -> dict:
+    return {
+        "input_path": tmp_path / f"{stem}.tif",
+        "output_dir": tmp_path / "out",
+    }
+
+
+# --- tab / stage mapping -----------------------------------------------------
+
+
+def test_haemodynamics_tab_ends_at_solve_not_build_model():
+    """Solve shares the Haemodynamics tab; revert must land after pressures."""
+    assert tab_end_stage("6. Haemodynamics") == "solve"
+
+
+def test_additional_measurements_tab_shares_export_results_with_no_call_of_its_own():
+    """"9. Additional measurements" opens its own tab but runs nothing on its
+
+    own -- its rows (Statistics and measurements) are read by export_results,
+    the same function "10. Export"'s VTK/plot rows are read by. Both tabs must
+    resolve to export_results for "Run from this stage", and both must
+    revert from the same predecessor checkpoint, or one of the two tabs would
+    silently re-run nothing when its own "Run from this stage" is pressed.
+    """
+    assert tab_start_stage("9. Additional measurements") == "export_results"
+    assert tab_start_stage("10. Export") == "export_results"
+    assert tab_end_stage("9. Additional measurements") == tab_end_stage("8. Perturbations")
+    assert revert_target_stage("9. Additional measurements") == revert_target_stage(
+        "10. Export"
+    )
+    assert previous_tab("10. Export") == "9. Additional measurements"
+
+
+def _boundaries_checkpoint(**overrides) -> StageCheckpoint:
+    defaults = dict(
+        stage="assign_boundaries",
+        title="4. Boundaries",
+        group=None,
+        graph="the-checkpoints-own-graph",
+        inlet_nodes=(0,),
+        outlet_nodes=(5,),
+        arteriole_boundary_nodes=(0, 1),
+        venule_boundary_nodes=(4, 5),
+    )
+    defaults.update(overrides)
+    return StageCheckpoint(**defaults)
+
+
+def test_resume_from_edit_threads_the_edited_graph_through():
+    checkpoint = _boundaries_checkpoint()
+    edited_graph = "the-users-hand-edited-graph"
+
+    resume = resume_from_edit(checkpoint, edited_graph)
+
+    # A copy of the edited graph (see the test below for why), not the
+    # checkpoint's own.
+    assert resume.graph == edited_graph
+    assert resume.graph != checkpoint.graph
+
+
+def test_resume_from_edit_defaults_to_starting_at_assign_diameters():
+    """A hand-added edge has no branch_order/length yet -- Regenerate must
+
+    recompute both for the edited topology, not skip straight to
+    haemodynamics (see set_poiseuille_resistances: either missing silently
+    zeroes that edge's conductance).
+    """
+    resume = resume_from_edit(_boundaries_checkpoint(), "graph")
+    assert resume.start_from == "assign_diameters"
+
+
+def test_resume_from_edit_carries_the_checkpoints_own_boundary_roles():
+    checkpoint = _boundaries_checkpoint()
+    resume = resume_from_edit(checkpoint, "edited-graph")
+
+    assert resume.inlet_nodes == checkpoint.inlet_nodes
+    assert resume.outlet_nodes == checkpoint.outlet_nodes
+    assert resume.arteriole_boundary_nodes == checkpoint.arteriole_boundary_nodes
+    assert resume.venule_boundary_nodes == checkpoint.venule_boundary_nodes
+    assert resume.resistance_node_pair == (0, 5)
+
+
+def test_resume_from_edit_accepts_an_explicit_start_from():
+    resume = resume_from_edit(_boundaries_checkpoint(), "graph", start_from="solve")
+    assert resume.start_from == "solve"
+
+
+def test_previous_tab_of_the_first_is_none():
+    titles = tab_titles()
+    assert previous_tab(titles[0]) is None
+    assert previous_tab(titles[1]) == titles[0]
+
+
+def test_revert_from_diameters_targets_boundaries():
+    assert revert_target_stage("5. Diameters") == "assign_boundaries"
+
+
+def test_revert_from_perturbations_targets_post_processing():
+    assert revert_target_stage("8. Perturbations") == "post_process"
+
+
+def test_revert_from_haemodynamics_targets_diameters():
+    assert revert_target_stage("6. Haemodynamics") == "assign_diameters"
+
+
+def test_can_revert_requires_a_checkpoint_for_the_previous_tab():
+    checkpoints = StageCheckpoints()
+    assert can_revert_from("5. Diameters", checkpoints) is False
+    results = built()
+    checkpoints.record(
+        "assign_boundaries", _group("assign_boundaries", "4. Boundaries"), results
+    )
+    assert can_revert_from("5. Diameters", checkpoints) is True
+
+
+# --- recording ---------------------------------------------------------------
+
+
+def test_topology_steps_are_not_recorded():
+    checkpoints = StageCheckpoints()
+    results = built()
+    assert (
+        checkpoints.record(
+            f"{TOPOLOGY_STEP}prune", _group("prune"), results
+        )
+        is None
+    )
+    assert checkpoints.stages == ()
+
+
+def test_record_pickles_the_graph_beside_the_run_output(tmp_path):
+    checkpoints = StageCheckpoints()
+    graph = a_graph(branch_order="A1")
+    results = built(graph)
+    settings = _settings(tmp_path)
+    (tmp_path / "out").mkdir()
+
+    checkpoint = checkpoints.record(
+        "build_network",
+        _group("build_network", "3. Graph"),
+        results,
+        settings=settings,
+    )
+
+    assert checkpoint is not None
+    assert checkpoint.graph is not None
+    assert checkpoint.graph is not graph
+    assert checkpoint.graph.number_of_edges() == graph.number_of_edges()
+    path = checkpoint_pickle_path(tmp_path / "out", "stack", "build_network")
+    assert path.is_file()
+    with path.open("rb") as handle:
+        restored = pickle.load(handle)
+    assert restored.number_of_nodes() == graph.number_of_nodes()
+
+
+def test_record_keeps_going_when_the_graph_will_not_pickle(tmp_path, monkeypatch):
+    checkpoints = StageCheckpoints()
+    results = built()
+
+    def boom(*_args, **_kwargs):
+        raise TypeError("unpickleable")
+
+    monkeypatch.setattr("haemolynx.gui.stage_checkpoints.pickle.dumps", boom)
+    checkpoint = checkpoints.record(
+        "build_network",
+        _group("build_network"),
+        results,
+        settings=_settings(tmp_path),
+    )
+    assert checkpoint is not None
+    assert checkpoint.graph is None
+    assert checkpoint.pickle_path is None
+
+
+# --- restore plan ------------------------------------------------------------
+
+
+def test_plan_restore_replays_groups_through_the_previous_tab(tmp_path):
+    checkpoints = StageCheckpoints()
+    results = built()
+    settings = _settings(tmp_path)
+    (tmp_path / "out").mkdir()
+
+    for stage, title in (
+        ("skeletonise", "2. Skeletonise"),
+        ("build_network", "3. Graph"),
+        ("assign_boundaries", "4. Boundaries"),
+        ("assign_diameters", "5. Diameters"),
+    ):
+        if stage == "build_network":
+            results.stage_finished("build_network", network(a_graph()))
+        checkpoints.record(stage, _group(stage, title), results, settings=settings)
+
+    plan = checkpoints.plan_restore("5. Diameters", settings=settings)
+
+    assert plan is not None
+    assert plan.stage == "assign_boundaries"
+    assert plan.tab_title == "5. Diameters"
+    assert plan.start_from == "assign_diameters"
+    assert [group.stage for group in plan.groups] == [
+        "skeletonise",
+        "build_network",
+        "assign_boundaries",
+    ]
+    # Later checkpoints are dropped so a second run-from cannot jump forward.
+    assert "assign_diameters" not in checkpoints.stages
+    assert checkpoints.has("assign_boundaries")
+
+
+def test_plan_restore_hands_the_graph_over_and_leaves_graph_pkl_alone(tmp_path):
+    """A run-from used to overwrite {stem}_graph.pkl with the checkpoint's
+    later-stage graph (and claim it, so Clear deleted it): a run with the
+    user's own do_graph_building off then loaded the wrong graph, or none.
+    The graph now goes to the run directly, and graph building stays on."""
+    checkpoints = StageCheckpoints()
+    graph = a_graph(resistance=1.0)
+    results = built(graph)
+    settings = _settings(tmp_path)
+    settings.update(measure_diameters_from_raw_image=True, raw_image_path=tmp_path / "raw.tif")
+    (tmp_path / "out").mkdir()
+    graph_pkl = tmp_path / "out" / "stack_graph.pkl"
+    graph_pkl.write_bytes(b"what graph building made")
+    # Haemodynamics' previous tab is Diameters: its checkpoint is the one.
+    checkpoints.record(
+        "assign_diameters",
+        _group("assign_diameters", "5. Diameters"),
+        results,
+        settings=settings,
+    )
+
+    plan = checkpoints.plan_restore("6. Haemodynamics", settings=settings)
+
+    assert plan is not None
+    assert plan.stage == "assign_diameters"
+    assert plan.skip_settings == ("do_fwhm_measurement",)
+    assert graph_pkl.read_bytes() == b"what graph building made"
+    assert graph_pkl not in checkpoints.session_artefact_paths
+    assert plan.resume.graph.edges[0, 1, 0]["resistance"] == 1.0
+    assert plan.resume.graph is not checkpoints.get("assign_diameters").graph
+
+
+def test_plan_restore_writes_skeleton_npy_when_no_skeleton_is_stored(tmp_path):
+    """A run loaded from a file keeps no stage outputs, so the resumed run
+    loads its skeleton: the .npy must exist before do_skeletonize goes off."""
+    checkpoints = StageCheckpoints()
+    graph = a_graph(resistance=1.0)
+    results = built(graph)
+    settings = _settings(tmp_path)
+    (tmp_path / "out").mkdir()
+    skeleton = np.zeros((2, 3, 4), dtype=bool)
+    skeleton_group = StageLayers(
+        stage="skeletonise",
+        title="2. Skeletonise",
+        layers=(
+            LayerSpec(kind="labels", name=SKELETON, data=skeleton, scale=(1.0, 1.0, 1.0)),
+        ),
+    )
+    checkpoints.record("skeletonise", skeleton_group, results, settings=settings)
+    checkpoints.record(
+        "build_network",
+        _group("build_network", "3. Graph"),
+        results,
+        settings=settings,
+    )
+    checkpoints.record(
+        "assign_boundaries",
+        _group("assign_boundaries", "4. Boundaries"),
+        results,
+        settings=settings,
+    )
+
+    plan = checkpoints.plan_restore("4. Boundaries", settings=settings)
+
+    assert plan is not None
+    assert plan.tab_title == "4. Boundaries"
+    assert plan.skip_settings == ("do_skeletonize",)
+    skel_path = skeleton_resume_path(tmp_path / "out", "stack")
+    assert skel_path.is_file()
+    assert np.array_equal(np.load(skel_path), skeleton)
+
+
+def _record_with_outputs(tmp_path, settings):
+    """A run through Boundaries whose early stages kept what they returned."""
+    from haemolynx.pipeline.stages import SegmentedInputs, SkeletonisedVolume, VesselNetwork
+
+    checkpoints = StageCheckpoints()
+    results = built(a_graph(resistance=1.0))
+    inputs = SegmentedInputs(image_path=tmp_path / "stack.tif", output_dir=tmp_path / "out")
+    volume = SkeletonisedVolume(
+        image=np.zeros((2, 3, 4)), skeleton=np.zeros((2, 3, 4), dtype=bool),
+        voxel_size_xyz=(1.0, 1.0, 1.0), voxel_size_zyx=(1.0, 1.0, 1.0),
+        output_dir=tmp_path / "out",
+    )
+    built_graph = a_graph()
+    network = VesselNetwork(graph=built_graph, volume=volume, large_arteriole_mask=np.ones(3))
+    for stage, output in (("segment", inputs), ("skeletonise", volume),
+                          ("build_network", network), ("assign_boundaries", None)):
+        checkpoints.record(stage, _group(stage), results, settings=settings, output=output)
+    # What assign_boundaries does to the live network after it was recorded.
+    network.graph = a_graph(resistance=9.0)
+    network.large_arteriole_mask = np.zeros(3)
+    return checkpoints, inputs, volume, built_graph
+
+
+def test_a_run_from_hands_over_what_the_early_stages_returned(tmp_path):
+    """So the resumed run neither re-segments (ilastik) nor reloads and
+    re-checks the image, skeleton, masks and graph -- and needs no skeleton
+    file or skip toggle for any of it."""
+    settings = _settings(tmp_path)
+    (tmp_path / "out").mkdir()
+    checkpoints, inputs, volume, built_graph = _record_with_outputs(tmp_path, settings)
+
+    plan = checkpoints.plan_run_from("5. Diameters", settings=settings)
+
+    assert plan.resume.inputs == inputs and plan.resume.volume is not None
+    assert plan.resume.volume.skeleton is volume.skeleton
+    # The network as graph building left it, not as Boundaries changed it.
+    assert plan.resume.network.graph is built_graph
+    assert np.array_equal(plan.resume.network.large_arteriole_mask, np.ones(3))
+    assert plan.skip_settings == ()
+    assert not skeleton_resume_path(tmp_path / "out", "stack").exists()
+
+
+def test_a_run_loaded_from_a_file_keeps_what_its_first_resume_loaded(tmp_path):
+    """A loaded run keeps no stage outputs, so every Regenerate of it loaded
+    the image and skeleton again. The first resume's are now kept for the
+    next, where the checkpoint had none; one it has is never replaced."""
+    from dataclasses import replace
+
+    from haemolynx.pipeline.stages import SkeletonisedVolume
+
+    settings = _settings(tmp_path)
+    (tmp_path / "out").mkdir()
+    checkpoints, inputs, volume, _graph = _record_with_outputs(tmp_path, settings)
+    loaded = StageCheckpoints()
+    loaded.replace_all([replace(item, output=None) for item in checkpoints.records()])
+    assert "volume" not in loaded._stored_outputs("post_process")
+
+    again = SkeletonisedVolume(
+        image=np.ones((2, 3, 4)), skeleton=np.zeros((2, 3, 4), dtype=bool),
+        voxel_size_xyz=(1.0, 1.0, 1.0), voxel_size_zyx=(1.0, 1.0, 1.0), output_dir=tmp_path / "out",
+    )
+    loaded.keep_output("skeletonise", again)
+    loaded.keep_output("segment", inputs)
+    loaded.keep_output("assign_boundaries", object())  # not a stage a resume is handed
+    loaded.keep_output("solve", again)  # not recorded at all
+
+    stored = loaded._stored_outputs("post_process")
+    assert stored["volume"].image is again.image and stored["inputs"] == inputs
+    assert loaded.get("assign_boundaries").output is None and not loaded.has("solve")
+    assert loaded.get("skeletonise").graph is not None, "its graph and layers stay"
+    loaded.keep_output("skeletonise", volume)
+    assert loaded._stored_outputs("post_process")["volume"].image is again.image, "never replaced"
+    from haemolynx.pipeline.stages import VesselNetwork
+
+    loaded.freeze()
+    loaded.keep_output("build_network", VesselNetwork(graph=a_graph(), volume=again))
+    assert loaded.get("build_network").output is None, "nothing kept after Clear"
+    loaded.unfreeze()
+    loaded.keep_output("build_network", VesselNetwork(graph=a_graph(), volume=again))
+    assert loaded._stored_outputs("post_process")["network"].volume is again
+
+
+def test_a_run_from_hands_over_only_the_stages_before_it(tmp_path):
+    settings = _settings(tmp_path)
+    (tmp_path / "out").mkdir()
+    checkpoints, _inputs, _volume, _graph = _record_with_outputs(tmp_path, settings)
+
+    plan = checkpoints.plan_run_from("3. Graph", settings=settings)
+
+    assert plan.resume.inputs is not None and plan.resume.volume is not None
+    assert plan.resume.network is None  # build_network is the stage being re-run
+
+
+def test_revert_from_every_tab_selects_the_restored_predecessor_tab():
+    """Run-from on tab K names K as the tab to stay on, and needs end of M."""
+    titles = tab_titles()
+    for index in range(1, len(titles)):
+        current = titles[index]
+        restored = titles[index - 1]
+        assert previous_tab(current) == restored
+        assert revert_target_stage(current) == tab_end_stage(restored)
+        from haemolynx.gui.stage_checkpoints import tab_start_stage
+
+        plan_tab = current
+        assert tab_start_stage(current) is not None
+        assert plan_tab == current
+
+
+def test_skip_settings_for_resume_requires_skeleton_before_disabling_skeletonize():
+    assert skip_settings_for_resume(skeleton_ready=False, start_from="assign_diameters") == ()
+    assert skip_settings_for_resume(skeleton_ready=True, start_from="assign_diameters") == (
+        "do_skeletonize",
+    )
+    assert skip_settings_for_resume(skeleton_ready=True, start_from="skeletonise") == ()
+    assert skip_settings_for_resume(skeleton_ready=True) == ()
+
+
+def test_skip_settings_never_turn_graph_building_off():
+    """A resumed run is handed its graph; turning graph building off made it
+    load {stem}_graph.pkl, which the run-from had to overwrite first."""
+    for start_from in ("build_network", "assign_boundaries", "solve", "export_results"):
+        assert "do_graph_building" not in skip_settings_for_resume(
+            skeleton_ready=True, start_from=start_from, use_fwhm_edge_diameters=True
+        )
+
+
+def test_skip_settings_for_start_from_diameters_does_not_disable_fwhm():
+    """Re-running Diameters should remeasure; Haemodynamics must not."""
+    assert skip_settings_for_resume(
+        skeleton_ready=True,
+        start_from="assign_diameters",
+        use_fwhm_edge_diameters=True,
+    ) == ("do_skeletonize",)
+    assert skip_settings_for_resume(
+        skeleton_ready=True,
+        start_from="build_haemodynamic_model",
+        use_fwhm_edge_diameters=True,
+    ) == ("do_skeletonize", "do_fwhm_measurement")
+    assert skip_settings_for_resume(
+        skeleton_ready=False,
+        target="assign_diameters",
+        use_fwhm_edge_diameters=True,
+    ) == ("do_fwhm_measurement",)
+
+
+def test_tab_start_stage_of_haemodynamics_is_build_model_not_solve():
+    from haemolynx.gui.stage_checkpoints import tab_start_stage
+
+    assert tab_start_stage("6. Haemodynamics") == "build_haemodynamic_model"
+    assert tab_start_stage("5. Diameters") == "assign_diameters"
+
+
+def test_frozen_checkpoints_do_not_record(tmp_path):
+    checkpoints = StageCheckpoints()
+    results = built()
+    checkpoints.freeze()
+    assert (
+        checkpoints.record(
+            "build_network",
+            _group("build_network"),
+            results,
+            settings=_settings(tmp_path),
+        )
+        is None
+    )
+    assert checkpoints.stages == ()
+    checkpoints.unfreeze()
+    assert (
+        checkpoints.record("build_network", _group("build_network"), results)
+        is not None
+    )
+
+
+def test_the_output_folder_is_unset_when_it_would_be_the_working_directory():
+    """Pickles are deleted from it: a cleared picker is the working
+    directory, and must not be taken for the run's folder."""
+    from haemolynx.gui.stage_checkpoints import output_dir_from_settings
+
+    assert output_dir_from_settings(None) is None
+    assert output_dir_from_settings({}) is None
+    assert output_dir_from_settings({"output_dir": None}) is None
+    assert output_dir_from_settings({"output_dir": "."}) is None
+    assert output_dir_from_settings({"output_dir": "  "}) is None
+    assert output_dir_from_settings({"output_dir": Path.cwd()}) is None
+    assert output_dir_from_settings({"output_dir": "stack"}) == Path("stack")
+    assert output_dir_from_settings({"output_dir": Path("out") / "stack"}) == Path("out") / "stack"
+    checkpoints = StageCheckpoints()
+    assert checkpoints.plan_restore("1. Input") is None
+
+
+def test_apply_to_results_restores_the_remembered_graph():
+    checkpoints = StageCheckpoints()
+    graph = a_graph(branch_order="C0")
+    results = built(graph)
+    checkpoints.record("build_network", _group("build_network"), results)
+    fresh = ResultLayers()
+
+    checkpoints.apply_to_results(fresh, checkpoints.get("build_network"))
+
+    assert fresh._graph is not None
+    assert fresh._graph is not graph
+    assert fresh._graph.edges[0, 1, 0]["branch_order"] == "C0"
+    assert fresh.emitted == results.emitted
+
+
+def test_apply_to_results_restores_the_thick_vessel_mask():
+    """A run that used thickness-gated skeletonisation carries its fat
+    catchment (results._thick_vessel_mask) forward across a resume -- it has
+    no per-stage-output equivalent the way the skeleton array itself does, so
+    without this a resumed run silently disabled the thick/thin debug toggle
+    for a run that genuinely used it, even though nothing about the run
+    changed."""
+    thick = np.zeros((4, 4, 4), dtype=bool)
+    thick[0, 0, 0] = True
+    results = ResultLayers()
+    results.stage_finished(
+        "skeletonise",
+        SimpleNamespace(
+            image=np.zeros((4, 4, 4)),
+            skeleton=np.zeros((4, 4, 4), dtype=bool),
+            voxel_size_xyz=(1.0, 1.0, 1.0),
+            voxel_size_zyx=(1.0, 1.0, 1.0),
+            thick_vessel_mask=thick,
+        ),
+    )
+    results.stage_finished("build_network", network(a_graph(), (1.0, 1.0, 1.0)))
+    checkpoints = StageCheckpoints()
+    checkpoints.record("build_network", _group("build_network"), results)
+    fresh = ResultLayers()
+
+    checkpoints.apply_to_results(fresh, checkpoints.get("build_network"))
+
+    assert fresh._thick_vessel_mask is not None
+    np.testing.assert_array_equal(fresh._thick_vessel_mask, thick)
+    assert fresh._skeleton_layer_options() == {"thick_vessel_mask": fresh._thick_vessel_mask}
+
+
+def test_restore_message_names_the_tab_and_the_toggles_turned_off():
+    plan = SimpleNamespace(
+        title="4. Boundaries",
+        tab_title="5. Diameters",
+        start_from="assign_diameters",
+        skip_settings=("do_skeletonize",),
+    )
+    message = restore_message(plan)
+    assert "5. Diameters" in message
+    assert "do_skeletonize" in message
+
+
+def test_discard_cached_artefacts_removes_checkpoints_not_the_pipelines_own_files(
+    tmp_path,
+):
+    """{stem}_graph.pkl and {stem}_skeleton.npy are graph building's and
+    skeletonisation's own output, which a run with those stages off loads:
+    Clear, and every fresh Run pipeline, must leave them."""
+    output_dir = tmp_path / "out"
+    output_dir.mkdir()
+    stem = "stack"
+    graph_path = output_dir / f"{stem}_graph.pkl"
+    graph_path.write_bytes(b"graph")
+    cp1 = checkpoint_pickle_path(output_dir, stem, "build_network")
+    cp1.write_bytes(b"cp")
+    cp2 = checkpoint_pickle_path(output_dir, stem, "assign_boundaries")
+    cp2.write_bytes(b"cp2")
+    skel_path = skeleton_resume_path(output_dir, stem)
+    skel_path.write_bytes(b"skeleton")
+    unrelated = output_dir / "other.pkl"
+    unrelated.write_bytes(b"other")
+
+    removed = discard_cached_artefacts(output_dir, stem)
+
+    assert set(removed) == {cp1, cp2}
+    assert graph_path.is_file()
+    assert not cp1.is_file()
+    assert not cp2.is_file()
+    assert skel_path.is_file()
+    assert unrelated.is_file()
+
+
+def test_discard_cached_artefacts_ignores_missing_files(tmp_path):
+    output_dir = tmp_path / "out"
+    output_dir.mkdir()
+    assert discard_cached_artefacts(output_dir, "stack") == ()
+
+
+def test_clear_looks_for_checkpoints_under_the_input_stem_they_are_named_with(
+    tmp_path,
+):
+    """record() names them {input stem}_checkpoint_{stage}.pkl; Clear used to
+    look under the VTK prefix's name, so a new session never cleaned an
+    earlier one's pickles."""
+    from haemolynx.gui.stage_checkpoints import (
+        discard_cached_artefacts_for_settings,
+        stems_for_cached_artefacts,
+    )
+
+    output_dir = tmp_path / "out"
+    output_dir.mkdir()
+    settings = {
+        "input_path": tmp_path / "HaemoLynx_image.tif",
+        "output_dir": tmp_path / "out",
+    }
+    ours = checkpoint_pickle_path(output_dir, "HaemoLynx_image", "build_network")
+    ours.write_bytes(b"c")
+    other = checkpoint_pickle_path(output_dir, "another_image", "build_network")
+    other.write_bytes(b"c2")
+
+    assert stems_for_cached_artefacts(settings) == ("HaemoLynx_image",)
+    removed = discard_cached_artefacts_for_settings(settings)
+    assert removed == (ours,)
+    assert not ours.is_file()
+    assert other.is_file()
+    ilastik = {
+        **settings,
+        "input_path": None,
+        "use_ilastik_segmentation": True,
+        "raw_image_path": tmp_path / "raw.tif",
+        "ilastik_output_dir": tmp_path / "seg",
+        "ilastik_output_suffix": ".h5",
+    }
+    assert stems_for_cached_artefacts(ilastik) == ("raw_segmented",)
+
+
+def test_a_synthetic_run_names_and_clears_its_checkpoints_after_its_template(tmp_path):
+    """A synthetic run has no segmented input: its pickles carry the one
+    stem every output of the run does, ``{template stem}_synthetic``, and
+    Clear removes those, never an image run's left in the same folder by
+    a stale input_path."""
+    from haemolynx.gui.stage_checkpoints import (
+        discard_cached_artefacts_for_settings,
+        stems_for_cached_artefacts,
+    )
+
+    settings = {
+        "network_source": "synthetic",
+        "synthetic_template_path": tmp_path / "stack_a.haemorun",
+        "input_path": tmp_path / "stack.tif",  # left from an image run, not read
+        "output_dir": tmp_path / "out",
+    }
+    checkpoints = StageCheckpoints()
+    results = built()
+    results.stage_finished("build_network", network(a_graph()))
+    checkpoint = checkpoints.record("build_network", _group("build_network", "3. Graph"), results, settings=settings)
+
+    ours = checkpoint_pickle_path(tmp_path / "out", "stack_a_synthetic", "build_network")
+    assert checkpoint.pickle_path == ours and ours.is_file()
+    image_runs = checkpoint_pickle_path(tmp_path / "out", "stack", "build_network")
+    image_runs.write_bytes(b"an image run's")
+    assert stems_for_cached_artefacts(settings) == ("stack_a_synthetic",)
+    assert discard_cached_artefacts_for_settings(settings) == (ours,)
+    assert not ours.is_file() and image_runs.is_file()
+    # With no template chosen there is no stem: nothing is named, nothing cleared.
+    assert stems_for_cached_artefacts({**settings, "synthetic_template_path": None}) == ()
+
+
+# --- a run from a tab starts from, and leaves, the earlier tabs as they were ---
+
+
+def test_stages_before_are_the_calls_ahead_of_the_start_in_run_order():
+    assert stages_before("assign_diameters") == (
+        "segment",
+        "skeletonise",
+        "build_network",
+        "assign_boundaries",
+    )
+    assert stages_before("segment") == ()
+    assert stages_before(None) == ()
+    assert stages_before("not a stage") == ()
+
+
+def test_a_resumed_run_gets_a_copy_of_the_checkpoints_graph(tmp_path):
+    """Every stage from the start writes onto the graph it is handed: handing
+    over the checkpoint's own left it holding the first run's results, so a
+    second run from the same tab started from a different graph."""
+    checkpoints = StageCheckpoints()
+    results = built()
+    settings = _settings(tmp_path)
+    (tmp_path / "out").mkdir()
+    results.stage_finished("build_network", network(a_graph()))
+    for stage, title in (("build_network", "3. Graph"), ("assign_boundaries", "4. Boundaries")):
+        checkpoints.record(stage, _group(stage, title), results, settings=settings)
+
+    plan = checkpoints.plan_run_from("5. Diameters", settings=settings)
+    for _u, _v, data in plan.resume.graph.edges(data=True):
+        data["diameter_um"] = 12.0  # what the resumed run would write
+
+    kept = checkpoints.get("assign_boundaries").graph
+    assert plan.resume.graph is not kept
+    assert all("diameter_um" not in data for *_e, data in kept.edges(data=True))
+
+
+def test_resume_from_edit_leaves_the_editors_graph_alone():
+    checkpoint = StageCheckpoint(stage="assign_boundaries", title="4. Boundaries", group=None)
+    edited = a_graph()
+
+    resume = resume_from_edit(checkpoint, edited)
+    for _u, _v, data in resume.graph.edges(data=True):
+        data["diameter_um"] = 12.0
+
+    assert all("diameter_um" not in data for *_e, data in edited.edges(data=True))
+
+
+def test_run_from_replays_only_stages_ahead_of_the_start(tmp_path):
+    """By position, not by stopping at the start stage's own checkpoint: a
+    missing checkpoint for the start stage must not let later ones through."""
+    checkpoints = StageCheckpoints()
+    results = built()
+    settings = _settings(tmp_path)
+    (tmp_path / "out").mkdir()
+    results.stage_finished("build_network", network(a_graph()))
+    for stage, title in (
+        ("skeletonise", "2. Skeletonise"),
+        ("build_network", "3. Graph"),
+        ("assign_boundaries", "4. Boundaries"),
+        ("build_haemodynamic_model", "6. Haemodynamics"),  # no assign_diameters
+    ):
+        checkpoints.record(stage, _group(stage, title), results, settings=settings)
+
+    plan = checkpoints.plan_run_from("5. Diameters", settings=settings)
+
+    assert [group.stage for group in plan.groups] == [
+        "skeletonise",
+        "build_network",
+        "assign_boundaries",
+    ]
+
+
+def test_a_plan_can_keep_the_later_work_until_the_run_is_known_to_start(tmp_path):
+    """The panel checks the resumed run before dropping anything: a run that
+    then fails its checks used to have thrown away every later tab's work."""
+    settings = _settings(tmp_path)
+    (tmp_path / "out").mkdir()
+    checkpoints, _ = _through_post_processing(tmp_path, settings)
+    recorded = checkpoints.stages
+
+    plan = checkpoints.plan_run_from("8. Perturbations", settings=settings, drop=False)
+
+    assert plan is not None and plan.start_from == "run_perturbations"
+    assert checkpoints.stages == recorded
+    checkpoints.drop_from(plan.start_from)
+    assert checkpoints.stages == recorded  # nothing from run_perturbations on yet
+    checkpoints.drop_from("build_haemodynamic_model")
+    assert checkpoints.stages == (
+        "skeletonise", "build_network", "assign_boundaries", "assign_diameters",
+    )
+
+    regenerate = checkpoints.plan_regenerate(a_graph(), settings=settings, drop=False)
+    assert regenerate is not None
+    assert checkpoints.has("assign_diameters")
+
+
+def test_a_run_from_leaves_the_pipelines_own_skeleton_to_the_pipeline(tmp_path):
+    """Clear discards what this session wrote. The skeleton skeletonise saved
+    is the pipeline's own output, which a run with do_skeletonize off loads:
+    claiming it made Clear -- and so every fresh Run pipeline -- delete it."""
+    settings = _settings(tmp_path)
+    (tmp_path / "out").mkdir()
+    skeleton_path = skeleton_resume_path(tmp_path / "out", "stack")
+
+    checkpoints, _ = _through_post_processing(tmp_path, settings)
+    checkpoints.plan_run_from("6. Haemodynamics", settings=settings)
+    assert skeleton_path.is_file()
+    assert skeleton_path in checkpoints.session_artefact_paths  # written by the resume
+
+    checkpoints, _ = _through_post_processing(tmp_path, settings)
+    checkpoints.plan_run_from("6. Haemodynamics", settings=settings)
+    assert skeleton_path.is_file()
+    assert skeleton_path not in checkpoints.session_artefact_paths  # already there
+
+
+# --- Regenerate after a hand edit --------------------------------------------
+
+
+def _through_post_processing(tmp_path, settings):
+    checkpoints = StageCheckpoints()
+    results = built(a_graph(resistance=1.0))
+    skeleton = np.zeros((2, 3, 4), dtype=bool)
+    skeleton[1, 1, :] = True
+    checkpoints.record(
+        "skeletonise",
+        StageLayers(
+            stage="skeletonise",
+            title="2. Skeletonise",
+            layers=(LayerSpec(kind="labels", name=SKELETON, data=skeleton, scale=(1.0, 1.0, 1.0)),),
+        ),
+        results,
+        settings=settings,
+    )
+    for stage in ("build_network", "assign_boundaries", "assign_diameters",
+                  "build_haemodynamic_model", "solve", "post_process"):
+        checkpoints.record(stage, _group(stage), results, settings=settings)
+    return checkpoints, skeleton
+
+
+def test_regenerate_hands_over_the_edited_graph_instead_of_rebuilding(tmp_path):
+    """Regenerate used to re-skeletonise the image and build a whole new
+    graph, only to replace it with the edited one -- and then wrote the edit
+    over {stem}_graph.pkl. It is handed the edit instead."""
+    settings = _settings(tmp_path)
+    (tmp_path / "out").mkdir()
+    checkpoints, skeleton = _through_post_processing(tmp_path, settings)
+    edited = a_graph(resistance=1.0)
+    edited.add_edge(0, 3, voxels=[[0.0, 0.0, 0.0], [3.0, 0.0, 0.0]])
+
+    plan = checkpoints.plan_regenerate(edited, settings=settings)
+
+    assert plan is not None
+    assert plan.start_from == "assign_diameters"
+    assert plan.skip_settings == ("do_skeletonize",)
+    assert np.array_equal(np.load(skeleton_resume_path(tmp_path / "out", "stack")), skeleton)
+    assert not (tmp_path / "out" / "stack_graph.pkl").exists()
+    assert plan.resume.graph.number_of_edges() == edited.number_of_edges()
+    assert plan.resume.graph is not edited
+
+
+def test_regenerate_forgets_the_checkpoints_made_before_the_edit(tmp_path):
+    """From Diameters on they describe the graph before the edit: a run from
+    one of those tabs must not continue the unedited network."""
+    settings = _settings(tmp_path)
+    (tmp_path / "out").mkdir()
+    checkpoints, _ = _through_post_processing(tmp_path, settings)
+
+    checkpoints.plan_regenerate(a_graph(), settings=settings)
+
+    assert checkpoints.stages == ("skeletonise", "build_network", "assign_boundaries")
+
+
+def test_regenerate_needs_boundaries_first(tmp_path):
+    settings = _settings(tmp_path)
+    checkpoints = StageCheckpoints()
+    checkpoints.record("build_network", _group("build_network"), built(), settings=settings)
+
+    assert checkpoints.plan_regenerate(a_graph(), settings=settings) is None
+
+
+# --- Post processing, between Haemodynamics and Perturbations --------------------
+
+
+def test_post_processing_sits_between_haemodynamics_and_perturbations():
+    assert previous_tab("6. Haemodynamics") == "5. Diameters"
+    assert previous_tab("7. Post processing") == "6. Haemodynamics"
+    assert previous_tab("8. Perturbations") == "7. Post processing"
+    assert tab_start_stage("7. Post processing") == "post_process"
+    assert tab_end_stage("7. Post processing") == "post_process"
+    # The network is edited solved: Post processing follows the solve.
+    assert revert_target_stage("7. Post processing") == "solve"
+    # A run from Perturbations starts from the edited, re-solved network.
+    assert revert_target_stage("8. Perturbations") == "post_process"
+
+
+def _boundaries_output(graph):
+    from haemolynx.pipeline.stages import BoundaryNodes
+
+    return BoundaryNodes(
+        inlet_nodes=[0],
+        outlet_nodes=[3],
+        arteriole_boundary_nodes=[1],
+        venule_boundary_nodes=[2],
+        large_arteriole_boundary_nodes=[1],
+        large_venule_boundary_nodes=[2],
+        graph=graph,
+    )
+
+
+def test_the_large_vessel_hand_off_nodes_reach_a_resumed_run(tmp_path):
+    """Only assign_boundaries finds them, and they have no layer: a run resumed
+    past it used to assign branch orders with no Large_Art/Large_Ven tier."""
+    graph = a_graph()
+    results = ResultLayers()
+    output = _boundaries_output(graph)
+    group = results.stage_finished("assign_boundaries", output)
+    checkpoints = StageCheckpoints()
+    checkpoints.record("assign_boundaries", group, results, output=output)
+    checkpoints.record("assign_diameters", _group("assign_diameters"), results)
+
+    later = checkpoints.get("assign_diameters")
+    assert later.large_arteriole_boundary_nodes == (1,)
+    assert later.large_venule_boundary_nodes == (2,)
+    assert checkpoints._carried_boundary_roles()["large_arteriole_boundary"] == (1,)
+
+    plan = checkpoints.plan_regenerate(
+        graph, settings=_settings(tmp_path), start_from="post_process"
+    )
+    assert plan.resume.large_arteriole_boundary_nodes == (1,)
+    assert plan.resume.large_venule_boundary_nodes == (2,)
+    assert plan.resume.inlet_nodes == (0,) and plan.resume.outlet_nodes == (3,)
+
+
+def test_a_boundaries_run_with_the_masks_off_carries_none_of_an_earlier_runs():
+    """Regression: the Boundaries checkpoint took masks carried from an
+    earlier one whenever its own output had none, so a run from Boundaries
+    with the masks switched off still resumed later stages with the old masks;
+    and it read the hand-off nodes only while it drew boundary nodes."""
+    from dataclasses import replace
+
+    graph = a_graph()
+    results = ResultLayers()
+    first = replace(
+        _boundaries_output(graph),
+        large_arteriole_mask=np.ones((2, 3, 4), dtype=bool),
+        large_venule_mask=np.zeros((2, 3, 4), dtype=bool),
+    )
+    checkpoints = StageCheckpoints()
+    checkpoints.record("assign_boundaries", results.stage_finished("assign_boundaries", first), results, output=first)
+    assert checkpoints.get("assign_boundaries").large_arteriole_mask is not None
+
+    again = _boundaries_output(graph)  # masks off now: none on the output
+    checkpoints.record("assign_boundaries", _group("assign_boundaries"), results, output=again)
+
+    record = checkpoints.get("assign_boundaries")
+    assert record.large_arteriole_mask is None and record.large_venule_mask is None
+    assert record.large_arteriole_boundary_nodes == (1,) and record.large_venule_boundary_nodes == (2,)
+
+
+def test_the_thick_vessel_region_reaches_a_resumed_run(tmp_path):
+    """Where post_process makes a hand-drawn vessel's bridge, when the resumed
+    run loads its skeleton rather than making it."""
+    graph = a_graph()
+    results = built(graph)
+    thick = np.zeros((2, 3, 4), dtype=bool)
+    thick[0, 0, :] = True
+    results._thick_vessel_mask = thick
+    output = _boundaries_output(graph)
+    checkpoints = StageCheckpoints()
+    checkpoints.record(
+        "assign_boundaries", results.stage_finished("assign_boundaries", output), results,
+        output=output,
+    )
+
+    plan = checkpoints.plan_regenerate(graph, settings=_settings(tmp_path), start_from="post_process")
+
+    assert plan.resume.thick_vessel_mask is thick
+
+
+def test_regenerate_from_post_processing_keeps_haemodynamics_and_drops_what_came_after(tmp_path):
+    settings = _settings(tmp_path)
+    (tmp_path / "out").mkdir()
+    checkpoints, _skeleton = _through_post_processing(tmp_path, settings)
+    edited = a_graph(resistance=1.0)
+
+    plan = checkpoints.plan_regenerate(
+        edited, settings=settings, start_from="post_process", drop=False
+    )
+    assert plan.start_from == "post_process" and plan.resume.start_from == "post_process"
+    assert stages_before("post_process")[-1] == "solve"
+
+    checkpoints.drop_from(plan.start_from)
+    assert checkpoints.stages == (
+        "skeletonise", "build_network", "assign_boundaries", "assign_diameters",
+        "build_haemodynamic_model", "solve",
+    )
+
+
+@pytest.mark.parametrize(
+    "read_as, skips_fwhm", [("endothelial", False), ("plasma_column", True), (None, True)]
+)
+def test_run_from_haemodynamics_reads_the_stain_the_run_resolved(tmp_path, read_as, skips_fwhm):
+    """With raw_image_stain auto, whether FWHM was in use -- and so whether
+    do_fwhm_measurement must be turned off to keep its approvals -- is what
+    the run read the stain as, kept on the checkpoint's graph; the setting
+    alone said FWHM for every auto run."""
+    checkpoints = StageCheckpoints()
+    results = built()
+    settings = _settings(tmp_path)
+    settings.update(
+        measure_diameters_from_raw_image=True,
+        raw_image_path=tmp_path / "raw.tif",
+        raw_image_stain="auto",
+    )
+    (tmp_path / "out").mkdir()
+    G = a_graph()
+    if read_as is not None:
+        G.graph["raw_image_stain"] = read_as
+    results.stage_finished("build_network", network(G))
+    for stage, title in (
+        ("build_network", "3. Graph"),
+        ("assign_boundaries", "4. Boundaries"),
+        ("assign_diameters", "5. Diameters"),
+    ):
+        checkpoints.record(stage, _group(stage, title), results, settings=settings)
+
+    plan = checkpoints.plan_run_from("6. Haemodynamics", settings=settings)
+
+    assert ("do_fwhm_measurement" in plan.skip_settings) is skips_fwhm
+
+
+def test_run_from_haemodynamics_without_a_raw_image_keeps_fwhm_measurement(tmp_path):
+    """measure_diameters_from_raw_image is out of effect without a raw image
+    (the diameter chain starts at the mask), so FWHM was not in use and
+    there are no FWHM diameters for do_fwhm_measurement to keep."""
+    checkpoints = StageCheckpoints()
+    results = built()
+    settings = _settings(tmp_path)
+    settings.update(measure_diameters_from_raw_image=True, raw_image_path=None)
+    (tmp_path / "out").mkdir()
+    results.stage_finished("build_network", network(a_graph()))
+    for stage, title in (
+        ("build_network", "3. Graph"),
+        ("assign_boundaries", "4. Boundaries"),
+        ("assign_diameters", "5. Diameters"),
+    ):
+        checkpoints.record(stage, _group(stage, title), results, settings=settings)
+
+    plan = checkpoints.plan_run_from("6. Haemodynamics", settings=settings)
+
+    assert "do_fwhm_measurement" not in plan.skip_settings
+
+
+# --- what Post processing leaves reaches the next regenerate -----------------
+
+
+def test_a_regenerate_resumes_with_the_boundary_lists_post_processing_left_and_the_small_masks():
+    """Post processing adds and drops arteriole/venule boundary nodes where
+    the edits changed the network, judged against the small masks the
+    Boundaries stage's labelling read. The panel's next Regenerate on that
+    tab resumes the run from these checkpoints, so they hand on the lists
+    post processing left -- not Boundaries' own, which would undo the first
+    round's -- and those small masks, drawn only by Boundaries."""
+    from haemolynx.gui.results import BOUNDARY_NODES, MASK_LAYERS
+
+    checkpoints = StageCheckpoints()
+    results = built()
+    small_arteriole = np.zeros((4, 4, 4), dtype=np.uint8)
+    small_venule = np.ones((4, 4, 4), dtype=np.uint8)
+    boundaries_group = StageLayers(
+        stage="assign_boundaries",
+        title="4. Boundaries",
+        layers=(
+            LayerSpec(
+                kind="points", name=BOUNDARY_NODES, data=np.zeros((4, 3)),
+                features={
+                    "role": np.array(
+                        ["inlet", "outlet", "arteriole_boundary", "venule_boundary"], dtype=object
+                    ),
+                    "node_id": np.array([0, 3, 1, 2], dtype=object),
+                },
+            ),
+            LayerSpec(kind="image", name=MASK_LAYERS["small_arteriole_mask"], data=small_arteriole),
+            LayerSpec(kind="image", name=MASK_LAYERS["small_venule_mask"], data=small_venule),
+        ),
+    )
+    checkpoints.record(
+        "assign_boundaries", boundaries_group, results,
+        output=SimpleNamespace(large_arteriole_boundary_nodes=[5], large_venule_boundary_nodes=[6]),
+    )
+    checkpoints.record("solve", _group("solve"), results)
+    left = {
+        "inlet_nodes": [0], "outlet_nodes": [3],
+        "arteriole_boundary_nodes": [1, 9], "venule_boundary_nodes": [],
+        "large_arteriole_boundary_nodes": [5], "large_venule_boundary_nodes": [6],
+    }
+    checkpoints.record(
+        "post_process", _group("post_process"), results,
+        output=SimpleNamespace(post_processed={"edited_vessels": 1, "boundary_nodes": left}),
+    )
+    checkpoints.record("export_results", _group("export_results"), results)
+
+    plan = checkpoints.plan_regenerate("edited-graph", start_from="post_process", drop=False)
+
+    assert plan.resume.arteriole_boundary_nodes == (1, 9)
+    assert plan.resume.venule_boundary_nodes == ()
+    assert plan.resume.large_arteriole_boundary_nodes == (5,)
+    assert plan.resume.small_arteriole_mask is small_arteriole
+    assert plan.resume.small_venule_mask is small_venule
+    # Before post processing ran, the solve's checkpoint held Boundaries' own.
+    assert checkpoints.get("solve").arteriole_boundary_nodes == (1,)
+
+
+# --- a loaded run's skeleton on disk is its own -------------------------------
+
+
+def _skeleton_groups(skeleton: np.ndarray) -> list[StageLayers]:
+    return [
+        StageLayers(
+            stage="skeletonise",
+            title="2. Skeletonise",
+            layers=(LayerSpec(kind="labels", name=SKELETON, data=skeleton, scale=(1.0, 1.0, 1.0)),),
+        )
+    ]
+
+
+def test_a_skeleton_another_run_wrote_since_is_replaced_by_the_runs_own(tmp_path):
+    """A loaded run's Run from this stage loads {stem}_skeleton.npy. Any file
+    there was trusted: a later run in the same folder had rewritten it, and the
+    loaded run was rebuilt from that run's skeleton."""
+    from haemolynx.gui.stage_checkpoints import ensure_skeleton_artefact
+
+    other = np.zeros((5, 5, 5), dtype=bool)
+    other[2, 2, :] = True
+    np.save(tmp_path / "input_skeleton.npy", other)
+    own = np.zeros((5, 5, 5), dtype=bool)
+    own[:, 2, 2] = True
+
+    path = ensure_skeleton_artefact(_skeleton_groups(own), tmp_path, "input")
+
+    assert path == skeleton_resume_path(tmp_path, "input")
+    assert np.array_equal(np.load(path), own)
+
+    # Another shape is another skeleton too.
+    np.save(path, np.zeros((5, 5, 6), dtype=bool))
+    assert np.array_equal(np.load(ensure_skeleton_artefact(_skeleton_groups(own), tmp_path, "input")), own)
+
+
+def test_a_skeleton_on_disk_that_is_the_runs_own_or_with_none_to_compare_is_left_alone(tmp_path):
+    import os
+
+    from haemolynx.gui.stage_checkpoints import ensure_skeleton_artefact
+
+    own = np.zeros((5, 5, 5), dtype=bool)
+    own[:, 2, 2] = True
+    path = skeleton_resume_path(tmp_path, "input")
+    np.save(path, own.astype(np.uint8))  # the same voxels, saved as another type
+    old_ns = path.stat().st_mtime_ns - 60_000_000_000
+    os.utime(path, ns=(old_ns, old_ns))
+
+    assert ensure_skeleton_artefact(_skeleton_groups(own), tmp_path, "input") == path
+    assert path.stat().st_mtime_ns == old_ns
+    assert ensure_skeleton_artefact([_group("skeletonise")], tmp_path, "input") == path
+    assert path.stat().st_mtime_ns == old_ns
+    assert ensure_skeleton_artefact([_group("skeletonise")], tmp_path, "missing") is None
+
+
+def test_a_checkpoint_not_keeping_its_output_still_reads_its_boundary_nodes(tmp_path):
+    """A batch keeps no stage outputs (it never resumes), but its .haemorun
+    still needs the large-vessel hand-off nodes only the output carries."""
+    graph = a_graph()
+    results = ResultLayers()
+    output = _boundaries_output(graph)
+    group = results.stage_finished("assign_boundaries", output)
+    from haemolynx.pipeline.stages import SkeletonisedVolume
+
+    checkpoints = StageCheckpoints()
+    volume = SkeletonisedVolume(
+        image=np.zeros((2, 3, 4)), skeleton=np.zeros((2, 3, 4), dtype=bool),
+        voxel_size_xyz=(1.0, 1.0, 1.0), voxel_size_zyx=(1.0, 1.0, 1.0),
+        output_dir=tmp_path / "out",
+    )
+    checkpoints.record("skeletonise", _group("skeletonise"), results, output=volume)
+    assert checkpoints.get("skeletonise").output is not None  # kept by default
+    checkpoints.record("skeletonise", _group("skeletonise"), results, output=volume, keep_output=False)
+    checkpoints.record("assign_boundaries", group, results, output=output, keep_output=False)
+
+    assert checkpoints.get("skeletonise").output is None
+    recorded = checkpoints.get("assign_boundaries")
+    assert recorded.large_arteriole_boundary_nodes == (1,)
+    assert recorded.large_venule_boundary_nodes == (2,)
+
+
+@pytest.mark.parametrize(
+    "now, starts_at",
+    [
+        ({"boundary_handling": "leave_unsolved"}, "6. Haemodynamics"),
+        ({"boundary_handling": "remove_disconnected", "run_haemodynamics": True,
+          "open_end_model": "closed"}, "5. Diameters"),
+    ],
+)
+def test_a_run_from_haemodynamics_starts_at_diameters_when_its_calibration_sample_changed(
+    tmp_path, now, starts_at
+):
+    """The Diameters stage samples its image calibrations (blur, wall, decoy
+    check) from the vessels the network handling keeps. Changing
+    boundary_handling or open_end_model and running from Haemodynamics kept
+    the old sample, where a fresh run takes the new one: the run starts at
+    Diameters instead, and says why."""
+    from haemolynx.gui.stage_checkpoints import restore_message
+    from haemolynx.pipeline.stages import CALIBRATION_SAMPLE
+
+    settings = _settings(tmp_path)
+    (tmp_path / "out").mkdir()
+    checkpoints, *_rest = _record_with_outputs(tmp_path, settings)
+    measured = built(a_graph(resistance=1.0))
+    measured._graph.graph[CALIBRATION_SAMPLE] = ["leave_unsolved"]
+    checkpoints.record("assign_diameters", _group("assign_diameters"), measured, settings=settings)
+
+    plan = checkpoints.plan_run_from("6. Haemodynamics", settings={**settings, **now})
+
+    assert plan.tab_title == starts_at
+    if starts_at == "5. Diameters":
+        assert plan.start_from == "assign_diameters"
+        assert "leave_unsolved keeps" in restore_message(plan)
+        assert "remove_disconnected / closed keeps" in restore_message(plan)
+    else:
+        assert plan.start_from == "build_haemodynamic_model" and plan.note == ""
+
+
+def test_a_run_from_replaces_a_skeleton_that_is_not_the_runs_own(tmp_path):
+    """After Load run, a later run's skeleton left in the folder was loaded
+    instead of the loaded run's: the graph was built from another skeleton
+    than the one on screen. It is replaced by the run's own; the run's own
+    is left alone."""
+    from haemolynx.gui.stage_checkpoints import ensure_skeleton_artefact
+
+    settings = _settings(tmp_path)
+    (tmp_path / "out").mkdir()
+    skeleton_path = skeleton_resume_path(tmp_path / "out", "stack")
+    checkpoints, skeleton = _through_post_processing(tmp_path, settings)
+    later = np.zeros_like(skeleton)
+    later[0, :, 1] = True
+    np.save(skeleton_path, later)
+
+    checkpoints.plan_run_from("6. Haemodynamics", settings=settings)
+    assert np.array_equal(np.load(skeleton_path), skeleton)
+    assert not skeleton_path.with_name(f"{skeleton_path.name}.part").exists()
+
+    groups = [checkpoints.get("skeletonise").group]
+    before = skeleton_path.stat().st_mtime_ns
+    assert ensure_skeleton_artefact(groups, tmp_path / "out", "stack") == skeleton_path
+    assert skeleton_path.stat().st_mtime_ns == before  # its own: not written again
+
+    skeleton_path.write_bytes(b"not a skeleton")
+    assert ensure_skeleton_artefact(groups, tmp_path / "out", "stack") == skeleton_path
+    assert np.array_equal(np.load(skeleton_path), skeleton)
+
+
+def test_a_resumed_skeleton_is_written_with_the_grid_it_was_made_on(tmp_path):
+    """Written alone, the resumed skeleton had no record: the run loading it
+    checked only its shape, and took one cut from a box moved since, of the
+    same size."""
+    from haemolynx.gui.stage_checkpoints import skeleton_record_path
+    from haemolynx.io.crop import CropBox
+    from haemolynx.pipeline.stages import _check_saved_skeleton_grid, _saved_skeleton_record
+
+    settings = _settings(tmp_path)
+    (tmp_path / "out").mkdir()
+    checkpoints = StageCheckpoints()
+    results = built(a_graph(resistance=1.0))
+    skeleton = np.zeros((2, 3, 4), dtype=bool)
+    skeleton[1, 1, :] = True
+    box = CropBox((0, 0, 0), (2, 3, 4), (2, 10, 10))
+    checkpoints.record(
+        "skeletonise",
+        StageLayers(
+            stage="skeletonise", title="2. Skeletonise",
+            layers=(LayerSpec(kind="labels", name=SKELETON, data=skeleton, scale=(1.0, 1.0, 1.0)),),
+        ),
+        results, settings=settings, output=SimpleNamespace(crop=box, downsample=None),
+    )
+    for stage in ("build_network", "assign_boundaries", "assign_diameters",
+                  "build_haemodynamic_model", "solve", "post_process"):
+        checkpoints.record(stage, _group(stage), results, settings=settings)
+    assert checkpoints.get("skeletonise").skeleton_grid["crop"] == {
+        "start_zyx": [0, 0, 0], "stop_zyx": [2, 3, 4],
+    }
+
+    checkpoints.plan_run_from("6. Haemodynamics", settings=settings)
+    skeleton_path = skeleton_resume_path(tmp_path / "out", "stack")
+    record = _saved_skeleton_record(skeleton_record_path(tmp_path / "out", "stack"), skeleton_path)
+    assert record["crop"] == {"start_zyx": [0, 0, 0], "stop_zyx": [2, 3, 4]} and record["downsample"] is None
+    _check_saved_skeleton_grid(skeleton_path, skeleton.shape, skeleton.shape, record, box, None)
+    moved = CropBox((0, 5, 0), (2, 8, 4), (2, 10, 10))
+    with pytest.raises(ValueError, match="crop_on_import"):
+        _check_saved_skeleton_grid(skeleton_path, skeleton.shape, skeleton.shape, record, moved, None)

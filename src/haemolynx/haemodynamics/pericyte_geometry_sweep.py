@@ -1,0 +1,296 @@
+"""Pericyte geometry-axis sweeps at fixed tone and fixed inlet pressure.
+
+Two complementary sweeps over focal-constriction geometry:
+
+* ``pericyte_spacing_sweep`` — vary ``constriction_spacing_um``; length fixed
+* ``pericyte_length_sweep`` — vary ``constriction_length_um``; spacing fixed
+
+Both keep a single fixed ``pericyte_geometry_dilation_percent`` (the pericyte
+dilation sweep's: the capillaries scaled, ``capillary.dilate_capillaries``) and solve at
+the run's ``inlet_p_bc``. Resistances at each grid point go through
+:func:`~haemolynx.haemodynamics.constriction_strategy.set_resistances_for_constriction_strategy`.
+"""
+from __future__ import annotations
+
+import logging
+from pathlib import Path
+from typing import Any, Callable, Literal, Mapping, Sequence
+
+import networkx as nx
+import numpy as np
+
+from .constriction_strategy import (
+    constriction_strategy_kwargs,
+    placed_pericyte_mask,
+    set_resistances_for_constriction_strategy,
+)
+from .capillary import dilate_capillaries
+from .pericyte_sweep import (
+    apply_baseline_overrides,
+    haematocrit_sweep_report,
+    is_capillary_custom_edge,
+    solve_sweep_point,
+    sweep_rows_at_pressures,
+    write_sweep_rows,
+)
+from .poiseuille import PoiseuilleModel
+from .viscosity import run_diameter_basis, run_viscosity_law
+from .sweep_flows import PericyteSites, build_sweep_flow_grid, edge_pericyte_sites
+
+logger = logging.getLogger(__name__)
+
+#: Columns of a geometry-axis sweep CSV, in order.
+GEOMETRY_SWEEP_COLUMNS = (
+    "constriction_spacing_um",
+    "constriction_length_um",
+    "dilation_percent",
+    "dilation_factor",
+    "inlet_pressure_pa",
+    "outlet_pressure_pa",
+    "total_inlet_flow",
+    "total_outlet_flow",
+    "flow_balance_error",
+    "equivalent_resistance",
+)
+
+GeometryAxis = Literal["spacing", "length"]
+
+
+def _um_axis_values(
+    settings: Mapping[str, Any],
+    *,
+    min_key: str,
+    max_key: str,
+    step_key: str,
+    axis_label: str,
+) -> Sequence[float]:
+    """Inclusive float range for a geometry axis (spacing or length)."""
+    start = float(settings[min_key])
+    stop = float(settings[max_key])
+    step = float(settings[step_key])
+    if start <= 0 or stop <= 0 or step <= 0:
+        raise ValueError(
+            f"{axis_label} sweep requires positive min/max/step; "
+            f"got min={start}, max={stop}, step={step}."
+        )
+    if stop < start:
+        raise ValueError(
+            f"{axis_label} sweep max ({stop}) is below min ({start})."
+        )
+    values: list[float] = []
+    index = 0
+    while True:
+        value = start + index * step
+        if value > stop + 1e-9:
+            break
+        values.append(float(value))
+        index += 1
+        if index > 100_000:
+            raise ValueError(
+                f"{axis_label} sweep produced too many points; check step={step}."
+            )
+    if not values:
+        raise ValueError(f"{axis_label} sweep produced no points.")
+    return tuple(values)
+
+
+def _apply_focal_constrictions(
+    G: nx.MultiGraph,
+    settings: Mapping[str, Any],
+    *,
+    scaled_diameters: Mapping[str, float],
+    constriction_length: float,
+    constriction_spacing: float,
+    dilation_factor: float,
+    pericyte_mask_placed=None,
+) -> nx.MultiGraph:
+    """Place and apply focal constrictions for one geometry grid point."""
+    G, _strategy, _results = set_resistances_for_constriction_strategy(
+        G,
+        **constriction_strategy_kwargs(
+            settings,
+            diameter_by_branch_order=scaled_diameters,
+            constriction_length=constriction_length,
+            constriction_spacing=constriction_spacing,
+            pericyte_mask_placed=pericyte_mask_placed,
+        ),
+    )
+    apply_baseline_overrides(
+        G,
+        settings,
+        PoiseuilleModel(
+            constriction_length=float(constriction_length),
+            constriction_spacing=float(constriction_spacing),
+            viscosity_law=run_viscosity_law(settings),
+            haematocrit=float(settings.get("haematocrit", 0.45)),
+            diameter_basis=run_diameter_basis(settings),
+        ),
+        custom_edge_diameter_scale=dilation_factor,
+        scaled_custom_edge=is_capillary_custom_edge,
+    )
+    return G
+
+
+def write_geometry_sweep_csv(
+    results: list[Mapping[str, Any]], csv_path: Path | str
+) -> Path:
+    """Write geometry-sweep *results* to *csv_path*, one row per point."""
+    return write_sweep_rows(results, GEOMETRY_SWEEP_COLUMNS, csv_path)
+
+
+def run_pericyte_geometry_sweep(
+    G: nx.MultiGraph,
+    settings: Mapping[str, Any],
+    *,
+    inlet_nodes: list[int],
+    outlet_nodes: list[int],
+    output_dir: Path | str,
+    sweep_axis: GeometryAxis,
+    pericyte_mask_placed=None,
+    heartbeat: Callable[[], None] | None = None,
+) -> dict[str, Any]:
+    """Sweep spacing or constriction length at fixed dilation and pressure.
+
+    *sweep_axis* ``"spacing"`` reads ``constriction_spacing_{min,max,step}_um``
+    and holds ``constriction_length_um`` fixed. ``"length"`` does the reverse.
+
+    Fixed tone is ``pericyte_geometry_dilation_percent``: the capillaries'
+    diameters scaled by ``1 + percent/100``, as the pericyte dilation sweep
+    scales them (:func:`~haemolynx.haemodynamics.capillary.dilate_capillaries`).
+    Inlet pressure is the run's ``inlet_p_bc`` (not a pressure sweep).
+    *pericyte_mask_placed* is the pericyte mask read and placed once; without
+    it a mask the settings name is read and placed here, once. *heartbeat*
+    is called at each grid point: a cancelled run raises from it.
+    """
+    if sweep_axis not in ("spacing", "length"):
+        raise ValueError(
+            f"sweep_axis must be 'spacing' or 'length', got {sweep_axis!r}."
+        )
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    dilation_percent = int(settings["pericyte_geometry_dilation_percent"])
+    from .arteriole import percent_change_to_scale
+
+    dilation_factor = percent_change_to_scale(float(dilation_percent))
+    inlet_pressure_pa = float(settings["inlet_p_bc"])
+    outlet_pressure_pa = float(settings["outlet_p_bc"])
+    diameter_by_branch_order = settings["diameter_by_branch_order"]
+    dilated_base, scaled_diameters, _capillaries, _measured = dilate_capillaries(
+        G, diameter_by_branch_order, dilation_factor
+    )
+    if pericyte_mask_placed is None:
+        pericyte_mask_placed = placed_pericyte_mask(G, settings)
+
+    if sweep_axis == "spacing":
+        axis_values = _um_axis_values(
+            settings,
+            min_key="constriction_spacing_min_um",
+            max_key="constriction_spacing_max_um",
+            step_key="constriction_spacing_step_um",
+            axis_label="Spacing",
+        )
+        fixed_length = float(settings["constriction_length_um"])
+        if fixed_length <= 0:
+            raise ValueError(
+                f"constriction_length_um must be > 0, got {fixed_length}."
+            )
+        csv_name = "pericyte_spacing_sweep.csv"
+        label = "Pericyte spacing sweep"
+    else:
+        axis_values = _um_axis_values(
+            settings,
+            min_key="constriction_length_min_um",
+            max_key="constriction_length_max_um",
+            step_key="constriction_length_step_um",
+            axis_label="Length",
+        )
+        fixed_spacing = float(settings["constriction_spacing_um"])
+        if fixed_spacing <= 0:
+            raise ValueError(
+                f"constriction_spacing_um must be > 0, got {fixed_spacing}."
+            )
+        csv_name = "pericyte_length_sweep.csv"
+        label = "Pericyte length sweep"
+
+    results: list[dict[str, Any]] = []
+    recorded_flows: list[dict[str, np.ndarray]] = []
+    # The sites move with the axis: spacing sets how far apart they are,
+    # length where the first one sits.
+    recorded_sites: list[PericyteSites] = []
+    iterations: list[dict[str, Any] | None] = []
+    last_node_list: list[int] = []
+    for axis_value in axis_values:
+        if heartbeat is not None:
+            heartbeat()
+        if sweep_axis == "spacing":
+            spacing = float(axis_value)
+            length = fixed_length
+        else:
+            length = float(axis_value)
+            spacing = fixed_spacing
+
+        step_graph = dilated_base.copy()
+
+        def recompute_resistances(graph=step_graph, length=length, spacing=spacing) -> None:
+            _apply_focal_constrictions(
+                graph,
+                settings,
+                scaled_diameters=scaled_diameters,
+                constriction_length=length,
+                constriction_spacing=spacing,
+                dilation_factor=dilation_factor,
+                pericyte_mask_placed=pericyte_mask_placed,
+            )
+
+        recompute_resistances()
+        unit, node_list, iterated = solve_sweep_point(
+            step_graph,
+            settings,
+            recompute_resistances=recompute_resistances,
+            inlet_nodes=inlet_nodes,
+            outlet_nodes=outlet_nodes,
+        )
+        iterations.append(iterated)
+        last_node_list = node_list
+        rows, flows = sweep_rows_at_pressures(
+            unit,
+            step_graph,
+            node_list,
+            (inlet_pressure_pa,),
+            outlet_pressure_pa,
+            {
+                "constriction_spacing_um": spacing,
+                "constriction_length_um": length,
+                "dilation_percent": dilation_percent,
+                "dilation_factor": float(dilation_factor),
+            },
+        )
+        results.extend(rows)
+        recorded_flows.extend(flows)
+        recorded_sites.extend([edge_pericyte_sites(step_graph)] * len(flows))
+
+    if sweep_axis == "spacing":
+        flow_axis_name = "constriction_spacing_um"
+    else:
+        flow_axis_name = "constriction_length_um"
+    sweep_flows = build_sweep_flow_grid(
+        axis_names=(flow_axis_name,),
+        axis_values={flow_axis_name: axis_values},
+        recorded=recorded_flows,
+        node_list=last_node_list,
+        pericyte_sites=recorded_sites,
+    )
+
+    csv_path = write_geometry_sweep_csv(results, output_dir / csv_name)
+    logger.info(
+        f"{label}: {len(results)} points at dilation={dilation_percent}% "
+        f"and inlet_p_bc={inlet_pressure_pa} Pa -> {csv_path}"
+    )
+    return {
+        "results": results,
+        "csv_path": str(csv_path),
+        "sweep_flows": sweep_flows,
+        "haematocrit_distribution": haematocrit_sweep_report(iterations),
+    }

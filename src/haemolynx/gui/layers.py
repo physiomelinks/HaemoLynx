@@ -34,16 +34,17 @@ class LayerInput:
 def rejection_reason(layer: Any) -> str | None:
     """Why this layer cannot be the pipeline's input, or None if it can be.
 
-    The pipeline skeletonises a 3D volume, so a 2D image or an RGB stack is a
+    The pipeline skeletonises a 3D volume, or a 2D image read as a stack of
+    one (as a 2D file is: ``io.load_2d``), so a 4D layer or an RGB image is a
     mistake worth naming rather than a crash three stages later.
     """
     data = getattr(layer, "data", None)
     if data is None:
         return "That layer has no image data."
     shape = getattr(data, "shape", ())
-    if len(shape) != 3:
+    if len(shape) not in (2, 3):
         return (
-            f"The pipeline needs a 3D volume; this layer is {len(shape)}D "
+            f"The pipeline needs a 3D volume or a 2D image; this layer is {len(shape)}D "
             f"with shape {tuple(shape)}."
         )
     if getattr(layer, "rgb", False):
@@ -68,26 +69,34 @@ def source_path_of(layer: Any) -> Path | None:
     return resolved if resolved.is_file() else None
 
 
-def voxel_size_xyz_from_scale(scale: Any) -> tuple[float, float, float] | None:
+def voxel_size_xyz_from_scale(
+    scale: Any, axis_order: str = "zyx"
+) -> tuple[float, float, float] | None:
     """A layer's `scale` as the image-metadata voxel size, or None if trivial.
 
-    napari scales a 3D layer per array axis, canonical **(z, y, x)**; the
-    setting is image metadata order, **(x, y, z)**. They are reverses of each
-    other, and mixing them swaps the z and x spacings -- invisible on isotropic
-    data and wrong on every real stack.
+    napari scales a 3D layer per array axis -- for a layer opened from a
+    file, the file's own axes, which *axis_order* (``image_axis_order``)
+    names: canonical **(z, y, x)** by default. The setting is image metadata
+    order, **(x, y, z)**. Mixing them swaps spacings -- invisible on
+    isotropic data and wrong on every real stack.
 
     A scale of all ones carries no information, so it is left alone rather than
-    overriding whatever the file says.
+    overriding whatever the file says. A 2D layer's ``(y, x)`` scale gives
+    ``(x, y, 1)``: a 2D image is read as a stack of one, with no z spacing of
+    its own, as its file's would be.
     """
+    from haemolynx.io.axis_order import voxel_size_xyz_from_file_axes
+
     if scale is None:
         return None
     values = [float(v) for v in scale]
-    if len(values) != 3:
+    if len(values) not in (2, 3):
         return None
     if all(value == 1.0 for value in values):
         return None
-    z, y, x = values
-    return (x, y, z)
+    if len(values) == 2:
+        return (values[1], values[0], 1.0)
+    return voxel_size_xyz_from_file_axes(values, axis_order)
 
 
 def export_name_for(layer: Any) -> str:
@@ -101,19 +110,26 @@ def export_name_for(layer: Any) -> str:
     return f"{safe or 'layer'}.tif"
 
 
-def input_for_layer(layer: Any, export_dir: Path | None = None) -> LayerInput:
+def input_for_layer(
+    layer: Any, export_dir: Path | None = None, axis_order: str = "zyx"
+) -> LayerInput:
     """The settings that make a run read *layer*, and what that required.
 
     A layer loaded from a TIFF or HDF5 points the run at that file. One built
     in the viewer -- a threshold result, a crop -- has no file behind it, so it
-    is written to *export_dir* first, and `needs_export` says so.
+    is written to *export_dir* first, and `needs_export` says so. *axis_order*
+    is the run's ``image_axis_order``: what the layer's axes are -- under
+    ``"auto"``, what its file's labels say, else ``"zyx"``.
     """
+    from haemolynx.io.axis_order import axis_order_for_file
+
     reason = rejection_reason(layer)
     if reason is not None:
         raise ValueError(reason)
 
+    axis_order = axis_order_for_file(axis_order, source_path_of(layer))
     settings: dict[str, Any] = {}
-    voxel_size = voxel_size_xyz_from_scale(getattr(layer, "scale", None))
+    voxel_size = voxel_size_xyz_from_scale(getattr(layer, "scale", None), axis_order)
     if voxel_size is not None:
         settings["voxel_size_override_xyz"] = list(voxel_size)
         settings["voxel_size_policy"] = "override"

@@ -19,6 +19,7 @@ from .config import (
     add_schema_arguments,
     cli_overrides,
     dump_config,
+    ensure_yaml_suffix,
     load_config,
     parameters_of,
     prefixed_arguments,
@@ -31,7 +32,14 @@ from .cli import (
     print_settings,
     settings_from_command_line,
 )
-from .schema import ConfigError, IneffectiveSettingWarning, Schema, Setting
+from .schema import (
+    ConfigError,
+    IneffectiveSettingWarning,
+    Schema,
+    Setting,
+    parse_prerequisite,
+    prerequisite_name,
+)
 
 __all__ = [
     "CheckReport",
@@ -46,9 +54,12 @@ __all__ = [
     "cli_overrides",
     "configure_console_logging",
     "dump_config",
+    "ensure_yaml_suffix",
     "load_config",
     "parameters_of",
+    "parse_prerequisite",
     "prefixed_arguments",
+    "prerequisite_name",
     "print_settings",
     "settings_for",
     "settings_from_command_line",

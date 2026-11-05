@@ -37,7 +37,7 @@ def test_synthetic_3d_branch_lengths_are_measured_correctly():
     voxel_size = (2.0, 1.5, 1.0)
 
     sk = skan.csr.Skeleton(skel)
-    graph, _, _ = build_graph_segment_skan_stitched_loops(
+    graph = build_graph_segment_skan_stitched_loops(
         sk,
         skel,
         voxel_size=voxel_size,

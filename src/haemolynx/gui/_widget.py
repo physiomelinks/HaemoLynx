@@ -15,27 +15,234 @@ from __future__ import annotations
 
 import logging
 import math
+import weakref
 from contextlib import contextmanager
 from dataclasses import replace
+from datetime import datetime
+import functools
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
+import networkx as nx
 import numpy as np
 
-from haemolynx.gui.form import Field, display_value_for
+from haemolynx.gui.form import (
+    CHANNEL_SETTINGS,
+    CLASSIFIER_FILLED_ROWS,
+    Field,
+    HOSTED_CLASSIFIER_ROWS,
+    HOSTED_CLASSIFIER_SETTING_SET,
+    HOSTED_MASK_SETTINGS,
+    SHARED_ILASTIK_SETTINGS,
+    SHARED_ILASTIK_SETTING_SET,
+    display_value_for,
+    channel_choices,
+    exclusive_partner_in_effect,
+    exclusive_reason,
+    hosted_classifier_entry,
+    hosted_classifier_host,
+    raw_image_stain_note,
+    unmet_chain,
+    shared_ilastik_host,
+)
+from haemolynx.graph.boundaries import assigns_large_vessel_branch_orders, network_is_synthetic
+from haemolynx.graph.thick_vessel_junctions import IS_ZERO_RESISTANCE
 from haemolynx.gui.layers import input_for_layer, voxel_size_xyz_from_scale
+from haemolynx.gui.layout import (
+    Disclosure,
+    TabLayout,
+    changed_settings,
+    entry_disclosure,
+    layout_for,
+    role_nodes_disclosure,
+    shared_ilastik_disclosure,
+)
+from haemolynx.gui.log_view import LogView, VERBOSE_LEVEL
+from haemolynx.gui.run_log import DEFAULT_LEVEL, attach
 from haemolynx.gui.results import (
+    BRANCH_HOVER,
+    BRANCH_ORDER_SIGNED,
+    DRAWN_ON_TOP,
+    FLOW_DIRECTION,
+    FLOW_DIR_COLUMNS,
+    FLOW_DIR_RGB_COLUMN,
+    FLOW_HEADING_COLUMN,
+    FLOW_SOLUTION,
+    IMAGE,
     NODES,
+    ON_TOP_POINTS_OPTIONS,
+    SKELETON,
+    VESSEL_TUBES,
     VESSELS,
     ResultLayers,
+    copy_graph,
+    _flow_dir_contrast_limits,
+    _flow_heading_contrast_limits,
+    clip_volume_to_z,
     colour_cycle_for,
+    colour_values_for_range,
+    drawn_on_top,
+    filter_points_by_z,
+    filter_vectors_by_z,
+    hidden_on_first_view,
+    is_z_depth_filtered_layer,
+    is_z_depth_windowed_volume_layer,
+    mask_unsolved_flow_columns,
+    perturbation_layer_names,
+    with_projection_mode,
+    z_window_is_full,
 )
+from haemolynx.gui.optimise_progress import OptimisationProgressDisplay
+from haemolynx.gui.optimise_review import proposed_changes, review_text
 from haemolynx.gui.progress import ProgressDisplay
+from haemolynx.gui.run_state import (
+    ALREADY_RUNNING,
+    CANCELLED,
+    CHECKS_FAILED_NOTHING_RUN,
+    RUNNING_CHECKS,
+    FINISHED_FIRST,
+    POST_PROCESS,
+    RunCancelled,
+    RunState,
+    clear_message,
+    mid_run_stop_after,
+    paused_bar_text,
+    slow_checks,
+    paused_message,
+    post_processing_tab_title,
+    regenerate_stop_after,
+)
+from haemolynx.gui.rotation_movie import viewer_camera
+from haemolynx.gui.stage_checkpoints import (
+    SKIP_FOR_RESUME,
+    StageCheckpoints,
+    can_revert_from,
+    discard_cached_artefacts_for_settings,
+    output_dir_from_settings,
+    previous_tab,
+    restore_message,
+    stages_before,
+)
+from haemolynx.gui.run_snapshot import (
+    DEFAULT_FILENAME as RUN_SNAPSHOT_FILENAME,
+    SAVE_FILTER as RUN_SNAPSHOT_FILTER,
+    SAVE_IN_PROGRESS as RUN_SAVE_IN_PROGRESS,
+    RunSnapshotError,
+    apply_snapshot_to_checkpoints,
+    apply_snapshot_to_results,
+    capture_run,
+    default_run_path,
+    ensure_run_suffix,
+    read_run_snapshot,
+    replay_groups,
+    relocate_run_paths,
+    write_resume_artefacts,
+    write_run_snapshot,
+)
 from haemolynx.gui.tabs import tabs_for
-from haemolynx.parsers import dump_config, load_config
-from haemolynx.pipeline import default_schema, preflight, resolve_settings, run_pipeline_stages
-from haemolynx.pipeline.progress import STAGE_STARTED, ProgressEvent
+from haemolynx.gui.template_basis import (
+    TARGET_SETTING as TEMPLATE_BASIS_TARGET,
+    TRIGGER_SETTINGS as TEMPLATE_BASIS_TRIGGERS,
+    template_basis_update,
+)
+from haemolynx.gui.vessel_mask_search import (
+    TRIGGER_SETTINGS as MASK_SEARCH_TRIGGERS,
+    fill_vessel_mask_rows,
+    roles_to_search,
+)
+from haemolynx.gui.pericyte_mask_search import (
+    MEASUREMENT_FIELD as PERICYTE_MEASUREMENT_FIELD,
+    REFERENCE_SETTINGS as PERICYTE_REFERENCE_SETTINGS,
+    TRIGGER_SETTINGS as PERICYTE_MASK_TRIGGERS,
+    filled_after_renumbering as pericyte_filled_after_renumbering,
+    perturbation_field as pericyte_perturbation_field,
+    perturbation_index as pericyte_perturbation_index,
+    update_pericyte_mask_rows,
+)
+from haemolynx.gui.vessel_tubes import (
+    DEFAULT_TUBE_DIAMETER,
+    DEFAULT_TUBE_QUALITY,
+    DEFAULT_UNIFORM_TUBE_DIAMETER_UM,
+    DEFAULT_VESSEL_DRAW,
+    TUBE_DIAMETER_LABELS,
+    TUBE_DIAMETER_UNIFORM,
+    TUBE_DIAMETERS,
+    TUBE_QUALITY_SIDES,
+    TUBE_SHADING,
+    UNIFORM_TUBE_DIAMETER_RANGE_UM,
+    VESSEL_DRAW_LINES,
+    VESSEL_DRAW_TUBES,
+    clamp_tube_quality,
+    colors_for_tube_vertices,
+    valid_tube_diameter,
+    valid_uniform_tube_diameter_um,
+    vessel_tube_mesh,
+    vessel_tubes_layer_name,
+)
+from haemolynx.io.crop import CropBox, crop_volume, crop_volume_from_settings
+from haemolynx.io.downsample import (
+    RAW_SETTING as RAW_DOWNSAMPLE_SETTING,
+    Downsample,
+    downsample_factor,
+    downsample_for,
+    downsample_raw_volume,
+    raw_volume_like_graph,
+)
+from haemolynx.io.load import _to_binary_volume_for_skeletonization
+from haemolynx.optimisation.scorecard import worse_rows
+from haemolynx.optimisation import (
+    FWHM_GROUP_NAMES,
+    FWHM_SETTING_NAMES,
+    OPTIMISE_SETTING_NAMES,
+    OptimisationEvent,
+    build_report_text,
+    config_filename,
+    finest_factor_fitting_memory,
+    full_resolution_search_refusal,
+    optimise_fwhm_settings,
+    optimise_skeleton_and_graph_settings,
+)
+from haemolynx.optimisation.endothelial_search import (
+    ENDOTHELIAL_GROUP_LABELS,
+    ENDOTHELIAL_GROUP_NAMES,
+    ENDOTHELIAL_SETTING_NAMES,
+    optimise_endothelial_settings,
+)
+from haemolynx.parsers import (
+    Schema,
+    dump_config,
+    ensure_yaml_suffix,
+    load_config,
+    parameters_of,
+    prefixed_arguments,
+    prerequisite_name,
+)
+from haemolynx.pipeline import (
+    default_schema,
+    preflight,
+    resolve_settings,
+    run_pipeline_stages,
+    segment,
+)
+from haemolynx.pipeline import stages as pipeline_stages
+from haemolynx.pipeline.presets import (
+    DELETE_PRESET,
+    PRESETS,
+    SAVE_PRESET,
+    preset_menu,
+    preset_settings,
+)
+from haemolynx.pipeline.progress import STAGE_STARTED, ProgressEvent, log_progress
+from haemolynx.pipeline.saved_presets import (
+    delete_saved_preset,
+    is_saved_preset_key,
+    save_preset,
+    saved_preset_for_key,
+    saved_preset_path,
+    saved_preset_settings,
+    saved_presets,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -45,20 +252,765 @@ UNCOLOURED = "#cccccc"
 #: The same grey, as RGBA, for the places that build a colour array by hand.
 UNCOLOURED_RGBA = (0.8, 0.8, 0.8, 1.0)
 
+#: A row with no value in the column shown -- above all the flow of a vessel
+#: the solve left unsolved -- drawn dark enough to sit back. In the light grey
+#: of no colouring it was the brightest thing on the canvas, and the middle
+#: of the diverging maps, so a capillary at signed order 0 read as unsolved.
+MISSING_VALUE_RGBA = (0.4, 0.4, 0.4, 1.0)
+
 #: Settings the panel starts with switched off, because they put a run's
-#: results somewhere other than napari: `show_plots_in_ide` makes the 3D graph
-#: open in a web browser (plotly's `fig.show()`), and `interactive_plots`
-#: blocks on windows of its own. They are ordinary rows, so anyone who wants a
-#: browser tab can tick them back on -- they are just the wrong default for a
-#: panel whose whole point is that the viewer is already open.
-#:
-#: `hold_ide_plots_open` is deliberately NOT here: it only does anything while
-#: `show_plots_in_ide` is on, so setting it as well earns an
-#: IneffectiveSettingWarning on a panel nobody has touched.
+#: results somewhere other than napari. ``visualize_results`` (Produce IDE
+#: plots) writes matplotlib PNG and Plotly HTML, including
+#: ``final_graph_3d.html``. Tick Produce to write files; the viewer is
+#: already open, so nothing the panel runs opens a window of its own
+#: (:data:`OPENS_A_WINDOW`).
 DISPLAY_SETTINGS_OFF_IN_NAPARI = {
-    "show_plots_in_ide": False,
-    "interactive_plots": False,
+    "visualize_results": False,
 }
+
+#: The settings that open a plot or VTK window as a run goes, at their
+#: schema defaults (all off, or inert while off). A panel run is on a worker
+#: thread, where a window is a Qt or VTK window outside the GUI thread and a
+#: blocking one ("Hold IDE plots open") would hold the run for ever, so the
+#: panel gives them no row and holds them there.
+OPENS_A_WINDOW: dict[str, Any] = {
+    "interactive_plots": False,
+    "show_plots_in_ide": False,
+    "ide_plot_mode": "final_only",
+    "hold_ide_plots_open": True,
+    "visualize_vtk": False,
+}
+
+#: Settings that are not a per-run decision, so they get no row of their
+#: own: flow_direction_colouring/flow_arrow_scale are cosmetics for a layer
+#: that is always added anyway, and the two FWHM label values are the
+#: numbers the rasterised branch label volume marks background and junction
+#: voxels with -- internal bookkeeping, held at the schema's defaults. A
+#: value is either a constant or a function of the other settings. Never
+#: parented as flat tab rows, forced on every call to ``apply_prerequisites``
+#: so a loaded config cannot silently change one with no visible control to
+#: notice it by.
+FORCED_HIDDEN_SETTINGS: dict[str, Any] = {
+    "flow_direction_colouring": True,
+    "flow_arrow_scale": 1.0,
+    "fwhm_background_label": 0,
+    "fwhm_junction_label": -1,
+    **OPENS_A_WINDOW,
+}
+
+
+#: Settings the panel holds at its own values, which a saved preset neither
+#: keeps nor sets: a preset saved in napari would otherwise record plotting
+#: turned off, and give it back as on.
+PANEL_HOLDS_ITSELF = frozenset(FORCED_HIDDEN_SETTINGS) | frozenset(DISPLAY_SETTINGS_OFF_IN_NAPARI)
+
+
+def forced_hidden_value(name: str, values: Mapping[str, Any]) -> Any:
+    """The value a FORCED_HIDDEN_SETTINGS entry takes given ``values``."""
+    forced = FORCED_HIDDEN_SETTINGS[name]
+    return forced(values) if callable(forced) else forced
+
+#: What napari calls the log window's dock.
+LOG_DOCK_NAME = "HaemoLynx run log"
+
+#: View chrome (Z-depth, scale bar, snapshot). The first of the left
+#: panel's four tabs, before Statistics and napari's layer list and layer
+#: controls.
+VIEW_DOCK_NAME = "HaemoLynx view"
+
+#: The last run's statistics, a button per measure. The left panel's second tab.
+STATISTICS_DOCK_NAME = "Statistics"
+
+#: Cosmetic TIFF of the current view; never a pipeline setting or input.
+SNAPSHOT_STEM = "haemolynx_snapshot"
+SNAPSHOT_NO_OUTPUT_FOLDER = (
+    "No output folder is set; set the output folder on the Input tab before saving a snapshot."
+)
+SNAPSHOT_NO_VIEWER = "No viewer to snapshot."
+
+#: Metadata key for the unclipped volume on a layer that is not tagged
+#: as ours (a user-dropped image). Ours layers keep the same array on the
+#: ``OURS`` tag as ``z_window_full``.
+Z_WINDOW_CACHE_KEY = "haemolynx_z_window_full"
+
+#: Napari layer unit for a physically meaningful scale bar.
+SCALE_BAR_UNIT = "micrometer"
+
+#: Canvas corner for napari's scale-bar overlay (``CanvasPosition`` value).
+SCALE_BAR_POSITION = "bottom_right"
+
+
+def _give_bottom_docks_the_corners(viewer) -> None:
+    """Let a bottom dock (the run log) keep the bottom strip of the window.
+
+    QMainWindow's default corners give a left/right dock the bottom-left or
+    bottom-right, so a tall side panel shrinks the log to nothing as a run
+    fills the viewer.
+    """
+    from qtpy.QtCore import Qt
+
+    window = getattr(viewer.window, "_qt_window", None)
+    if window is None or not hasattr(window, "setCorner"):
+        return
+    try:
+        window.setCorner(Qt.BottomLeftCorner, Qt.BottomDockWidgetArea)
+        window.setCorner(Qt.BottomRightCorner, Qt.BottomDockWidgetArea)
+    except Exception:  # noqa: BLE001
+        logger.debug("could not prefer bottom dock corners", exc_info=True)
+
+
+def _guard_tab_bar_wheel(tabs) -> Any:
+    """Swallow a mouse-wheel event over *tabs*' bar while its current tab is
+    disabled, and return the filter doing it.
+
+    Qt's ``QTabBar::wheelEvent`` looks for the next enabled tab a step at a
+    time, and a wheel turned less than a notch -- a trackpad, a fine wheel --
+    is a step of nought: from a disabled tab the search never ends and the
+    panel hangs (Harvey, 2026-10-24: a synthetic network disables every
+    Boundaries role tab). Over an enabled tab the wheel turns tabs as Qt has it.
+    """
+    from qtpy.QtCore import QEvent, QObject
+
+    class _WheelGuard(QObject):
+        def eventFilter(self, watched, event):  # noqa: N802 -- Qt's name
+            if event.type() == QEvent.Type.Wheel and not watched.isTabEnabled(watched.currentIndex()):
+                return True
+            return False
+
+    bar = tabs.tabBar()
+    guard = _WheelGuard(bar)
+    bar.installEventFilter(guard)
+    return guard
+
+
+def _in_a_scroll_area(widget, *, horizontal: bool = True):
+    """*widget* in a frameless QScrollArea that grows with it.
+
+    Qt holds a dock at least as tall as its contents, and tabbed docks share
+    one height, so the tallest tab's contents would set the floor of the
+    whole left strip. Scrolled, a tab shrinks as far as the strip does.
+    """
+    from qtpy.QtCore import Qt
+    from qtpy.QtWidgets import QFrame, QScrollArea
+
+    scroller = QScrollArea()
+    scroller.setWidgetResizable(True)
+    scroller.setFrameShape(QFrame.Shape.NoFrame)
+    if not horizontal:
+        scroller.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    scroller.setWidget(widget)
+    return scroller
+
+
+def _let_layer_controls_scroll(controls) -> None:
+    """Put the layer controls dock's contents in a scroll area.
+
+    An image layer's controls are ~310 px tall at their smallest, and Qt
+    holds a dock at least as tall as its contents. Scrolled, the controls
+    shrink as far as the dock.
+    """
+    from qtpy.QtWidgets import QScrollArea
+
+    inner = controls.widget()
+    if inner is None or isinstance(inner, QScrollArea):
+        return
+    controls.setWidget(_in_a_scroll_area(inner, horizontal=False))
+    # Qt has already raised the dock's own minimum to its old contents';
+    # back to napari's 50 px, which the scroller no longer pushes up.
+    controls.setMinimumHeight(50)
+
+
+#: napari's two layer docks, as their titles and tab labels read here.
+LAYER_LIST_TITLE = "Layer list"
+LAYER_CONTROLS_TITLE = "Layer controls"
+
+
+def _layer_docks(viewer) -> tuple:
+    """napari's (layer list, layer controls) docks; None for a missing one."""
+    window = getattr(viewer, "window", None)
+    qt_viewer = getattr(window, "_qt_viewer", None) if window is not None else None
+    return (
+        getattr(qt_viewer, "dockLayerList", None),
+        getattr(qt_viewer, "dockLayerControls", None),
+    )
+
+
+def _retitle_dock(dock, title: str) -> None:
+    """Call *dock* *title* on its tab and on its title bar."""
+    if dock.windowTitle() != title:
+        dock.setWindowTitle(title)
+    # napari draws its own title bar from ``name``, and draws it again from
+    # ``name`` every time the dock floats or docks.
+    if getattr(dock, "name", title) != title:
+        dock.name = title
+    label = getattr(getattr(dock, "title", None), "title", None)
+    if label is not None and callable(getattr(label, "setText", None)):
+        label.setText(title)
+
+
+def _show_layer_docks(viewer) -> None:
+    """Show napari's layer list and layer controls again, where they were."""
+    for dock in _layer_docks(viewer):
+        if dock is not None and dock.isHidden():
+            dock.show()
+
+
+#: The left panel's tabs, in order.
+LEFT_PANEL_TABS = (VIEW_DOCK_NAME, STATISTICS_DOCK_NAME, LAYER_LIST_TITLE, LAYER_CONTROLS_TITLE)
+
+
+def _alive(dock):
+    """*dock*, or None for none or one whose close button deleted it."""
+    try:
+        if dock is not None:
+            dock.isHidden()
+            return dock
+    except RuntimeError:
+        logger.debug("dock is gone", exc_info=True)
+    return None
+
+
+def _tab_with_the_layer_docks(viewer, dock, statistics=None) -> bool:
+    """Make *dock* one panel with the *statistics* dock (when there is one)
+    and napari's layer list and layer controls.
+
+    Four tabs, in this order: *dock*, Statistics, the layer list, the layer
+    controls, with *dock*'s tab open, the four as wide as each other across
+    the panel. napari stacks its two layer docks one above the other in the
+    left strip; tabbed, each has the strip's whole height. False, and
+    nothing moved, without a Qt window or napari's layer docks.
+    """
+    from qtpy.QtCore import QTimer
+
+    window = getattr(viewer, "window", None)
+    main_window = getattr(window, "_qt_window", None) if window is not None else None
+    layer_list, controls = _layer_docks(viewer)
+    if main_window is None or layer_list is None or controls is None:
+        return False
+    _retitle_dock(layer_list, LAYER_LIST_TITLE)
+    _retitle_dock(controls, LAYER_CONTROLS_TITLE)
+    _let_layer_controls_scroll(controls)
+    # Each tabifyDockWidget appends its second dock to the first's tabs.
+    statistics = _alive(statistics)
+    if statistics is not None:
+        main_window.tabifyDockWidget(dock, statistics)
+    main_window.tabifyDockWidget(dock, layer_list)
+    main_window.tabifyDockWidget(dock, controls)
+    if getattr(viewer, "_haemolynx_even_tabs", None) is None:
+        viewer._haemolynx_even_tabs = _even_panel_tabs_class()(main_window, LEFT_PANEL_TABS)
+    _bring_dock_to_front(dock)
+    # Raised at once, a dock just tabbed loses its tab again to the last
+    # one tabbed when Qt lays the new tabs out.
+    QTimer.singleShot(0, lambda: _bring_dock_to_front(dock))
+    _arrange_once_placed(dock, (dock, statistics, layer_list, controls))
+    return True
+
+
+def _tab_statistics_second(viewer, dock, statistics) -> None:
+    """Tab a rebuilt *statistics* dock second, after *dock* (the view).
+
+    The layer docks already tabbed with the view are tabbed again after it,
+    to keep their order; one the user moved elsewhere stays where it is.
+    """
+    window = getattr(viewer, "window", None)
+    main_window = getattr(window, "_qt_window", None) if window is not None else None
+    if main_window is None or _alive(statistics) is None:
+        return
+    tabbed = main_window.tabifiedDockWidgets(dock)
+    main_window.tabifyDockWidget(dock, statistics)
+    for layer_dock in _layer_docks(viewer):
+        if layer_dock is not None and layer_dock in tabbed:
+            main_window.tabifyDockWidget(dock, layer_dock)
+    _arrange_once_placed(
+        statistics, (dock, statistics, *(d for d in _layer_docks(viewer) if d in tabbed))
+    )
+
+
+def _tab_bar_holding(main_window, title: str):
+    """*main_window*'s shown dock tab bar with a tab *title*, or None."""
+    from qtpy.QtCore import Qt
+    from qtpy.QtWidgets import QTabBar
+
+    for bar in main_window.findChildren(QTabBar, options=Qt.FindChildOption.FindDirectChildrenOnly):
+        if not bar.isHidden() and title in _bar_titles(bar):
+            return bar
+    return None
+
+
+def _bar_titles(bar) -> list[str]:
+    return [bar.tabText(i) for i in range(bar.count())]
+
+
+def _arrange_tabs(main_window, docks, rebuilt) -> bool:
+    """Make *docks* one group of tabs in that order, the first open; True
+    when anything had to move.
+
+    On Linux, Qt's dock layout would not take *rebuilt* (a dock just made
+    again) as tabifyDockWidget's first dock, nor move a dock already in the
+    group when it was tabbed again, and the tab bar's own moves landed one
+    place off. What it does do is append a dock to a group it is tabbed
+    onto. So a stray dock is tabbed onto the group, then every dock after
+    the first is taken out and tabbed back on, in turn, each to the end;
+    no move is made onto *rebuilt*.
+    """
+    from qtpy.QtCore import Qt
+
+    wanted = [dock.windowTitle() for dock in docks]
+    bar = _tab_bar_holding(main_window, wanted[0])
+    if len(docks) < 2 or (bar is not None and _bar_titles(bar) == wanted):
+        return False
+
+    def anchor_for(moving):
+        return next(dock for dock in docks if dock is not moving and dock is not rebuilt)
+
+    joined = anchor_for(None)
+    for dock in docks:
+        if dock is not joined and dock not in main_window.tabifiedDockWidgets(joined):
+            main_window.tabifyDockWidget(joined, dock)
+    area = main_window.dockWidgetArea(joined)
+    if area == Qt.DockWidgetArea.NoDockWidgetArea:
+        area = Qt.DockWidgetArea.LeftDockWidgetArea
+    for dock in docks[1:]:
+        main_window.addDockWidget(area, dock)
+        main_window.tabifyDockWidget(anchor_for(dock), dock)
+    _bring_dock_to_front(docks[0])
+    return True
+
+
+def _arrange_once_placed(dock, docks, tries: int = 20) -> None:
+    """Put *docks* (None left out) in order once *dock* is placed.
+
+    napari shows a dock it adds a moment later, so a rebuilt dock is tabbed
+    while hidden. Windows then puts it with the tabs, in its place; Linux
+    put a rebuilt view dock beside them and a rebuilt Statistics dock last.
+    Each event-loop pass checks again, up to *tries*, until *dock* is no
+    longer hidden, and then :func:`_arrange_tabs`; where the tabs are already
+    right nothing moves. The docks are held weakly, and the window read
+    from *dock*, so a wait never keeps napari's viewer alive.
+    """
+    import weakref
+
+    from qtpy.QtCore import QTimer
+
+    watched = weakref.ref(dock)
+    held = [weakref.ref(each) for each in docks if each is not None]
+
+    def check(left: int) -> None:
+        this = watched()
+        try:
+            if this is None:
+                return
+            if this.isHidden() and left > 0:
+                QTimer.singleShot(0, lambda: check(left - 1))
+                return
+            main_window = this.parentWidget()
+            present = [ref() for ref in held]
+            if main_window is not None and all(each is not None for each in present):
+                _arrange_tabs(main_window, present, this)
+        except RuntimeError:
+            logger.debug("a dock is gone", exc_info=True)
+
+    QTimer.singleShot(0, lambda: check(tries))
+
+
+def _bring_dock_to_front(dock) -> None:
+    """Open *dock*'s tab, or raise its window if it floats.
+
+    A docked QDockWidget opens its tab when raised, but ``raise_`` does
+    nothing to a widget already last among its siblings -- as a dock just
+    added is -- so it is lowered first.
+    """
+    try:
+        dock.lower()
+        dock.raise_()
+    except RuntimeError:
+        logger.debug("dock is gone", exc_info=True)
+
+
+#: The rule giving every tab of one of the panel's tab bars one width. Less
+#: side padding than napari's 6 px leaves a label more of its quarter of
+#: napari's ~270 px strip; a label still too long is elided, its tab's
+#: tooltip the whole title.
+EVEN_TAB_RULE = (
+    "QTabBar::tab {{ width: {width}px; padding-left: 2px; padding-right: 2px; }}"
+)
+
+#: Where a tab bar keeps the tab width the rule above gave it.
+EVEN_TAB_WIDTH_PROPERTY = "haemolynx_tab_width"
+
+
+def _even_out_tabs(bar) -> None:
+    """Make *bar*'s tabs equal in width and, together, as wide as *bar*.
+
+    Qt's dock tab bars size each tab to its label and leave the rest of the
+    bar empty. The rule sets a tab's content width; napari's theme adds its
+    padding and border round it, read back from the tab's size at the
+    width the rule last gave.
+    """
+    count = bar.count()
+    if count == 0 or bar.width() <= 0:
+        return
+    current = bar.property(EVEN_TAB_WIDTH_PROPERTY)
+    if current is None:
+        current = 100
+        bar.setStyleSheet(EVEN_TAB_RULE.format(width=current))
+        bar.setProperty(EVEN_TAB_WIDTH_PROPERTY, current)
+    # A tab's width at the rule's, its padding and border included, read from
+    # the bar's size hint (its tabs' hints side by side): tabSizeHint is
+    # protected, and PyQt on Linux refuses it on a tab bar Qt made itself.
+    border = round(bar.sizeHint().width() / count) - int(current)
+    wanted = max(bar.width() // count - border, 8)
+    if wanted != current:
+        bar.setStyleSheet(EVEN_TAB_RULE.format(width=wanted))
+        bar.setProperty(EVEN_TAB_WIDTH_PROPERTY, wanted)
+    # The pixels the division leaves over go to the tabs, not the bar's end.
+    bar.setExpanding(True)
+
+
+def _release_tabs(bar) -> None:
+    """Give a tab bar Qt reuses for other docks back its own tab widths."""
+    if bar.property(EVEN_TAB_WIDTH_PROPERTY) is None:
+        return
+    bar.setStyleSheet("")
+    bar.setProperty(EVEN_TAB_WIDTH_PROPERTY, None)
+    bar.setExpanding(False)
+
+
+_EVEN_PANEL_TABS = None
+
+
+def _even_panel_tabs_class():
+    """The watcher keeping the panel's tabs even (built on first use)."""
+    global _EVEN_PANEL_TABS
+    if _EVEN_PANEL_TABS is not None:
+        return _EVEN_PANEL_TABS
+    from qtpy.QtCore import QEvent, QObject, Qt
+    from qtpy.QtWidgets import QTabBar
+
+    class EvenPanelTabs(QObject):
+        """Keep the panel's tabs equal in width across its whole tab bar.
+
+        Qt makes the tab bar of a group of tabbed docks itself, swaps it for
+        another as tabs come and go, and resizes it with the strip, so this
+        watches the main window: a tab added or removed asks it for a new
+        layout, and each tab bar holding one of *titles* is evened out then
+        and whenever it is resized or shown. The main window is read as the
+        parent, never kept: Qt keeps this alive as long as the window, and a
+        reference from here would keep napari's viewer alive past its close.
+        """
+
+        def __init__(self, main_window, titles) -> None:
+            super().__init__(main_window)
+            self.titles = frozenset(titles)
+            main_window.installEventFilter(self)
+            self.even_out()
+
+        def bars(self) -> list:
+            return self.parent().findChildren(
+                QTabBar, options=Qt.FindChildOption.FindDirectChildrenOnly
+            )
+
+        def ours(self, bar) -> bool:
+            return any(bar.tabText(i) in self.titles for i in range(bar.count()))
+
+        def even_out(self) -> None:
+            for bar in self.bars():
+                if self.ours(bar):
+                    if bar.property(EVEN_TAB_WIDTH_PROPERTY) is None:
+                        bar.installEventFilter(self)
+                    _even_out_tabs(bar)
+                else:
+                    _release_tabs(bar)
+
+        def eventFilter(self, watched, event):  # noqa: N802 - Qt's name
+            kind = event.type()
+            try:
+                if watched is self.parent():
+                    if kind in (QEvent.Type.LayoutRequest, QEvent.Type.ChildAdded):
+                        self.even_out()
+                elif kind in (QEvent.Type.Resize, QEvent.Type.Show):
+                    if self.ours(watched):
+                        _even_out_tabs(watched)
+            except RuntimeError:
+                logger.debug("a tab bar is gone", exc_info=True)
+            return False
+
+    _EVEN_PANEL_TABS = EvenPanelTabs
+    return EvenPanelTabs
+
+
+class _StatisticsPanel:
+    """The left panel's Statistics tab: one button per section of the last
+    run's statistics (see :mod:`haemolynx.gui.statistics_view`), each showing
+    that section's results below it while pressed.
+
+    :meth:`show` puts a new report in; a section open before stays open when
+    the report it comes back in replaces the old one. A section's rows are
+    built the first time it opens: full mode can make thousands.
+    """
+
+    def __init__(self, statistics_tab: str) -> None:
+        from qtpy.QtWidgets import QLabel, QVBoxLayout, QWidget
+
+        #: The tab the Statistics setting is on, for the empty panel's note.
+        self.statistics_tab = statistics_tab
+        self.widget = QWidget()
+        self.widget.setObjectName("haemolynx_statistics_panel")
+        layout = QVBoxLayout(self.widget)
+        self.summary = QLabel()
+        self.summary.setObjectName("haemolynx_statistics_summary")
+        self.summary.setWordWrap(True)
+        layout.addWidget(self.summary)
+        holder = QWidget()
+        self._sections_layout = QVBoxLayout(holder)
+        self._sections_layout.setContentsMargins(0, 0, 0, 0)
+        self._sections_layout.setSpacing(0)
+        layout.addWidget(holder)
+        # Docked, the panel is as tall as the strip; the buttons keep their height.
+        layout.addStretch(1)
+        self.report = None
+        self.sections: dict[str, Any] = {}
+        self.buttons: dict[str, Any] = {}
+        self.bodies: dict[str, Any] = {}
+        #: Sections the user has open, by key, kept across reports.
+        self.open: set[str] = set()
+        self._shown = False
+        self.show(None)
+
+    def show(self, report) -> None:
+        """Show *report*'s sections, each behind its own button."""
+        from qtpy.QtWidgets import QPushButton
+
+        from haemolynx.gui.statistics_view import (
+            breakable,
+            section_tooltip,
+            statistics_sections,
+            statistics_summary,
+        )
+
+        if self._shown and report is self.report:
+            return
+        self._shown = True
+        self.report = report
+        self.summary.setText(breakable(statistics_summary(report, self.statistics_tab)))
+        for widget in (*self.buttons.values(), *self.bodies.values()):
+            self._sections_layout.removeWidget(widget)
+            widget.setParent(None)
+            widget.deleteLater()
+        self.sections, self.buttons, self.bodies = {}, {}, {}
+        for section in statistics_sections(report):
+            button = QPushButton()
+            button.setObjectName("haemolynx_statistics_button")
+            button.setAccessibleName(section.key)
+            button.setFlat(True)
+            button.setCheckable(True)
+            button.setStyleSheet("text-align: left; padding: 2px 4px;")
+            button.setToolTip(section_tooltip(section.key))
+            self._sections_layout.addWidget(button)
+            self.sections[section.key] = section
+            self.buttons[section.key] = button
+            self._retitle(section.key)
+            button.toggled.connect(
+                lambda checked, key=section.key: self.toggle(key, checked)
+            )
+            if section.key in self.open:
+                self.toggle(section.key, True)
+
+    def toggle(self, key: str, expanded: bool | None = None) -> None:
+        """Show or hide section *key*'s results; with no *expanded*, the
+        other way from now."""
+        button = self.buttons[key]
+        expanded = (key not in self.open) if expanded is None else bool(expanded)
+        (self.open.add if expanded else self.open.discard)(key)
+        if expanded and key not in self.bodies:
+            body = self._body(self.sections[key].rows)
+            self._sections_layout.insertWidget(
+                self._sections_layout.indexOf(button) + 1, body
+            )
+            self.bodies[key] = body
+        if key in self.bodies:
+            self.bodies[key].setVisible(expanded)
+        if button.isChecked() != expanded:
+            button.setChecked(expanded)
+        self._retitle(key)
+
+    def _retitle(self, key: str) -> None:
+        self.buttons[key].setText(
+            advanced_button_text(self.sections[key].title, key in self.open)
+        )
+
+    def _body(self, rows):
+        from qtpy.QtCore import Qt
+        from qtpy.QtWidgets import QGridLayout, QLabel, QWidget
+
+        from haemolynx.gui.statistics_view import breakable
+
+        body = QWidget()
+        body.setObjectName("haemolynx_statistics_rows")
+        grid = QGridLayout(body)
+        grid.setContentsMargins(ADVANCED_INDENT_PX, 0, 0, 6)
+        grid.setHorizontalSpacing(8)
+        grid.setVerticalSpacing(2)
+        grid.setColumnStretch(0, 1)
+        grid.setColumnStretch(1, 1)
+        for line, row in enumerate(rows):
+            name = QLabel(breakable(row.name))
+            name.setWordWrap(True)
+            name.setContentsMargins(ADVANCED_INDENT_PX * row.depth, 0, 0, 0)
+            if row.heading:
+                name.setStyleSheet("font-weight: bold;")
+                grid.addWidget(name, line, 0, 1, 2)
+                continue
+            value = QLabel(breakable(row.value))
+            value.setWordWrap(True)
+            value.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            grid.addWidget(name, line, 0, Qt.AlignmentFlag.AlignTop)
+            grid.addWidget(value, line, 1, Qt.AlignmentFlag.AlignTop)
+        return body
+
+    def rows_shown(self, key: str) -> list[tuple[str, str]]:
+        """Section *key*'s (name, value) lines as drawn, headings with no value."""
+        from haemolynx.gui.statistics_view import ZERO_WIDTH_SPACE
+
+        body = self.bodies.get(key)
+        if body is None:
+            return []
+        grid = body.layout()
+        lines: dict[int, list[str]] = {}
+        for index in range(grid.count()):
+            line, column, _rows, _columns = grid.getItemPosition(index)
+            text = grid.itemAt(index).widget().text().replace(ZERO_WIDTH_SPACE, "")
+            lines.setdefault(line, ["", ""])[column] = text
+        return [tuple(lines[line]) for line in sorted(lines)]
+
+
+#: Gap between the view-snap buttons and the canvas's bottom-left corner (px).
+VIEW_SNAP_MARGIN = 8
+
+
+def snap_view_to_plane(viewer, plane: str) -> bool:
+    """Centre the data and look straight at *plane* ("XY", "XZ" or "YZ").
+
+    A 3D view keeps napari's own axis order and turns the camera; a 2D view
+    reorders the dims so the plane's two axes are the ones on screen. Either
+    way ``reset_view`` recentres and refits first, so the snap also brings
+    back data panned or zoomed out of sight. False (and nothing changes)
+    when there is no 3D data to look at a plane of.
+    """
+    from haemolynx.gui.view_snap import (
+        camera_directions_for_plane,
+        dims_order_for_plane,
+    )
+
+    ndim = int(viewer.dims.ndim)
+    if ndim < 3:
+        return False
+    if int(viewer.dims.ndisplay) == 3:
+        viewer.dims.order = tuple(range(ndim))
+        viewer.reset_view()
+        view_direction, up_direction = camera_directions_for_plane(plane)
+        viewer_camera(viewer).set_view_direction(view_direction, up_direction)
+    else:
+        viewer.dims.order = dims_order_for_plane(plane, ndim)
+        viewer.reset_view()
+    return True
+
+
+def _install_view_snap_buttons(viewer):
+    """XY / XZ / YZ buttons pinned to the canvas's bottom-left corner.
+
+    Parented to the main window: not the vispy canvas, since a child of an
+    OpenGL widget does not reliably paint on every platform, and not the Qt
+    viewer, which is a QSplitter that adopts every child as a pane and so
+    squeezed the canvas to the buttons' width. Moved back to the corner
+    whenever the canvas or viewer is resized or moved. One set per viewer: a
+    second panel on the same viewer reuses it. None without a Qt window.
+    """
+    existing = getattr(viewer, "_haemolynx_view_snap_buttons", None)
+    if existing is not None:
+        return existing
+    from qtpy.QtCore import QEvent, QObject, Qt
+    from qtpy.QtWidgets import QHBoxLayout, QLayout, QPushButton, QWidget
+
+    from haemolynx.gui.chrome_tooltips import VIEW_SNAP_TOOLTIPS
+    from haemolynx.gui.view_snap import VIEW_PLANES
+
+    window = getattr(viewer, "window", None)
+    qt_viewer = getattr(window, "_qt_viewer", None) if window is not None else None
+    canvas = getattr(qt_viewer, "canvas", None)
+    native = getattr(canvas, "native", canvas)
+    main_window = getattr(window, "_qt_window", None) if window is not None else None
+    if qt_viewer is None or native is None or main_window is None:
+        return None
+
+    bar = QWidget(main_window)
+    bar.setObjectName("haemolynx_view_snap")
+    # Only the buttons show: napari's stylesheet otherwise paints the bar as
+    # an opaque strip over the canvas.
+    bar.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+    bar.setStyleSheet("#haemolynx_view_snap { background: transparent; }")
+    layout = QHBoxLayout(bar)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(4)
+    # The bar is exactly as wide as its buttons, never stretched across the
+    # canvas.
+    layout.setSizeConstraint(QLayout.SizeConstraint.SetFixedSize)
+    bar.buttons = {}
+    # Weak references only: Qt owns the bar through the viewer, a link the
+    # garbage collector cannot see, so a strong one back to the viewer or
+    # canvas would keep the closed viewer alive for good.
+    viewer_ref = weakref.ref(viewer)
+    native_ref = weakref.ref(native)
+
+    def snap(plane: str) -> None:
+        live = viewer_ref()
+        if live is not None:
+            snap_view_to_plane(live, plane)
+
+    for plane in VIEW_PLANES:
+        button = QPushButton(plane, bar)
+        button.setObjectName(f"haemolynx_view_snap_{plane.lower()}")
+        button.setToolTip(VIEW_SNAP_TOOLTIPS[plane])
+        button.setFixedWidth(40)
+        button.clicked.connect(lambda _checked=False, plane=plane: snap(plane))
+        layout.addWidget(button)
+        bar.buttons[plane] = button
+    bar.adjustSize()
+    bar_ref = weakref.ref(bar)
+
+    def place() -> None:
+        bar = bar_ref()
+        native = native_ref()
+        if bar is None or native is None:
+            return
+        try:
+            corner = native.mapTo(bar.parentWidget(), native.rect().bottomLeft())
+            bar.move(
+                int(corner.x()) + VIEW_SNAP_MARGIN,
+                int(corner.y()) - bar.height() - VIEW_SNAP_MARGIN + 1,
+            )
+            bar.raise_()
+        except RuntimeError:
+            # The canvas or bar was deleted with the viewer.
+            logger.debug("view-snap buttons outlived the canvas", exc_info=True)
+
+    class _FollowCanvas(QObject):
+        def eventFilter(self, _watched, event):  # noqa: N802 - Qt's name
+            if event.type() in (QEvent.Resize, QEvent.Move, QEvent.Show):
+                place()
+            return False
+
+    follower = _FollowCanvas(bar)
+    native.installEventFilter(follower)
+    # Resizing a dock moves the canvas within the window without sending the
+    # canvas itself a Move.
+    qt_viewer.installEventFilter(follower)
+    bar._haemolynx_follow_canvas = follower
+    bar.place = place
+    place()
+    bar.show()
+    viewer._haemolynx_view_snap_buttons = bar
+    return bar
 
 
 def _create_widget(**kwargs):
@@ -68,14 +1020,407 @@ def _create_widget(**kwargs):
     return create_widget(**kwargs)
 
 
+def _safe_widget_value(widget) -> Any:
+    """A row's raw value, treating unparsable literal text as an empty box.
+
+    `LiteralEvalLineEdit` (the widget behind the ``int_list``/``float_list``/
+    ``mapping``/``any`` kinds) evaluates its text as a Python literal on
+    every read of ``.value``. Text that is not a complete literal -- most
+    often a box a user has cleared by hand, but equally every keystroke of
+    typing one out (``[1, 2,`` is a `SyntaxError` mid-edit) -- raises there
+    instead of returning. `current_values()` reads every row's `.value` in
+    one dict comprehension whenever *any* row changes, so one such widget
+    breaks prerequisite handling for the whole panel until its text becomes
+    valid again. Treat that the same way `Field.to_setting_value` already
+    treats an empty string: unset, not a crash.
+    """
+    try:
+        return widget.value
+    except (SyntaxError, ValueError):
+        return ""
+
+
 def _export_dir(values: dict[str, Any]) -> Path:
     """Where a layer with no file behind it gets written: beside the outputs."""
-    prefix = values.get("vtk_output_prefix")
-    return Path(prefix).parent if prefix else Path.cwd()
+    folder = values.get("output_dir")
+    return Path(folder) if folder else Path.cwd()
+
+
+def output_folder_from_settings(values: Mapping[str, Any]) -> Path | None:
+    """The run's output folder (``output_dir``), or None.
+
+    Same folder VTK and other run artifacts use. A snapshot is a cosmetic
+    export into this directory; it is never read back as pipeline input.
+
+    A cleared FileEdit arrives as ``"."`` or the working directory rather
+    than None, and is treated as unset, so snapshots and pickle discards do
+    not land in the process cwd.
+    """
+    return output_dir_from_settings(values)
+
+
+def _confirm_run_without_hand_edits(parent, tab_title: str) -> bool:
+    """Ask before a run from *tab_title* goes ahead without the Post
+    processing tab's edits not yet regenerated."""
+    from qtpy.QtWidgets import QMessageBox
+
+    answer = QMessageBox.question(
+        parent,
+        "Run without the hand edits?",
+        f"The edits on {POST_PROCESSING_TAB} are not in the model yet: running from "
+        f"{tab_title} leaves them out, though the tab keeps them. Regenerate graph "
+        "there takes them in. Run anyway?",
+    )
+    return answer == QMessageBox.Yes
+
+
+def _confirm_discard_hand_edits(parent, tab_title: str) -> bool:
+    """Ask before a run from *tab_title* drops the Post processing tab's edits."""
+    from qtpy.QtWidgets import QMessageBox
+
+    answer = QMessageBox.question(
+        parent,
+        "Discard the hand edits?",
+        f"Running from {tab_title} starts again from a network without the "
+        f"edits made on {POST_PROCESSING_TAB}; they will be lost. Run anyway?",
+    )
+    return answer == QMessageBox.Yes
+
+
+def _dialog_parent(viewer) -> Any:
+    """The napari main window, so file dialogues stay in front of the viewer."""
+    if viewer is None:
+        return None
+    window = getattr(viewer, "window", None)
+    if window is None:
+        return None
+    return getattr(window, "_qt_window", None) or getattr(window, "qt_viewer", None)
+
+
+def unique_snapshot_path(
+    output_dir: Path, *, when: datetime | None = None
+) -> Path:
+    """``haemolynx_snapshot_YYYYMMDD_HHMMSS.tif``; ``_2``, ``_3``, … if taken."""
+    stamp = (when or datetime.now()).strftime("%Y%m%d_%H%M%S")
+    candidate = Path(output_dir) / f"{SNAPSHOT_STEM}_{stamp}.tif"
+    if not candidate.exists():
+        return candidate
+    n = 2
+    while True:
+        candidate = Path(output_dir) / f"{SNAPSHOT_STEM}_{stamp}_{n}.tif"
+        if not candidate.exists():
+            return candidate
+        n += 1
+
+
+#: How far in each nesting level of an Advanced button is drawn, in pixels,
+#: and how far in the rows it reveals sit from the button itself.
+ADVANCED_INDENT_PX = 14
+
+#: The panel's starting value where it is not the schema default -- what an
+#: Advanced button's "changed" count measures against, so Produce IDE plots
+#: being off in napari does not read as a change nobody made.
+ADVANCED_BASELINE: dict[str, Any] = dict(DISPLAY_SETTINGS_OFF_IN_NAPARI)
+
+
+def advanced_button_text(title: str, expanded: bool, changed: int = 0) -> str:
+    """What an Advanced button says: open or closed, and how much is changed."""
+    arrow = "▾" if expanded else "▸"
+    note = f" ({changed} changed)" if changed else ""
+    return f"{arrow} {title}{note}"
+
+
+def _readout_hover_text(slider) -> None:
+    """Give a magicgui slider's number box the slider's hover text: magicgui
+    puts it on the slider alone, and the box beside it can be typed in."""
+    from qtpy.QtWidgets import QAbstractSpinBox
+
+    for readout in slider.native.findChildren(QAbstractSpinBox):
+        readout.setToolTip(slider.tooltip)
+
+
+def _hide_row_label(widget) -> None:
+    """Drop the empty label a labelled Container gives a nested block.
+
+    magicgui wraps every widget that is not a button in a row with a label,
+    pinned to the widest label's width, so a nested block -- an Advanced
+    button, the shared ilastik holder -- would otherwise start half-way across
+    the tab, squeezed into the value column.
+    """
+    labeled = widget._labeled_widget()
+    if labeled is not None:
+        labeled._label_widget.visible = False
+
+
+def _flush(container) -> None:
+    """No margins: a nested block lines up with the rows around it."""
+    container.margins = (0, 0, 0, 0)
+
+
+def _line_up_labels(container) -> None:
+    """Give every label in *container* the widest one's width, so values align.
+
+    magicgui does this whenever a widget is added to a container, but not for
+    the widgets it is built with -- so a box built whole would keep ragged
+    value columns, and no label in it would reach the width
+    :func:`_wrap_row_labels` caps and wraps at.
+    """
+    container._unify_label_widths()
+
+
+class _AdvancedDisclosure:
+    """One "Advanced" button and the rows it reveals.
+
+    :mod:`haemolynx.gui.layout` decides which rows, under which row, and at
+    what depth; this draws that. It starts closed. The rows inside keep their
+    own prerequisites -- hidden or greyed exactly as they would be outside --
+    and the button itself hides when none of them would show, so it never
+    opens onto nothing.
+    """
+
+    def __init__(self, spec: Disclosure, rows: Mapping[str, Any], *, always_visible: bool = False) -> None:
+        from magicgui.widgets import Container, PushButton
+
+        from haemolynx.gui.chrome_tooltips import ADVANCED_SETTINGS_TOOLTIP
+
+        self.spec = spec
+        self.names: tuple[str, ...] = tuple(spec.names)
+        self.expanded = False
+        self.changed = 0
+        #: For a block that something else shows and hides (the shared
+        #: ilastik rows, which move between two tabs).
+        self.always_visible = always_visible
+        #: Panel controls placed inside that are not settings: they always show.
+        self.extras: list[Any] = []
+        self._extras_holder = None
+        self.headings: list[tuple[Any, tuple[str, ...]]] = []
+
+        self.button = PushButton(text=advanced_button_text(spec.title, False))
+        self.button.tooltip = ADVANCED_SETTINGS_TOOLTIP
+        native = self.button.native
+        native.setObjectName("haemolynx_advanced")
+        native.setAccessibleName(spec.key)
+        native.setFlat(True)
+        native.setStyleSheet("text-align: left; padding: 2px 4px;")
+
+        self.body = Container(widgets=[], labels=False)
+        self.body.margins = (ADVANCED_INDENT_PX, 0, 0, 4)
+        self._fill(spec.groups, rows)
+        self.container = Container(widgets=[self.button, self.body], labels=False)
+        self.container.margins = (ADVANCED_INDENT_PX * spec.level, 0, 0, 0)
+        self.body.visible = False
+        self.button.changed.connect(lambda *_args: self.toggle())
+
+    def _fill(self, groups, rows: Mapping[str, Any]) -> None:
+        from magicgui.widgets import Container, Label
+
+        for heading, names in groups:
+            if heading:
+                label = Label(value=heading)
+                label.native.setStyleSheet("font-weight: bold;")
+                self.body.append(label)
+                self.headings.append((label, tuple(names)))
+            chunk = Container(widgets=[rows[n] for n in names if n in rows], labels=True)
+            _flush(chunk)
+            _line_up_labels(chunk)
+            self.body.append(chunk)
+
+    def set_rows(self, names: Sequence[str], rows: Mapping[str, Any]) -> None:
+        """Put these rows, and only these, behind the button (one run, no headings)."""
+        self.body.clear()
+        self.headings = []
+        self._extras_holder = None
+        self.names = tuple(names)
+        self._fill(((None, tuple(names)),) if names else (), rows)
+        for widget in self.extras:
+            self._extras_holder_container().append(widget)
+
+    def _extras_holder_container(self):
+        from magicgui.widgets import Container
+
+        if self._extras_holder is None:
+            self._extras_holder = Container(widgets=[], labels=True)
+            _flush(self._extras_holder)
+            self.body.append(self._extras_holder)
+        return self._extras_holder
+
+    def add(self, widget) -> None:
+        """Put a panel control that is not a setting behind the button too."""
+        from magicgui.widgets import Container
+
+        self._extras_holder_container().append(widget)
+        if isinstance(widget, Container):
+            _hide_row_label(widget)
+        self.extras.append(widget)
+
+    def toggle(self, expanded: bool | None = None) -> None:
+        """Open or close; with no argument, the other way from now."""
+        self.expanded = (not self.expanded) if expanded is None else bool(expanded)
+        self.body.visible = self.expanded
+        self._retitle()
+
+    def _retitle(self) -> None:
+        self.button.text = advanced_button_text(self.spec.title, self.expanded, self.changed)
+
+    def refresh(self, shows, values: Mapping[str, Any], schema, baseline=None) -> None:
+        """Follow the other settings: whether to show at all, and what is changed.
+
+        *shows* says whether one row would show, given everything above it.
+        """
+        names = [n for n in self.names if n in schema]
+        shown = self.always_visible or bool(self.extras) or any(shows(n) for n in names)
+        self.container.visible = shown
+        for label, members in self.headings:
+            label.visible = any(shows(n) for n in members if n in schema)
+        self.changed = len(changed_settings(names, schema, values, baseline))
+        self._retitle()
+
+
+def _box_containers(
+    layout: TabLayout, rows: Mapping[str, Any], disclosures: dict, lead=(), replacements=None
+):
+    """One labelled Container per box of *layout*, with its Advanced buttons in place.
+
+    *lead* (a tab's summary line) heads the first box when that box is
+    untitled. Every button made is recorded in *disclosures* by its key.
+    *replacements* draws a panel control in a row's place, or nothing for a
+    row mapped to None: the row still anchors its Advanced buttons.
+    """
+    from magicgui.widgets import Container
+
+    replacements = replacements or {}
+    made: list[tuple[Any, Any]] = []
+    lead = list(lead)
+    for index, box in enumerate(layout.boxes):
+        widgets = lead if (index == 0 and box.title is None) else []
+        buttons = []
+        for item in box.items:
+            if isinstance(item, str) and item in replacements:
+                if replacements[item] is not None:
+                    widgets.append(replacements[item])
+            elif isinstance(item, str):
+                widgets.append(rows[item])
+            else:
+                disclosure = _AdvancedDisclosure(item, rows)
+                buttons.append(disclosure)
+                widgets.append(disclosure.container)
+        container = Container(widgets=list(widgets), labels=True)
+        _line_up_labels(container)
+        for disclosure in buttons:
+            _hide_row_label(disclosure.container)
+            disclosures[disclosure.spec.key] = disclosure
+        made.append((box, container))
+        if index == 0 and box.title is None:
+            lead = []
+    if lead:
+        # The first box has a title, so the summary stands above it on its
+        # own, the full width (a label column would squeeze it into half).
+        made.insert(0, (None, Container(widgets=lead, labels=False)))
+    return made
+
+
+def _lay_out_boxes(
+    layout: TabLayout,
+    rows: Mapping[str, Any],
+    *,
+    disclosures: dict,
+    group_boxes: dict,
+    lead=(),
+    replacements=None,
+):
+    """Draw *layout*: untitled boxes as plain runs of rows, titled ones as group boxes.
+
+    Returns the drawn page and each box's Container by key. A titled box is
+    recorded in *group_boxes* with every setting in it, so the panel can hide
+    the whole box -- rather than leave an empty titled frame -- once none of
+    them would show.
+    """
+    from qtpy.QtWidgets import QGroupBox, QVBoxLayout, QWidget
+
+    page = QWidget()
+    page_layout = QVBoxLayout(page)
+    page_layout.setContentsMargins(0, 0, 0, 0)
+    containers: dict[str, Any] = {}
+    for box, container in _box_containers(
+        layout, rows, disclosures, lead=lead, replacements=replacements
+    ):
+        if box is None or box.title is None:
+            page_layout.addWidget(container.native)
+        else:
+            group = QGroupBox(box.title)
+            group.setObjectName(f"haemolynx_section_{box.key}")
+            QVBoxLayout(group).addWidget(container.native)
+            page_layout.addWidget(group)
+            group_boxes[box.key] = (group, list(box.names))
+        if box is not None:
+            containers[box.key] = container
+    return page, containers
+
+
+_CHANNEL_COMBO_BOX = None
+
+
+def _channel_combo_box_class():
+    """A drop-down of an image's channels (built on first use, like every
+    magicgui import here)."""
+    global _CHANNEL_COMBO_BOX
+    if _CHANNEL_COMBO_BOX is None:
+        from magicgui.widgets import ComboBox
+
+        class ChannelComboBox(ComboBox):
+            """Takes any channel it is given, listing it if it must: a value
+            written in -- from a config file, before the image path that says
+            which channels exist -- is kept, not refused or swapped for
+            another channel. :meth:`show_channels` then lists the file's."""
+
+            def _on_value_change(self, value=None) -> None:
+                # "No channel" is None, a real choice here: magicgui's base
+                # class would swallow the change to it (None is its "unset").
+                self.changed.emit(value)
+
+            def _entries(self) -> list[tuple[str, Any]]:
+                return [(self.native.itemText(i), data) for i, data in enumerate(self.choices)]
+
+            @ComboBox.value.setter
+            def value(self, value):
+                if value is not None and value not in self.choices:
+                    self.choices = self._entries() + channel_choices([], int(value))[-1:]
+                ComboBox.value.fset(self, value)
+
+            def show_channels(self, channels) -> None:
+                """List *channels* (from :func:`haemolynx.io.tiff_channels`), keeping the current one."""
+                keep = self.value
+                self.choices = channel_choices(channels, keep)
+                ComboBox.value.fset(self, keep)
+
+        _CHANNEL_COMBO_BOX = ChannelComboBox
+    return _CHANNEL_COMBO_BOX
+
+
+def _follow_image_channels(channel_row, path_row) -> None:
+    """Keep *channel_row*'s list to the channels of the file *path_row* names."""
+    from haemolynx.io import tiff_channels
+
+    def refresh(*_args) -> None:
+        value = path_row.value
+        path = None if value in (None, "", ".") else Path(value)
+        channel_row.show_channels(
+            tiff_channels(path) if path is not None and path.is_file() else []
+        )
+
+    path_row.changed.connect(refresh)
+    refresh()
 
 
 def _build_row(field: Field):
     """One magicgui widget for one form row."""
+    if field.name in CHANNEL_SETTINGS:
+        widget = _channel_combo_box_class()(
+            choices=field.options["choices"], value=field.value, name=field.name,
+            label=field.label,
+        )
+        widget.tooltip = field.help
+        return widget
     widget = _create_widget(
         value=field.value,
         name=field.name,
@@ -84,10 +1429,21 @@ def _build_row(field: Field):
         options=dict(field.options),
     )
     widget.tooltip = field.help
+    if field.placeholder:
+        # magicgui's create_widget has no placeholder kwarg; the backend
+        # (Qt) does. An empty box means None, so this is a LineEdit -- see
+        # widget_type_for -- or, for a path, a FileEdit, whose own native is
+        # a container around the line edit that actually holds the text.
+        target = getattr(widget, "line_edit", widget)
+        set_placeholder = getattr(target.native, "setPlaceholderText", None)
+        if callable(set_placeholder):
+            set_placeholder(field.placeholder)
     return widget
 
 
-def _scale_layer_from_its_file(layer, path) -> tuple[float, float, float] | None:
+def _scale_layer_from_its_file(
+    layer, path, axis_order: str = "zyx"
+) -> tuple[float, float, float] | None:
     """Give *layer* the voxel size its own file describes, if it has none.
 
     napari's readers do not apply a TIFF's resolution tags, so a stack opened
@@ -98,16 +1454,20 @@ def _scale_layer_from_its_file(layer, path) -> tuple[float, float, float] | None
 
     Only ever fills a gap: a layer whose scale someone has already set is left
     alone, and so is a file whose tags say nothing. Returns the scale applied,
-    or None if it left the layer as it was.
+    or None if it left the layer as it was. The layer's axes are the file's,
+    which *axis_order* (``image_axis_order``) names.
     """
-    from haemolynx.io import read_voxel_size_xyz, voxel_size_zyx_from_xyz
+    from haemolynx.io import file_axis_spacing_from_xyz, read_voxel_size_xyz
 
     if path is None or voxel_size_xyz_from_scale(getattr(layer, "scale", None)):
         return None
-    found = read_voxel_size_xyz(path)
+    found = read_voxel_size_xyz(path, axis_order)
     if found is None:
         return None
-    scale = voxel_size_zyx_from_xyz(found[0])
+    scale = file_axis_spacing_from_xyz(found[0], axis_order)
+    if len(getattr(getattr(layer, "data", None), "shape", ())) == 2:
+        # A 2D image's own axes are (y, x), not reordered.
+        scale = file_axis_spacing_from_xyz(found[0])[1:]
     try:
         layer.scale = scale
     except Exception:  # noqa: BLE001 - a layer that will not take a scale is survivable
@@ -154,8 +1514,17 @@ class ProgressBars:
         self.display.finish(message)
         self._refresh()
 
+    def pause(self, message: str) -> None:
+        self.display.pause(message)
+        self._refresh()
+
     def fail(self, message: str = "Failed") -> None:
         self.display.fail(message)
+        self._refresh()
+
+    def reset(self) -> None:
+        """Both bars back to nothing: the run was stopped on purpose."""
+        self.display.reset()
         self._refresh()
 
     def _refresh(self) -> None:
@@ -172,17 +1541,2073 @@ class ProgressBars:
             bar.setVisible(state.visible)
 
 
+class _OptimiseReview:
+    """One optimiser's proposal, shown under its button until Apply or Discard.
+
+    An optimisation run hands :meth:`propose` its result and a function that
+    writes the settings it names into the panel; this shows what would
+    change against the panel's current values (see
+    :mod:`haemolynx.gui.optimise_review`) and keeps the function until the
+    user decides. Nothing reaches the panel's rows before Apply, and Apply
+    writes the changes listed and nothing else: a row edited since is left
+    as it is. Built and used on the GUI thread only.
+    """
+
+    def __init__(self, current_values, report, *, what: str) -> None:
+        from magicgui.widgets import Container, PushButton, TextEdit
+
+        from haemolynx.gui.chrome_tooltips import OPTIMISE_TOOLTIPS
+
+        self._current_values = current_values
+        self._report = report
+        self._what = what
+        self._apply = None
+        self.text = TextEdit(value="")
+        self.text.read_only = True
+        self.text.tooltip = OPTIMISE_TOOLTIPS["review"]
+        self.apply_button = PushButton(text="Apply")
+        self.apply_button.tooltip = OPTIMISE_TOOLTIPS["apply"]
+        self.discard_button = PushButton(text="Discard")
+        self.discard_button.tooltip = OPTIMISE_TOOLTIPS["discard"]
+        buttons = Container(
+            widgets=[self.apply_button, self.discard_button], layout="horizontal", labels=False
+        )
+        self.container = Container(widgets=[self.text, buttons], labels=False)
+        self.container.visible = False
+        self.apply_button.changed.connect(lambda *_args: self.apply())
+        self.discard_button.changed.connect(lambda *_args: self.discard())
+
+    @property
+    def pending(self) -> bool:
+        return self._apply is not None
+
+    def propose(self, result, apply) -> str:
+        """Show *result*'s proposal and keep *apply* for the Apply button; the
+        status line to report."""
+        changes = proposed_changes(result.settings, self._current_values())
+        self.text.value = review_text(changes, result.scorecard)
+        names = tuple(change.name for change in changes)
+        self._apply = lambda: apply(names)
+        self.container.visible = True
+        count = len(changes)
+        worse = worse_rows(result.scorecard)
+        warning = (
+            f" WARNING: worse than your settings on {len(worse)} measure"
+            f"{'s' if len(worse) != 1 else ''}."
+            if worse
+            else ""
+        )
+        return (
+            f"{self._what[0].upper()}{self._what[1:]} ready to review below: {count} "
+            f"change{'s' if count != 1 else ''}.{warning} Apply or Discard."
+        )
+
+    def apply(self) -> None:
+        if self._apply is None:
+            return
+        apply, self._apply = self._apply, None
+        apply()
+        self.container.visible = False
+        self._report.value = f"Applied the {self._what}."
+
+    def discard(self) -> None:
+        if self._apply is None:
+            return
+        self._apply = None
+        self.container.visible = False
+        self._report.value = f"Discarded the {self._what}; the panel is unchanged."
+
+    def clear(self) -> None:
+        """Forget a proposal without a word: the state it belonged to is gone."""
+        self._apply = None
+        self.container.visible = False
+
+
+class OptimiseProgressBars:
+    """The "Optimise settings" run's own two progress bars.
+
+    Structurally identical to :class:`ProgressBars`, but reading
+    :class:`~haemolynx.gui.optimise_progress.OptimisationProgressDisplay`
+    instead -- kept separate rather than generalising `ProgressBars`, so the
+    pipeline run's well-tested bars are untouched. Every method here touches
+    Qt, so all of them must be called on the GUI thread.
+    """
+
+    def __init__(self) -> None:
+        from qtpy.QtWidgets import QProgressBar, QVBoxLayout, QWidget
+
+        self.display = OptimisationProgressDisplay()
+        self.group_bar = QProgressBar()
+        self.candidate_bar = QProgressBar()
+        self.native = QWidget()
+        layout = QVBoxLayout(self.native)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.group_bar)
+        layout.addWidget(self.candidate_bar)
+        self._refresh()
+
+    def start(self) -> None:
+        self.display.start()
+        self._refresh()
+
+    def show_event(self, event: OptimisationEvent) -> None:
+        self.display.update(event)
+        self._refresh()
+
+    def finish(self, message: str = "Optimised") -> None:
+        self.display.finish(message)
+        self._refresh()
+
+    def fail(self, message: str = "Failed") -> None:
+        self.display.fail(message)
+        self._refresh()
+
+    def reset(self) -> None:
+        self.display.reset()
+        self._refresh()
+
+    def _refresh(self) -> None:
+        for bar, state in (
+            (self.group_bar, self.display.groups),
+            (self.candidate_bar, self.display.candidates),
+        ):
+            bar.setRange(0, state.total)
+            bar.setValue(min(state.value, state.total) if state.total else 0)
+            bar.setTextVisible(bool(state.text))
+            bar.setFormat(state.text or "%p%")
+            bar.setVisible(state.visible)
+
+
 #: Marks a layer as one of ours, so a re-run updates its own work and never a
 #: layer the user made that happens to share a name.
 OURS = "haemolynx"
+
+#: Session-wide checkbox selection for the branch-hover metrics panel.
+#: ``None`` means "not yet chosen" -- the panel then defaults to every
+#: metric the current graph can offer. Survives layer rebuilds within a
+#: napari session so toggling mid-run does not reset after the next stage.
+_branch_hover_session_selected: tuple[str, ...] | None = None
+
+#: View-only vessels drawing: tubes (default) or napari Vectors line ribbons.
+#: Survives layer rebuilds within a napari session; not a pipeline setting.
+_vessel_draw_mode: str = DEFAULT_VESSEL_DRAW
+#: The tubes' render quality (see ``TUBE_QUALITY_SIDES``), shared by every
+#: tubes layer in the session and set from the slider on their controls.
+_tube_quality: int = DEFAULT_TUBE_QUALITY
+#: Each tube at its vessel's own diameter or every one at the same width (see
+#: ``TUBE_DIAMETERS``): the session's too, set from the view panel or from
+#: any tubes layer's controls.
+_tube_diameter: str = DEFAULT_TUBE_DIAMETER
+#: The width (µm) every tube is drawn at while that choice is Uniform, from
+#: the µm box beside it.
+_tube_uniform_diameter_um: float = DEFAULT_UNIFORM_TUBE_DIAMETER_UM
+
+#: Keys stashed on a branch-hover LayerSpec that must not reach napari.
+_BRANCH_HOVER_OPTION_KEYS = frozenset(
+    {"branch_hover_available", "branch_hover_selected"}
+)
+
+#: Keys stashed on the skeleton LayerSpec that must not reach napari.
+_THICK_THIN_OPTION_KEYS = frozenset({"thick_vessel_mask"})
+
+#: Keys stashed on the IMAGE LayerSpec that must not reach napari.
+_SEGMENTATION_CLEANUP_OPTION_KEYS = frozenset({"raw_segmented_image"})
+
+#: Debug colours for the skeleton layer's thick/thin toggle -- distinct from
+#: every mask/vessel-type colour already in use elsewhere in the viewer.
+THIN_SKELETON_COLOUR: tuple[float, float, float, float] = (0.0, 0.85, 0.85, 1.0)
+THICK_SKELETON_COLOUR: tuple[float, float, float, float] = (1.0, 0.55, 0.0, 1.0)
+
+#: Debug colours for the segmentation-cleanup toggle: unchanged voxels,
+#: voxels cleanup added (reconnect/smooth), voxels cleanup removed
+#: (smooth/remove-small) -- three colours, not one "changed" colour, so a
+#: user can tell an over-eager reconnect bridge (green) apart from a
+#: cleanup step that deleted real vessel (red) at a glance.
+SEGMENTATION_CLEANUP_UNCHANGED_COLOUR: tuple[float, float, float, float] = (0.78, 0.78, 0.82, 0.35)
+SEGMENTATION_CLEANUP_ADDED_COLOUR: tuple[float, float, float, float] = (0.20, 0.85, 0.25, 1.0)
+SEGMENTATION_CLEANUP_REMOVED_COLOUR: tuple[float, float, float, float] = (0.90, 0.20, 0.20, 1.0)
+
+
+def _thick_thin_skeleton_labels(skeleton: np.ndarray, thick_vessel_mask: np.ndarray) -> np.ndarray:
+    """Skeleton voxels as three labels: 0 background, 1 thin, 2 thick.
+
+    A voxel is "thick" when it is both skeleton and inside the fat catchment
+    ``skeletonize_thickness_gated`` built the tree from; every other skeleton
+    voxel is "thin". Pure and shape-agnostic -- the two inputs just need to
+    broadcast together.
+    """
+    def labels_for(skel, thick):
+        skel = np.asarray(skel, dtype=bool)
+        thick = np.asarray(thick, dtype=bool)
+        labels = np.zeros(skel.shape, dtype=np.uint8)
+        labels[skel] = 1
+        labels[skel & thick] = 2
+        return labels
+
+    if _on_disk(skeleton) and np.shape(thick_vessel_mask) == np.shape(skeleton):
+        return _labels_by_slab(labels_for, skeleton, thick_vessel_mask)
+    return labels_for(skeleton, thick_vessel_mask)
+
+
+def _on_disk(*volumes) -> bool:
+    """A disk-backed (low-RAM option) volume: its display labels are built a
+    slab at a time into a new disk-backed array, with the same values."""
+    return any(isinstance(v, np.memmap) for v in volumes)
+
+
+def _labels_by_slab(labels_for, *volumes) -> np.ndarray:
+    from haemolynx.preprocessing.memmap_support import (
+        LOW_MEMORY_BLOCK_VOXELS,
+        delete_when_unmapped,
+        new_memmap_array,
+    )
+
+    shape = volumes[0].shape
+    # Made only to be displayed: the file goes when the layer drops it.
+    out = delete_when_unmapped(new_memmap_array(shape, np.uint8))
+    step = max(1, LOW_MEMORY_BLOCK_VOXELS // max(1, int(np.prod(shape[1:], dtype=np.int64))))
+    for start in range(0, shape[0], step):
+        out[start:start + step] = labels_for(*(v[start:start + step] for v in volumes))
+    return out
+
+
+def _as_uint8_layer_data(volume: np.ndarray) -> np.ndarray:
+    """``volume.astype(np.uint8)`` -- an independent copy a Labels layer can be
+    painted on -- written a slab at a time to disk for a disk-backed volume."""
+    if _on_disk(volume):
+        return _labels_by_slab(lambda slab: np.asarray(slab).astype(np.uint8), volume)
+    return volume.astype(np.uint8)
 
 
 def _is_ours(layer) -> bool:
     return bool(getattr(layer, "metadata", {}).get(OURS))
 
 
+def _is_vessel_vectors_layer(layer) -> bool:
+    """Whether *layer* is the HaemoLynx vessels Vectors source of truth."""
+    if not _is_ours(layer):
+        return False
+    if layer.__class__.__name__ != "Vectors":
+        return False
+    name = str(getattr(layer, "name", ""))
+    return name == VESSELS or name.startswith(f"{VESSELS} ")
+
+
+def _is_vessel_tubes_layer(layer) -> bool:
+    """Whether *layer* is the HaemoLynx vessel-tube Surface."""
+    if not _is_ours(layer):
+        return False
+    name = str(getattr(layer, "name", ""))
+    if name == VESSEL_TUBES or name.startswith(f"{VESSEL_TUBES} "):
+        return True
+    tag = getattr(layer, "metadata", {}).get(OURS) or {}
+    return tag.get("role") == "vessel_tubes"
+
+
+def _vector_edge_rgba(layer) -> np.ndarray:
+    """Per-segment RGBA currently drawn on a Vectors layer."""
+    n = len(np.asarray(getattr(layer, "data", ()), dtype=float))
+    colours = np.asarray(getattr(layer, "edge_color", ()), dtype=float)
+    if colours.ndim == 2 and len(colours) == n and colours.shape[1] >= 3:
+        if colours.shape[1] == 3:
+            return np.concatenate(
+                [colours, np.ones((n, 1), dtype=float)], axis=1
+            )
+        return np.asarray(colours[:, :4], dtype=float)
+    out = np.ones((n, 4), dtype=float)
+    out[:, :3] = UNCOLOURED_RGBA[:3]
+    return out
+
+
+def _retint_vessel_tubes(viewer, vessels) -> None:
+    """Copy Vectors edge colours onto the matching tube Surface vertices."""
+    if viewer is None or _vessel_draw_mode != VESSEL_DRAW_TUBES:
+        return
+    name = vessel_tubes_layer_name(vessels.name)
+    if name not in getattr(viewer, "layers", {}):
+        return
+    tubes = viewer.layers[name]
+    if not _is_vessel_tubes_layer(tubes):
+        return
+    tag = getattr(tubes, "metadata", {}).get(OURS) or {}
+    segment_index = tag.get("segment_index")
+    if segment_index is None:
+        return
+    try:
+        _set_tube_colours(
+            viewer, tubes,
+            colors_for_tube_vertices(np.asarray(segment_index), _vector_edge_rgba(vessels)),
+        )
+        _mirror_colour_scale(vessels, tubes)
+    except Exception:  # noqa: BLE001 - a missed retint must not break a run
+        logger.debug(
+            "could not retint vessel tubes for %s", vessels.name, exc_info=True
+        )
+
+
+def _mirror_colour_scale(vessels, tubes) -> bool:
+    """Give the tube Surface the vessels' colormap and range.
+
+    The tubes are drawn from per-vertex colours, which a Surface draws as they
+    are, so this changes nothing on screen. It is for the canvas colour bar:
+    napari draws a layer's bar only while that layer is visible, and in Tubes
+    mode the vessels layer is hidden. The tubes' own bar reads their colormap
+    and range, so with these copied it shows the scale the tubes were coloured
+    by. Returns whether the vessels have a continuous scale to copy.
+    """
+    if getattr(vessels, "edge_color_mode", None) != "colormap":
+        return False
+    try:
+        colormap = vessels.edge_colormap
+        low, high = (float(v) for v in vessels.edge_contrast_limits)
+    except (AttributeError, TypeError, ValueError):
+        return False
+    if not (np.isfinite(low) and np.isfinite(high) and high > low):
+        return False
+    try:
+        if getattr(tubes.colormap, "name", None) != getattr(colormap, "name", None):
+            tubes.colormap = colormap
+        if tuple(float(v) for v in tubes.contrast_limits) != (low, high):
+            tubes.contrast_limits = (low, high)
+    except (AttributeError, TypeError, ValueError, KeyError):
+        logger.debug("could not copy the colour scale onto %s", tubes.name, exc_info=True)
+        return False
+    return True
+
+
+def _network_vessels_layers(viewer) -> list:
+    """Every network's vessels Vectors layer: the baseline's and each
+    perturbation's."""
+    from haemolynx.gui.layer_sets import layer_set
+
+    layers = getattr(viewer, "layers", None) if viewer is not None else None
+    if layers is None:
+        return []
+    found = []
+    for key in (None, *_perturbation_sets_in(viewer)):
+        name = layer_set(key)["vessels"]
+        for candidate in (name, f"{name} (HaemoLynx)"):
+            if (candidate in layers and _is_ours(layers[candidate])
+                    and layers[candidate].__class__.__name__ == "Vectors"):
+                found.append(layers[candidate])
+    return found
+
+
+def _set_canvas_colour_bar(viewer, wanted: bool) -> None:
+    """Ask for the shown network's colour bar in the canvas, or not."""
+    if viewer is None:
+        return
+    viewer._haemolynx_canvas_colour_bar = bool(wanted)
+    _sync_canvas_colour_bar(viewer)
+
+
+def _sync_canvas_colour_bar(viewer) -> None:
+    """Put the canvas colour bar on the layer that draws the shown network.
+
+    One bar, for the network "Showing" names: on its vessels layer in Lines
+    mode, on its tubes in Tubes mode (the vessels layer is hidden then, and
+    napari draws no bar for a hidden layer). Every other network's bar goes,
+    so swapping baseline and perturbation moves the bar rather than stacking
+    two. A colouring with no continuous scale -- branch order, the RGB
+    direction -- has none to show.
+    """
+    if viewer is None:
+        return
+    wanted = bool(getattr(viewer, "_haemolynx_canvas_colour_bar", False))
+    shown = _shown_vessels_layer(viewer)
+    layers = viewer.layers
+    tubes = None
+    if shown is not None:
+        name = vessel_tubes_layer_name(shown.name)
+        if name in layers and _is_vessel_tubes_layer(layers[name]):
+            tubes = layers[name]
+    tubes_on = _vessel_draw_mode == VESSEL_DRAW_TUBES
+    continuous = (
+        shown is not None
+        and getattr(shown, "edge_color_mode", None) == "colormap"
+        and _active_column(shown) not in {None, "", "none", FLOW_DIR_RGB_COLUMN}
+    )
+    try:
+        for vessels in _network_vessels_layers(viewer):
+            on = wanted and continuous and vessels is shown
+            overlay = _viewer_colorbar(vessels, create=on)
+            if overlay is not None and bool(overlay.visible) != on:
+                overlay.visible = on
+        for layer in list(layers):
+            if not _is_vessel_tubes_layer(layer):
+                continue
+            on = bool(wanted and continuous and tubes_on and layer is tubes
+                      and _mirror_colour_scale(shown, layer))
+            bar = getattr(layer, "_overlays", {}).get("colorbar")
+            if bar is not None and bool(bar.visible) != on:
+                bar.visible = on
+    except Exception:  # noqa: BLE001 - private napari ground; never break a run
+        logger.debug("could not sync the canvas colour bar", exc_info=True)
+
+
+def _set_tube_colours(viewer, tubes, colours) -> None:
+    """Recolour a tube Surface without rebuilding its mesh on screen.
+
+    napari answers any ``vertex_colors`` change with its whole data path,
+    which has vispy recompute the normals of every vertex: 0.4-0.8 s on a
+    network of 1,500 vessels, several times a stage. Only the colours changed,
+    so in 3D they go straight to the vispy mesh, whose normals stay cached;
+    the layer still records them, for its next full refresh. Anything else
+    -- 2D, a different vertex count, no vispy visual -- takes napari's path.
+    """
+    colours = np.asarray(colours, dtype=float)
+    qt_viewer = getattr(getattr(viewer, "window", None), "_qt_viewer", None)
+    mapping = getattr(qt_viewer, "layer_to_visual", None) if qt_viewer is not None else None
+    node = getattr(mapping.get(tubes) if mapping else None, "node", None)
+    mesh = getattr(node, "mesh_data", None)
+    blocker = getattr(tubes, "_block_refresh", None)
+    if (
+        mesh is not None
+        and callable(blocker)
+        and viewer.dims.ndisplay == 3
+        and not mesh.is_empty()
+        and colours.ndim == 2
+        and len(colours) == mesh.n_vertices == len(tubes.vertices)
+    ):
+        with blocker():
+            tubes.vertex_colors = colours
+        mesh.set_vertex_colors(colours.astype(np.float32))
+        node.mesh_data_changed()
+        return
+    tubes.vertex_colors = colours
+
+
+def _maybe_retint_vessel_tubes(layer) -> None:
+    """Retint tubes after a Vectors colouring, even if napari events are quiet."""
+    if not _is_vessel_vectors_layer(layer):
+        return
+    viewer = getattr(layer, "_haemolynx_viewer", None)
+    if viewer is None:
+        viewer = getattr(layer, "viewer", None)
+    if viewer is not None:
+        _retint_vessel_tubes(viewer, layer)
+
+
+def _ensure_tube_colour_follow(viewer, vessels) -> None:
+    """Retint tubes whenever the Vectors edge colours change."""
+    vessels._haemolynx_viewer = viewer
+    if getattr(vessels, "_haemolynx_follow_tubes", False):
+        return
+    events = getattr(vessels, "events", None)
+    signal = getattr(events, "edge_color", None) if events else None
+    if signal is None:
+        return
+
+    def _follow(*_args) -> None:
+        _retint_vessel_tubes(viewer, vessels)
+
+    signal.connect(_follow)
+    vessels._haemolynx_follow_tubes = True
+
+
+def _set_tube_mesh(layer, vertices, faces, colours) -> None:
+    """Write vertices, faces and colours without a half-updated vispy mesh.
+
+    Napari refreshes the Surface visual on each assignment. Expanding or
+    shrinking the mesh while ``vertex_colors`` still has the old length
+    raises in vispy (``incorrect number of colors``). Block refresh until
+    both agree, then draw once.
+    """
+    colours = np.asarray(colours, dtype=float)
+    if colours.ndim == 1:
+        colours = np.empty((0, 4), dtype=float)
+    blocker = getattr(layer, "_block_refresh", None)
+    if callable(blocker):
+        with blocker():
+            layer.data = (vertices, faces)
+            layer.vertex_colors = colours
+    else:
+        # No refresh-block guard on this napari build: the two assignments
+        # below can each trigger a vispy redraw before the other lands, and a
+        # mismatched vertex/vertex_colors length raises "incorrect number of
+        # colors" from that redraw -- outside this function's call stack, so
+        # nothing here can catch it. Surface the gap instead of risking a
+        # silent, hard-to-reproduce crash from an unguarded build.
+        logger.warning(
+            "Surface layer %r has no _block_refresh; tube mesh updates are "
+            "not atomic on this napari build and may crash on resize.",
+            getattr(layer, "name", layer),
+        )
+        layer.data = (vertices, faces)
+        layer.vertex_colors = colours
+    if getattr(layer, "visible", False):
+        refresh = getattr(layer, "refresh", None)
+        if callable(refresh):
+            refresh()
+
+
+def _hide_tube_surface(layer) -> None:
+    """Stop drawing a tube Surface, including vispy leftovers while hidden."""
+    if layer is None:
+        return
+    try:
+        _set_tube_mesh(
+            layer,
+            np.empty((0, 3), dtype=float),
+            np.empty((0, 3), dtype=np.intp),
+            np.empty((0, 4), dtype=float),
+        )
+    except Exception:  # noqa: BLE001 - still hide even if the mesh cannot clear
+        logger.debug("could not clear vessel tube mesh", exc_info=True)
+    layer.visible = False
+
+
+def _request_canvas_redraw(viewer) -> None:
+    """Ask the vispy canvas to repaint after a vessels drawing-mode change."""
+    window = getattr(viewer, "window", None)
+    qt_viewer = getattr(window, "_qt_viewer", None) if window else None
+    canvas = getattr(qt_viewer, "canvas", None)
+    native = getattr(canvas, "native", None)
+    update = getattr(native, "update", None)
+    if callable(update):
+        update()
+
+
+def _make_surfaces_follow_the_dims_order() -> None:
+    """Draw a 3D Surface in the displayed axis order, as napari 0.8 did.
+
+    napari 0.9's Surface slicing hands back the stored vertices unchanged when
+    every axis is on screen, ignoring ``dims.displayed``, while Image and
+    Vectors layers permute theirs. So once the dims order is anything but
+    ``(0, 1, 2)`` in 3D -- a 2D XZ/YZ snap, napari's roll or transpose button,
+    all of which outlive a cleared viewer -- the tubes are drawn with their
+    axes swapped against the image and the vessel lines they are built from.
+    Patched once, and only when that very unpermuted array comes back, so a
+    napari that fixes this upstream is left alone.
+    """
+    try:
+        from napari.layers.surface._slice import _SurfaceSliceRequest
+    except ImportError:  # napari < 0.9 slices a Surface in displayed order itself
+        return
+    original = _SurfaceSliceRequest.__call__
+    if getattr(original, "_haemolynx_follows_dims_order", False):
+        return
+
+    def __call__(self):
+        response = original(self)
+        displayed = list(self.slice_input.displayed)
+        vertices = response.vertices
+        if (
+            len(self.slice_input.not_displayed)
+            or displayed == sorted(displayed)
+            or vertices is not self.data[0]
+            or np.ndim(vertices) != 2
+            or np.shape(vertices)[1] != len(displayed)
+        ):
+            return response
+        return replace(response, vertices=np.asarray(vertices)[:, displayed])
+
+    __call__._haemolynx_follows_dims_order = True
+    _SurfaceSliceRequest.__call__ = __call__
+
+
+def _tube_mesh_key(vessels) -> str:
+    """A fingerprint of everything a vessels layer's tube mesh is built from.
+
+    Its geometry, the three columns :func:`vessel_tube_mesh` reads, the
+    quality level, the diameter choice, edge width and scale. Colours are not
+    in it: those change without the mesh changing.
+    """
+    import hashlib
+
+    from haemolynx.graph import IS_ZERO_RESISTANCE
+
+    digest = hashlib.blake2b(digest_size=16)
+    data = np.ascontiguousarray(np.asarray(getattr(vessels, "data", ()), dtype=float))
+    digest.update(repr(data.shape).encode())
+    digest.update(data.tobytes())
+    features = getattr(vessels, "features", None)
+    for column in ("diameter_um", "edge_index", IS_ZERO_RESISTANCE):
+        digest.update(column.encode())
+        if features is not None and column in features:
+            digest.update(repr(np.asarray(features[column]).tolist()).encode())
+    digest.update(repr((
+        _tube_quality,
+        _tube_diameter,
+        _tube_uniform_diameter_um if _tube_diameter == TUBE_DIAMETER_UNIFORM else None,
+        np.asarray(getattr(vessels, "edge_width", 0.0)).tolist(),
+        tuple(float(v) for v in getattr(vessels, "scale", (1.0, 1.0, 1.0))),
+    )).encode())
+    return digest.hexdigest()
+
+
+def _sync_one_vessel_tubes(viewer, vessels, tubes_on: bool) -> str:
+    """Show tubes or line ribbons for one vessels Vectors layer; the name of
+    its tubes layer, whether or not it has one yet."""
+    _make_surfaces_follow_the_dims_order()
+    name = vessel_tubes_layer_name(vessels.name)
+    existing = viewer.layers[name] if name in viewer.layers else None
+    if existing is not None and not _is_ours(existing):
+        name = f"{name} (HaemoLynx)"
+        existing = viewer.layers[name] if name in viewer.layers else None
+
+    if not tubes_on:
+        vessels.visible = True
+        _hide_tube_surface(existing)
+        return name
+
+    key = _tube_mesh_key(vessels)
+    if existing is not None and existing.__class__.__name__.lower() == "surface":
+        held = getattr(existing, "metadata", {}).get(OURS) or {}
+        segment_index = held.get("segment_index")
+        if (
+            held.get("mesh_key") == key
+            and segment_index is not None
+            and len(np.asarray(segment_index)) == len(existing.vertices) > 0
+        ):
+            # The vessels are as the tubes were built from; most stages and
+            # every Z-depth or layer change land here. Rebuilding the mesh
+            # took about a second for 1,500 vessels, so only the colours go.
+            _set_tube_colours(viewer, existing, colors_for_tube_vertices(
+                np.asarray(segment_index), _vector_edge_rgba(vessels)))
+            existing.visible = True
+            vessels.visible = False
+            _ensure_tube_colour_follow(viewer, vessels)
+            return name
+
+    vertices, faces, segment_index = vessel_tube_mesh(
+        getattr(vessels, "data", ()),
+        getattr(vessels, "features", None),
+        quality=_tube_quality,
+        edge_width=getattr(vessels, "edge_width", None),
+        diameter=_tube_diameter,
+        uniform_diameter_um=_tube_uniform_diameter_um,
+    )
+    if len(vertices) == 0:
+        vessels.visible = False
+        _hide_tube_surface(existing)
+        return name
+    colours = colors_for_tube_vertices(segment_index, _vector_edge_rgba(vessels))
+    ours = {
+        "kind": "surface",
+        "role": "vessel_tubes",
+        "segment_index": np.asarray(segment_index),
+        "mesh_key": key,
+    }
+    scale = tuple(float(v) for v in getattr(vessels, "scale", (1.0, 1.0, 1.0)))
+    if existing is not None and existing.__class__.__name__.lower() == "surface":
+        existing.scale = scale
+        extra = dict(getattr(existing, "metadata", {}) or {})
+        tag = dict(extra.get(OURS) or {})
+        tag.update(ours)
+        extra[OURS] = tag
+        existing.metadata = extra
+        _set_tube_mesh(existing, vertices, faces, colours)
+        existing.visible = True
+        tubes_layer = existing
+    else:
+        if existing is not None:
+            _process_pending_qt_events()
+            viewer.layers.remove(existing)
+            _process_pending_qt_events()
+        tubes_layer = viewer.add_surface(
+            (vertices, faces),
+            name=name,
+            scale=scale,
+            vertex_colors=colours,
+            shading=TUBE_SHADING,
+            blending="translucent",
+            metadata={OURS: ours},
+        )
+    vessels.visible = False
+    _ensure_tube_colour_follow(viewer, vessels)
+    for attach_control in (_attach_tube_quality_slider, _attach_tube_diameter_choice):
+        try:
+            attach_control(viewer, tubes_layer)
+        except Exception:  # noqa: BLE001 - a missing control must not stop drawing
+            logger.debug("could not run %s", attach_control.__name__, exc_info=True)
+    return name
+
+
+def _tube_quality_sliders(viewer) -> list:
+    """Every tube-quality slider on the tubes layers' controls."""
+    sliders = []
+    for layer in list(getattr(viewer, "layers", ())):
+        if not _is_vessel_tubes_layer(layer):
+            continue
+        controls = _layer_controls(viewer, layer)
+        slider = getattr(controls, "_haemolynx_tube_quality", None) if controls else None
+        if slider is not None:
+            sliders.append(slider)
+    return sliders
+
+
+def set_tube_quality(viewer, quality: int) -> None:
+    """Redraw every tube at *quality* (see ``TUBE_QUALITY_SIDES``).
+
+    Every tubes layer's slider is moved to match, since the level is the
+    session's, not one layer's. The shading is left as the user has it.
+    """
+    global _tube_quality
+    _tube_quality = clamp_tube_quality(quality)
+    for slider in _tube_quality_sliders(viewer):
+        if slider.value() != _tube_quality:
+            slider.blockSignals(True)
+            slider.setValue(_tube_quality)
+            slider.blockSignals(False)
+    _sync_vessel_tubes(viewer)
+
+
+def _attach_tube_quality_slider(viewer, layer) -> bool:
+    """Put the "Render quality" slider on a tubes layer's controls, once.
+
+    It lives on the layer's own controls, so napari shows it only while a
+    tubes layer is selected. Each step right draws the same tubes with more
+    sides round them, rounder and costlier to draw. It acts on release, not
+    while dragging: a big network takes a moment to rebuild.
+    """
+    from qtpy.QtCore import Qt
+    from qtpy.QtWidgets import QLabel, QSlider
+
+    from haemolynx.gui.chrome_tooltips import TUBE_QUALITY_TOOLTIP
+
+    controls = _layer_controls(viewer, layer)
+    if controls is None:
+        return False
+    slider = getattr(controls, "_haemolynx_tube_quality", None)
+    if slider is not None:
+        if slider.value() != _tube_quality:
+            slider.blockSignals(True)
+            slider.setValue(_tube_quality)
+            slider.blockSignals(False)
+        return True
+    layout = controls.layout()
+    if not hasattr(layout, "addRow"):
+        return False
+    slider = QSlider(Qt.Orientation.Horizontal)
+    slider.setObjectName("haemolynx_tube_quality")
+    slider.setRange(0, len(TUBE_QUALITY_SIDES) - 1)
+    slider.setSingleStep(1)
+    slider.setPageStep(1)
+    slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+    slider.setTickInterval(1)
+    slider.setTracking(False)
+    slider.setValue(_tube_quality)
+    slider.setToolTip(TUBE_QUALITY_TOOLTIP)
+    label = QLabel("render quality:")
+    label.setToolTip(TUBE_QUALITY_TOOLTIP)
+    slider.valueChanged.connect(lambda value: set_tube_quality(viewer, value))
+    layout.addRow(label, slider)
+    controls._haemolynx_tube_quality = slider
+    return True
+
+
+def _tube_diameter_controls(viewer) -> list:
+    """The controls of every tubes layer that carry the tube-diameter choice."""
+    found = []
+    for layer in list(getattr(viewer, "layers", ())):
+        if not _is_vessel_tubes_layer(layer):
+            continue
+        controls = _layer_controls(viewer, layer)
+        if getattr(controls, "_haemolynx_tube_diameter", None) is not None:
+            found.append(controls)
+    return found
+
+
+def _show_uniform_width(box) -> None:
+    """Put a uniform-width box on the session's width without it answering."""
+    if box.value() != _tube_uniform_diameter_um:
+        with _blocked(box):
+            box.setValue(_tube_uniform_diameter_um)
+
+
+def _show_tube_diameter(controls) -> None:
+    """Put a tubes layer's diameter choice and width box on the session's,
+    without either answering; the width only while the choice is Uniform."""
+    combo = controls._haemolynx_tube_diameter
+    index = combo.findData(_tube_diameter)
+    if index >= 0 and combo.currentIndex() != index:
+        with _blocked(combo):
+            combo.setCurrentIndex(index)
+    box = getattr(controls, "_haemolynx_tube_uniform_width", None)
+    if box is not None:
+        _show_uniform_width(box)
+        uniform = _tube_diameter == TUBE_DIAMETER_UNIFORM
+        box.setVisible(uniform)
+        controls._haemolynx_tube_uniform_width_label.setVisible(uniform)
+
+
+def _uniform_width_box(object_name: str):
+    """A µm box for the uniform tube width. It applies on Enter, on leaving
+    it or on an arrow step, not on every key: a big network takes a moment
+    to redraw, and typing 40 would draw it 4 µm wide on the way."""
+    from qtpy.QtWidgets import QDoubleSpinBox
+
+    from haemolynx.gui.chrome_tooltips import TUBE_UNIFORM_WIDTH_TOOLTIP
+
+    box = QDoubleSpinBox()
+    box.setObjectName(object_name)
+    box.setRange(*UNIFORM_TUBE_DIAMETER_RANGE_UM)
+    box.setDecimals(1)
+    box.setSingleStep(1.0)
+    box.setSuffix(" µm")
+    box.setKeyboardTracking(False)
+    box.setValue(_tube_uniform_diameter_um)
+    box.setToolTip(TUBE_UNIFORM_WIDTH_TOOLTIP)
+    return box
+
+
+def _show_tube_diameter_everywhere(viewer) -> None:
+    """Move every tube-diameter control to the session's choice and width,
+    the view panel's included, and redraw the tubes."""
+    for controls in _tube_diameter_controls(viewer):
+        _show_tube_diameter(controls)
+    refresh = getattr(viewer, "_haemolynx_refresh_tube_diameter", None)
+    if callable(refresh):
+        refresh()
+    _sync_vessel_tubes(viewer)
+
+
+def set_tube_diameter(viewer, diameter: str) -> None:
+    """Redraw every tube at its vessel's own diameter, or every one at the
+    same width (see ``TUBE_DIAMETERS``).
+
+    The choice is the session's, as the quality is: every tubes layer's
+    combo and the view panel's menu are moved to match. Only the drawing
+    changes; the vessels keep their diameters.
+    """
+    global _tube_diameter
+    _tube_diameter = valid_tube_diameter(diameter)
+    _show_tube_diameter_everywhere(viewer)
+
+
+def set_tube_uniform_diameter(viewer, diameter_um: float) -> None:
+    """Draw every tube *diameter_um* across while the choice is Uniform,
+    held to ``UNIFORM_TUBE_DIAMETER_RANGE_UM`` and to the box's one decimal.
+    The session's, like the choice."""
+    global _tube_uniform_diameter_um
+    _tube_uniform_diameter_um = round(valid_uniform_tube_diameter_um(diameter_um), 1)
+    _show_tube_diameter_everywhere(viewer)
+
+
+def _attach_tube_diameter_choice(viewer, layer) -> bool:
+    """Put the "tube diameter" choice and its uniform width on a tubes
+    layer's controls, once, under its render quality: the same as the view
+    panel's."""
+    from qtpy.QtWidgets import QComboBox, QLabel
+
+    from haemolynx.gui.chrome_tooltips import (
+        TUBE_DIAMETER_TOOLTIP,
+        TUBE_UNIFORM_WIDTH_TOOLTIP,
+    )
+
+    controls = _layer_controls(viewer, layer)
+    if controls is None:
+        return False
+    if getattr(controls, "_haemolynx_tube_diameter", None) is not None:
+        _show_tube_diameter(controls)
+        return True
+    layout = controls.layout()
+    if not hasattr(layout, "addRow"):
+        return False
+    combo = QComboBox()
+    combo.setObjectName("haemolynx_tube_diameter")
+    for key in TUBE_DIAMETERS:
+        combo.addItem(TUBE_DIAMETER_LABELS[key], key)
+    combo.setToolTip(TUBE_DIAMETER_TOOLTIP)
+    label = QLabel("tube diameter:")
+    label.setToolTip(TUBE_DIAMETER_TOOLTIP)
+    combo.currentIndexChanged.connect(
+        lambda index: set_tube_diameter(viewer, combo.itemData(index))
+    )
+    layout.addRow(label, combo)
+    box = _uniform_width_box("haemolynx_tube_uniform_width")
+    width_label = QLabel("uniform width:")
+    width_label.setToolTip(TUBE_UNIFORM_WIDTH_TOOLTIP)
+    box.valueChanged.connect(lambda value: set_tube_uniform_diameter(viewer, value))
+    layout.addRow(width_label, box)
+    controls._haemolynx_tube_diameter = combo
+    controls._haemolynx_tube_uniform_width = box
+    controls._haemolynx_tube_uniform_width_label = width_label
+    _show_tube_diameter(controls)
+    return True
+
+
+def _option_holds(current: Any, value: Any) -> bool:
+    """Whether a layer property already reads *value*: a name (a blending or
+    a colour, which napari hands back as RGBA rows) or numbers."""
+    if isinstance(value, str) and str(current) == value:
+        return True
+    try:
+        held = np.asarray(current, dtype=float)
+        if isinstance(value, str):
+            from napari.utils.colormaps.standardize_color import transform_color
+
+            value = transform_color(value)[0]
+        return held.size == 0 or bool(np.allclose(held, np.asarray(value, dtype=float)))
+    except (TypeError, ValueError):
+        return False
+
+
+def _draw_on_top(viewer) -> None:
+    """Draw the ``drawn_on_top`` layers over everything else.
+
+    Without a depth test, rimmed and last in the layer list, the terminal
+    nodes last of all. Their specs ask for the first two, but a layer from a
+    run saved before they did, or one the Z-depth filter rebuilt, comes back
+    without them, and a layer added after one -- the tubes, always -- paints
+    over it.
+    """
+    layers = viewer.layers
+    order = {name: index for index, name in enumerate(DRAWN_ON_TOP)}
+    on_top = sorted(
+        (layer for layer in layers if drawn_on_top(layer.name) and _is_ours(layer)),
+        key=lambda layer: order.get(layer.name, order[FLOW_DIRECTION]),
+    )
+    if list(layers)[len(layers) - len(on_top):] != on_top:
+        for layer in on_top:
+            layers.move(layers.index(layer), len(layers))
+    for layer in on_top:
+        for key, value in ON_TOP_POINTS_OPTIONS.items():
+            if hasattr(layer, key) and not _option_holds(getattr(layer, key), value):
+                setattr(layer, key, value)
+
+
+def _sync_vessel_tubes(viewer) -> None:
+    """Rebuild or hide tube Surfaces to match the session drawing mode.
+
+    Only for the network the view panel is showing (see
+    :func:`show_layer_set`): the baseline's vessels normally, a
+    perturbation's once it is chosen -- and then every other network's tubes
+    go, and its vessels are left as the swap left them, hidden.
+    """
+    if viewer is None:
+        return
+    tubes_on = _vessel_draw_mode == VESSEL_DRAW_TUBES
+    shown = _layer_set_shown(viewer)
+    seen_tube_names: set[str] = set()
+    try:
+        for layer in list(viewer.layers):
+            if shown is None:
+                if not _is_vessel_vectors_layer(layer):
+                    continue
+            elif not (_is_ours(layer) and layer.__class__.__name__ == "Vectors"
+                      and _layer_set_of(layer) == shown
+                      and layer.name == perturbation_layer_names(shown)[0]):
+                continue
+            seen_tube_names.add(_sync_one_vessel_tubes(viewer, layer, tubes_on))
+        if not tubes_on or shown is not None or _perturbation_sets_in(viewer):
+            for layer in list(viewer.layers):
+                if _is_vessel_tubes_layer(layer) and layer.name not in seen_tube_names:
+                    _hide_tube_surface(layer)
+        # After the tubes: a new tubes layer lands last, over everything.
+        _draw_on_top(viewer)
+        _sync_canvas_colour_bar(viewer)
+        _request_canvas_redraw(viewer)
+    except Exception:  # noqa: BLE001 - drawing must not stop a run
+        logger.exception("could not sync vessel tubes")
+
+
+def _store_z_filter_cache(
+    layer,
+    data: Any = None,
+    features: Mapping[str, np.ndarray] | None = None,
+    *,
+    segment_owner: Any = None,
+) -> None:
+    """Remember unfiltered graph geometry for the view-only Z depth filter."""
+    kind = layer.__class__.__name__.lower()
+    if not is_z_depth_filtered_layer(layer.name, kind):
+        return
+    if data is None:
+        data = layer.data
+    if features is None:
+        features = dict(getattr(layer, "features", {}))
+    tag = dict(getattr(layer, "metadata", {}).get(OURS) or {})
+    cache: dict[str, Any] = {
+        "data": np.asarray(data),
+        "features": {name: np.asarray(values) for name, values in features.items()},
+    }
+    owner = segment_owner
+    if owner is None:
+        owner = tag.get("segment_owner")
+    if owner is not None:
+        cache["segment_owner"] = np.asarray(owner)
+    tag["z_filter_full"] = cache
+    # Fresh, whole data: no Z window is applied to it yet.
+    tag["z_filter_window"] = None
+    metadata = dict(getattr(layer, "metadata", {}) or {})
+    metadata[OURS] = tag
+    layer.metadata = metadata
+
+
+def _note_z_filter_window(layer, window) -> None:
+    """Record the Z window *layer* now shows; None when it shows everything."""
+    tag = dict(getattr(layer, "metadata", {}).get(OURS) or {})
+    tag["z_filter_window"] = window
+    metadata = dict(getattr(layer, "metadata", {}) or {})
+    metadata[OURS] = tag
+    layer.metadata = metadata
+
+
+def _uniform_colour(colours: Any) -> np.ndarray | None:
+    """The one colour every row shares, or None when rows differ (or none)."""
+    if colours is None:
+        return None
+    rows = np.asarray(colours)
+    if rows.ndim == 1:
+        return rows
+    if rows.ndim != 2 or len(rows) == 0:
+        return None
+    return rows[0] if np.all(rows == rows[0]) else None
+
+
+def _set_z_filtered_layer_data(
+    viewer,
+    layer,
+    kind: str,
+    data: Any,
+    features: Mapping[str, np.ndarray],
+    segment_owner: Any,
+):
+    """Write filtered geometry; recreate when shrinking avoids stale Vectors draw.
+
+    Returns the layer the data ended up on (a new one when recreated).
+
+    The recreate path below removes the old layer and immediately adds its
+    replacement -- the same ``viewer.layers.remove`` that
+    ``_clear_our_layers`` found could crash the process outright (a native
+    access violation, not a catchable Python exception): vispy tears down
+    that layer's GL resources synchronously, and queued-but-unflushed GL
+    work from recent interaction racing with that teardown is what
+    crashed. This is the Z-depth slider's own version of the same
+    operation -- shrinking the visible vessel count recreates the Vectors/
+    Points layer on essentially every drag -- so it gets the same
+    before-and-between event-queue drain.
+    """
+    old_count = len(np.asarray(getattr(layer, "data", ())))
+    new_count = len(np.asarray(data))
+    adder = getattr(viewer, f"add_{kind}", None)
+    if kind in {"vectors", "points"} and new_count < old_count and adder is not None:
+        name = layer.name
+        visible = layer.visible
+        scale = getattr(layer, "scale", None)
+        metadata = dict(getattr(layer, "metadata", {}) or {})
+        if segment_owner is not None:
+            ours = dict(metadata.get(OURS) or {})
+            ours["segment_owner"] = np.asarray(segment_owner)
+            metadata[OURS] = ours
+        add_kwargs: dict[str, Any] = {
+            "name": name,
+            "visible": visible,
+            "metadata": metadata,
+        }
+        if scale is not None:
+            add_kwargs["scale"] = scale
+        if features:
+            add_kwargs["features"] = dict(features)
+        if kind == "vectors":
+            for key in ("vector_style", "edge_width", "length", "projection_mode"):
+                if hasattr(layer, key):
+                    add_kwargs[key] = getattr(layer, key)
+            colour_attr, colour = "edge_color", getattr(layer, "edge_color", None)
+        else:
+            for key in ("size", "shown", "symbol"):
+                if hasattr(layer, key):
+                    add_kwargs[key] = _uniform_points_property(
+                        getattr(layer, key), new_count
+                    )
+            if hasattr(layer, "projection_mode"):
+                add_kwargs["projection_mode"] = layer.projection_mode
+            colour_attr, colour = "face_color", getattr(layer, "face_color", None)
+        # Only a single flat colour carries over as-is. Per-row colours belong
+        # to the old rows -- the caller re-applies the colouring rule instead
+        # (see _colouring_rule); pasting them onto a shorter layer gave its
+        # vessels other vessels' colours.
+        colour = _uniform_colour(colour)
+        _process_pending_qt_events()
+        viewer.layers.remove(layer)
+        _process_pending_qt_events()
+        new_layer = adder(data, **add_kwargs)
+        if colour is not None:
+            setattr(new_layer, colour_attr, colour)
+        return new_layer
+    layer.data = data
+    if features:
+        layer.features = features
+    if kind == "points":
+        _sync_points_per_point_properties(layer, new_count)
+    if segment_owner is not None:
+        metadata = dict(getattr(layer, "metadata", {}) or {})
+        ours = dict(metadata.get(OURS) or {})
+        ours["segment_owner"] = np.asarray(segment_owner)
+        metadata[OURS] = ours
+        layer.metadata = metadata
+    return layer
+
+
+def _apply_z_filter(
+    viewer,
+    z_min: float,
+    z_max: float,
+    *,
+    z_extent: float | None = None,
+) -> None:
+    """Redraw graph Vectors/Points layers filtered to a physical Z band."""
+    full_range = z_window_is_full(z_min, z_max, z_extent)
+    changed = False
+    # A snapshot, not the live list: recreating a layer on shrink removes it
+    # and appends the replacement, which reindexes viewer.layers mid-loop and
+    # silently skips whichever layer landed on the vacated index.
+    for layer in list(viewer.layers):
+        if not _is_ours(layer):
+            continue
+        kind = layer.__class__.__name__.lower()
+        if not is_z_depth_filtered_layer(layer.name, kind):
+            continue
+        tag = getattr(layer, "metadata", {}).get(OURS) or {}
+        cache = tag.get("z_filter_full")
+        if cache is None:
+            _store_z_filter_cache(layer)
+            tag = getattr(layer, "metadata", {}).get(OURS) or {}
+            cache = tag.get("z_filter_full")
+        if cache is None:
+            continue
+        if full_range and tag.get("z_filter_window") is None:
+            # Already whole: new data clears the window, and so does a
+            # return to full range. Rewriting it anyway rebuilt the vessel
+            # tubes and every colouring after each stage, for nothing.
+            continue
+        if full_range:
+            data = cache["data"]
+            features = cache["features"]
+            segment_owner = cache.get("segment_owner")
+        elif kind == "vectors":
+            data, features, segment_owner = filter_vectors_by_z(
+                cache["data"],
+                cache["features"],
+                z_min,
+                z_max,
+                segment_owner=cache.get("segment_owner"),
+            )
+        else:
+            data, features = filter_points_by_z(
+                cache["data"], cache["features"], z_min, z_max
+            )
+            segment_owner = cache.get("segment_owner")
+        rule = _colouring_rule(layer)
+        layer = _set_z_filtered_layer_data(
+            viewer, layer, kind, data, features, segment_owner
+        )
+        _note_z_filter_window(layer, None if full_range else (float(z_min), float(z_max)))
+        changed = True
+        # Controls first: a recreated layer's new colour-range control takes
+        # its column as newly chosen and fits the range to the rows left in
+        # the window. The rule, applied after, puts back the full layer's.
+        try:
+            _attach_colour_scale(viewer, layer)
+        except Exception:  # noqa: BLE001 - a missing colour bar is survivable
+            logger.debug(
+                "could not reattach colour controls to %s",
+                getattr(layer, "name", "?"), exc_info=True,
+            )
+        _reapply_colouring(layer, rule, cache["features"])
+        # _set_z_filtered_layer_data recreates the layer (a new object) when
+        # the window shrinks -- the branch-hover mouse-move callback and the
+        # "branch tooltip metrics" checkbox panel were attached to the old
+        # one and do not carry over, so hovering the recreated layer would
+        # silently stop showing a tooltip until the next real pipeline run.
+        # _apply_layers attaches these the same way for a freshly-built
+        # layer; do it here too so a recreated layer keeps working, and a
+        # merely-updated one is a cheap no-op (_attach_branch_hover_controls
+        # only rebuilds the panel when it is missing). The same goes for the
+        # Colour by / colour map / colour range controls (attached above):
+        # napari builds fresh controls for the new layer, and without them a
+        # narrowed window left the vessels with no way to change their
+        # colouring at all.
+        try:
+            _refresh_layer_controls(viewer, layer)
+        except Exception:  # noqa: BLE001 - a stale readout is survivable
+            logger.debug(
+                "could not refresh colour controls on %s",
+                getattr(layer, "name", "?"), exc_info=True,
+            )
+        try:
+            _attach_branch_hover_controls(viewer, layer)
+        except Exception:  # noqa: BLE001 - missing hover panel is survivable
+            logger.debug(
+                "could not reattach branch-hover controls to %s",
+                getattr(layer, "name", "?"), exc_info=True,
+            )
+    if changed:
+        # The tubes follow the vessels they were drawn from; untouched
+        # vessels leave them as they are (each rebuild is about a second).
+        _sync_vessel_tubes(viewer)
+
+
+def _colouring_rule(layer) -> dict[str, Any] | None:
+    """How *layer* is coloured, as a rule another set of its rows can take.
+
+    Not the colours themselves: those are one RGBA row per item, computed for
+    the rows the layer held, and meaningless once the Z-depth filter changes
+    which rows it holds -- copying them across drew every remaining vessel in
+    some other vessel's flow colour.
+    """
+    column = _active_column(layer)
+    if not column:
+        return None
+    rule: dict[str, Any] = {"column": column}
+    if getattr(layer, f"{_colour_attribute(layer)}_mode", None) == "colormap":
+        rule["colormap"] = getattr(layer, _colormap_attribute(layer), None)
+        try:
+            low, high = getattr(layer, _contrast_limits_attribute(layer))
+            rule["limits"] = (float(low), float(high))
+        except (TypeError, ValueError, AttributeError):
+            pass
+    return rule
+
+
+def _reapply_colouring(layer, rule, full_features: Mapping[str, Any] | None) -> None:
+    """Colour *layer*'s current rows by *rule*, exactly as the full layer was.
+
+    The colour scale comes from the full layer, never from the rows left in
+    the Z window: a continuous column keeps its contrast limits and colormap,
+    and a text column its full set of labels, so a vessel is the same colour
+    whatever window it is seen through.
+    """
+    if rule is None:
+        return
+    column = rule["column"]
+    if column == FLOW_DIR_RGB_COLUMN:
+        _colour_layer(layer, column, "direct")
+        return
+    if _is_text_column(layer, column):
+        values = (full_features or {}).get(column)
+        if values is None:
+            values = layer.features[column]
+        _colour_layer(layer, column, "categorical", colour_cycle_for(values))
+        return
+    limits = rule.get("limits")
+    if limits is None and full_features is not None and column in full_features:
+        try:
+            full = np.asarray(full_features[column], dtype=float)
+        except (TypeError, ValueError):
+            full = np.asarray([], dtype=float)
+        finite = full[np.isfinite(full)]
+        if finite.size and float(finite.max()) > float(finite.min()):
+            limits = (float(finite.min()), float(finite.max()))
+    _colour_layer(layer, column, "continuous", (), limits)
+    colormap = rule.get("colormap")
+    if colormap is not None and getattr(layer, f"{_colour_attribute(layer)}_mode", None) == "colormap":
+        setattr(layer, _colormap_attribute(layer), colormap)
+        if limits is not None:
+            _apply_contrast_limits(layer, *limits)
+
+
+def _z_window_cache(layer) -> np.ndarray | None:
+    """The unclipped volume stored for the view-only Z depth filter, if any."""
+    metadata = getattr(layer, "metadata", None) or {}
+    tag = metadata.get(OURS) or {}
+    cached = tag.get("z_window_full")
+    if cached is None:
+        cached = metadata.get(Z_WINDOW_CACHE_KEY)
+    if cached is None:
+        return None
+    # As stored: np.asarray would turn a disk-backed (low-RAM option) volume
+    # into a plain ndarray view, and clip_volume_to_z tells the two apart by
+    # type to decide whether its clipped copy goes to disk or to RAM.
+    return cached if isinstance(cached, np.ndarray) else np.asarray(cached)
+
+
+def _store_z_window_cache(layer, data: Any = None) -> None:
+    """Remember the full volume so the Z depth filter can restore it.
+
+    A reference, not a copy: the Z filter never writes into it (a clipped
+    view is always a new array), and a copy doubled every volume's memory --
+    and, for a disk-backed volume, read the whole of it into RAM, which is
+    what the low-RAM option exists to avoid.
+    """
+    kind = layer.__class__.__name__.lower()
+    if not is_z_depth_windowed_volume_layer(kind):
+        return
+    if data is None:
+        data = layer.data
+    stored = data if isinstance(data, np.ndarray) else np.asarray(data)
+    metadata = dict(getattr(layer, "metadata", {}) or {})
+    if _is_ours(layer):
+        tag = dict(metadata.get(OURS) or {})
+        tag["z_window_full"] = stored
+        metadata[OURS] = tag
+    else:
+        metadata[Z_WINDOW_CACHE_KEY] = stored
+    layer.metadata = metadata
+
+
+def data_for_pipeline(layer) -> Any:
+    """The full volume a run should read, ignoring the view-only Z-depth filter."""
+    cached = _z_window_cache(layer)
+    return cached if cached is not None else getattr(layer, "data", None)
+
+
+def _canvas_screenshot(viewer) -> np.ndarray | None:
+    """RGB(A) array of the current napari canvas, or None if it cannot be taken."""
+    window = getattr(viewer, "window", None)
+    take = getattr(window, "screenshot", None) if window is not None else None
+    if take is None:
+        take = getattr(viewer, "screenshot", None)
+    if take is None:
+        return None
+    try:
+        rgb = take(canvas_only=True, flash=False)
+    except TypeError:
+        try:
+            rgb = take(canvas_only=True)
+        except Exception:  # noqa: BLE001
+            logger.debug("canvas screenshot failed", exc_info=True)
+            return None
+    except Exception:  # noqa: BLE001
+        logger.debug("canvas screenshot failed", exc_info=True)
+        return None
+    arr = np.asarray(rgb)
+    return arr if arr.size else None
+
+
+def write_viewer_snapshot(
+    viewer, output_dir: Path, *, when: datetime | None = None
+) -> Path:
+    """Write one 2D TIFF of the current napari canvas into *output_dir*.
+
+    This is a screenshot of what the user sees — visible layers, the Z-depth
+    filter, colours, scale bar — not a multi-page dump of layer arrays and
+    not the hidden ``z_window_full`` cache. Cosmetic only; never pipeline input.
+
+    Filename: ``haemolynx_snapshot_YYYYMMDD_HHMMSS.tif``, with ``_2``,
+    ``_3``, … when that timestamp is already taken.
+    """
+    import tifffile
+
+    rgb = _canvas_screenshot(viewer)
+    if rgb is None:
+        raise ValueError("Could not capture the current view.")
+    arr = np.ascontiguousarray(rgb)
+    folder = Path(output_dir)
+    folder.mkdir(parents=True, exist_ok=True)
+    path = unique_snapshot_path(folder, when=when)
+    extras: dict[str, Any] = {}
+    if arr.ndim == 3 and arr.shape[-1] in (3, 4):
+        extras["photometric"] = "rgb"
+    tifffile.imwrite(str(path), arr, **extras)
+    return path
+
+
+def _layer_voxel_size_z(layer) -> float:
+    scale = getattr(layer, "scale", None)
+    if scale is None:
+        return 1.0
+    try:
+        return float(scale[0]) if len(scale) > 0 else 1.0
+    except TypeError:
+        return 1.0
+
+
+def _viewer_z_extent_um(viewer) -> float | None:
+    """Physical Z span from visible layers, preferring cached full volumes."""
+    max_extent = 0.0
+    for layer in viewer.layers:
+        kind = layer.__class__.__name__.lower()
+        if is_z_depth_windowed_volume_layer(kind):
+            full = _z_window_cache(layer)
+            data = full if full is not None else getattr(layer, "data", None)
+            if data is None:
+                continue
+            arr = np.asarray(data)
+            if arr.ndim < 3:
+                continue
+            max_extent = max(max_extent, _layer_voxel_size_z(layer) * int(arr.shape[0]))
+            continue
+        if kind not in ("points", "vectors"):
+            # Anything else -- surface (tube mesh), shapes, tracks -- has no
+            # single per-row array this function knows how to read, and a
+            # tube mesh's ``(vertices, faces, values)`` tuple is genuinely
+            # ragged: np.asarray on it raises. Its own vessels Vectors
+            # layer already contributes the same extent below.
+            continue
+        data = getattr(layer, "data", None)
+        if data is None:
+            continue
+        arr = np.asarray(data)
+        if kind == "points" and arr.ndim == 2 and arr.shape[-1] >= 1 and len(arr):
+            max_extent = max(max_extent, float(np.max(arr[:, 0])))
+        elif kind == "vectors" and arr.ndim == 3 and arr.shape[1] == 2 and len(arr):
+            max_extent = max(max_extent, float(np.max(arr[:, 0, 0])))
+    return max_extent if max_extent > 0.0 else None
+
+
+def _apply_volume_z_display(
+    viewer,
+    z_min: float,
+    z_max: float,
+    *,
+    z_extent: float | None = None,
+) -> None:
+    """Clip image/labels layers to a physical Z window.
+
+    Reads the unclipped ``z_window_full`` cache. Full-range restores the
+    cached stack. Does not crop pipeline inputs.
+    """
+    identity = z_window_is_full(z_min, z_max, z_extent)
+    for layer in viewer.layers:
+        kind = layer.__class__.__name__.lower()
+        if not is_z_depth_windowed_volume_layer(kind):
+            continue
+        cached = _z_window_cache(layer)
+        if cached is None:
+            _store_z_window_cache(layer)
+            cached = _z_window_cache(layer)
+        if cached is None:
+            continue
+        if identity:
+            # Already showing the full volume (every stage's layer refresh
+            # lands here): reassigning would re-upload it to the GPU for
+            # nothing.
+            if layer.data is not cached:
+                layer.data = cached
+            continue
+        dz = _layer_voxel_size_z(layer)
+        layer.data = clip_volume_to_z(cached, dz, z_min, z_max, z_extent=z_extent)
+
+
+def _current_z_depth_window(viewer) -> tuple[float, float, float | None] | None:
+    """The Z-depth filter's current ``(z_min, z_max, z_extent)``, or ``None``.
+
+    ``None`` when nothing has run ``apply_view_z`` yet, or the window covers
+    the full range (nothing for a caller to compose with). Set by
+    ``apply_view_z`` on ``viewer._haemolynx_z_depth_window`` so the thick/thin
+    skeleton toggle -- a separate module-level mechanism with no other link
+    to that closure -- can clip its own redraws to the same window instead of
+    silently discarding it (see ``_apply_thick_thin_skeleton_display``).
+    """
+    window = getattr(viewer, "_haemolynx_z_depth_window", None) if viewer is not None else None
+    if window is None:
+        return None
+    z_min, z_max, z_extent = window
+    if z_window_is_full(z_min, z_max, z_extent):
+        return None
+    return window
+
+
+def _scale_bar_overlay(viewer):
+    """Napari 0.9 ``canvas.overlays.scale_bar``, else deprecated ``viewer.scale_bar``."""
+    overlays = getattr(getattr(viewer, "canvas", None), "overlays", None)
+    if overlays is not None:
+        getter = getattr(overlays, "get", None)
+        overlay = getter("scale_bar") if callable(getter) else None
+        if overlay is None:
+            overlay = getattr(overlays, "scale_bar", None)
+        if overlay is not None:
+            return overlay
+    return getattr(viewer, "scale_bar", None)
+
+
+def _vispy_canvas(viewer):
+    """The vispy canvas that lazily creates overlay visuals, if the window exists."""
+    window = getattr(viewer, "window", None)
+    qt_viewer = getattr(window, "_qt_viewer", None) if window is not None else None
+    return getattr(qt_viewer, "canvas", None) if qt_viewer is not None else None
+
+
+def _set_scale_bar_units(viewer) -> None:
+    """Label world coordinates as µm so the overlay is physically meaningful."""
+    for layer in viewer.layers:
+        if not hasattr(layer, "units"):
+            continue
+        try:
+            ndim = int(getattr(layer, "ndim", 0) or 0)
+            layer.units = (SCALE_BAR_UNIT,) * ndim if ndim else SCALE_BAR_UNIT
+        except Exception:  # noqa: BLE001 - a layer that rejects units is fine
+            logger.debug(
+                "could not set scale-bar units on %s",
+                getattr(layer, "name", layer),
+                exc_info=True,
+            )
+
+
+def _ensure_scale_bar_drawn(viewer, overlay, visible: bool) -> None:
+    """Create/hide the vispy overlay and flush a redraw.
+
+    Napari 0.9 builds the canvas visual only when the overlay becomes visible,
+    and defers unit updates until the next draw. Setting the model flag without
+    that visual (or without a paint) leaves the checkbox as a no-op on screen.
+    """
+    vispy = _vispy_canvas(viewer)
+    if vispy is None:
+        return
+    if visible:
+        update = getattr(vispy, "_update_viewer_overlays", None)
+        if callable(update):
+            try:
+                update()
+            except Exception:  # noqa: BLE001 - private napari; model flag still set
+                logger.debug("could not create the scale-bar visual", exc_info=True)
+        units_update = getattr(vispy, "_update_world_units", None)
+        if callable(units_update):
+            try:
+                units_update()
+            except Exception:  # noqa: BLE001
+                logger.debug("could not refresh scale-bar units", exc_info=True)
+    mapping = getattr(vispy, "_viewer_overlay_to_visual", None)
+    visuals = mapping.get(overlay, []) if mapping is not None else []
+    for visual in visuals:
+        node = getattr(visual, "node", None)
+        if node is not None:
+            node.visible = bool(visible)
+    native = getattr(vispy, "native", None)
+    if native is not None and hasattr(native, "update"):
+        native.update()
+
+
+def _apply_scale_bar(viewer, visible: bool) -> None:
+    """Show or hide napari's canvas scale bar in the bottom-right corner."""
+    overlay = _scale_bar_overlay(viewer)
+    if overlay is None:
+        return
+    show = bool(visible)
+    if hasattr(overlay, "position"):
+        try:
+            overlay.position = SCALE_BAR_POSITION
+        except Exception:  # noqa: BLE001 - older napari used a different enum
+            logger.debug("could not set scale-bar position", exc_info=True)
+    if show:
+        _set_scale_bar_units(viewer)
+    overlay.visible = show
+    _ensure_scale_bar_drawn(viewer, overlay, show)
+
+
+#: 3D rendering an Image layer gets once it becomes the active selection, so
+#: its structure is easier to compare against the derived skeleton/graph
+#: while it is the thing being inspected. Plain MIP -- napari's own default --
+#: has no depth cue at all: it takes the brightest voxel along each ray
+#: regardless of how far away it is, which washes a segmented volume's own
+#: foreground into whatever noise sits behind it. Attenuated MIP weights
+#: nearer voxels more heavily instead, and nearest-neighbour 3D interpolation
+#: keeps a binary-ish mask's edges crisp rather than blurred.
+IMAGE_FOCUS_RENDER_OPTIONS: dict[str, Any] = {
+    "rendering": "attenuated_mip",
+    "attenuation": 0.2,
+    "interpolation3d": "nearest",
+    "gamma": 0.7,
+}
+
+#: What every other Image layer's 3D rendering falls back to -- napari's own
+#: defaults -- so only the layer actually being inspected stands out.
+IMAGE_DEFAULT_RENDER_OPTIONS: dict[str, Any] = {
+    "rendering": "mip",
+    "attenuation": 0.05,
+    "interpolation3d": "linear",
+    "gamma": 1.0,
+}
+
+#: Opacity the segmented-image layer gets when it is binary-ish (see
+#: results.binary_value_range) and is the active selection, vs. every other
+#: time -- rendering/interpolation stay whatever results.py laid out
+#: (BINARY_IMAGE_VOLUME_OPTIONS's own "translucent" mode, which must not be
+#: overwritten back to mip here), so opacity is the one knob adjusted to
+#: make the focused layer stand out.
+IMAGE_FOCUS_OPACITY_BINARY = 0.85
+IMAGE_DEFAULT_OPACITY_BINARY = 0.45
+
+
+def _focus_image_layer_rendering(viewer) -> None:
+    """Give the pipeline's own input-image layer a clearer 3D render while
+    it is the active selection, and napari's plain default otherwise.
+
+    Scoped to the one layer this feature is for (HaemoLynx's own ``IMAGE``
+    layer, the segmented input drawn for comparison against the derived
+    skeleton/graph) rather than every napari Image-kind layer in the viewer:
+    a user's own reference image dropped into the viewer is not ours to
+    touch, and HaemoLynx's own vessel-mask volumes (also Image-kind) have
+    their own deliberately-chosen rendering (``MASK_VOLUME_OPTIONS``, crisp
+    nearest-neighbour edges) that this must not overwrite either. Display-only,
+    like the scale bar and Z-depth filter: never written into settings or
+    stage inputs.
+
+    A binary-ish segmented image (see ``results.binary_value_range``) was
+    already given its own translucent rendering and transparent-background
+    colour at layer-creation time -- napari's MIP-family rendering shows
+    only whichever single sample is brightest along a ray, which for a
+    dense, space-filling vessel volume is foreground almost everywhere,
+    turning it solid regardless of colour. Overwriting that back to
+    ``mip``/``attenuated_mip`` here would undo the fix, so only its opacity
+    is adjusted for focus; everything else is left as results.py laid it out.
+    """
+    if viewer is None:
+        return
+    layer = None
+    for candidate in viewer.layers:
+        if _is_ours(candidate) and getattr(candidate, "name", None) == IMAGE:
+            layer = candidate
+            break
+    if layer is None:
+        return
+    focused = layer is viewer.layers.selection.active
+    tag = getattr(layer, "metadata", {}).get(OURS) or {}
+    if tag.get("binary_render"):
+        try:
+            layer.opacity = (
+                IMAGE_FOCUS_OPACITY_BINARY if focused else IMAGE_DEFAULT_OPACITY_BINARY
+            )
+        except Exception:  # noqa: BLE001 - a layer that rejects opacity is left alone
+            logger.debug("could not set opacity on %s", getattr(layer, "name", layer), exc_info=True)
+        return
+    options = IMAGE_FOCUS_RENDER_OPTIONS if focused else IMAGE_DEFAULT_RENDER_OPTIONS
+    for key, value in options.items():
+        try:
+            setattr(layer, key, value)
+        except Exception:  # noqa: BLE001 - a layer that rejects an option is left alone
+            logger.debug(
+                "could not set %s on %s", key, getattr(layer, "name", layer),
+                exc_info=True,
+            )
+
+
+def _uniform_points_property(value: Any, n: int) -> Any:
+    """Return a scalar or length-*n* value napari Points accepts for size/shown/symbol.
+
+    Napari 0.9 broadcasts per-point properties only when ``len(value) == len(data)``.
+    After a Z-filter or graph shrink the stale array must become a scalar (when uniform)
+    or be dropped to the first entry, not passed through at the old length.
+    """
+    if value is None:
+        return None
+    arr = np.asarray(value)
+    if arr.ndim == 0 or arr.size == 1:
+        val = arr if arr.ndim == 0 else arr.flat[0]
+        return val.item() if isinstance(val, np.generic) else val
+    flat = arr.ravel()
+    if len(flat) == n:
+        return value
+    if len(flat) > 0:
+        try:
+            if np.all(flat == flat[0]):
+                first = flat[0]
+                return first.item() if isinstance(first, np.generic) else first
+        except (TypeError, ValueError):
+            pass
+        first = flat[0]
+        return first.item() if isinstance(first, np.generic) else first
+    return value
+
+
+def _sync_points_per_point_properties(
+    layer,
+    n: int,
+    options: Mapping[str, Any] | None = None,
+) -> None:
+    """Keep ``size`` / ``shown`` / ``symbol`` aligned with ``len(layer.data)``."""
+    opts = options or {}
+    for key in ("size", "shown", "symbol"):
+        if key in opts:
+            value = opts[key]
+        elif hasattr(layer, key):
+            value = getattr(layer, key)
+        else:
+            continue
+        fixed = _uniform_points_property(value, n)
+        if fixed is not None:
+            setattr(layer, key, fixed)
+
+
+def _double_range_pair(object_name: str):
+    """Min/max ``QDoubleSlider`` pair with a range-slider value API.
+
+    superqt's ``QDoubleRangeSlider`` is not reliably draggable in napari's
+    left dock: a factory ``(0, 1)`` µm window on a real stack parks both
+    handles on top of each other at the left edge, and handles sitting at
+    the groove ends (full range) often miss hit-testing. Two
+    ``QDoubleSlider`` s match the working Arrow size control.
+
+    ``valueChanged`` fires on every handle move (so labels can update);
+    ``sliderReleased`` fires when a drag ends. Display rebuilds should
+    wait for release, not each tick.
+    """
+    from qtpy.QtCore import Qt, Signal
+    from qtpy.QtWidgets import (
+        QAbstractSlider,
+        QAbstractSpinBox,
+        QFormLayout,
+        QLabel,
+        QLineEdit,
+        QSizePolicy,
+        QWidget,
+    )
+    from superqt import QDoubleSlider
+
+    class DoubleRangePair(QWidget):
+        valueChanged = Signal(object)
+        sliderReleased = Signal()
+
+        def __init__(self):
+            super().__init__()
+            self._lo = QDoubleSlider(Qt.Orientation.Horizontal)
+            self._hi = QDoubleSlider(Qt.Orientation.Horizontal)
+            self._lo.setObjectName(f"{object_name}_min")
+            self._hi.setObjectName(f"{object_name}_max")
+            for slider in (self._lo, self._hi):
+                slider.setMinimumHeight(18)
+                slider.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+                slider.setRange(0.0, 1.0)
+            self._lo.setValue(0.0)
+            self._hi.setValue(0.0)
+            self._lo_label = QLabel("min")
+            self._hi_label = QLabel("max")
+            self._lo_label.setObjectName(f"{object_name}_min_label")
+            self._hi_label.setObjectName(f"{object_name}_max_label")
+            form = QFormLayout(self)
+            form.setContentsMargins(0, 0, 0, 0)
+            form.setSpacing(2)
+            form.addRow(self._lo_label, self._lo)
+            form.addRow(self._hi_label, self._hi)
+            self._lo.valueChanged.connect(self._on_lo)
+            self._hi.valueChanged.connect(self._on_hi)
+            self._lo.sliderPressed.connect(self._on_pressed)
+            self._hi.sliderPressed.connect(self._on_pressed)
+            self._lo.sliderReleased.connect(self._on_released)
+            self._hi.sliderReleased.connect(self._on_released)
+            self._updating = False
+            self._dragging = False
+            self._haemolynx_extent_ready = False
+
+        def setEnabled(self, enabled: bool) -> None:  # noqa: N802 - Qt API
+            """Grey min/max sliders, companion fields, and an optional outer row."""
+            on = bool(enabled)
+            row = getattr(self, "_haemolynx_row", None)
+            if on and row is not None:
+                row.setEnabled(True)
+            super().setEnabled(on)
+            self._lo.setEnabled(on)
+            self._hi.setEnabled(on)
+            self._lo_label.setEnabled(on)
+            self._hi_label.setEnabled(on)
+            for child in self.findChildren(
+                (QAbstractSlider, QAbstractSpinBox, QLineEdit, QLabel)
+            ):
+                child.setEnabled(on)
+            outer = getattr(self, "_haemolynx_label", None)
+            if outer is not None:
+                outer.setEnabled(on)
+            if not on and row is not None:
+                row.setEnabled(False)
+
+        def isSliderDown(self) -> bool:  # noqa: N802 - Qt API
+            """True while either handle is being dragged."""
+            return bool(
+                self._dragging
+                or self._lo.isSliderDown()
+                or self._hi.isSliderDown()
+            )
+
+        def _on_pressed(self) -> None:
+            self._dragging = True
+
+        def _on_released(self) -> None:
+            self._dragging = False
+            self.sliderReleased.emit()
+
+        def _on_lo(self, value: float) -> None:
+            if self._updating:
+                return
+            if value > self._hi.value():
+                self._updating = True
+                try:
+                    self._hi.setValue(value)
+                finally:
+                    self._updating = False
+            self.valueChanged.emit(self.value())
+
+        def _on_hi(self, value: float) -> None:
+            if self._updating:
+                return
+            if value < self._lo.value():
+                self._updating = True
+                try:
+                    self._lo.setValue(value)
+                finally:
+                    self._updating = False
+            self.valueChanged.emit(self.value())
+
+        def edge_labels(self) -> tuple[str, str]:
+            """Text beside the lower and upper handles."""
+            return (self._lo_label.text(), self._hi_label.text())
+
+        def set_edge_labels(self, low: str, high: str) -> None:
+            self._lo_label.setText(str(low))
+            self._hi_label.setText(str(high))
+
+        def value(self) -> tuple[float, float]:
+            lo, hi = float(self._lo.value()), float(self._hi.value())
+            return (min(lo, hi), max(lo, hi))
+
+        def setValue(self, pair) -> None:
+            lo, hi = float(pair[0]), float(pair[1])
+            if lo > hi:
+                lo, hi = hi, lo
+            self._updating = True
+            try:
+                self._lo.setValue(lo)
+                self._hi.setValue(hi)
+            finally:
+                self._updating = False
+            if not self.signalsBlocked():
+                self.valueChanged.emit(self.value())
+
+        def setRange(self, minimum: float, maximum: float) -> None:
+            self._lo.setRange(minimum, maximum)
+            self._hi.setRange(minimum, maximum)
+
+        def setSingleStep(self, step: float) -> None:
+            self._lo.setSingleStep(step)
+            self._hi.setSingleStep(step)
+
+        def minimum(self) -> float:
+            return float(self._lo.minimum())
+
+        def maximum(self) -> float:
+            return float(self._lo.maximum())
+
+        def blockSignals(self, block: bool) -> bool:  # noqa: N802 - Qt API
+            self._lo.blockSignals(block)
+            self._hi.blockSignals(block)
+            return super().blockSignals(block)
+
+    widget = DoubleRangePair()
+    widget.setObjectName(object_name)
+    widget.setMinimumHeight(44)
+    widget.setSizePolicy(
+        QSizePolicy.Expanding, QSizePolicy.Fixed
+    )
+    return widget
+
+
+def _z_extent_and_step(results: ResultLayers | None, viewer=None) -> tuple[float | None, float]:
+    """Physical Z span (µm) and slider step from results or open layers."""
+    extent = results.image_z_extent_um() if results is not None else None
+    step = None
+    if results is not None:
+        try:
+            step = float(results._voxel_size_zyx[0])  # noqa: SLF001
+        except (TypeError, IndexError):
+            step = None
+    if (extent is None or extent <= 0.0) and viewer is not None:
+        extent = _viewer_z_extent_um(viewer)
+        if viewer is not None:
+            for layer in viewer.layers:
+                kind = layer.__class__.__name__.lower()
+                if is_z_depth_windowed_volume_layer(kind):
+                    step = _layer_voxel_size_z(layer)
+                    break
+    if step is None or step <= 0.0:
+        step = 1.0
+    return extent, step
+
+
+def format_z_depth_microns(value: float) -> str:
+    """A Z position for the view-panel labels, in microns."""
+    text = f"{float(value):.2f}".rstrip("0").rstrip(".")
+    if text in {"", "-0"}:
+        text = "0"
+    return f"{text} µm"
+
+
+def _refresh_z_depth_labels(slider, results: ResultLayers | None, viewer=None) -> None:
+    """Show the selected Z window in microns, or min/max before a stack is loaded."""
+    try:
+        extent, _step = _z_extent_and_step(results, viewer)
+        ready = bool(getattr(slider, "_haemolynx_extent_ready", False))
+        if extent is None or extent <= 0.0 or not ready:
+            slider.set_edge_labels("min", "max")
+            return
+        z_min, z_max = slider.value()
+        slider.set_edge_labels(format_z_depth_microns(z_min), format_z_depth_microns(z_max))
+    except RuntimeError:
+        logger.debug("Z-depth slider is gone; skipping its labels", exc_info=True)
+
+
+def _sync_z_depth_slider(slider, results: ResultLayers | None, viewer=None) -> None:
+    """Set the Z-depth range from the image/skeleton; stay visible on the left.
+
+    Guarded the way ``_park_layer_control_host`` already is: this slider
+    lives in a floating dock, and a stage-completion callback firing once
+    per stage of a real run has, on real production-scale data, found its
+    underlying Qt widget already deleted (``RuntimeError: wrapped C/C++
+    object ... has been deleted``) -- reproducible only under that load,
+    not in a synthetic test. Left unguarded, the exception is raised
+    inside a Qt-queued slot, where PyQt/PySide print it and move on rather
+    than propagating it, silently skipping ``slider.setEnabled(True)``
+    below and leaving every later stage's sync attempt to fail the same
+    way. Catching it here means one destroyed widget degrades to an inert
+    Z-depth filter instead of a repeating, swallowed exception on every
+    subsequent stage of the run.
+    """
+    try:
+        extent, step = _z_extent_and_step(results, viewer)
+        if extent is None or extent <= 0.0:
+            slider.setEnabled(False)
+            _refresh_z_depth_labels(slider, results, viewer)
+            return
+        slider.blockSignals(True)
+        try:
+            slider.setRange(0.0, extent)
+            if hasattr(slider, "setSingleStep"):
+                # Finer than a voxel so setValue(µm) sticks and handles can move.
+                slider.setSingleStep(max(min(step, 0.1), 1e-6))
+            lo, hi = slider.value()
+            uninitialized = not getattr(slider, "_haemolynx_extent_ready", False)
+            if uninitialized or hi <= lo or hi > extent or lo < 0.0:
+                lo, hi = 0.0, extent
+            else:
+                lo = max(0.0, min(lo, extent))
+                hi = max(lo, min(hi, extent))
+            slider.setValue((lo, hi))
+            slider._haemolynx_extent_ready = True
+        finally:
+            slider.blockSignals(False)
+        slider.setEnabled(True)
+        _refresh_z_depth_labels(slider, results, viewer)
+    except RuntimeError:
+        logger.debug("Z-depth slider is gone; skipping this sync", exc_info=True)
+
+
+def _park_layer_control_host(host, parking) -> None:
+    """Take *host* out of napari's layer controls without destroying it."""
+    try:
+        host.setParent(parking)
+    except RuntimeError:
+        return
+
+
+#: Flow-direction arrow scale matches ``flow_arrow_scale`` schema bounds.
+_ARROW_LENGTH_MIN = 0.1
+_ARROW_LENGTH_MAX = 5.0
+
+
+def _vectors_layer_uses_arrow_length(layer) -> bool:
+    """Triangle-style HaemoLynx Vectors layers scale heads via ``length``."""
+    if layer is None or not _is_ours(layer):
+        return False
+    if layer.__class__.__name__ != "Vectors":
+        return False
+    return getattr(layer, "vector_style", None) == "triangle"
+
+
+def _stored_arrow_length(layer) -> float | None:
+    tag = getattr(layer, "metadata", {}).get(OURS) or {}
+    if tag.get("arrow_length_user_set"):
+        value = tag.get("arrow_length")
+        if value is not None:
+            return float(value)
+    return None
+
+
+def _remember_arrow_length(layer, length: float) -> None:
+    metadata = dict(getattr(layer, "metadata", {}) or {})
+    tag = dict(metadata.get(OURS) or {})
+    tag["arrow_length"] = float(length)
+    tag["arrow_length_user_set"] = True
+    metadata[OURS] = tag
+    layer.metadata = metadata
+
+
+def _sync_arrow_length_slider(slider, layer, host=None) -> None:
+    """Show the slider only for flow-direction layers; mirror ``layer.length``."""
+    if not _vectors_layer_uses_arrow_length(layer):
+        slider.setEnabled(False)
+        slider.setVisible(False)
+        if host is not None:
+            host.setVisible(False)
+        return
+    if host is not None:
+        host.setVisible(True)
+    slider.setVisible(True)
+    slider.setEnabled(True)
+    value = _stored_arrow_length(layer)
+    if value is None:
+        value = float(getattr(layer, "length", 1.0))
+    value = max(_ARROW_LENGTH_MIN, min(_ARROW_LENGTH_MAX, value))
+    slider.blockSignals(True)
+    try:
+        slider.setValue(value)
+    finally:
+        slider.blockSignals(False)
+
+
+def _reparent_arrow_length_slider(
+    viewer,
+    *,
+    slider,
+    host,
+    parking,
+    controls_holder: dict[str, Any],
+) -> None:
+    """Mount the shared arrow-size row at the top of flow-direction controls."""
+    _park_layer_control_host(host, parking)
+    controls_holder["controls"] = None
+
+    if viewer is None:
+        host.setVisible(False)
+        return
+
+    active = viewer.layers.selection.active
+    if not _vectors_layer_uses_arrow_length(active):
+        host.setVisible(False)
+        return
+
+    controls = _layer_controls(viewer, active)
+    if controls is None:
+        host.setVisible(False)
+        return
+
+    layout = controls.layout()
+    if layout is None or not hasattr(layout, "insertRow"):
+        host.setVisible(False)
+        return
+
+    layout.insertRow(0, host)
+    controls_holder["controls"] = controls
+
+    _sync_arrow_length_slider(slider, active, host)
+
+
+def _apply_vectors_length(existing, spec) -> None:
+    """Apply spec length unless the user already chose one on the slider."""
+    if "length" not in spec.options:
+        return
+    stored = _stored_arrow_length(existing)
+    existing.length = stored if stored is not None else spec.options["length"]
+
+
+def _maybe_store_z_filter_cache(layer, spec) -> None:
+    if is_z_depth_filtered_layer(spec.name, spec.kind):
+        _store_z_filter_cache(
+            layer,
+            spec.data,
+            spec.features,
+            segment_owner=getattr(spec, "segment_owner", None),
+        )
+    if is_z_depth_windowed_volume_layer(spec.kind):
+        _store_z_window_cache(layer, spec.data)
+
+
+def _drop_legacy_branch_hover_layer(viewer, group) -> None:
+    """Remove leftover midpoint-circle hover Points from earlier GUI builds."""
+    emitted = {spec.name for spec in getattr(group, "layers", ())}
+    if BRANCH_HOVER in emitted:
+        return
+    layers = getattr(viewer, "layers", None)
+    if layers is None or BRANCH_HOVER not in layers:
+        return
+    layer = layers[BRANCH_HOVER]
+    if _is_ours(layer):
+        layers.remove(layer)
+
+
 def _apply_layers(viewer, group, report=None) -> None:
     """Put one stage's layers in the viewer. Runs on the GUI thread."""
+    _drop_legacy_branch_hover_layer(viewer, group)
     for spec in group.layers:
         try:
             _add_or_update(viewer, spec)
@@ -196,14 +3621,71 @@ def _apply_layers(viewer, group, report=None) -> None:
             except Exception:  # noqa: BLE001 - a missing colour bar is survivable
                 logger.debug("could not attach a colour bar to %s",
                              spec.name, exc_info=True)
+            try:
+                _attach_sweep_sliders(viewer, viewer.layers[spec.name], spec)
+            except Exception:  # noqa: BLE001 - missing sliders are survivable
+                logger.debug("could not attach sweep sliders to %s",
+                             spec.name, exc_info=True)
+            try:
+                _attach_branch_hover_controls(viewer, viewer.layers[spec.name])
+            except Exception:  # noqa: BLE001 - missing hover panel is survivable
+                logger.debug("could not attach branch-hover controls to %s",
+                             spec.name, exc_info=True)
+            try:
+                _attach_thick_thin_skeleton_toggle(viewer, viewer.layers[spec.name])
+            except Exception:  # noqa: BLE001 - missing toggle is survivable
+                logger.debug("could not attach thick/thin skeleton toggle to %s",
+                             spec.name, exc_info=True)
+            try:
+                _attach_segmentation_cleanup_toggle(viewer, viewer.layers[spec.name])
+            except Exception:  # noqa: BLE001 - missing toggle is survivable
+                logger.debug("could not attach segmentation-cleanup toggle to %s",
+                             spec.name, exc_info=True)
     for name, column in group.recolour:
         layer = viewer.layers[name] if name in viewer.layers else None
         if layer is not None and _is_ours(layer):
             _colour_layer(layer, column)
+    for name in hidden_on_first_view(group):
+        layer = viewer.layers[name] if name in viewer.layers else None
+        if layer is not None and _is_ours(layer):
+            layer.visible = False
     if group.ndisplay is not None:
         viewer.dims.ndisplay = group.ndisplay
+    reparent_arrow = getattr(viewer, "_haemolynx_reparent_arrow_length_slider", None)
+    if reparent_arrow is not None:
+        try:
+            reparent_arrow()
+        except Exception:  # noqa: BLE001 - missing controls are survivable
+            logger.debug("could not reparent arrow length slider", exc_info=True)
+    after = getattr(viewer, "_haemolynx_after_layers_applied", None)
+    if after is not None:
+        try:
+            after()
+        except Exception:  # noqa: BLE001 - missing Z filter is survivable
+            logger.debug("could not re-apply Z depth filter", exc_info=True)
+    _sync_vessel_tubes(viewer)
     if report is not None and group.note:
         report.value = f"{group.title}: {group.note}"
+
+
+def _apply_layer_groups(viewer, groups, report=None) -> None:
+    """Put back what several stage groups leave, drawing each layer once.
+
+    Loading a saved run and "Run from this stage" both replay every stage
+    up to some point. Applied one after another, the vessels and nodes
+    layers were redrawn once per stage, and where a stage's layer is smaller
+    than the one before it :func:`_add_or_update` removes and re-adds it:
+    the GL teardown that crashed the process with an access violation in the
+    driver (reproduced on a 3,191-vessel network, the second run from the
+    Perturbations tab). Pacing the groups a Qt event-loop cycle apart made
+    that rarer, not safe. Each layer's final state is all the viewer needs
+    (see :func:`~haemolynx.gui.results.merge_stage_layers`).
+    """
+    from haemolynx.gui.results import merge_stage_layers
+
+    merged = merge_stage_layers(list(groups))
+    if merged is not None:
+        _apply_layers(viewer, merged, report)
 
 
 def _colour_attribute(layer) -> str:
@@ -224,17 +3706,150 @@ def _colour_attributes(layer) -> tuple[str, ...]:
     return (_colour_attribute(layer),)
 
 
+def _ensure_flow_dir_features(layer) -> None:
+    """Fill missing or NaN ``flow_dir_*`` / ``flow_heading_deg`` from arrows."""
+    if layer.__class__.__name__ != "Vectors":
+        return
+    data = np.asarray(layer.data, dtype=float)
+    if data.ndim != 3 or data.shape[1] != 2 or data.shape[0] == 0:
+        return
+    from haemolynx.visualization.flow_direction import (
+        flow_direction_components,
+        flow_heading_deg,
+    )
+
+    features = dict(getattr(layer, "features", {}))
+    displacements = data[:, 1, :]
+    components = np.asarray(
+        [flow_direction_components(vector) for vector in displacements],
+        dtype=float,
+    )
+    for index, name in enumerate(("flow_dir_z", "flow_dir_y", "flow_dir_x")):
+        column = np.asarray(features.get(name, []), dtype=float)
+        if column.shape[0] != len(data) or not np.any(np.isfinite(column)):
+            features[name] = components[:, index]
+            continue
+        missing = ~np.isfinite(column)
+        if np.any(missing):
+            filled = column.copy()
+            filled[missing] = components[missing, index]
+            features[name] = filled
+    heading = np.asarray(features.get(FLOW_HEADING_COLUMN, []), dtype=float)
+    if heading.shape[0] != len(data) or not np.any(np.isfinite(heading)):
+        features[FLOW_HEADING_COLUMN] = np.asarray(
+            [flow_heading_deg(vector) for vector in displacements],
+            dtype=float,
+        )
+    else:
+        missing = ~np.isfinite(heading)
+        if np.any(missing):
+            filled = heading.copy()
+            filled[missing] = [
+                flow_heading_deg(vector) for vector in displacements[missing]
+            ]
+            features[FLOW_HEADING_COLUMN] = filled
+    rgb_dummy = np.asarray(features.get(FLOW_DIR_RGB_COLUMN, []), dtype=float)
+    if rgb_dummy.shape[0] != len(data):
+        features[FLOW_DIR_RGB_COLUMN] = np.zeros(len(data), dtype=float)
+    layer.features = features
+
+
+def _flow_dir_rgba(layer) -> np.ndarray:
+    """Per-vector RGBA for the 3D direction map, from current ``flow_dir_*``."""
+    from haemolynx.visualization.flow_direction import flow_direction_rgba
+
+    _ensure_flow_dir_features(layer)
+    n = len(np.asarray(getattr(layer, "data", ()), dtype=float))
+    features = getattr(layer, "features", {})
+    if n == 0 or "flow_dir_z" not in features:
+        return np.zeros((n, 4), dtype=float)
+    rgba = flow_direction_rgba(
+        features["flow_dir_z"],
+        features["flow_dir_y"],
+        features["flow_dir_x"],
+    )
+    if FLOW_SOLUTION in features:
+        from haemolynx.gui.branch_hover import FLOW_SOLUTION_TEXT
+
+        # The same grey every other flow-based colouring draws them in.
+        unsolved = np.asarray(features[FLOW_SOLUTION], dtype=object) == FLOW_SOLUTION_TEXT[False]
+        rgba[unsolved] = MISSING_VALUE_RGBA
+    return rgba
+
+
+def _flow_heading_colormap() -> str:
+    """Cyclic map for azimuth; fall back when ``hsv`` is unavailable."""
+    from napari.utils.colormaps import ensure_colormap
+
+    for name in ("hsv", "twilight_shifted"):
+        try:
+            ensure_colormap(name)
+            return name
+        except (KeyError, ValueError, TypeError):
+            continue
+    return "viridis"
+
+
+def _default_colormap_for(column: str | None) -> str:
+    """The map a colour-by column starts with, before the user overrides it.
+
+    Signed branch order runs red to blue: its arterial side is negative, and
+    arteries are red, veins blue, as the vessel masks are drawn. coolwarm put
+    them the other way round."""
+    if column == FLOW_HEADING_COLUMN:
+        return _flow_heading_colormap()
+    if column == BRANCH_ORDER_SIGNED:
+        return "RdBu"
+    if column in FLOW_DIR_COLUMNS:
+        return "coolwarm"
+    return "viridis"
+
+
+#: Ends the name of the copy :func:`_grey_nan_colormap` makes of a map.
+GREY_NAN_SUFFIX = " (grey NaN)"
+
+
+def _grey_nan_colormap(name: str):
+    """Colormap *name*, drawing NaN in :data:`MISSING_VALUE_RGBA`'s grey.
+
+    NaN is a value a row has not got -- the flow of a vessel the solve left
+    unsolved, above all (``results.SOLVED_FLOW_COLUMNS``) -- and napari's own
+    maps draw it transparent, so those vessels vanished instead of showing
+    grey. *name* itself for anything napari cannot read as a map.
+    """
+    from napari.utils.colormaps import Colormap, ensure_colormap
+
+    try:
+        base = ensure_colormap(_base_colormap_name(name))
+    except (KeyError, ValueError, TypeError):
+        return name
+    return Colormap(
+        colors=base.colors,
+        controls=base.controls,
+        interpolation=base.interpolation,
+        name=f"{base.name}{GREY_NAN_SUFFIX}",
+        nan_color=MISSING_VALUE_RGBA,
+        low_color=base.low_color,
+        high_color=base.high_color,
+    )
+
+
+def _base_colormap_name(name: str) -> str:
+    """The map a :func:`_grey_nan_colormap` copy was made from."""
+    return name[: -len(GREY_NAN_SUFFIX)] if name.endswith(GREY_NAN_SUFFIX) else name
+
+
 def _categorical_colours(layer, column: str, cycle) -> np.ndarray:
     """One RGBA row per item, looked up from *cycle* by the item's label.
 
     A value the cycle does not name -- a role from a newer config, a blank in a
-    half-filled column -- takes the uncoloured grey rather than borrowing some
-    other label's colour.
+    half-filled column -- takes the missing-value grey rather than borrowing
+    some other label's colour.
     """
     lookup = {label: colour for label, colour in cycle}
     values = layer.features[column]
     return np.array(
-        [lookup.get(value, UNCOLOURED_RGBA) for value in values], dtype=float
+        [lookup.get(value, MISSING_VALUE_RGBA) for value in values], dtype=float
     )
 
 
@@ -254,7 +3869,10 @@ def _colour_layer(layer, column: str | None, kind: str = "continuous",
         for attribute in attributes:
             setattr(layer, attribute, UNCOLOURED)
         _record_colour(layer, None)
+        _maybe_retint_vessel_tubes(layer)
         return
+    if column in FLOW_DIR_COLUMNS or column in {FLOW_HEADING_COLUMN, FLOW_DIR_RGB_COLUMN}:
+        _ensure_flow_dir_features(layer)
     if column not in getattr(layer, "features", {}):
         return
     # Drop to a flat colour before naming the new column. A layer keeps
@@ -277,7 +3895,16 @@ def _colour_layer(layer, column: str | None, kind: str = "continuous",
     # re-maps the column that is still active, which is the same crash.
     for attribute in attributes:
         setattr(layer, attribute, UNCOLOURED)
-    if kind == "categorical" and cycle:
+    if column == FLOW_DIR_RGB_COLUMN or kind == "direct":
+        # Napari Vectors colour from a 1D feature + LUT cannot represent a
+        # sphere; assign per-arrow RGB with R=x, G=y, B=z.
+        colours = _flow_dir_rgba(layer)
+        for attribute in attributes:
+            setattr(layer, attribute, colours)
+        _record_colour(layer, column)
+        _maybe_retint_vessel_tubes(layer)
+        return
+    if kind == "categorical" and cycle and len(layer.features[column]):
         # One colour per item, looked up by label, rather than handing napari
         # the cycle and the column and letting it pair them up. It pairs them
         # by the order the values are first *encountered*, not by the labels
@@ -289,8 +3916,22 @@ def _colour_layer(layer, column: str | None, kind: str = "continuous",
         for attribute in attributes:
             setattr(layer, attribute, colours)
     else:
+        try:
+            values = np.asarray(layer.features[column], dtype=float)
+        except (TypeError, ValueError):
+            values = np.asarray([], dtype=float)
+        if values.size == 0 or not np.any(np.isfinite(values)):
+            # All-NaN or empty: stay flat grey. Naming the column in colormap
+            # mode still makes napari map it; on some builds that aborts Qt
+            # rather than raising, which `_apply_layers` cannot catch.
+            _record_colour(layer, column)
+            _maybe_retint_vessel_tubes(layer)
+            return
+        colormap = _grey_nan_colormap(_default_colormap_for(column))
         for attribute in attributes:
-            setattr(layer, f"{attribute}_colormap", "viridis")
+            cmap_attr = f"{attribute.replace('_color', '')}_colormap"
+            if hasattr(layer, cmap_attr):
+                setattr(layer, cmap_attr, colormap)
             setattr(layer, attribute, column)
         # After the column, and through the same path the Fit buttons use: the
         # range has to be applied *and* the colours re-mapped against it. Set
@@ -298,10 +3939,16 @@ def _colour_layer(layer, column: str | None, kind: str = "continuous",
         # plain setattr, and nothing re-maps at all -- which is how `flow_abs`
         # came to be the selected colouring and not the one on screen.
         if limits is None:
-            limits = _data_range(layer, column)
+            if column == FLOW_HEADING_COLUMN:
+                limits = _flow_heading_contrast_limits(values)
+            elif column in FLOW_DIR_COLUMNS:
+                limits = _flow_dir_contrast_limits(values)
+            else:
+                limits = _data_range(layer, column)
         if limits is not None:
             _apply_contrast_limits(layer, *limits)
     _record_colour(layer, column)
+    _maybe_retint_vessel_tubes(layer)
 
 
 def _record_colour(layer, column: str | None) -> None:
@@ -324,16 +3971,77 @@ def _active_column(layer) -> str | None:
     napari's own layer controls: anything we noted when we last set a colouring
     goes stale the moment the user picks something on the left.
 
-    `color_properties` is private, so fall back to what we recorded if a napari
-    version moves it -- a stale answer beats no colour bar.
+    Points layers only get a feature dropdown from us; when a column is all-NaN
+    we record the choice in metadata without entering napari's colormap mode,
+    so the recorded name is the authoritative answer there.
     """
+    tag = getattr(layer, "metadata", {}).get(OURS)
+    recorded = tag.get("colour_by") if isinstance(tag, dict) else None
+    if recorded and _colour_attribute(layer) == "face_color":
+        return str(recorded)
     manager = getattr(layer, "_edge", None) or getattr(layer, "_face", None)
     properties = getattr(manager, "color_properties", None)
     name = getattr(properties, "name", None)
-    if name:
+    mode = getattr(layer, f"{_colour_attribute(layer)}_mode", None)
+    if name and mode != "direct":
         return str(name)
-    tag = getattr(layer, "metadata", {}).get(OURS)
-    return tag.get("colour_by") if isinstance(tag, dict) else None
+    if recorded:
+        return str(recorded)
+    return str(name) if name else None
+
+
+def _image_options_for_napari(options: Mapping[str, Any]) -> dict[str, Any]:
+    """Napari kwargs for an Image layer, expanding our ``mask_colour`` marker.
+
+    Vessel-mask specs stay napari-free: they carry an RGBA tuple under
+    ``mask_colour``. Here that becomes a two-stop colormap (transparent at 0,
+    the role colour at 1) so binary volumes render as translucent overlays.
+    """
+    prepared = dict(options)
+    colour = prepared.pop("mask_colour", None)
+    if colour is None:
+        return prepared
+    from napari.utils.colormaps import Colormap
+
+    rgba = tuple(float(c) for c in colour)
+    prepared["colormap"] = Colormap(
+        [[0.0, 0.0, 0.0, 0.0], list(rgba)],
+        name="haemolynx_vessel_mask",
+    )
+    return prepared
+
+
+def _keep_layer_interaction(layer, spec, *, visible, mode) -> None:
+    """Restore what the user set on *layer* after a redraw.
+
+    A spec may hide a layer (skeleton after the graph exists) but must not
+    un-hide one the user turned off, and assigning ``data`` resets napari's
+    edit mode to pan-zoom, which would drop a Draw that was still in progress.
+    """
+    layer.visible = bool(visible) if spec.visible else False
+    if mode is not None and mode != getattr(layer, "mode", None):
+        try:
+            layer.mode = mode
+        except Exception:  # noqa: BLE001 - not every kind has every mode
+            logger.debug("could not restore layer mode %s on %s", mode, spec.name)
+
+
+def _same_volume(held: Any, new: Any) -> bool:
+    """Whether a volume layer holding *held* already shows *new*.
+
+    The same array, or the same shape, type and values. Anything not a plain
+    array (a multiscale list, a dask array) counts as different.
+    """
+    if held is new:
+        return True
+    if not isinstance(held, np.ndarray) or not isinstance(new, np.ndarray):
+        return False
+    if held.shape != new.shape or held.dtype != new.dtype:
+        return False
+    try:
+        return bool(np.array_equal(held, new))
+    except Exception:  # noqa: BLE001 - when unsure, redraw
+        return False
 
 
 def _add_or_update(viewer, spec) -> None:
@@ -346,47 +4054,1014 @@ def _add_or_update(viewer, spec) -> None:
         spec = replace(spec, name=f"{spec.name} (HaemoLynx)")
         existing = viewer.layers[spec.name] if spec.name in viewer.layers else None
 
+    saved_visible = bool(existing.visible) if existing is not None else spec.visible
+    saved_mode = getattr(existing, "mode", None) if existing is not None else None
+
     if existing is not None and existing.__class__.__name__.lower() == _CLASS_FOR[spec.kind]:
-        # A Shapes layer applies the types it already holds to whatever data
-        # it is next given, so handing a box outline to a layer holding one
-        # rectangle raises "Rectangle expects four corner vertices, 2
-        # provided" -- after it has emptied itself, which loses the region.
-        # The spec knows what each shape is, so the two go in together.
-        shape_type = spec.options.get("shape_type") if spec.kind == "shapes" else None
-        if shape_type is not None:
-            existing.data = []
-            existing.add(list(spec.data), shape_type=list(shape_type))
-        else:
-            existing.data = spec.data
-        if spec.features:
-            existing.features = dict(spec.features)
-        _colour_layer(existing, spec.colour_by, spec.colour_kind,
-                      spec.colour_cycle, spec.contrast_limits)
-        return
+        if spec.kind == "surface":
+            # A new mesh and its colours land together, or vispy redraws one
+            # against the other's length (see _set_tube_mesh).
+            vertices, faces = spec.data[:2]
+            _set_tube_mesh(existing, vertices, faces, spec.options.get("vertex_colors", ()))
+            _keep_layer_interaction(existing, spec, visible=saved_visible, mode=saved_mode)
+            return
+        # Shrinking Vectors/Points in place leaves stale segments on screen.
+        if spec.kind in {"vectors", "points"}:
+            new_count = len(np.asarray(spec.data))
+            old_count = len(np.asarray(existing.data))
+            if new_count < old_count:
+                # A synchronous GL teardown: let vispy's queued work flush
+                # first, as _clear_our_layers does, or the driver can fault.
+                _process_pending_qt_events()
+                viewer.layers.remove(existing)
+                _process_pending_qt_events()
+                existing = None
+        if existing is not None:
+            # A Shapes layer applies the types it already holds to whatever data
+            # it is next given, so handing a box outline to a layer holding one
+            # rectangle raises "Rectangle expects four corner vertices, 2
+            # provided" -- after it has emptied itself, which loses the region.
+            # The spec knows what each shape is, so the two go in together.
+            shape_type = spec.options.get("shape_type") if spec.kind == "shapes" else None
+            if shape_type is not None:
+                existing.data = []
+                existing.add(list(spec.data), shape_type=list(shape_type))
+            elif spec.kind in {"image", "labels"} and _same_volume(existing.data, spec.data):
+                # Most stages hand back the image, skeleton and masks as they
+                # were. Setting them again re-slices and re-uploads a whole
+                # volume to the GPU for nothing.
+                pass
+            else:
+                existing.data = spec.data
+            if spec.features:
+                existing.features = dict(spec.features)
+            if spec.kind == "points":
+                _sync_points_per_point_properties(
+                    existing, new_count, spec.options
+                )
+            _keep_layer_interaction(
+                existing, spec, visible=saved_visible, mode=saved_mode
+            )
+            if spec.kind == "image" and "mask_colour" in spec.options:
+                image_opts = _image_options_for_napari(spec.options)
+                if "colormap" in image_opts:
+                    existing.colormap = image_opts["colormap"]
+                if spec.contrast_limits is not None:
+                    existing.contrast_limits = spec.contrast_limits
+                for key in ("blending", "opacity", "rendering"):
+                    if key in image_opts:
+                        setattr(existing, key, image_opts[key])
+            if spec.kind == "vectors":
+                vector_options = with_projection_mode(spec.kind, spec.options)
+                for key in ("edge_width", "vector_style", "projection_mode"):
+                    if key in vector_options:
+                        setattr(existing, key, vector_options[key])
+                _apply_vectors_length(existing, spec)
+            _colour_layer(existing, spec.colour_by, spec.colour_kind,
+                          spec.colour_cycle, spec.contrast_limits)
+            _store_sweep_metadata(existing, spec)
+            _store_layer_set_metadata(existing, spec)
+            _store_branch_hover_metadata(existing, spec)
+            _maybe_store_z_filter_cache(existing, spec)
+            _store_thick_thin_skeleton_metadata(existing, spec)
+            _store_binary_render_metadata(existing, spec)
+            _store_segmentation_cleanup_metadata(existing, spec)
+            return
 
     if existing is not None:
         viewer.layers.remove(existing)
 
     adder = getattr(viewer, f"add_{spec.kind}")
-    options = dict(spec.options)
+    options = with_projection_mode(spec.kind, spec.options)
+    if spec.kind == "image":
+        options = _image_options_for_napari(options)
+    for key in _BRANCH_HOVER_OPTION_KEYS:
+        options.pop(key, None)
+    for key in _THICK_THIN_OPTION_KEYS:
+        options.pop(key, None)
+    for key in _SEGMENTATION_CLEANUP_OPTION_KEYS:
+        options.pop(key, None)
     if spec.features:
         options["features"] = dict(spec.features)
-    layer = adder(spec.data, name=spec.name, scale=spec.scale,
-                  visible=spec.visible, metadata={OURS: {"kind": spec.kind}}, **options)
+    add_kwargs = {
+        "name": spec.name,
+        "scale": spec.scale,
+        "visible": saved_visible if spec.visible else False,
+        "metadata": {OURS: {"kind": spec.kind}},
+        **options,
+    }
+    if spec.kind == "image" and spec.contrast_limits is not None:
+        add_kwargs.setdefault("contrast_limits", spec.contrast_limits)
+    layer = adder(spec.data, **add_kwargs)
+    _keep_layer_interaction(layer, spec, visible=saved_visible, mode=saved_mode)
     _colour_layer(layer, spec.colour_by, spec.colour_kind,
                   spec.colour_cycle, spec.contrast_limits)
+    _store_sweep_metadata(layer, spec)
+    _store_layer_set_metadata(layer, spec)
+    _store_branch_hover_metadata(layer, spec)
+    _maybe_store_z_filter_cache(layer, spec)
+    _store_thick_thin_skeleton_metadata(layer, spec)
+    _store_binary_render_metadata(layer, spec)
+    _store_segmentation_cleanup_metadata(layer, spec)
+
+
+def _store_sweep_metadata(layer, spec) -> None:
+    """Keep sweep grid + indexing on the layer so sliders can refresh features."""
+    tag = dict(getattr(layer, "metadata", {}).get(OURS) or {})
+    tag["kind"] = getattr(spec, "kind", tag.get("kind"))
+    if getattr(spec, "sweep", None) is not None:
+        tag["sweep"] = spec.sweep
+        tag["segment_owner"] = spec.segment_owner
+        tag["sweep_edge_index"] = spec.sweep_edge_index
+        tag["sweep_directions"] = getattr(spec, "sweep_directions", None)
+        tag["colour_by"] = spec.colour_by
+        tag["contrast_limits"] = spec.contrast_limits
+    else:
+        tag.pop("sweep", None)
+        tag.pop("segment_owner", None)
+        tag.pop("sweep_edge_index", None)
+        tag.pop("sweep_directions", None)
+    if getattr(spec, "sweep_points", None) is not None:
+        tag["sweep_points"] = spec.sweep_points
+        tag["sweep_points_colour_cycle"] = spec.colour_cycle
+    else:
+        tag.pop("sweep_points", None)
+        tag.pop("sweep_points_colour_cycle", None)
+    if getattr(spec, "sweep_rows", None) is not None:
+        tag["sweep_rows"] = spec.sweep_rows
+    else:
+        tag.pop("sweep_rows", None)
+    metadata = dict(getattr(layer, "metadata", {}) or {})
+    metadata[OURS] = tag
+    layer.metadata = metadata
+
+
+def _store_layer_set_metadata(layer, spec) -> None:
+    """Remember which perturbation's network *layer* draws, if any."""
+    tag = dict(getattr(layer, "metadata", {}).get(OURS) or {})
+    key = getattr(spec, "layer_set", None)
+    if key is None:
+        tag.pop("layer_set", None)
+    else:
+        tag["layer_set"] = str(key)
+    metadata = dict(getattr(layer, "metadata", {}) or {})
+    metadata[OURS] = tag
+    layer.metadata = metadata
+
+
+def _layer_set_of(layer) -> str | None:
+    """The perturbation whose network *layer* draws; None for anything else."""
+    tag = getattr(layer, "metadata", {}).get(OURS) or {}
+    key = tag.get("layer_set")
+    return None if key is None else str(key)
+
+
+def _perturbation_sets_in(viewer) -> list[str]:
+    """The perturbations with a network in the viewer, in layer order."""
+    if viewer is None:
+        return []
+    keys = (_layer_set_of(layer) for layer in viewer.layers if _is_ours(layer))
+    return list(dict.fromkeys(key for key in keys if key is not None))
+
+
+def _layer_set_shown(viewer) -> str | None:
+    """The network the view panel shows: a perturbation's name, or None."""
+    return getattr(viewer, "_haemolynx_layer_set", None)
+
+
+def _apply_layer_set_visibility(viewer, key, roles) -> None:
+    from haemolynx.gui.layer_sets import visibility_for
+
+    present = [layer.name for layer in viewer.layers if _is_ours(layer)]
+    keys = [None, *_perturbation_sets_in(viewer)]
+    for name, visible in visibility_for(key, keys, roles, present).items():
+        layer = viewer.layers[name]
+        if bool(layer.visible) != visible:
+            if not visible and _is_vessel_tubes_layer(layer):
+                _hide_tube_surface(layer)
+            else:
+                layer.visible = visible
+
+
+def show_layer_set(viewer, key: str | None) -> None:
+    """Show one network -- the baseline (None) or a perturbation -- and hide
+    every other network's vessels, nodes, flow direction and pericytes.
+
+    Which kinds of layer were on carries across from the network shown
+    before (see :mod:`haemolynx.gui.layer_sets`). A perturbation with no
+    layers in the viewer shows the baseline instead.
+    """
+    from haemolynx.gui.layer_sets import carried_roles, role_visibility
+
+    if viewer is None:
+        return
+    if key is not None and key not in _perturbation_sets_in(viewer):
+        key = None
+    shown = _layer_set_shown(viewer)
+    visible = {layer.name: bool(layer.visible) for layer in viewer.layers if _is_ours(layer)}
+    remembered = getattr(viewer, "_haemolynx_layer_set_roles", {}) or {}
+    outgoing = role_visibility(shown, visible)
+    if shown is not None and shown not in _perturbation_sets_in(viewer):
+        # What was shown has gone: fall back to how the baseline was left.
+        outgoing = remembered
+    roles = carried_roles(role_visibility(key, visible), outgoing, remembered)
+    viewer._haemolynx_layer_set = key
+    viewer._haemolynx_layer_set_roles = roles
+    _apply_layer_set_visibility(viewer, key, roles)
+    _sync_vessel_tubes(viewer)
+
+
+def _reapply_layer_set(viewer) -> None:
+    """Keep the chosen network shown after layers were redrawn or removed.
+
+    A redrawn perturbation layer comes back hidden, as every perturbation
+    layer starts; a removed one leaves nothing to show, so the baseline
+    comes back.
+    """
+    shown = _layer_set_shown(viewer)
+    if shown is None:
+        return
+    if shown not in _perturbation_sets_in(viewer):
+        show_layer_set(viewer, None)
+        return
+    _apply_layer_set_visibility(
+        viewer, shown, getattr(viewer, "_haemolynx_layer_set_roles", {}) or {}
+    )
+
+
+def _store_branch_hover_metadata(layer, spec) -> None:
+    """Remember which hover metrics a stage offered, for the controls panel."""
+    available = spec.options.get("branch_hover_available")
+    selected = spec.options.get("branch_hover_selected")
+    if available is None and selected is None:
+        return
+    tag = dict(getattr(layer, "metadata", {}).get(OURS) or {})
+    tag["kind"] = getattr(spec, "kind", tag.get("kind"))
+    if available is not None:
+        tag["branch_hover_available"] = tuple(available)
+    if selected is not None:
+        tag["branch_hover_selected"] = tuple(selected)
+    metadata = dict(getattr(layer, "metadata", {}) or {})
+    metadata[OURS] = tag
+    layer.metadata = metadata
+
+
+def _store_thick_thin_skeleton_metadata(layer, spec) -> None:
+    """Keep the boolean skeleton and its fat catchment on the layer.
+
+    Read by the thick/thin debug toggle to recompute its display after every
+    stage that re-emits this same layer (build_network, assign_boundaries,
+    solve all redraw it), not only the skeletonise run that first computed
+    it. Cleared, not left stale, on a run that did not use thickness-gated
+    skeletonisation -- otherwise a later rerun with it off would still offer
+    a toggle backed by a previous run's mask.
+    """
+    thick_vessel_mask = spec.options.get("thick_vessel_mask")
+    metadata = dict(getattr(layer, "metadata", {}) or {})
+    tag = dict(metadata.get(OURS) or {})
+    if thick_vessel_mask is None:
+        tag.pop("thick_vessel_mask", None)
+        tag.pop("skeleton_bool", None)
+    else:
+        tag["thick_vessel_mask"] = thick_vessel_mask
+        tag["skeleton_bool"] = np.asarray(spec.data, dtype=bool)
+    metadata[OURS] = tag
+    layer.metadata = metadata
+
+
+def _store_binary_render_metadata(layer, spec) -> None:
+    """Remember that *layer* was laid out with the transparent-background
+    mask style (``results.BINARY_IMAGE_VOLUME_OPTIONS`` /
+    ``MASK_VOLUME_OPTIONS``), independent of which colormap is currently
+    applied.
+
+    ``_focus_image_layer_rendering`` used to tell this apart from plain
+    grayscale by checking ``layer.colormap.name`` against the custom
+    ``haemolynx_vessel_mask`` colormap's own name -- which broke the moment
+    a user picked any other colormap from napari's own dropdown: the check
+    then read the layer as ordinary grayscale and overwrote its rendering
+    back to MIP-family, turning a dense volume solid again (the exact bug
+    the translucent rendering exists to avoid) regardless of which
+    colormap they chose. A metadata flag set once at layer-creation time
+    survives any later colormap change.
+    """
+    if spec.kind != "image":
+        return
+    tag = dict(getattr(layer, "metadata", {}).get(OURS) or {})
+    if "mask_colour" in spec.options:
+        tag["binary_render"] = True
+    else:
+        tag.pop("binary_render", None)
+    metadata = dict(getattr(layer, "metadata", {}) or {})
+    metadata[OURS] = tag
+    layer.metadata = metadata
+
+
+def _thick_thin_skeleton_state(layer) -> tuple[np.ndarray | None, np.ndarray | None]:
+    """The ``(skeleton_bool, thick_vessel_mask)`` a toggle needs, or ``(None, None)``."""
+    tag = getattr(layer, "metadata", {}).get(OURS) or {}
+    return tag.get("skeleton_bool"), tag.get("thick_vessel_mask")
+
+
+def _apply_thick_thin_skeleton_display(
+    layer, *, show: bool, default_colormap,
+    z_window: tuple[float, float, float | None] | None = None,
+) -> None:
+    """Recolour the skeleton layer to show thick vs. thin voxels, or revert.
+
+    Reads the layer's own stashed skeleton/thick-mask fresh every time
+    (rather than a value captured when the toggle was built), so it stays
+    correct across reruns without any separate refresh bookkeeping.
+    *default_colormap* is napari's own colormap object, captured once when
+    the checkbox was first built (before this ever touched it) -- napari 0.9
+    Labels layers have no "reset to default" short of handing the original
+    object back. *z_window*, when given, is the Z-depth filter's current
+    ``(z_min, z_max, z_extent)`` (see ``_current_z_depth_window``): both
+    caches this reads are the full, unclipped volume, so without this the
+    Z-depth window and this recolouring would each silently discard
+    whichever one the other applied last.
+    """
+    skeleton_bool, thick_vessel_mask = _thick_thin_skeleton_state(layer)
+    if show and skeleton_bool is not None and thick_vessel_mask is not None:
+        if z_window is not None:
+            z_min, z_max, z_extent = z_window
+            dz = _layer_voxel_size_z(layer)
+            skeleton_bool = np.asanyarray(
+                clip_volume_to_z(skeleton_bool, dz, z_min, z_max, z_extent=z_extent),
+                dtype=bool,
+            )
+            thick_vessel_mask = np.asanyarray(
+                clip_volume_to_z(thick_vessel_mask, dz, z_min, z_max, z_extent=z_extent),
+                dtype=bool,
+            )
+        layer.data = _thick_thin_skeleton_labels(skeleton_bool, thick_vessel_mask)
+        layer.colormap = {
+            1: THIN_SKELETON_COLOUR,
+            2: THICK_SKELETON_COLOUR,
+            None: (0.0, 0.0, 0.0, 0.0),
+        }
+        return
+    # Revert the colormap even when there is no skeleton_bool to redraw from
+    # (a rerun dropped the fat catchment) -- otherwise the layer is left
+    # stuck on the two-colour debug scheme with no control left to fix it.
+    layer.colormap = default_colormap
+    if skeleton_bool is not None:
+        data = _as_uint8_layer_data(skeleton_bool)
+        if z_window is not None:
+            z_min, z_max, z_extent = z_window
+            dz = _layer_voxel_size_z(layer)
+            data = clip_volume_to_z(data, dz, z_min, z_max, z_extent=z_extent)
+        layer.data = data
+
+
+def _attach_thick_thin_skeleton_toggle(viewer, layer) -> bool:
+    """Put the thick/thin debug checkbox on the skeleton layer's controls, once.
+
+    Only offered when this run's skeleton actually carries a fat catchment
+    (``use_thick_vessel_skeletonisation`` was on) -- see
+    _store_thick_thin_skeleton_metadata. The checkbox itself lives on the
+    layer's own native controls, so napari already shows it only while this
+    layer is the active selection. Scoped to the skeleton layer by name, not
+    just by its napari Labels kind, so a future non-skeleton Labels layer
+    does not silently pick up this checkbox and get recoloured from whatever
+    unrelated thick_vessel_mask/skeleton_bool metadata happens to be on it.
+    """
+    from qtpy.QtWidgets import QCheckBox
+
+    if layer.__class__.__name__.lower() != "labels":
+        return False
+    if getattr(layer, "name", None) != SKELETON:
+        return False
+    _skeleton_bool, thick_vessel_mask = _thick_thin_skeleton_state(layer)
+    available = thick_vessel_mask is not None
+    controls = _layer_controls(viewer, layer)
+    if controls is None:
+        return False
+    checkbox = getattr(controls, "_haemolynx_thick_thin", None)
+    if checkbox is not None:
+        checkbox.setEnabled(available)
+        if not available:
+            checkbox.setChecked(False)
+        _apply_thick_thin_skeleton_display(
+            layer, show=checkbox.isChecked(),
+            default_colormap=checkbox._haemolynx_default_colormap,
+            z_window=_current_z_depth_window(viewer),
+        )
+        return True
+    layout = controls.layout()
+    if not hasattr(layout, "addRow"):
+        return False
+    checkbox = QCheckBox("Thick/thin skeleton (debug)")
+    checkbox.setToolTip(
+        "Colour the skeleton by whether each part was treated as a thick or "
+        "a thin vessel"
+    )
+    checkbox.setEnabled(available)
+    # Captured once, before this ever recolours the layer: napari 0.9 Labels
+    # layers have no "reset to default" short of handing this object back.
+    checkbox._haemolynx_default_colormap = layer.colormap
+    checkbox.toggled.connect(
+        lambda checked, l=layer, cb=checkbox: _apply_thick_thin_skeleton_display(
+            l, show=checked, default_colormap=cb._haemolynx_default_colormap,
+            z_window=_current_z_depth_window(viewer),
+        )
+    )
+    layout.addRow(checkbox)
+    controls._haemolynx_thick_thin = checkbox
+    return True
+
+
+def _resync_thick_thin_skeleton_after_z_change(viewer) -> None:
+    """Re-apply the thick/thin recolouring on top of a just-changed Z-depth
+    window, for whichever skeleton layer has the toggle checked.
+
+    ``_apply_volume_z_display`` (called just before this, from
+    ``apply_view_z``) overwrites the skeleton layer's data from its own
+    plain, unclipped cache -- silently discarding the two-colour recolouring
+    if the toggle is on. This puts it back, clipped to the same window, so
+    the two features compose instead of clobbering each other.
+    """
+    if viewer is None:
+        return
+    z_window = _current_z_depth_window(viewer)
+    for layer in viewer.layers:
+        if layer.__class__.__name__.lower() != "labels":
+            continue
+        if getattr(layer, "name", None) != SKELETON:
+            continue
+        controls = _layer_controls(viewer, layer)
+        checkbox = getattr(controls, "_haemolynx_thick_thin", None) if controls is not None else None
+        if checkbox is None or not checkbox.isChecked():
+            continue
+        _apply_thick_thin_skeleton_display(
+            layer, show=True, default_colormap=checkbox._haemolynx_default_colormap,
+            z_window=z_window,
+        )
+
+
+def _store_segmentation_cleanup_metadata(layer, spec) -> None:
+    """Keep the pre-cleanup mask on the IMAGE layer, plus the corrected mask
+    it is being drawn with, for the raw-vs-corrected debug toggle.
+
+    Mirrors ``_store_thick_thin_skeleton_metadata``. Cleared, not left
+    stale, on a run whose segmentation_cleanup_* settings were all off --
+    otherwise a later rerun without cleanup would still offer a toggle
+    backed by a previous run's mask.
+    """
+    if spec.kind != "image":
+        return
+    raw_segmented_image = spec.options.get("raw_segmented_image")
+    metadata = dict(getattr(layer, "metadata", {}) or {})
+    tag = dict(metadata.get(OURS) or {})
+    if raw_segmented_image is None:
+        tag.pop("raw_segmented_image", None)
+        tag.pop("corrected_mask_bool", None)
+    else:
+        tag["raw_segmented_image"] = np.asarray(raw_segmented_image, dtype=bool)
+        tag["corrected_mask_bool"] = np.asarray(spec.data, dtype=bool)
+    metadata[OURS] = tag
+    layer.metadata = metadata
+
+
+def _segmentation_cleanup_state(layer) -> tuple[np.ndarray | None, np.ndarray | None]:
+    """The ``(corrected_mask_bool, raw_segmented_image)`` a toggle needs, or ``(None, None)``."""
+    tag = getattr(layer, "metadata", {}).get(OURS) or {}
+    return tag.get("corrected_mask_bool"), tag.get("raw_segmented_image")
+
+
+def _segmentation_cleanup_diff_labels(corrected: np.ndarray, raw: np.ndarray) -> np.ndarray:
+    """Four labels: 0 background, 1 unchanged, 2 added by cleanup, 3 removed
+    by cleanup. Pure, shape-agnostic, like ``_thick_thin_skeleton_labels``."""
+    def labels_for(corrected, raw):
+        corr = np.asarray(corrected, dtype=bool)
+        raw_bool = np.asarray(raw, dtype=bool)
+        labels = np.zeros(corr.shape, dtype=np.uint8)
+        labels[corr & raw_bool] = 1
+        labels[corr & ~raw_bool] = 2
+        labels[~corr & raw_bool] = 3
+        return labels
+
+    if _on_disk(corrected, raw) and np.shape(corrected) == np.shape(raw):
+        return _labels_by_slab(labels_for, corrected, raw)
+    return labels_for(corrected, raw)
+
+
+def _apply_segmentation_cleanup_display(
+    layer, *, show: bool, default_colormap, default_contrast_limits,
+    z_window: tuple[float, float, float | None] | None = None,
+) -> None:
+    """Recolour the IMAGE layer to show cleanup's changes, or revert.
+
+    ``IMAGE`` is a napari Image layer, not a Labels layer like ``SKELETON``,
+    so the thick/thin toggle's ``layer.colormap = {1: ..., ...}`` dict trick
+    (valid only for Labels) does not apply. Reuses this codebase's only
+    existing Image-layer recolour precedent instead --
+    ``_image_options_for_napari``'s two-stop ``Colormap`` trick for
+    ``mask_colour`` -- extended to four stops, with
+    ``contrast_limits=(0, 3)`` so each integer label lands exactly on a
+    control point with no interpolation.
+    """
+    corrected_bool, raw_mask = _segmentation_cleanup_state(layer)
+    if show and corrected_bool is not None and raw_mask is not None:
+        if z_window is not None:
+            z_min, z_max, z_extent = z_window
+            dz = _layer_voxel_size_z(layer)
+            corrected_bool = np.asanyarray(
+                clip_volume_to_z(corrected_bool, dz, z_min, z_max, z_extent=z_extent),
+                dtype=bool,
+            )
+            raw_mask = np.asanyarray(
+                clip_volume_to_z(raw_mask, dz, z_min, z_max, z_extent=z_extent),
+                dtype=bool,
+            )
+        from napari.utils.colormaps import Colormap
+
+        layer.data = _segmentation_cleanup_diff_labels(corrected_bool, raw_mask)
+        layer.colormap = Colormap(
+            [
+                [0.0, 0.0, 0.0, 0.0],
+                list(SEGMENTATION_CLEANUP_UNCHANGED_COLOUR),
+                list(SEGMENTATION_CLEANUP_ADDED_COLOUR),
+                list(SEGMENTATION_CLEANUP_REMOVED_COLOUR),
+            ],
+            name="haemolynx_segmentation_cleanup_diff",
+        )
+        layer.contrast_limits = (0.0, 3.0)
+        return
+    layer.colormap = default_colormap
+    layer.contrast_limits = default_contrast_limits
+    if corrected_bool is not None:
+        data = _as_uint8_layer_data(corrected_bool)
+        if z_window is not None:
+            z_min, z_max, z_extent = z_window
+            dz = _layer_voxel_size_z(layer)
+            data = clip_volume_to_z(data, dz, z_min, z_max, z_extent=z_extent)
+        layer.data = data
+
+
+def _attach_segmentation_cleanup_toggle(viewer, layer) -> bool:
+    """Put the segmentation-cleanup debug checkbox on the IMAGE layer's
+    controls, once.
+
+    Only offered when this run's mask actually carries a pre-cleanup
+    version (at least one segmentation_cleanup_* step was on) -- see
+    ``_store_segmentation_cleanup_metadata``. Mirrors
+    ``_attach_thick_thin_skeleton_toggle`` including its defensive
+    ``hasattr(layout, "addRow")`` guard: if napari's Image-layer controls
+    widget does not expose an addRow-capable layout the way Labels controls
+    do, the toggle is simply not offered rather than raising.
+    """
+    from qtpy.QtWidgets import QCheckBox
+
+    if layer.__class__.__name__.lower() != "image":
+        return False
+    if getattr(layer, "name", None) != IMAGE:
+        return False
+    _corrected, raw_mask = _segmentation_cleanup_state(layer)
+    available = raw_mask is not None
+    controls = _layer_controls(viewer, layer)
+    if controls is None:
+        return False
+    checkbox = getattr(controls, "_haemolynx_segmentation_cleanup", None)
+    if checkbox is not None:
+        checkbox.setEnabled(available)
+        if not available:
+            checkbox.setChecked(False)
+        _apply_segmentation_cleanup_display(
+            layer, show=checkbox.isChecked(),
+            default_colormap=checkbox._haemolynx_default_colormap,
+            default_contrast_limits=checkbox._haemolynx_default_contrast_limits,
+            z_window=_current_z_depth_window(viewer),
+        )
+        return True
+    layout = controls.layout()
+    if not hasattr(layout, "addRow"):
+        return False
+    checkbox = QCheckBox("Segmentation cleanup: show changes (debug)")
+    checkbox.setToolTip(
+        "Colour the mask by which voxels the clean-up before skeletonising "
+        "added or removed"
+    )
+    checkbox.setEnabled(available)
+    # Captured once, before this ever recolours the layer.
+    checkbox._haemolynx_default_colormap = layer.colormap
+    checkbox._haemolynx_default_contrast_limits = layer.contrast_limits
+    checkbox.toggled.connect(
+        lambda checked, l=layer, cb=checkbox: _apply_segmentation_cleanup_display(
+            l, show=checked, default_colormap=cb._haemolynx_default_colormap,
+            default_contrast_limits=cb._haemolynx_default_contrast_limits,
+            z_window=_current_z_depth_window(viewer),
+        )
+    )
+    layout.addRow(checkbox)
+    controls._haemolynx_segmentation_cleanup = checkbox
+    return True
+
+
+def _resync_segmentation_cleanup_after_z_change(viewer) -> None:
+    """Mirror of ``_resync_thick_thin_skeleton_after_z_change`` for the
+    IMAGE layer's segmentation-cleanup toggle."""
+    if viewer is None:
+        return
+    z_window = _current_z_depth_window(viewer)
+    for layer in viewer.layers:
+        if layer.__class__.__name__.lower() != "image":
+            continue
+        if getattr(layer, "name", None) != IMAGE:
+            continue
+        controls = _layer_controls(viewer, layer)
+        checkbox = (
+            getattr(controls, "_haemolynx_segmentation_cleanup", None)
+            if controls is not None else None
+        )
+        if checkbox is None or not checkbox.isChecked():
+            continue
+        _apply_segmentation_cleanup_display(
+            layer, show=True, default_colormap=checkbox._haemolynx_default_colormap,
+            default_contrast_limits=checkbox._haemolynx_default_contrast_limits,
+            z_window=z_window,
+        )
+
+
+#: Axis name -> short slider label.
+_SWEEP_AXIS_LABELS = {
+    "dilation_percent": "Constriction/dilation %",
+    "inlet_pressure_pa": "Inlet pressure (Pa)",
+    "constriction_spacing_um": "Spacing (µm)",
+    "constriction_length_um": "Length (µm)",
+}
+
+
+def _sweep_axis_label(name: str) -> str:
+    return _SWEEP_AXIS_LABELS.get(str(name), str(name).replace("_", " "))
+
+
+def _apply_sweep_index(layer, indices: tuple[int, ...]) -> None:
+    """Swap flow feature columns for *indices* without rebuilding geometry."""
+    import numpy as np
+
+    tag = getattr(layer, "metadata", {}).get(OURS) or {}
+    sweep = tag.get("sweep")
+    owner = tag.get("segment_owner")
+    edge_index = tag.get("sweep_edge_index")
+    if sweep is None or owner is None or edge_index is None:
+        return
+
+    edge_index = np.asarray(edge_index, dtype=int)
+
+    # This grid point's columns per drawable edge, then spread over segments.
+    per_edge: dict[str, np.ndarray] = {}
+    flow_abs = np.asarray(sweep.flow_abs_at(*indices), dtype=float)
+    per_edge["flow_abs"] = flow_abs[edge_index]
+    from haemolynx.haemodynamics.resistance import flow_abs_log10_values
+
+    per_edge["flow_abs_log10"] = flow_abs_log10_values(flow_abs)[edge_index]
+    signed = sweep.flow_signed_at(*indices)
+    if signed is not None:
+        per_edge["flow_signed"] = np.asarray(signed, dtype=float)[edge_index]
+    directions = tag.get("sweep_directions")
+    if signed is not None and directions is not None:
+        from haemolynx.gui.results import sweep_direction_columns
+
+        per_edge.update(
+            (name, np.asarray(values))
+            for name, values in sweep_direction_columns(
+                directions, np.asarray(signed, dtype=float)[edge_index]
+            ).items()
+        )
+    drop = sweep.pressure_drop_at(*indices)
+    if drop is not None:
+        per_edge["pressure_drop"] = np.asarray(drop, dtype=float)[edge_index]
+
+    def _with_grid_point(features: Mapping[str, Any], segment_owner) -> dict[str, Any]:
+        segment_owner = np.asarray(segment_owner, dtype=int)
+        updated = dict(features)
+        for name, values in per_edge.items():
+            if name == "flow_abs" or name in updated:
+                updated[name] = values[segment_owner]
+        mask_unsolved_flow_columns(updated)
+        return updated
+
+    layer.features = _with_grid_point(layer.features, owner)
+    # The Z-depth filter redraws the layer from its full cache, so the cache
+    # has to hold this grid point too -- otherwise the next depth change
+    # quietly puts back the flows of whichever point was cached.
+    cache = tag.get("z_filter_full")
+    if isinstance(cache, dict) and cache.get("segment_owner") is not None:
+        tag = dict(tag)
+        tag["z_filter_full"] = {
+            **cache,
+            "features": _with_grid_point(cache["features"], cache["segment_owner"]),
+        }
+        metadata = dict(getattr(layer, "metadata", {}) or {})
+        metadata[OURS] = tag
+        layer.metadata = metadata
+
+    colour_by = tag.get("colour_by") or "flow_abs"
+    _colour_layer(layer, colour_by, "continuous", (),
+                  _sweep_contrast_limits(sweep, tag, colour_by))
+
+
+def _sweep_contrast_limits(sweep, tag: Mapping[str, Any], column: str | None):
+    """The range a sweep layer's colouring keeps as its slider moves.
+
+    Flow and log10 flow span the whole grid -- the range the layer was drawn
+    with (``results.sweep_flow_colour_limits``) -- so sliding does not
+    re-stretch the colours. Any other column fits itself (None). The limits
+    kept on the layer are for whichever column it was drawn coloured by:
+    flow's, in m^3/s, applied to log10 flow -- about -13 -- put every vessel
+    below the bottom of the colormap the moment the slider moved, so a network
+    coloured by log flow went dark.
+
+    A range the user set for *column* (typed, or a Fit button) wins over
+    all of that, so moving the slider never undoes it."""
+    chosen = (tag.get(USER_CONTRAST_LIMITS) or {}).get(column)
+    if chosen is not None:
+        return tuple(chosen)
+    from haemolynx.gui.results import sweep_flow_colour_limits
+
+    return sweep_flow_colour_limits(sweep, column)
+
+
+def _apply_sweep_points(viewer, layer_set: str | None, row: int) -> None:
+    """Move network *layer_set*'s sweep-following layers to grid *row*.
+
+    A spacing or length sweep moves the pericytes themselves, so this swaps
+    the points, not a column; the nodes take the grid point's pressures and
+    the flow arrows its directions (``sweep_rows``). The Z-depth filter's
+    cache takes the grid point's whole set, and the layer shows the part
+    inside the current window, as the filter would have drawn it.
+    """
+    for layer in list(viewer.layers):
+        if not _is_ours(layer) or _layer_set_of(layer) != layer_set:
+            continue
+        tag = getattr(layer, "metadata", {}).get(OURS) or {}
+        per_row = tag.get("sweep_points")
+        rows_of = tag.get("sweep_rows")
+        if per_row is not None and 0 <= row < len(per_row):
+            data, features = per_row[row]
+        elif rows_of is not None and 0 <= row < len(rows_of):
+            data, features = rows_of.at(row)
+        else:
+            continue
+        kind = "vectors" if layer.__class__.__name__ == "Vectors" else "points"
+        rule = _colouring_rule(layer)
+        _store_z_filter_cache(layer, data, features)
+        shown, shown_features = data, features
+        window = _current_z_depth_window(viewer)
+        if window is not None and kind == "vectors":
+            shown, shown_features, _owner = filter_vectors_by_z(data, features, window[0], window[1])
+        elif window is not None:
+            shown, shown_features = filter_points_by_z(data, features, window[0], window[1])
+        # Fewer items than before recreates the layer (see
+        # _set_z_filtered_layer_data), so its colour controls go back on as
+        # the Z-depth filter puts them back.
+        layer = _set_z_filtered_layer_data(
+            viewer, layer, kind, shown, dict(shown_features), None
+        )
+        _note_z_filter_window(layer, None if window is None else tuple(window))
+        try:
+            _attach_colour_scale(viewer, layer)
+        except Exception:  # noqa: BLE001 - a missing colour bar is survivable
+            logger.debug("could not reattach colour controls to %s", layer.name, exc_info=True)
+        if len(layer.data):
+            cycle = tag.get("sweep_points_colour_cycle")
+            if rule is not None and rule["column"] == "branch_order" and cycle:
+                # The cycle covers every grid point's branch orders, so a
+                # pericyte keeps its colour as the slider moves.
+                _colour_layer(layer, "branch_order", "categorical", cycle)
+            else:
+                _reapply_colouring(layer, rule, features)
+        try:
+            _refresh_layer_controls(viewer, layer)
+        except Exception:  # noqa: BLE001 - a stale readout is survivable
+            logger.debug("could not refresh colour controls on %s", layer.name, exc_info=True)
+
+
+def _sweep_dock_name(layer_name: str) -> str:
+    return f"{layer_name} sweep"
+
+
+def _remove_sweep_sliders(viewer, layer_name: str) -> None:
+    """Take down the sweep sliders for *layer_name*, if there are any.
+
+    Sliders outlive their layer otherwise: Clear, a run from an earlier tab,
+    or a perturbation that failed or changed type left sliders driving a
+    layer that was gone or no longer a sweep. They live in the view panel
+    (see :func:`_attach_sweep_sliders`), or in a dock of their own when the
+    viewer has no panel.
+    """
+    host = getattr(viewer, "_haemolynx_sweep_host", None)
+    if host is not None:
+        try:
+            host.remove(layer_name)
+        except Exception:  # noqa: BLE001
+            logger.debug("could not remove sweep sliders for %s", layer_name, exc_info=True)
+    dock_name = _sweep_dock_name(layer_name)
+    try:
+        window = viewer.window
+        docks = getattr(window, "_wrapped_dock_widgets", None)
+        if docks is None:  # napari < 0.6.2
+            docks = getattr(window, "_dock_widgets", {})
+        for dock in list(docks.values()):
+            if getattr(dock, "objectName", lambda: "")() == dock_name or (
+                hasattr(dock, "windowTitle") and dock.windowTitle() == dock_name
+            ):
+                window.remove_dock_widget(dock)
+    except Exception:  # noqa: BLE001
+        logger.debug("could not remove sweep dock %s", dock_name, exc_info=True)
+
+
+def _attach_sweep_sliders(viewer, layer, spec) -> None:
+    """One or two integer sliders for a sweep Vectors layer.
+
+    They go in the view panel's Sweep box, which shows only the sliders of
+    the perturbation chosen under "Showing"; a viewer with no panel gets them
+    in a dock of their own.
+    """
+    # Drop previous sliders for this layer on re-run -- and keep them dropped
+    # when this layer is no longer a sweep.
+    _remove_sweep_sliders(viewer, spec.name)
+    sweep = getattr(spec, "sweep", None)
+    if sweep is None:
+        return
+
+    from magicgui.widgets import Container, Label, Slider
+
+    from haemolynx.gui.chrome_tooltips import SWEEP_SLIDER_TOOLTIP
+
+    dock_name = _sweep_dock_name(spec.name)
+
+    sliders: list = []
+    value_labels: list = []
+    for axis_name in sweep.axis_names:
+        values = list(sweep.axis_values[axis_name])
+        slider = Slider(
+            value=0,
+            min=0,
+            max=max(len(values) - 1, 0),
+            step=1,
+            label=_sweep_axis_label(axis_name),
+            tooltip=SWEEP_SLIDER_TOOLTIP,
+        )
+        _readout_hover_text(slider)
+        readout = Label(value=_format_sweep_value(axis_name, values[0] if values else 0))
+        sliders.append((axis_name, slider, values, readout))
+        value_labels.append(readout)
+
+    layer_name = layer.name
+    network = getattr(spec, "layer_set", None)
+
+    def on_change(_event=None) -> None:
+        indices = tuple(int(slider.value) for _name, slider, _vals, _lab in sliders)
+        for (_name, slider, values, readout), index in zip(sliders, indices):
+            if 0 <= index < len(values):
+                readout.value = _format_sweep_value(_name, values[index])
+        try:
+            _apply_sweep_points(viewer, network, sweep.flat_index(*indices))
+        except Exception:  # noqa: BLE001 - the flows below still move
+            logger.debug("could not move %s's sweep points", network, exc_info=True)
+        # By name, not the layer object this slider was built for: narrowing
+        # the Z-depth filter replaces the layer with a new one, and a slider
+        # still holding the old object moved flows on a layer no longer shown.
+        current = viewer.layers[layer_name] if layer_name in viewer.layers else None
+        if current is None:
+            return
+        _apply_sweep_index(current, indices)
+        try:
+            _refresh_layer_controls(viewer, current)
+            _attach_colour_scale(viewer, current)
+        except Exception:  # noqa: BLE001
+            logger.debug("sweep slider refresh failed for %s", layer_name, exc_info=True)
+
+    for _name, slider, _values, _readout in sliders:
+        slider.changed.connect(on_change)
+
+    rows = []
+    for _name, slider, _values, readout in sliders:
+        rows.append(slider)
+        rows.append(readout)
+    container = Container(widgets=rows, layout="vertical", labels=True)
+    host = getattr(viewer, "_haemolynx_sweep_host", None)
+    if host is not None:
+        host.add(spec.name, getattr(spec, "layer_set", None), container)
+        return
+    try:
+        dock = viewer.window.add_dock_widget(
+            container, name=dock_name, area="right", allowed_areas=["right", "left"]
+        )
+        try:
+            dock.setObjectName(dock_name)
+        except Exception:  # noqa: BLE001
+            pass
+    except Exception:  # noqa: BLE001
+        logger.debug("could not dock sweep sliders for %s", spec.name, exc_info=True)
+
+
+def _format_sweep_value(axis_name: str, value) -> str:
+    name = str(axis_name)
+    if "percent" in name:
+        return f"{value:g} %"
+    if "pressure" in name:
+        return f"{value:g} Pa"
+    if name.endswith("_um"):
+        return f"{value:g} µm"
+    return f"{value:g}"
 
 
 #: Spec kind -> the napari class name it becomes, for "is this the same sort of
 #: layer I already have?".
 _CLASS_FOR = {
     "image": "image", "labels": "labels", "points": "points",
-    "vectors": "vectors", "shapes": "shapes",
+    "vectors": "vectors", "shapes": "shapes", "surface": "surface",
 }
 
 
 #: Identifiers rather than quantities: colouring by one shows nothing.
-NOT_WORTH_COLOURING_BY = frozenset({"u", "v", "key", "edge_index", "node_id"})
+#: Hover metric copies (`flow`, `order`, `tortuosity`) ride on the vessels
+#: Vectors layer for the tooltip table and must not appear in Colour by.
+NOT_WORTH_COLOURING_BY = frozenset(
+    {
+        "u", "v", "key", "edge_index", "node_id", "tooltip", "branch_id",
+        "flow", "order", "tortuosity",
+        # The hover's copy of vessel_size_class, which is the colouring.
+        "size_class",
+        # Not a colouring of its own: under any flow-based colouring the
+        # unsolved vessels are the grey ones.
+        FLOW_SOLUTION,
+        # What the tubes draw a bridge by, not a quantity.
+        IS_ZERO_RESISTANCE,
+    }
+)
+
+#: The columns the colour-by dropdown lists first, in this order.
+_FLOW_COLOUR_COLUMN_ORDER = (
+    "flow_abs",
+    "flow_abs_log10",
+    # Branch order beside flow rather than alphabetically among ~30 analysis
+    # columns: its rank along the flow path and its signed generations from
+    # the capillary bed colour with a map, range and colour bar like flow;
+    # the label with a fixed palette in the same flow-path order.
+    "branch_order_rank",
+    "branch_order_signed",
+    "branch_order",
+    "flow_signed",
+    "flow_dir_rgb",
+    "flow_heading_deg",
+    "flow_dir_z",
+    "flow_dir_y",
+    "flow_dir_x",
+    "pressure_drop",
+    "pressure_u",
+    "pressure_v",
+    "resistance",
+    "resistance_log10",
+)
+
+#: Colormaps offered on Vectors/Points layer controls, grouped for scanning.
+#: Names are matplotlib/vispy maps ``ensure_colormap`` accepts; unknown ones
+#: are dropped when the combo is filled so an older napari still starts.
+COLORMAP_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        "Sequential",
+        ("viridis", "plasma", "inferno", "magma", "cividis", "turbo", "gray"),
+    ),
+    (
+        "Diverging",
+        ("coolwarm", "RdBu", "seismic", "PiYG", "bwr"),
+    ),
+    (
+        "Cyclic",
+        ("hsv", "twilight", "twilight_shifted"),
+    ),
+    (
+        "Other",
+        (
+            "jet",
+            "rainbow",
+            "hot",
+            "cool",
+            "spring",
+            "summer",
+            "autumn",
+            "winter",
+            "bone",
+            "copper",
+            "pink",
+        ),
+    ),
+)
+_COLORMAP_GROUP_HEADERS = frozenset(title for title, _names in COLORMAP_GROUPS)
+
+
+def _colour_by_columns(layer) -> list[str]:
+    """Feature columns worth offering for colouring, in a sensible order."""
+    names = [
+        name for name in getattr(layer, "features", {})
+        if name not in NOT_WORTH_COLOURING_BY
+    ]
+    order = {name: index for index, name in enumerate(_FLOW_COLOUR_COLUMN_ORDER)}
+    return sorted(names, key=lambda name: (order.get(name, len(order)), name))
 
 #: How wide and tall the colour bar is drawn, in pixels.
 COLORBAR_SIZE = (150, 12)
@@ -454,13 +5129,26 @@ def _data_range(layer, column: str | None, low_percentile=0.0, high_percentile=1
         return None
     if _is_text_column(layer, column):
         return None
+    if column in FLOW_DIR_COLUMNS or column == FLOW_HEADING_COLUMN:
+        _ensure_flow_dir_features(layer)
+    if column == FLOW_DIR_RGB_COLUMN:
+        return None
     try:
         values = np.asarray(layer.features[column], dtype=float)
     except (TypeError, ValueError):
         return None
-    finite = values[np.isfinite(values)]
+    finite = colour_values_for_range(column, values)
     if finite.size == 0:
         return None
+    if column == FLOW_HEADING_COLUMN:
+        return _flow_heading_contrast_limits(values)
+    if column in FLOW_DIR_COLUMNS:
+        return _flow_dir_contrast_limits(values)
+    if column == BRANCH_ORDER_SIGNED:
+        # Centred on the capillary bed, so a diverging map puts the arterial
+        # and venous sides on its two halves whatever their depths.
+        reach = max(float(np.max(np.abs(finite))), 1.0)
+        return -reach, reach
     low = float(np.percentile(finite, low_percentile))
     high = float(np.percentile(finite, high_percentile))
     if high <= low:
@@ -470,6 +5158,65 @@ def _data_range(layer, column: str | None, low_percentile=0.0, high_percentile=1
 
 def _contrast_limits_attribute(layer) -> str:
     return f"{_colour_attribute(layer).replace('_color', '')}_contrast_limits"
+
+
+def _colormap_attribute(layer) -> str:
+    """``edge_colormap`` / ``face_colormap`` -- not ``edge_color_colormap``.
+
+    Napari accepts setattr of a name it does not have: the value lands on a
+    stray attribute and the real colormap stays viridis. Same trap as
+    ``edge_color_contrast_limits`` (see ``_contrast_limits_attribute``).
+    """
+    return f"{_colour_attribute(layer).replace('_color', '')}_colormap"
+
+
+def _colormap_name(layer) -> str | None:
+    """The LUT currently on *layer*, or None if it has none -- named as the
+    map a grey-NaN copy was made from."""
+    cmap = getattr(layer, _colormap_attribute(layer), None)
+    name = getattr(cmap, "name", None)
+    return _base_colormap_name(str(name)) if name else None
+
+
+def _colormap_usable(layer) -> bool:
+    """Whether a 1D LUT applies: colormap mode, not direct RGB or a cycle."""
+    if layer is None:
+        return False
+    if not hasattr(layer, _colormap_attribute(layer)):
+        return False
+    column = _active_column(layer)
+    if column in {None, "", "none", FLOW_DIR_RGB_COLUMN}:
+        return False
+    if _is_text_column(layer, column):
+        return False
+    mode = getattr(layer, f"{_colour_attribute(layer)}_mode", None)
+    return mode == "colormap"
+
+
+def _apply_colormap(layer, name: str) -> bool:
+    """Set the layer's LUT and re-map the active column so the canvas updates."""
+    applied = False
+    for attribute in _colour_attributes(layer):
+        cmap_attr = f"{attribute.replace('_color', '')}_colormap"
+        if not hasattr(layer, cmap_attr):
+            continue
+        try:
+            setattr(layer, cmap_attr, _grey_nan_colormap(name))
+        except (ValueError, TypeError, KeyError):
+            logger.debug("could not set %s = %s", cmap_attr, name, exc_info=True)
+            return False
+        applied = True
+    if not applied:
+        return False
+    column = _active_column(layer)
+    if not column:
+        return True
+    try:
+        for attribute in _colour_attributes(layer):
+            setattr(layer, attribute, column)
+    except (KeyError, TypeError, ValueError):
+        logger.debug("could not remap colours after colormap change", exc_info=True)
+    return True
 
 
 def _apply_contrast_limits(layer, low: float, high: float) -> bool:
@@ -538,6 +5285,11 @@ def _blocked(widget):
         widget.blockSignals(previous)
 
 
+#: Tag key: the range a user set on a layer, per column (see
+#: :meth:`_ColourScale.remember`), which a sweep slider keeps.
+USER_CONTRAST_LIMITS = "user_contrast_limits"
+
+
 class _ColourScale:
     """A colour bar for one layer, with the range it spans, editable.
 
@@ -573,20 +5325,29 @@ class _ColourScale:
 
         self.heading = QLabel("no colouring")
         self.heading.setToolTip(
-            "The range the colours span. Type a number, or let it fit the data."
+            "The range of values the colours span. Type its ends, or fit it to the data"
         )
         outer.addWidget(self.heading)
+
+        from haemolynx.gui.chrome_tooltips import COLOUR_RANGE_TOOLTIPS
 
         row = QHBoxLayout()
         row.setSpacing(4)
         self.low = QLineEdit()
         self.high = QLineEdit()
+        self.low.setToolTip(COLOUR_RANGE_TOOLTIPS["low"])
+        self.high.setToolTip(COLOUR_RANGE_TOOLTIPS["high"])
         for box in (self.low, self.high):
             box.setFixedWidth(74)
             box.setAlignment(Qt.AlignRight)
             box.editingFinished.connect(self._apply_typed)
         self.bar = QLabel()
         self.bar.setFixedHeight(COLORBAR_SIZE[1])
+        # Stretched to whatever width the row has: held at the pixmap's own
+        # 150 px, it set the floor of the whole left tab, and every control
+        # in it ran past the tab's edge.
+        self.bar.setMinimumWidth(16)
+        self.bar.setScaledContents(True)
         self.bar.setPixmap(_colorbar_pixmap())
         row.addWidget(self.low)
         row.addWidget(self.bar, 1)
@@ -600,12 +5361,12 @@ class _ColourScale:
         # including them flattens everything else to a single colour.
         self.full_button = QPushButton("Fit all")
         self.full_button.setToolTip("Span the smallest and largest value")
-        self.full_button.clicked.connect(lambda: self.autoscale(0.0, 100.0))
+        self.full_button.clicked.connect(lambda: self.fit(0.0, 100.0))
         self.trim_button = QPushButton("Fit 1-99%")
         self.trim_button.setToolTip(
-            "Ignore the extreme 1% at each end, so the bulk of the data spreads"
+            "Ignore the extreme 1% at each end, so most values spread across the colours"
         )
-        self.trim_button.clicked.connect(lambda: self.autoscale(1.0, 99.0))
+        self.trim_button.clicked.connect(lambda: self.fit(1.0, 99.0))
         buttons.addWidget(self.full_button)
         buttons.addWidget(self.trim_button)
         buttons.addStretch(1)
@@ -613,7 +5374,7 @@ class _ColourScale:
 
         self.in_viewer = QCheckBox("Show colour bar in the viewer")
         self.in_viewer.setToolTip(
-            "Draw the scale in the canvas, beside the data it describes"
+            "Show the colour scale in the viewer, beside the data"
         )
         self.in_viewer.toggled.connect(self._show_in_viewer)
         outer.addWidget(self.in_viewer)
@@ -636,23 +5397,52 @@ class _ColourScale:
         and idempotent-ish: the layer is replaced on a re-run, so the previous
         connection dies with it.
         """
+        if getattr(self, "_following", False):
+            # Re-entered from an edge/face_color event we triggered in
+            # autoscale or _apply_contrast_limits: refresh only, no autoscale.
+            layer = self._layer()
+            column = _active_column(layer) if layer is not None else None
+            self.refresh(column)
+            return
+        self._following = True
+        try:
+            layer = self._layer()
+            if layer is not None and layer is not self._connected:
+                events = getattr(layer, "events", None)
+                attribute = _colour_attribute(layer)
+                signal = getattr(events, attribute, None) if events else None
+                if signal is not None:
+                    signal.connect(lambda *_a: self.follow_the_layer())
+                self._connected = layer
+            column = _active_column(layer) if layer is not None else None
+            changed = column != self._column
+            self.refresh(column)
+            if changed and self.shown:
+                # A colouring chosen in napari's own dropdown is applied with
+                # whatever range the last one used, so a column of flows lands on
+                # a scale of branch orders and every vessel comes out one colour.
+                # Fit it, exactly as the button does -- but a sweep's flows to
+                # its whole grid, as its slider keeps them: the values it holds
+                # are one grid point's, often all one flow.
+                if not self._fit_to_sweep_grid():
+                    self.autoscale(0.0, 100.0)
+        finally:
+            self._following = False
+
+    def _fit_to_sweep_grid(self) -> bool:
+        """Span a sweep layer's flow colouring over its whole grid
+        (:func:`_sweep_contrast_limits`); False for any other layer or column."""
         layer = self._layer()
-        if layer is not None and layer is not self._connected:
-            events = getattr(layer, "events", None)
-            attribute = _colour_attribute(layer)
-            signal = getattr(events, attribute, None) if events else None
-            if signal is not None:
-                signal.connect(lambda *_a: self.follow_the_layer())
-            self._connected = layer
-        column = _active_column(layer) if layer is not None else None
-        changed = column != self._column
-        self.refresh(column)
-        if changed and self.shown:
-            # A colouring chosen in napari's own dropdown is applied with
-            # whatever range the last one used, so a column of flows lands on
-            # a scale of branch orders and every vessel comes out one colour.
-            # Fit it, exactly as the button does.
-            self.autoscale(0.0, 100.0)
+        tag = getattr(layer, "metadata", {}).get(OURS) if layer is not None else None
+        sweep = tag.get("sweep") if isinstance(tag, dict) else None
+        if sweep is None or self._column is None:
+            return False
+        limits = _sweep_contrast_limits(sweep, tag, self._column)
+        if limits is None or not _apply_contrast_limits(layer, *limits):
+            return False
+        self.low.setText(_format_limit(float(limits[0])))
+        self.high.setText(_format_limit(float(limits[1])))
+        return True
 
     def refresh(self, column: str | None) -> None:
         """Show the range of *column*, or hide if there is nothing to show."""
@@ -661,6 +5451,7 @@ class _ColourScale:
         usable = (
             layer is not None
             and self._column is not None
+            and self._column != FLOW_DIR_RGB_COLUMN
             and not _is_text_column(layer, self._column)
         )
         # Recorded as well as applied: Qt reports a child of an unshown window
@@ -672,6 +5463,12 @@ class _ColourScale:
             return
 
         self.heading.setText(str(self._column))
+        try:
+            self.bar.setPixmap(
+                _colorbar_pixmap(_colormap_name(layer) or "viridis")
+            )
+        except Exception:  # noqa: BLE001 - a missing bar is survivable
+            logger.debug("could not draw colour bar pixmap", exc_info=True)
         overlay = None
         try:
             overlay = _viewer_colorbar(layer, create=False)
@@ -699,10 +5496,33 @@ class _ColourScale:
         self.high.setText(_format_limit(found[1]))
         return True
 
+    def fit(self, low_percentile: float, high_percentile: float) -> bool:
+        """A Fit button: fit the range, and keep it as the user's choice."""
+        if not self.autoscale(low_percentile, high_percentile):
+            return False
+        layer = self._layer()
+        if layer is not None:
+            self.remember(layer, *getattr(layer, _contrast_limits_attribute(layer)))
+        return True
+
+    def remember(self, layer, low: float, high: float) -> None:
+        """Keep a range the user chose for this column on the layer, so a
+        sweep slider re-colouring it every step leaves the range alone."""
+        tag = getattr(layer, "metadata", {}).get(OURS)
+        if isinstance(tag, dict) and self._column is not None:
+            chosen = dict(tag.get(USER_CONTRAST_LIMITS) or {})
+            chosen[self._column] = (float(low), float(high))
+            tag[USER_CONTRAST_LIMITS] = chosen
+
     def _show_in_viewer(self, wanted: bool) -> None:
         """Put the colour bar in the canvas, or take it away again."""
         layer = self._layer()
         if layer is None:
+            return
+        if layer is _shown_vessels_layer(self._viewer):
+            # The shown network's bar is drawn on whichever layer draws it,
+            # tubes or lines (see _sync_canvas_colour_bar).
+            _set_canvas_colour_bar(self._viewer, wanted)
             return
         try:
             overlay = _viewer_colorbar(layer)
@@ -723,28 +5543,135 @@ class _ColourScale:
             return
         if not _apply_contrast_limits(layer, low, high):
             self.refresh(self._column)
+            return
+        self.remember(layer, low, high)
+
+
+class _ShownVesselsColourScale(_ColourScale):
+    """Colour range for the vessels on screen, in the floating view panel.
+
+    The range boxes, Fit buttons and canvas colour bar of the vessels layer's
+    own controls, for the network "Showing" names, drawn as tubes or lines --
+    the tubes take their colours from that layer, so its range is theirs.
+    Swapping network shows the new network's own range: each keeps its own,
+    and nothing here refits on a swap (a sweep's range spans its whole grid).
+    """
+
+    def __init__(self, viewer, on_resize=None) -> None:
+        from qtpy.QtWidgets import QLabel, QVBoxLayout, QWidget
+
+        from haemolynx.gui.chrome_tooltips import COLOUR_RANGE_TOOLTIPS
+
+        super().__init__(viewer, "")
+        self._on_resize = on_resize
+        # "Colour by" just above names the column already.
+        self.heading.setVisible(False)
+        self.label = QLabel("Colour range")
+        self.label.setObjectName("haemolynx_colour_range_label")
+        self.native.setObjectName("haemolynx_colour_range")
+        for widget, key in (
+            (self.label, "range"), (self.native, "range"), (self.low, "low"),
+            (self.high, "high"), (self.full_button, "fit_all"),
+            (self.trim_button, "fit_trim"), (self.in_viewer, "canvas"),
+        ):
+            widget.setToolTip(COLOUR_RANGE_TOOLTIPS[key])
+        # The label above, as the Z-depth filter's is: beside the boxes and
+        # the canvas checkbox it made this row wider than a narrow tab.
+        self.row = QWidget()
+        self.row.setObjectName("haemolynx_colour_range_row")
+        stack = QVBoxLayout(self.row)
+        stack.setContentsMargins(0, 0, 0, 0)
+        stack.setSpacing(2)
+        stack.addWidget(self.label)
+        stack.addWidget(self.native)
+        self.row.setVisible(False)
+
+    def _layer(self):
+        return _shown_vessels_layer(self._viewer)
+
+    def follow_the_layer(self) -> None:
+        """Show the shown network's range, and hear when it changes.
+
+        Never refits: a column picked anywhere arrives already fitted (see
+        _colour_layer), and refitting on a swap would replace a sweep's
+        grid-wide range with one grid point's."""
+        layer = self._layer()
+        if layer is not None and layer is not self._connected:
+            events = getattr(layer, "events", None)
+            signal = getattr(events, "edge_color", None) if events else None
+            if signal is not None:
+                # Bound, so napari connects it once per layer however often.
+                signal.connect(self._layer_recoloured)
+            self._connected = layer
+        self.update()
+
+    def _layer_recoloured(self, *_args) -> None:
+        if self._layer() is not None:
+            self.update()
+
+    def update(self) -> None:
+        """Refresh the boxes, the row and the canvas bar for what is shown."""
+        layer = self._layer()
+        was_shown = self.shown
+        try:
+            self.refresh(_active_column(layer) if layer is not None else None)
+            with _blocked(self.in_viewer):
+                self.in_viewer.setChecked(
+                    bool(getattr(self._viewer, "_haemolynx_canvas_colour_bar", False))
+                )
+            self.row.setVisible(self.shown)
+        except RuntimeError:
+            # The dock's Qt widgets outlive the panel on teardown.
+            logger.debug("colour range is gone", exc_info=True)
+            return
+        _sync_canvas_colour_bar(self._viewer)
+        if self.shown != was_shown and self._on_resize is not None:
+            self._on_resize()
+
+    def _show_in_viewer(self, wanted: bool) -> None:
+        _set_canvas_colour_bar(self._viewer, wanted)
+
+
+def _choose_colour_by(viewer, layer, column: str) -> None:
+    """Colour *layer* by *column* as a user's pick does, then let every
+    control showing that choice catch up.
+
+    The one path for both pickers -- "Colour by" on the layer's own controls
+    and on the view panel -- so neither colours differently from the other,
+    or is left naming a column that is no longer the one on screen.
+    """
+    text = _is_text_column(layer, column)
+    cycle = colour_cycle_for(layer.features[column]) if text else ()
+    _colour_layer(layer, column, "categorical" if text else "continuous", cycle)
+    _refresh_layer_controls(viewer, layer)
+    refresh_view_panel = getattr(viewer, "_haemolynx_refresh_colour_by", None)
+    if refresh_view_panel is not None:
+        refresh_view_panel()
 
 
 class _FeatureChooser:
-    """The dropdown napari gives Vectors and does not give Points.
+    """The dropdown napari gives Vectors once, and does not give Points.
 
-    `QtVectorsControls` has an "edge feature:" box; `QtPointsControls` has a
-    colour swatch and no way to colour by a column at all, so the node layer
-    arrives with `pressure`, `degree` and `node_id` on it and nothing to pick
-    between them.
+    `QtVectorsControls` has an "edge feature:" box filled in its constructor
+    and never updated when ``layer.features`` grows -- which is exactly why
+    ``flow_abs`` written by the solve never appeared there. Worse, colouring
+    in direct mode (RGB arrays for categorical columns) hides that box
+    entirely. So HaemoLynx adds its own "Colour by" combo, rebuilt whenever the
+    layer's columns change.
 
-    Rebuilt from the layer whenever it is refreshed rather than filled once,
-    because napari's own box is filled in its constructor and never updated --
-    the bug that kept flow out of the vessels list -- and there is no reason to
-    repeat it here.
+    Points layers get the same treatment because `QtPointsControls` has a
+    colour swatch and no feature picker at all.
     """
 
     def __init__(self, viewer, layer_name: str) -> None:
         from qtpy.QtWidgets import QComboBox
 
+        from haemolynx.gui.chrome_tooltips import LAYER_COLOUR_BY_TOOLTIP
+
         self._viewer = viewer
         self._layer_name = layer_name
         self.native = QComboBox()
+        self.native.setToolTip(LAYER_COLOUR_BY_TOOLTIP)
         self.native.currentTextChanged.connect(self._chosen)
 
     def _layer(self):
@@ -753,22 +5680,23 @@ class _FeatureChooser:
         return layer if layer is not None and _is_ours(layer) else None
 
     def refresh(self) -> None:
-        """Offer the columns the layer holds now, keeping the current one."""
+        """Offer the columns the layer holds now, keeping the current one.
+
+        A layer coloured by none of them (the flow arrows' one colour) shows
+        none chosen: the combo picks its first item when filled, which named a
+        colouring that was not on screen, and choosing that item did nothing.
+        """
         layer = self._layer()
         if layer is None:
             return
-        columns = [
-            name for name in getattr(layer, "features", {})
-            if name not in NOT_WORTH_COLOURING_BY
-        ]
+        columns = _colour_by_columns(layer)
         active = _active_column(layer)
         if list(self._items()) == columns and self.native.currentText() == (active or ""):
             return
         with _blocked(self.native):
             self.native.clear()
             self.native.addItems(columns)
-            if active in columns:
-                self.native.setCurrentIndex(columns.index(active))
+            self.native.setCurrentIndex(columns.index(active) if active in columns else -1)
 
     def _items(self):
         return (self.native.itemText(i) for i in range(self.native.count()))
@@ -777,9 +5705,122 @@ class _FeatureChooser:
         layer = self._layer()
         if layer is None or not column:
             return
-        text = _is_text_column(layer, column)
-        cycle = colour_cycle_for(layer.features[column]) if text else ()
-        _colour_layer(layer, column, "categorical" if text else "continuous", cycle)
+        _choose_colour_by(self._viewer, layer, column)
+
+
+def _known_colormap(name: str) -> bool:
+    """Whether napari will accept *name* as a LUT."""
+    try:
+        from napari.utils.colormaps import ensure_colormap
+
+        ensure_colormap(name)
+        return True
+    except (KeyError, ValueError, TypeError):
+        return False
+
+
+def colormap_choices() -> tuple[str, ...]:
+    """Flat, de-duplicated list of maps the dropdown offers, in group order."""
+    seen: set[str] = set()
+    names: list[str] = []
+    for _title, group in COLORMAP_GROUPS:
+        for name in group:
+            if name not in seen:
+                seen.add(name)
+                names.append(name)
+    return tuple(names)
+
+
+def _fill_colormap_combo(combo) -> None:
+    """Group headers (disabled) then the maps napari actually knows."""
+    seen: set[str] = set()
+    for title, group in COLORMAP_GROUPS:
+        available = [
+            name for name in group
+            if name not in seen and _known_colormap(name)
+        ]
+        if not available:
+            continue
+        seen.update(available)
+        combo.addItem(title)
+        header = combo.model().item(combo.count() - 1)
+        if header is not None:
+            header.setEnabled(False)
+        for name in available:
+            combo.addItem(name)
+
+
+class _ColormapChooser:
+    """LUT picker on the same layer-controls panel as Colour by.
+
+    Direct RGB (``flow_dir_rgb``) and categorical colourings do not use a
+    colormap, so the combo is hidden then. Changing Colour by reapplies that
+    column's default map; the user can override afterwards from here.
+    """
+
+    def __init__(self, viewer, layer_name: str) -> None:
+        from qtpy.QtWidgets import QComboBox
+
+        from haemolynx.gui.chrome_tooltips import LAYER_COLOUR_MAP_TOOLTIP
+
+        self._viewer = viewer
+        self._layer_name = layer_name
+        self._connected = None
+        self.label = None
+        self.shown = False
+        self.native = QComboBox()
+        self.native.setToolTip(LAYER_COLOUR_MAP_TOOLTIP)
+        _fill_colormap_combo(self.native)
+        self.native.currentTextChanged.connect(self._chosen)
+
+    def _layer(self):
+        layers = getattr(self._viewer, "layers", {}) if self._viewer else {}
+        layer = layers[self._layer_name] if self._layer_name in layers else None
+        return layer if layer is not None and _is_ours(layer) else None
+
+    def follow_the_layer(self) -> None:
+        """Keep the combo in step with colourings chosen anywhere."""
+        layer = self._layer()
+        if layer is not None and layer is not self._connected:
+            events = getattr(layer, "events", None)
+            attribute = _colour_attribute(layer)
+            signal = getattr(events, attribute, None) if events else None
+            if signal is not None:
+                signal.connect(lambda *_a: self.refresh())
+            self._connected = layer
+        self.refresh()
+
+    def _offered_maps(self) -> list[str]:
+        return [
+            self.native.itemText(i)
+            for i in range(self.native.count())
+            if self.native.itemText(i)
+            and self.native.itemText(i) not in _COLORMAP_GROUP_HEADERS
+        ]
+
+    def refresh(self) -> None:
+        """Select the layer's current map, or hide when a LUT does not apply."""
+        layer = self._layer()
+        usable = _colormap_usable(layer)
+        self.shown = bool(usable)
+        self.native.setEnabled(usable)
+        self.native.setVisible(usable)
+        if self.label is not None:
+            self.label.setVisible(usable)
+        if not usable or layer is None:
+            return
+        name = _colormap_name(layer)
+        if name and name in self._offered_maps():
+            with _blocked(self.native):
+                self.native.setCurrentText(name)
+
+    def _chosen(self, name: str) -> None:
+        if not name or name in _COLORMAP_GROUP_HEADERS:
+            return
+        layer = self._layer()
+        if layer is None or not _colormap_usable(layer):
+            return
+        _apply_colormap(layer, name)
 
 
 def _layer_controls(viewer, layer):
@@ -817,6 +5858,8 @@ def _attach_colour_scale(viewer, layer) -> bool:
     Keyed on the controls widget rather than the layer, because napari builds a
     fresh one whenever a layer is removed and re-added.
     """
+    if _is_vessel_tubes_layer(layer):
+        return False
     from qtpy.QtWidgets import QLabel
 
     controls = _layer_controls(viewer, layer)
@@ -825,12 +5868,19 @@ def _attach_colour_scale(viewer, layer) -> bool:
     layout = controls.layout()
     if not hasattr(layout, "addRow"):
         return False
-    if _colour_attribute(layer) == "face_color":
-        # Vectors already has "edge feature:"; Points has nothing.
+    attribute = _colour_attribute(layer)
+    if attribute in {"edge_color", "face_color"}:
+        label = "Colour by:" if attribute == "edge_color" else "node feature:"
         chooser = _FeatureChooser(viewer, layer.name)
-        layout.addRow(QLabel("node feature:"), chooser.native)
+        layout.addRow(QLabel(label), chooser.native)
         controls._haemolynx_feature = chooser
         chooser.refresh()
+        map_label = QLabel("Colour map:")
+        maps = _ColormapChooser(viewer, layer.name)
+        maps.label = map_label
+        layout.addRow(map_label, maps.native)
+        controls._haemolynx_colormap = maps
+        maps.follow_the_layer()
     scale = _ColourScale(viewer, layer.name)
     layout.addRow(QLabel("colour range:"), scale.native)
     controls._haemolynx_scale = scale
@@ -841,7 +5891,12 @@ def _attach_colour_scale(viewer, layer) -> bool:
 def _refresh_layer_controls(viewer, layer) -> None:
     """Let our additions catch up with whatever the stage just changed."""
     controls = _layer_controls(viewer, layer)
-    for attribute in ("_haemolynx_feature", "_haemolynx_scale"):
+    for attribute in (
+        "_haemolynx_feature",
+        "_haemolynx_colormap",
+        "_haemolynx_scale",
+        "_haemolynx_branch_hover",
+    ):
         widget = getattr(controls, attribute, None)
         if widget is None:
             continue
@@ -851,11 +5906,599 @@ def _refresh_layer_controls(viewer, layer) -> None:
             widget.refresh()
 
 
+def _shown_vessels_layer(viewer):
+    """The vessels Vectors layer of the network "Showing" names, or None.
+
+    Tubes or lines, this is the layer to colour: the tube Surface takes its
+    colours from it (see :func:`_retint_vessel_tubes`), hidden or not.
+    """
+    from haemolynx.gui.layer_sets import layer_set
+
+    layers = getattr(viewer, "layers", None) if viewer is not None else None
+    if layers is None:
+        return None
+    name = layer_set(_layer_set_shown(viewer))["vessels"]
+    # With the name a clash with a user's layer gives ours (see _add_or_update).
+    for candidate in (name, f"{name} (HaemoLynx)"):
+        if candidate in layers:
+            layer = layers[candidate]
+            if _is_ours(layer) and layer.__class__.__name__ == "Vectors":
+                return layer
+    return None
+
+
+class _VesselColourMenu:
+    """"Colour by" for the vessels on screen, in the floating view panel.
+
+    The same choice as the vessels layer's own "Colour by" (see
+    :class:`_FeatureChooser`), without having to select the layer first. For
+    tubes that was the only way: the tube Surface takes its colours from the
+    vessels Vectors layer, which is hidden while tubes are drawn. It acts on
+    the network "Showing" names, drawn either way.
+
+    A menu on a button rather than a QComboBox, for the reason the Showing
+    menu is one: a combo's popup over the floating dock missed clicks.
+    """
+
+    def __init__(self, viewer, on_resize=None) -> None:
+        from qtpy.QtWidgets import QFormLayout, QLabel, QMenu, QToolButton, QWidget
+
+        from haemolynx.gui.chrome_tooltips import COLOUR_BY_TOOLTIP
+
+        self._viewer = viewer
+        self._on_resize = on_resize
+        self._connected = None
+        #: Recorded for tests: Qt reports children of an unshown window as
+        #: invisible, so callers check this rather than isVisible().
+        self.shown = False
+        self.label = QLabel("Colour by")
+        self.label.setObjectName("haemolynx_colour_by_label")
+        self.button = QToolButton()
+        self.button.setObjectName("haemolynx_colour_by")
+        self.button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.menu = QMenu(self.button)
+        self.menu.setObjectName("haemolynx_colour_by_menu")
+        self.button.setMenu(self.menu)
+        # A later stage adds columns (flow after the solve) without always
+        # recolouring, so the list is read afresh each time it opens.
+        self.menu.aboutToShow.connect(self.refresh)
+        for widget in (self.label, self.button):
+            widget.setToolTip(COLOUR_BY_TOOLTIP)
+        self.row = QWidget()
+        self.row.setObjectName("haemolynx_colour_by_row")
+        form = QFormLayout(self.row)
+        form.setContentsMargins(0, 0, 0, 0)
+        form.addRow(self.label, self.button)
+        self.row.setVisible(False)
+
+    def refresh(self, *_args) -> None:
+        """Offer what the shown network's vessels layer offers on its own
+        controls, tick the one on screen, and hide the row while there is no
+        network to colour."""
+        layer = _shown_vessels_layer(self._viewer)
+        self._follow(layer)
+        columns = _colour_by_columns(layer) if layer is not None else []
+        active = _active_column(layer) if layer is not None else None
+        try:
+            offered = [action.text() for action in self.menu.actions()]
+            if offered != columns:
+                # Only when the list changed: a pick recolours, the recolour
+                # lands here, and clearing would delete the very action whose
+                # `triggered` is still being delivered.
+                self.menu.clear()
+                for column in columns:
+                    action = self.menu.addAction(column)
+                    action.setCheckable(True)
+                    action.triggered.connect(
+                        lambda _checked=False, column=column: self.choose(column)
+                    )
+            for action in self.menu.actions():
+                action.setChecked(action.text() == active)
+            self.button.setText(active if active in columns else "none")
+            was_shown = self.shown
+            self.shown = bool(columns)
+            self.row.setVisible(self.shown)
+        except RuntimeError:
+            # The dock's Qt widgets outlive the panel on teardown.
+            logger.debug("colour-by menu is gone", exc_info=True)
+            return
+        if self.shown != was_shown and self._on_resize is not None:
+            self._on_resize()
+
+    def choose(self, column: str) -> None:
+        """Colour the shown network's vessels by *column*, tubes and all."""
+        layer = _shown_vessels_layer(self._viewer)
+        if layer is None or column not in getattr(layer, "features", {}):
+            self.refresh()
+            return
+        # Which refreshes this menu too, through the viewer's hook.
+        _choose_colour_by(self._viewer, layer, column)
+
+    def _follow(self, layer) -> None:
+        """Hear about a colouring chosen anywhere else -- napari's own controls.
+
+        A bound method, which napari connects once however often it is asked,
+        so going back to a network already followed adds nothing.
+        """
+        if layer is None or layer is self._connected:
+            return
+        events = getattr(layer, "events", None)
+        signal = getattr(events, "edge_color", None) if events else None
+        if signal is not None:
+            signal.connect(self.refresh)
+        self._connected = layer
+
+
+def _layer_features(layer):
+    """Feature table on *layer*, never a DataFrame used as a boolean."""
+    features = getattr(layer, "features", None)
+    if features is None:
+        return {}
+    return features
+
+
+def _is_branch_hover_layer(layer) -> bool:
+    """Whether *layer* carries branch-tooltip features (vessels / flow / leftover)."""
+    if not _is_ours(layer):
+        return False
+    if _is_vessel_tubes_layer(layer):
+        return False
+    if layer.name == BRANCH_HOVER or layer.name.startswith(f"{BRANCH_HOVER} "):
+        return True
+    features = _layer_features(layer)
+    return "tooltip" in features and "branch_id" in features
+
+
+def _branch_hover_available(layer) -> tuple[str, ...]:
+    """Optional metrics this hover layer can offer right now."""
+    from haemolynx.gui.branch_hover import available_metrics_from_features
+
+    tag = getattr(layer, "metadata", {}).get(OURS) or {}
+    stored = tag.get("branch_hover_available")
+    if stored is not None:
+        return tuple(stored)
+    return available_metrics_from_features(_layer_features(layer))
+
+
+def _branch_hover_selected_for(layer) -> tuple[str, ...]:
+    """Checkbox selection: session choice filtered by what is available."""
+    from haemolynx.gui.branch_hover import (
+        default_selected_metrics,
+        filter_selected_metrics,
+    )
+
+    available = _branch_hover_available(layer)
+    global _branch_hover_session_selected
+    if _branch_hover_session_selected is None:
+        return default_selected_metrics(available)
+    return filter_selected_metrics(_branch_hover_session_selected, available)
+
+
+def _apply_branch_hover_selection(layer, selected: Sequence[str]) -> None:
+    """Rewrite the ``tooltip`` feature column for the current checkbox set."""
+    from haemolynx.gui.branch_hover import (
+        filter_selected_metrics,
+        tooltips_from_feature_table,
+    )
+
+    available = _branch_hover_available(layer)
+    chosen = filter_selected_metrics(selected, available)
+    tag = dict(getattr(layer, "metadata", {}).get(OURS) or {})
+    # The tag records which selection the tooltip column was composed for --
+    # set here, and by _store_branch_hover_metadata for a stage's own column --
+    # and the Z-depth filter's cache is kept in step with it below, so a
+    # filtered or recreated layer's tooltips are already right. Recomposing
+    # them anyway on every Z-depth change is what made the slider take tens
+    # of seconds per move.
+    recorded = tag.get("branch_hover_selected")
+    if (
+        recorded is not None
+        and tuple(recorded) == tuple(chosen)
+        and "tooltip" in getattr(layer, "features", {})
+    ):
+        return
+    features = dict(layer.features)
+    features["tooltip"] = tooltips_from_feature_table(features, chosen)
+    layer.features = features
+    tag["branch_hover_selected"] = chosen
+    cache = tag.get("z_filter_full")
+    if isinstance(cache, dict) and cache.get("features") is not None:
+        full_feats = dict(cache["features"])
+        if full_feats:
+            full_feats["tooltip"] = tooltips_from_feature_table(full_feats, chosen)
+            tag["z_filter_full"] = {**cache, "features": full_feats}
+    metadata = dict(getattr(layer, "metadata", {}) or {})
+    metadata[OURS] = tag
+    layer.metadata = metadata
+
+
+def _hover_max_distance(layer) -> float:
+    """Pickup radius in data coordinates; at least the old circle diameter."""
+    from haemolynx.gui.branch_hover import BRANCH_HOVER_MAX_DISTANCE
+
+    width = getattr(layer, "edge_width", None)
+    try:
+        edge_width = float(np.asarray(width).reshape(-1)[0])
+    except (TypeError, ValueError, IndexError):
+        edge_width = 0.0
+    if not np.isfinite(edge_width) or edge_width < 0.0:
+        edge_width = 0.0
+    return max(BRANCH_HOVER_MAX_DISTANCE, edge_width * 2.0)
+
+
+def _hover_feature_index(layer, event) -> int | None:
+    """Index into *layer.features['tooltip']* for the cursor, or ``None``."""
+    from haemolynx.gui.branch_hover import nearest_vector_index
+
+    kind = layer.__class__.__name__.lower()
+    if kind == "vectors":
+        position = getattr(event, "position", None)
+        dims = list(getattr(event, "dims_displayed", ()) or ())
+        view_direction = getattr(event, "view_direction", None)
+        if len(dims) != 3:
+            view_direction = None
+        return nearest_vector_index(
+            position,
+            getattr(layer, "data", ()),
+            max_distance=_hover_max_distance(layer),
+            view_direction=view_direction,
+        )
+    try:
+        index = layer.get_value(
+            event.position,
+            view_direction=getattr(event, "view_direction", None),
+            dims_displayed=list(getattr(event, "dims_displayed", ())),
+            world=True,
+        )
+    except TypeError:
+        index = layer.get_value(event.position, world=True)
+    if isinstance(index, tuple):
+        index = index[0]
+    if index is None:
+        return None
+    try:
+        return int(index)
+    except (TypeError, ValueError):
+        return None
+
+
+def _show_branch_tooltip(layer, index: int) -> None:
+    from qtpy.QtGui import QCursor
+    from qtpy.QtWidgets import QToolTip
+
+    tips = _layer_features(layer).get("tooltip")
+    if tips is None:
+        return
+    try:
+        text = str(tips[int(index)])
+    except (IndexError, TypeError, ValueError):
+        return
+    if text:
+        QToolTip.showText(QCursor.pos(), text)
+
+
+def _dragging(event) -> bool:
+    """Whether a mouse-move event comes in the middle of a drag.
+
+    napari 0.10 calls move callbacks during drags too (0.9 did not), so a
+    hover would search every vessel on each frame of a rotate or pan.
+    """
+    return bool(getattr(event, "is_dragging", False))
+
+
+def _branch_hover_mouse_move(layer, event) -> None:
+    """Show the composed tooltip when the cursor is over this layer's polyline.
+
+    A miss does not hide the tooltip: the viewer-level callback owns
+    hide-on-empty so a selected nodes layer cannot swallow a hit on the
+    vessels underneath.
+    """
+    if _dragging(event):
+        return
+    index = _hover_feature_index(layer, event)
+    if index is None:
+        return
+    _show_branch_tooltip(layer, index)
+
+
+def _is_node_hover_layer(layer) -> bool:
+    """One of our Points layers whose points are graph nodes, hoverable now.
+
+    The network's own nodes layer answers hidden too, as the vessels do when
+    drawn as tubes: it starts hidden, and its IDs are what the boundary node
+    ID lists need. Any other node layer only while it is shown.
+    """
+    from haemolynx.gui.results import NODES
+
+    return bool(
+        _is_ours(layer)
+        and layer.__class__.__name__.lower() == "points"
+        and (getattr(layer, "visible", False) or layer.name == NODES)
+        and "node_id" in _layer_features(layer)
+        and len(getattr(layer, "data", ()))
+    )
+
+
+def _node_hover_index(layer, event) -> int | None:
+    """The node under the cursor, by distance, so a hidden layer answers too.
+
+    napari's own picking only works on a layer it has sliced, which a hidden
+    one is not. In 3D the distance is across the line of sight, as clicking
+    a node measures it (``graph_click.nearest_node_hit``).
+    """
+    from haemolynx.gui.branch_hover import nearest_vector_index
+
+    data = np.asarray(getattr(layer, "data", ()), dtype=float)
+    if data.ndim != 2 or not len(data):
+        return None
+    dims = list(getattr(event, "dims_displayed", ()) or ())
+    view_direction = getattr(event, "view_direction", None) if len(dims) == 3 else None
+    sizes = np.asarray(getattr(layer, "size", 0.0), dtype=float).reshape(-1)
+    radius = max(float(np.nanmax(sizes)) / 2.0 if sizes.size else 0.0, 1.5)
+    segments = np.stack([data, np.zeros_like(data)], axis=1)
+    return nearest_vector_index(
+        getattr(event, "position", None), segments, max_distance=radius,
+        view_direction=view_direction, dims=dims or None,
+    )
+
+
+def _show_node_tooltip(layer, index: int) -> bool:
+    from qtpy.QtGui import QCursor
+    from qtpy.QtWidgets import QToolTip
+
+    from haemolynx.gui.branch_hover import format_node_tooltip
+
+    features = _layer_features(layer)
+    try:
+        node_id = features["node_id"][int(index)]
+        position = np.asarray(layer.data[int(index)], dtype=float)
+    except (IndexError, KeyError, TypeError, ValueError):
+        return False
+    extra = {name: features[name][int(index)] for name in ("degree", "pressure", "end")
+             if name in features}
+    QToolTip.showText(QCursor.pos(), format_node_tooltip(node_id, position, **extra))
+    return True
+
+
+def _branch_hover_viewer_mouse_move(viewer, event) -> None:
+    """Hover the drawn branch even when another HaemoLynx layer is selected.
+
+    A node under the cursor comes first: it sits on the vessels it joins, and
+    its ID is what the boundary node ID lists take.
+    """
+    from qtpy.QtWidgets import QToolTip
+
+    if _dragging(event):
+        return
+    layers = getattr(viewer, "layers", ())
+    for layer in reversed(list(layers)):
+        if not _is_node_hover_layer(layer):
+            continue
+        index = _node_hover_index(layer, event)
+        if index is not None and _show_node_tooltip(layer, index):
+            return
+    for layer in reversed(list(layers)):
+        if not _is_branch_hover_layer(layer):
+            continue
+        hidden_source = (
+            not getattr(layer, "visible", False)
+            and _is_vessel_vectors_layer(layer)
+            and _vessel_draw_mode == VESSEL_DRAW_TUBES
+        )
+        if not getattr(layer, "visible", False) and not hidden_source:
+            continue
+        index = _hover_feature_index(layer, event)
+        if index is None:
+            continue
+        _show_branch_tooltip(layer, index)
+        return
+    QToolTip.hideText()
+
+
+def _ensure_branch_hover_callback(layer, viewer=None) -> None:
+    """Install polyline tooltip callbacks once per layer and once per viewer."""
+    callbacks = getattr(layer, "mouse_move_callbacks", None)
+    if callbacks is not None and _branch_hover_mouse_move not in callbacks:
+        callbacks.append(_branch_hover_mouse_move)
+    if viewer is None:
+        viewer = getattr(layer, "viewer", None)
+    if viewer is None:
+        return
+    viewer_callbacks = getattr(viewer, "mouse_move_callbacks", None)
+    if viewer_callbacks is None:
+        return
+    if _branch_hover_viewer_mouse_move not in viewer_callbacks:
+        viewer_callbacks.append(_branch_hover_viewer_mouse_move)
+
+
+class _BranchHoverPanel:
+    """Checkboxes for optional branch-hover metrics, in the layer controls.
+
+    Only metrics the current graph actually carries are offered. Selection is
+    remembered for the napari session so a later stage that adds flow does not
+    wipe a choice the user already made.
+    """
+
+    def __init__(self, viewer, layer_name: str) -> None:
+        from qtpy.QtWidgets import QLabel, QVBoxLayout, QWidget
+
+        self._viewer = viewer
+        self._layer_name = layer_name
+        self._boxes: dict[str, Any] = {}
+        self.native = QWidget()
+        self._layout = QVBoxLayout(self.native)
+        self._layout.setContentsMargins(0, 2, 0, 2)
+        self._layout.setSpacing(2)
+        self._heading = QLabel("branch tooltip metrics")
+        self._heading.setToolTip(
+            "Values to show when hovering over a vessel. Its branch ID is always shown"
+        )
+        self._layout.addWidget(self._heading)
+        self._box_host = QWidget()
+        self._box_layout = QVBoxLayout(self._box_host)
+        self._box_layout.setContentsMargins(0, 0, 0, 0)
+        self._box_layout.setSpacing(1)
+        self._layout.addWidget(self._box_host)
+        self.offered: tuple[str, ...] = ()
+        self.selected: tuple[str, ...] = ()
+
+    def _layer(self):
+        layers = getattr(self._viewer, "layers", {}) if self._viewer else {}
+        if self._layer_name not in layers:
+            return None
+        layer = layers[self._layer_name]
+        return layer if _is_branch_hover_layer(layer) else None
+
+    def refresh(self) -> None:
+        """Rebuild checkboxes for the metrics this layer can currently offer."""
+        from haemolynx.gui.branch_hover import panel_metric_options
+        from haemolynx.gui.chrome_tooltips import BRANCH_HOVER_TOOLTIPS
+        from qtpy.QtWidgets import QCheckBox
+
+        layer = self._layer()
+        if layer is None:
+            self.native.setVisible(False)
+            return
+        available = _branch_hover_available(layer)
+        selected = _branch_hover_selected_for(layer)
+        options = panel_metric_options(available)
+        current_keys = tuple(key for key, _label in options)
+        if tuple(self._boxes) != current_keys:
+            while self._box_layout.count():
+                item = self._box_layout.takeAt(0)
+                widget = item.widget()
+                if widget is not None:
+                    widget.deleteLater()
+            self._boxes = {}
+            for key, label in options:
+                box = QCheckBox(label)
+                box.setObjectName(f"branch_hover_{key}")
+                box.setToolTip(BRANCH_HOVER_TOOLTIPS[key])
+                box.toggled.connect(self._toggled)
+                self._box_layout.addWidget(box)
+                self._boxes[key] = box
+        for key, box in self._boxes.items():
+            with _blocked(box):
+                box.setChecked(key in selected)
+        _apply_branch_hover_selection(layer, selected)
+        _ensure_branch_hover_callback(layer, self._viewer)
+        self.native.setVisible(True)
+        # Recorded for tests: Qt reports children of an unshown window as
+        # invisible, so callers check this rather than isVisible().
+        self.offered = current_keys
+        self.selected = selected
+
+    def _toggled(self, *_args) -> None:
+        global _branch_hover_session_selected
+        selected = tuple(
+            key for key, box in self._boxes.items() if box.isChecked()
+        )
+        _branch_hover_session_selected = selected
+        viewer = self._viewer
+        if viewer is not None:
+            for layer in getattr(viewer, "layers", ()):
+                if _is_branch_hover_layer(layer):
+                    _apply_branch_hover_selection(layer, selected)
+        else:
+            layer = self._layer()
+            if layer is not None:
+                _apply_branch_hover_selection(layer, selected)
+        layer = self._layer()
+        if layer is not None:
+            self.selected = _branch_hover_selected_for(layer)
+
+
+def _attach_branch_hover_controls(viewer, layer) -> bool:
+    """Put the metrics checkboxes on the branch-hover layer's controls, once."""
+    from qtpy.QtWidgets import QLabel
+
+    if not _is_branch_hover_layer(layer):
+        return False
+    controls = _layer_controls(viewer, layer)
+    if controls is None:
+        _ensure_branch_hover_callback(layer, viewer)
+        _apply_branch_hover_selection(layer, _branch_hover_selected_for(layer))
+        return False
+    if getattr(controls, "_haemolynx_branch_hover", None) is not None:
+        controls._haemolynx_branch_hover.refresh()
+        return True
+    layout = controls.layout()
+    if not hasattr(layout, "addRow"):
+        _ensure_branch_hover_callback(layer, viewer)
+        return False
+    panel = _BranchHoverPanel(viewer, layer.name)
+    layout.addRow(QLabel("hover info:"), panel.native)
+    controls._haemolynx_branch_hover = panel
+    panel.refresh()
+    return True
+
+
+def _process_pending_qt_events() -> None:
+    """Let Qt/vispy finish any already-queued GL work before more layer
+    teardown queues more.
+
+    A no-op when there is no live ``QApplication`` (some test contexts);
+    otherwise just drains whatever is already pending -- it does not block
+    waiting for new events, so this is cheap enough to call often.
+    """
+    try:
+        from qtpy.QtWidgets import QApplication
+
+        app = QApplication.instance()
+        if app is not None:
+            app.processEvents()
+    except Exception:  # noqa: BLE001 - never let this stop a clear
+        logger.debug("could not process pending Qt events", exc_info=True)
+
+
 def _clear_our_layers(viewer) -> int:
-    """Remove every layer this plugin added. Leaves the user's alone."""
-    ours = [layer for layer in list(viewer.layers) if _is_ours(layer)]
+    """Remove every layer this plugin added. Leaves the user's alone.
+
+    Processes pending Qt events before starting, and after every removal.
+    ``viewer.layers.remove`` tears down that layer's GL resources
+    synchronously (napari's vispy canvas -> glDeleteProgram and friends),
+    but vispy's own GLIR command queue can still hold earlier GL work
+    queued by recent user interaction (a camera move, a colormap change, a
+    visibility toggle) that has not been flushed yet. Starting a
+    synchronous teardown on top of that queue crashed the whole process
+    with a Windows access violation deep inside vispy's own cleanup --
+    below Python, so there is no exception to catch. Letting the queue
+    drain before, and between, each removal is the standard mitigation for
+    this class of vispy/GL race.
+    """
+    return _remove_our_layers(viewer, keep=frozenset())
+
+
+def _layer_names_redrawn_by(groups) -> frozenset[str]:
+    """Every layer name replaying *groups* puts back, tube Surfaces included.
+
+    With the name a clash with a user's layer would give ours (see
+    :func:`_add_or_update`), and the tube mesh drawn for each vessels layer
+    (see :func:`_sync_vessel_tubes`).
+    """
+    names = {spec.name for group in groups for spec in getattr(group, "layers", ())}
+    names |= {vessel_tubes_layer_name(name) for name in list(names)}
+    names |= {f"{name} (HaemoLynx)" for name in list(names)}
+    return frozenset(names)
+
+
+def _remove_our_layers(viewer, keep: frozenset[str]) -> int:
+    """Remove this plugin's layers except those named in *keep*.
+
+    See :func:`_clear_our_layers` for why the removals are paced.
+    """
+    ours = [
+        layer for layer in list(viewer.layers)
+        if _is_ours(layer) and layer.name not in keep
+    ]
+    if not ours:
+        return 0
+    _process_pending_qt_events()
     for layer in ours:
+        name = layer.name
         viewer.layers.remove(layer)
+        _process_pending_qt_events()
+        _remove_sweep_sliders(viewer, name)
     return len(ours)
 
 
@@ -891,39 +6534,145 @@ def _progress_bridge():
 
 
 def _run_in_background(
-    settings, schema, report, button, bars=None, viewer=None, results=None):
+    settings, schema, report, button, bars=None, viewer=None, results=None,
+    state=None, log=None, checkpoints=None, after_layers=None,
+    start_from=None, resume=None, restored_stages=(), stop_after=None,
+    on_paused=None):
     """Run the pipeline off the GUI thread, reporting back as it goes.
 
     With *viewer* and *results*, each stage's output is turned into layers as it
     finishes and shown in the viewer the run was launched from.
+
+    *state* is the panel's :class:`~haemolynx.gui.run_state.RunState`: how the
+    panel knows it has a run going, and how that run is stopped on purpose.
+    Without one the run is unstoppable but otherwise unchanged, which is all a
+    test driving this function on its own needs.
+
+    *log* is a :class:`~haemolynx.gui.log_view.LogView`, or anything with its
+    handful of methods -- like *report* and *bars*, it is optional and duck
+    typed, so a test hands over its own. With one, the library's logger is
+    captured for exactly the length of the run and drained onto the widget on
+    a timer.
+
+    *checkpoints* is a :class:`~haemolynx.gui.stage_checkpoints.StageCheckpoints`
+    the panel keeps across a run so a tab can re-run from an earlier stage
+    without rebuilding topology. Optional: without one, the run is unchanged.
+
+    *start_from* / *resume* are forwarded to
+    :func:`~haemolynx.pipeline.run_pipeline_stages` so "Run from this stage"
+    can skip earlier work.
+
+    *stop_after* is forwarded too: a run that stops there on purpose is
+    paused, not finished -- the bars stay where it got to, *state* records
+    where it paused, and *on_paused* (if given) is called, for the panel to
+    bring up its Post processing tab.
     """
     from napari.qt.threading import thread_worker
 
+    run_state = state if state is not None else RunState()
+    cancel_flag = {"cancelled": False}
     bridge = _progress_bridge()
     show_layers = viewer is not None and results is not None
+    #: The capture, while there is one. A namespace rather than a name, because
+    #: it is set below `stopped`, which is what releases it.
+    capture = SimpleNamespace(attachment=None)
+
+    def still_ours() -> bool:
+        return run_state.cancel_flag is cancel_flag
 
     def progressed(event: ProgressEvent) -> None:
+        # A cancelled run's last few events are already on their way here. The
+        # bars have been put back to nothing; moving them again would show a
+        # run that is no longer going.
+        if cancel_flag["cancelled"]:
+            return
         if bars is not None:
             bars.show_event(event)
         if event.kind == STAGE_STARTED:
             report.value = f"Running {event.title} ({event.index + 1}/{event.total})..."
 
+    def shown(group) -> None:
+        """One stage's layers, in the viewer -- unless the run was stopped.
+
+        A group emitted just before the cancel is still queued for this thread,
+        and applying it would put back the layers just cleared.
+        """
+        if cancel_flag["cancelled"]:
+            return
+        _apply_layers(viewer, group, report)
+        if after_layers is not None:
+            after_layers()
+
     bridge.event.connect(progressed)
     if show_layers:
-        bridge.layers.connect(lambda group: _apply_layers(viewer, group, report))
+        bridge.layers.connect(shown)
+
+    def watched(event: ProgressEvent) -> None:
+        """Pass the run's progress on, having first let it be stopped.
+
+        `run_pipeline_stages` takes no cancel argument, so this and `produced`
+        are where a cancellation acts.         Both are called between stages, or
+        between graph building's thirteen topology steps, so a run stops with
+        nothing half-written -- and soon after being asked, rather than at the
+        end of whatever stage it is in.
+
+        The event becomes a log record *here*, on the run's own thread, rather
+        than beside the progress bars on the GUI thread. That is what gives the
+        log one producer and one ordered stream: a stage's banner and the
+        counts that stage logs go through the same handler, in the order they
+        happened. Emitted on the other side of the bridge instead, the banner
+        would arrive whenever the GUI thread got round to it, and land above or
+        below its own counts at random.
+        """
+        run_state.check(cancel_flag)
+        log_progress(event)
+        bridge.event.emit(event)
+
+    restored = frozenset(restored_stages)
 
     def produced(stage: str, output) -> None:
         """Build this stage's layers here, on the run's thread.
+
+        A stage in *restored_stages* was restored from its checkpoint before a
+        mid-pipeline run, and only passed through here: its outputs are the
+        resumed ones -- graph building's is the previous tab's *finished*
+        graph -- so it is neither recorded nor redrawn, or every earlier tab
+        would take on a later tab's state. Its layers are not built either --
+        they are on screen, replayed -- only the results' own bookkeeping
+        follows it (see ``ResultLayers.stage_restored``).
 
         Eagerly, because every stage after `build_network` writes onto the same
         graph: convert later and the viewer shows a later stage's numbers under
         this stage's name. And guarded, because a fault in drawing a run must
         never end it -- an eight-hour whole-brain run least of all.
+
+        The cancellation check is outside that guard, deliberately: stopping is
+        the one thing that must get past it.
         """
+        run_state.check(cancel_flag)
+        if stage in restored:
+            try:
+                results.stage_restored(stage, output)
+                # A run loaded from a file kept no stage outputs: what this
+                # one loaded is kept, so the next resume is handed it.
+                if checkpoints is not None and not cancel_flag["cancelled"]:
+                    checkpoints.keep_output(stage, output)
+            except Exception:  # noqa: BLE001 - reported, never raised at the run
+                logger.exception("could not follow restored stage %s", stage)
+            return
         try:
             group = results.stage_finished(stage, output)
         except Exception:  # noqa: BLE001 - reported, never raised at the run
             logger.exception("could not build layers for stage %s", stage)
+            return
+        if cancel_flag["cancelled"]:
+            return
+        if checkpoints is not None:
+            try:
+                checkpoints.record(stage, group, results, settings=settings, output=output)
+            except Exception:  # noqa: BLE001 - a bad snapshot must not end the run
+                logger.exception("could not record checkpoint for stage %s", stage)
+        if cancel_flag["cancelled"]:
             return
         bridge.layers.emit(group)
 
@@ -931,15 +6680,42 @@ def _run_in_background(
     def run():
         # `bridge` is captured here, which is also what keeps it alive for as
         # long as the run that emits through it.
+        extra = {}
+        if start_from is not None or resume is not None:
+            extra["start_from"] = start_from
+            extra["resume"] = resume
+        if stop_after is not None:
+            extra["stop_after"] = stop_after
         return run_pipeline_stages(
             settings,
             schema,
-            progress=bridge.event.emit,
+            progress=watched,
             on_stage_output=produced if show_layers else None,
+            **extra,
         )
 
     def finished(graph) -> None:
+        if not still_ours():
+            return
+        run_state.stopped()
         button.enabled = True
+        if cancel_flag["cancelled"]:
+            # It got to the end between being asked to stop and reaching the
+            # next checkpoint. Saying "finished" beside an empty viewer, or
+            # "cancelled" about a run that completed, would both be wrong.
+            report.value = FINISHED_FIRST
+            return
+        if stop_after is not None and graph is not None:
+            run_state.paused_after = stop_after
+            if bars is not None:
+                pause = getattr(bars, "pause", None)
+                (pause if callable(pause) else bars.finish)(paused_bar_text(stop_after))
+            report.value = paused_message(
+                stop_after, graph.number_of_nodes(), graph.number_of_edges()
+            )
+            if on_paused is not None:
+                on_paused()
+            return
         if graph is None:
             if bars is not None:
                 bars.finish("Finished, no graph")
@@ -953,20 +6729,1308 @@ def _run_in_background(
         )
 
     def failed(error: Exception) -> None:
+        if not still_ours():
+            if isinstance(error, RunCancelled):
+                return
+            logger.debug("stale worker failed after Clear", exc_info=error)
+            return
+        run_state.stopped()
         button.enabled = True
+        if isinstance(error, RunCancelled):
+            # Not a failure: the bars were reset when the cancel was asked
+            # for, and there is no stack trace worth logging.
+            report.value = CANCELLED
+            return
         if bars is not None:
             bars.fail(f"Failed: {type(error).__name__}")
         report.value = f"{type(error).__name__}: {error}"
         logger.exception("pipeline run failed", exc_info=error)
+        # What superqt would have done for us, and the only reason it is spelled
+        # out here: connecting `errored` below is what stops it doing it to a
+        # cancellation as well.
+        raise error
 
-    worker = run()
+    def release_log() -> None:
+        """Stop capturing the library's log, and show the last of what it said.
+
+        The detach has to happen on the worker's `finished`, which is the only
+        one of the three that fires however a run ends: superqt suppresses
+        `returned` once `quit()` has been called, so a cancelled-but-completed
+        run reaches neither `finished` nor `failed`. Released in either of
+        those, the handler would stay on the logger after a cancel -- and then
+        double every line of the next run.
+
+        The final drain is here for the same reason: a run's last records are
+        written in the milliseconds after the last timer tick, and would
+        otherwise sit in the buffer until the next run started.
+        """
+        if capture.attachment is not None:
+            capture.attachment.detach()
+            capture.attachment = None
+        if log is not None:
+            log.stop()
+
+    def stopped() -> None:
+        """The worker has gone without `returned` or `errored` saying so.
+
+        napari suppresses `returned` once `quit()` has been called -- it will
+        not hand back a result it was told to abandon -- so a run that reached
+        its end between the cancel and its next checkpoint announces nothing at
+        all. Without this the guard would stay set and the Run button greyed
+        out, which is the very state being fixed.
+        """
+        # Above the guard, deliberately: this is the one callback that runs on
+        # every way out of a run, and the guard below returns early for two of
+        # the three. See `release_log`.
+        release_log()
+        if not still_ours():
+            return
+        if not run_state.running:
+            return
+        run_state.stopped()
+        button.enabled = True
+        if cancel_flag["cancelled"]:
+            report.value = FINISHED_FIRST
+
+    # `errored` is connected here rather than on the worker, because superqt
+    # only leaves it alone once something else has claimed it: a worker created
+    # without one gets a handler that re-raises whatever the run raised. A
+    # cancellation goes out through `errored` like any other exception, so that
+    # handler put `RunCancelled` and a stack trace in front of the user through
+    # napari's error popup -- the report this replaces with a plain "Cancelled".
+    # `_start_thread=False` because `_connect` otherwise starts the run here,
+    # before the state below says there is one.
+    worker = run(_connect={"errored": failed}, _start_thread=False)
     worker.returned.connect(finished)
-    worker.errored.connect(failed)
+    worker.finished.connect(stopped)
+    run_state.start(worker=worker, results=results, cancel_flag=cancel_flag)
+    if checkpoints is not None:
+        checkpoints.unfreeze()
     button.enabled = False
     if bars is not None:
         bars.start()
+    if log is not None:
+        # Before `worker.start()`, or the first stage's records are gone by the
+        # time anything is listening -- and the capture is what makes the
+        # library's INFO reach a handler at all (`gui.run_log.attach`).
+        log.start()
+        capture.attachment = attach(log.run_log, level=log.level)
     report.value = "Running..."
     worker.start()
+    return worker
+
+
+def _run_batch_in_background(
+    values,
+    schema,
+    setup,
+    report,
+    button,
+    bars=None,
+    state=None,
+    log=None,
+    on_done=None,
+    on_item=None,
+    on_stopped=None,
+    stop_requested=None,
+):
+    """Run a batch (:func:`haemolynx.gui.batch_run.run_batch`) off the GUI
+    thread: the bars follow each image's stages in turn, the report says which
+    image is running, *on_item* gets each :class:`~haemolynx.gui.batch_run.BatchResult`
+    as its image starts and ends, and *on_done* the batch's summary; *on_stopped*
+    is called once the batch is over, however it ended. All on the GUI thread.
+    *stop_requested* is asked from the batch's thread before each image: once
+    True, the batch stops there (Stop after this image).
+    Nothing is drawn; each image's ``.haemorun`` opens with Load run. Stopped
+    as a run is."""
+    from napari.qt.threading import thread_worker
+
+    from haemolynx.gui.batch_run import RUNNING as RUNNING_IMAGE
+    from haemolynx.gui.batch_run import run_batch
+
+    run_state = state if state is not None else RunState()
+    cancel_flag = {"cancelled": False}
+    bridge = _progress_bridge()
+    capture = SimpleNamespace(attachment=None)
+
+    def still_ours() -> bool:
+        return run_state.cancel_flag is cancel_flag
+
+    def progressed(event: ProgressEvent) -> None:
+        if cancel_flag["cancelled"]:
+            return
+        if bars is not None:
+            bars.show_event(event)
+
+    def item_changed(update) -> None:
+        if cancel_flag["cancelled"]:
+            return
+        index, total, result = update
+        if result.status == RUNNING_IMAGE:
+            if bars is not None:
+                bars.start()
+            report.value = f"Batch image {index + 1} of {total}: {result.match.stem}..."
+        if on_item is not None:
+            on_item(result)
+
+    bridge.event.connect(progressed)
+    # The layers signal is free: a batch draws nothing. It carries each
+    # image's start and end across to this thread instead.
+    bridge.layers.connect(item_changed)
+
+    def watched(event: ProgressEvent) -> None:
+        log_progress(event)
+        bridge.event.emit(event)
+
+    @thread_worker
+    def run():
+        return run_batch(
+            values,
+            schema,
+            setup.selected(),
+            setup.output_root,
+            folders=setup.folders,
+            progress=watched,
+            on_item=lambda index, total, result: bridge.layers.emit((index, total, result)),
+            check_cancelled=lambda: run_state.check(cancel_flag),
+            skip_done=setup.skip_done,
+            conditions=setup.conditions,
+            exclude_sections=setup.exclude_sections,
+            stop_requested=stop_requested,
+        )
+
+    def finished(summary) -> None:
+        if not still_ours():
+            return
+        run_state.stopped()
+        button.enabled = True
+        if bars is not None:
+            bars.finish(f"Batch: {summary.count('done')} done")
+        report.value = summary.message()
+        if on_done is not None:
+            on_done(summary)
+
+    def failed(error: Exception) -> None:
+        if not still_ours():
+            return
+        run_state.stopped()
+        button.enabled = True
+        if isinstance(error, RunCancelled):
+            report.value = CANCELLED
+            return
+        if bars is not None:
+            bars.fail(f"Failed: {type(error).__name__}")
+        report.value = f"{type(error).__name__}: {error}"
+        logger.error("batch run failed", exc_info=error)
+
+    def stopped() -> None:
+        if capture.attachment is not None:
+            capture.attachment.detach()
+            capture.attachment = None
+        if log is not None:
+            log.stop()
+        if on_stopped is not None:
+            on_stopped()
+        if not still_ours() or not run_state.running:
+            return
+        run_state.stopped()
+        button.enabled = True
+        if cancel_flag["cancelled"]:
+            report.value = (
+                f"{CANCELLED} The batch's summary says which images ran: "
+                f"{setup.output_root / 'batch_summary.csv'}"
+            )
+
+    worker = run(_connect={"errored": failed}, _start_thread=False)
+    worker.returned.connect(finished)
+    worker.finished.connect(stopped)
+    run_state.start(worker=worker, results=None, cancel_flag=cancel_flag)
+    button.enabled = False
+    if bars is not None:
+        bars.start()
+    if log is not None:
+        log.start()
+        capture.attachment = attach(log.run_log, level=log.level)
+    report.value = f"Running a batch of {len(setup.selected())} image(s)..."
+    worker.start()
+    return worker
+
+
+_OPTIMISATION_PROGRESS_BRIDGE_CLASS = None
+
+
+def _optimisation_progress_bridge():
+    """Same rationale as `_progress_bridge`: a QObject whose signal carries an
+    `OptimisationEvent` from the optimiser's worker thread to the GUI thread.
+
+    A separate bridge class from `_progress_bridge`'s, so the two event types
+    (a pipeline run's `ProgressEvent`, the optimiser's `OptimisationEvent`)
+    never share a Signal.
+    """
+    global _OPTIMISATION_PROGRESS_BRIDGE_CLASS
+    if _OPTIMISATION_PROGRESS_BRIDGE_CLASS is None:
+        from qtpy.QtCore import QObject, Signal
+
+        class OptimisationProgressBridge(QObject):
+            event = Signal(object)
+
+        _OPTIMISATION_PROGRESS_BRIDGE_CLASS = OptimisationProgressBridge
+    return _OPTIMISATION_PROGRESS_BRIDGE_CLASS()
+
+
+def _names_with_prerequisite_closure(schema: Schema, names: Sequence[str]) -> tuple[str, ...]:
+    """*names* plus every setting they (transitively) ``requires``.
+
+    ``Schema.__init__`` validates each setting's ``requires`` targets against
+    its own subset, not the parent schema -- building a documentation-only
+    subset (like the optimiser's generated config schema) straight from a
+    fixed list of "quality knobs" raises ``ConfigError`` the moment one of
+    them, or one of *its* prerequisites, needs a stage toggle or another
+    setting that fixed list never named. Walking the whole chain here means
+    a new setting or a new layer of prerequisites never needs a matching
+    edit at the call site.
+    """
+    closure: set[str] = set()
+    stack = list(names)
+    while stack:
+        name = stack.pop()
+        if name in closure:
+            continue
+        closure.add(name)
+        for prerequisite in schema[name].requires:
+            # "name=value" names a choice setting to check the value of, not
+            # a nested prerequisite of its own -- the base name is what needs
+            # to be in the closure.
+            stack.append(prerequisite_name(prerequisite))
+    return tuple(setting.name for setting in schema if setting.name in closure)
+
+
+def _load_raw_reference_image_or_none(
+    local_settings: dict[str, Any],
+    *,
+    expected_shape: tuple[int, ...],
+    downsample: "Mapping[str, Any] | Downsample | None" = None,
+    voxel_size_xyz: "tuple[float, float, float] | None" = None,
+    use_memmap: bool = False,
+    crop: "CropBox | None" = None,
+) -> tuple["np.ndarray | None", "str | None"]:
+    """Load the optional raw reference image from ``raw_image_path``.
+
+    Shared by "Check segmented image" and "Optimise settings" -- the Input
+    tab's raw image feeds both, as it feeds the rest of the run -- so a fix to
+    how that load degrades only has to be made once, and both callers agree
+    on what "the raw file didn't work out" means. Never raises: a missing
+    setting, an unreadable file, or a raw image whose shape does not match
+    *expected_shape* (the segmented mask's own shape) all degrade to
+    ``(None, reason)`` rather than failing the caller's own real work --
+    including the shape check itself, which every actual consumer of the
+    returned image (`compare_segmentation_to_raw_image`, `_Search.__init__`)
+    would otherwise raise on directly, one of them outside any try/except
+    the caller has around this load.
+
+    The raw image goes through the segmented image's ``crop_on_import`` box
+    (*crop*, the box the mask was cut by, after checking the raw image is
+    the whole stack that box was cut from: worked out from the raw image's
+    own shape instead, one of another size was cut at its own place and
+    passed the check after) and then onto its grid: *downsample* is how the mask was reduced (the
+    record ``load_volume_for_skeletonise`` returns in its status, or a
+    ``Downsample``), and with none, *voxel_size_xyz* -- the run's -- is what
+    a ``raw_image_downsample`` of its own is read against.
+
+    *use_memmap* (the low-RAM option) reads it as the run's stages do: onto
+    disk in ``memmap_directory``, cut and reduced a slab at a time, so no
+    copy of the whole image is ever in RAM.
+    """
+    from haemolynx.haemodynamics.fwhm_diameter import load_single_channel_tiff_volume
+    from haemolynx.io import (
+        axis_order_for_run,
+        resolve_image_path_with_optional_zip,
+        voxel_size_zyx_from_xyz,
+    )
+    from haemolynx.preprocessing import release_superseded
+
+    raw_path = local_settings.get("raw_image_path")
+    if not raw_path:
+        return None, None
+    on_disk = (
+        {"use_memmap": True, "memmap_directory": local_settings.get("memmap_directory")}
+        if use_memmap else {}
+    )
+    try:
+        raw_path_resolved = resolve_image_path_with_optional_zip(Path(raw_path))
+        channel = local_settings.get("raw_image_channel")
+        whole = load_single_channel_tiff_volume(
+            raw_path_resolved,
+            axis_order=axis_order_for_run(local_settings),
+            channel=None if channel is None else int(channel),
+            **on_disk,
+        )
+        # The mask came through crop_on_import's box; the raw image goes too.
+        if crop is not None:
+            if tuple(whole.shape) != tuple(crop.source_shape_zyx):
+                raise ValueError(
+                    "raw_image shape does not match the segmented image's whole shape: "
+                    f"{tuple(whole.shape)} != {tuple(crop.source_shape_zyx)}"
+                )
+            raw_image = crop_volume(whole, crop, **on_disk)
+        else:
+            raw_image = crop_volume_from_settings(whole, local_settings, description="raw image")
+        release_superseded(whole, raw_image, keep=None)
+        # And onto the mask's grid, as the run reads it.
+        reduction = (
+            Downsample.from_record(downsample)
+            if isinstance(downsample, Mapping) else downsample
+        )
+        raw_factor = downsample_factor(local_settings.get(RAW_DOWNSAMPLE_SETTING))
+        if reduction is None and raw_factor > 1 and voxel_size_xyz is not None:
+            reduction = downsample_for(
+                1, raw_image.shape, voxel_size_zyx_from_xyz(tuple(float(v) for v in voxel_size_xyz))
+            )
+        if reduction is not None:
+            cropped = raw_image
+            raw_image = downsample_raw_volume(
+                cropped, reduction, raw_factor, description="raw image", **on_disk
+            )
+            release_superseded(cropped, raw_image, keep=None)
+        if raw_image.shape != expected_shape:
+            raise ValueError(
+                "raw_image shape does not match the segmented mask shape: "
+                f"{raw_image.shape} != {expected_shape}"
+            )
+        return raw_image, None
+    except Exception as error:  # noqa: BLE001 - degrade, never fail the caller
+        return None, f"{type(error).__name__}: {error}"
+
+
+def _thick_restriction_or_none(
+    local_settings: dict[str, Any], binary_mask: "np.ndarray", volume
+) -> "tuple[np.ndarray | None, str | None]":
+    """``(restriction, None)``: the vessel masks a run confines its
+    thick-vessel region to (``pipeline.stages.thick_vessel_restriction_mask``,
+    ``None`` while ``skeleton_thick_vessel_restrict_to_mask`` is off), on
+    *volume*'s grid -- or ``(None, reason)`` when they cannot be read, so the
+    search still runs, unconfined, and says so."""
+    try:
+        return pipeline_stages.thick_vessel_restriction_mask(
+            binary_mask, local_settings, volume.voxel_size_xyz, volume.crop, volume.downsample
+        ), None
+    except Exception as error:  # noqa: BLE001 - degrade, never fail the caller
+        return None, f"{type(error).__name__}: {error}"
+
+
+def _cancellable_progress_bridge(run_state: "RunState", bars: "OptimiseProgressBars"):
+    """The cancel-flag/progress-bridge plumbing every "Optimise ..."
+    background run needs, shared by `_run_optimisation_in_background` and
+    `_run_fwhm_optimisation_in_background` (previously copy-pasted between
+    them verbatim).
+
+    Returns ``(cancel_flag, still_ours, watched)`` for the caller's own
+    `run()`/`finished()`/`failed()` closures: *still_ours* is how they check
+    a later "Clear layers and state" press did not already claim
+    *run_state* for something else, and *watched* is what the worker's
+    `progress=` callback should be -- it runs on the worker's own thread,
+    raises ``RunCancelled`` if this run was asked to stop, and forwards the
+    event across the thread boundary via the Qt signal bridge so *bars* can
+    draw it on the GUI thread.
+    """
+    bridge = _optimisation_progress_bridge()
+    cancel_flag: dict[str, bool] = {"cancelled": False}
+
+    def still_ours() -> bool:
+        return run_state.cancel_flag is cancel_flag
+
+    def progressed(event: OptimisationEvent) -> None:
+        if cancel_flag["cancelled"]:
+            return
+        bars.show_event(event)
+
+    bridge.event.connect(progressed)
+
+    def watched(event: OptimisationEvent) -> None:
+        run_state.check(cancel_flag)
+        bridge.event.emit(event)
+
+    return cancel_flag, still_ours, watched
+
+
+def _start_optimisation_worker(
+    run_thread_worker,
+    *,
+    run_state: "RunState",
+    cancel_flag: dict,
+    still_ours,
+    button,
+    bars: "OptimiseProgressBars",
+    report,
+    finished,
+    failed,
+    starting_message: str,
+):
+    """Wire up and start a `thread_worker`-wrapped optimisation run with the
+    button/progress-bar/cancellation bookkeeping `_run_optimisation_in_background`
+    and `_run_fwhm_optimisation_in_background` both need identically --
+    including `stopped()`, whose body never differed between the two.
+    """
+    def stopped() -> None:
+        if not still_ours():
+            return
+        if not run_state.running:
+            return
+        run_state.stopped()
+        button.enabled = True
+        if cancel_flag["cancelled"]:
+            report.value = FINISHED_FIRST
+
+    worker = run_thread_worker(_connect={"errored": failed}, _start_thread=False)
+    worker.returned.connect(finished)
+    worker.finished.connect(stopped)
+    run_state.start(worker=worker, cancel_flag=cancel_flag)
+    button.enabled = False
+    bars.start()
+    report.value = starting_message
+    worker.start()
+    return worker
+
+
+class _OptimiseRefused(Exception):
+    """Optimise settings will not run, for the reason it carries: said in the
+    panel as it is, and not a failure."""
+
+
+def _segmented_image_to_optimise(
+    settings: Mapping[str, Any], action: str = "Optimise settings"
+) -> tuple["Path | None", str]:
+    """``(path, "")``: the segmented image Optimise settings tries settings
+    on, and Check segmented image scores (*action*, the button pressed) --
+    the Input tab's, or, while ilastik does the segmenting, its output
+    from the raw image when that output's record says it is the one a run
+    would make now (``pipeline.stages.current_ilastik_output``) -- else
+    ``(None, why not)``. Ilastik is never run from here: a segmentation can
+    take hours, and the run makes it."""
+    if pipeline_stages.ilastik_segments(settings):
+        path, reason = pipeline_stages.current_ilastik_output(settings)
+        if path is None:
+            return None, (
+                "ilastik segments this run's raw image, and there is no current output of it "
+                f"to work on ({reason}). Run the pipeline once to make it, then press "
+                f"{action}."
+            )
+        return path, ""
+    input_path = settings.get("input_path")
+    if not input_path or not Path(input_path).is_file():
+        return None, f"Choose a segmented input image first, then press {action}."
+    return Path(input_path), ""
+
+
+def _optimise_settings_for_run(
+    settings: dict[str, Any],
+    *,
+    segmented_path: "Path | None" = None,
+    progress=None,
+    downsample_factor: "int | None" = None,
+    groups: "tuple[str, ...] | None" = None,
+    max_passes: int = 1,
+    available_bytes: "int | None" = None,
+):
+    """`optimise_skeleton_and_graph_settings` on the segmented image at
+    *segmented_path* (``_segmented_image_to_optimise``'s when None), read as
+    the run's skeletonise reads it, with the run's whole settings, its
+    thick-vessel restriction and the Input tab's raw image. The plain function
+    `_run_optimisation_in_background`'s worker calls.
+
+    Under ``use_memmap_loading`` nothing volume-sized is copied into RAM
+    before the search reduces it: the mask is binarised onto disk, the raw
+    image read onto disk as the run's stages read it, and the search reduces
+    both a slab at a time. A search at full resolution (*downsample_factor*
+    1, "Off") that would not fit in *available_bytes* of free memory
+    (``haemodynamics.available_memory_bytes`` when None) is refused, as is an
+    image ilastik would have to make: both raise :class:`_OptimiseRefused`.
+
+    Returns ``(result, input_path, raw_image_error, restriction_error)``,
+    the result's voxel counts back on the image as read.
+    """
+    from dataclasses import replace
+
+    local_settings = dict(settings)
+    if segmented_path is None:
+        segmented_path, refusal = _segmented_image_to_optimise(local_settings)
+        if segmented_path is None:
+            raise _OptimiseRefused(refusal)
+    ilastik = pipeline_stages.ilastik_segments(local_settings)
+    if not ilastik:
+        local_settings["input_path"] = segmented_path
+    # Handed to `segment` only while ilastik segments, so that it reads
+    # ilastik's output rather than running ilastik; else it reads the image named.
+    inputs = segment(local_settings, segmented_path=segmented_path if ilastik else None)
+    # What a run's skeletonise reads: the image on the run's grid, and the
+    # box and reduction it came through, which the vessel masks the run
+    # confines its thick-vessel region to come through too.
+    volume = pipeline_stages.load_volume_on_run_grid(local_settings, inputs.input_format)
+    voxel_size_xyz = volume.voxel_size_xyz
+    use_memmap = bool(local_settings.get("use_memmap_loading"))
+    min_downsample_factor = 1
+    if use_memmap and downsample_factor in (None, 1):
+        if available_bytes is None:
+            from haemolynx.haemodynamics import available_memory_bytes
+
+            available_bytes = available_memory_bytes()
+        if downsample_factor == 1:
+            refusal = full_resolution_search_refusal(volume.image.shape, available_bytes)
+            if refusal is not None:
+                raise _OptimiseRefused(refusal)
+        else:
+            # Auto chooses no grid finer than fits: its resolution cap alone
+            # could resolve to full resolution on any stack.
+            min_downsample_factor = finest_factor_fitting_memory(
+                volume.image.shape, tuple(reversed(voxel_size_xyz)), available_bytes
+            )
+    raw_mask = _to_binary_volume_for_skeletonization(
+        volume.image, use_memmap=use_memmap, memmap_directory=local_settings.get("memmap_directory")
+    )
+    if not raw_mask.any():
+        # It ran for seconds, tried nothing and proposed nothing, unsaid why.
+        raise _OptimiseRefused(
+            "The segmented image holds no vessel (in its crop box, if it is cropped): there is "
+            "nothing to optimise settings on. Check the image, its crop box and which label is "
+            "vessel, then press Optimise settings."
+        )
+    # The run's whole settings: the search changes only the ones it
+    # tunes and builds every trial with the rest as a run would. Voxel
+    # counts go in on the run's grid, as a run counts them there.
+    starting_values = {
+        **local_settings,
+        **pipeline_stages.skeleton_voxel_settings_on_grid(local_settings, volume.downsample),
+    }
+    restriction, restriction_error = _thick_restriction_or_none(local_settings, raw_mask, volume)
+
+    # Optional: the Input tab's raw image, which "Check segmented image"
+    # reads too -- when present, guards the
+    # segmentation_cleanup group against inventing foreground the raw
+    # signal does not support. Never fatal (see
+    # `_load_raw_reference_image_or_none`): a missing/unreadable/
+    # mismatched-shape raw file just means the search runs without this
+    # extra guard, exactly like leaving the field empty.
+    raw_image, raw_image_error = _load_raw_reference_image_or_none(
+        local_settings,
+        expected_shape=raw_mask.shape,
+        downsample=volume.downsample,
+        voxel_size_xyz=tuple(float(v) for v in voxel_size_xyz),
+        use_memmap=use_memmap,
+        crop=volume.crop,
+    )
+    raw_image_stain = "plasma_column"
+    if raw_image is not None:
+        from haemolynx.io import voxel_size_zyx_from_xyz
+        from haemolynx.preprocessing import resolve_stain
+
+        raw_image_stain, _reading = resolve_stain(
+            local_settings.get("raw_image_stain", "auto"), raw_image, raw_mask,
+            voxel_size_zyx_from_xyz(voxel_size_xyz),
+        )
+
+    result = optimise_skeleton_and_graph_settings(
+        raw_mask,
+        voxel_size_xyz=voxel_size_xyz,
+        starting_values=starting_values,
+        progress=progress,
+        downsample_factor=downsample_factor,
+        groups=groups,
+        raw_image=raw_image,
+        raw_image_stain=raw_image_stain,
+        max_passes=max_passes,
+        thick_restriction_mask=restriction,
+        min_downsample_factor=min_downsample_factor,
+    )
+    # Voxel counts back from the run's grid to the image as read, as the
+    # rows hold them.
+    result = replace(
+        result,
+        settings={
+            **result.settings,
+            **pipeline_stages.skeleton_voxel_settings_from_grid(
+                result.settings, local_settings, volume.downsample
+            ),
+        },
+        run_grid_factor=(
+            1 if volume.downsample is None or volume.downsample.is_identity else int(volume.downsample.factor)
+        ),
+    )
+    return result, local_settings["input_path"], raw_image_error, restriction_error
+
+
+def _run_optimisation_in_background(
+    settings: dict[str, Any],
+    schema: Schema,
+    rows: dict[str, Any],
+    report,
+    button,
+    bars: "OptimiseProgressBars",
+    *,
+    apply_prerequisites,
+    run_state: RunState,
+    downsample_factor: "int | None" = None,
+    groups: "tuple[str, ...] | None" = None,
+    max_passes: int = 1,
+    propose,
+    segmented_path: "Path | None" = None,
+):
+    """Run the settings optimiser off the GUI thread, reporting progress as it goes.
+
+    The run writes nothing into *rows* itself: when it finishes it hands
+    *propose* the result and a function writing it into *rows*, and the panel
+    shows the proposal for the user to Apply (which calls that function) or
+    Discard.
+
+    Structurally parallel to `_run_in_background`, but not a reuse of it: that
+    one is tightly coupled to `run_pipeline_stages` / `ResultLayers` /
+    checkpoints, none of which apply to a search that never produces a graph
+    worth drawing in the viewer. Shares *run_state* with the pipeline Run
+    button purely for mutual exclusion and cooperative cancellation --
+    "Optimise settings" and "Run pipeline" must never run concurrently against
+    the same `rows`.
+
+    *segmented_path* is the image to optimise on (`_segmented_image_to_optimise`);
+    a refusal (:class:`_OptimiseRefused`) is said in *report*, not raised.
+    """
+    from napari.qt.threading import thread_worker
+
+    cancel_flag, still_ours, watched = _cancellable_progress_bridge(run_state, bars)
+
+    @thread_worker
+    def run():
+        return _optimise_settings_for_run(
+            settings,
+            segmented_path=segmented_path,
+            progress=watched,
+            downsample_factor=downsample_factor,
+            groups=groups,
+            max_passes=max_passes,
+        )
+
+    def finished(payload) -> None:
+        if not still_ours():
+            return
+        run_state.stopped()
+        button.enabled = True
+        if cancel_flag["cancelled"]:
+            report.value = FINISHED_FIRST
+            return
+        result, input_path, raw_image_error, restriction_error = payload
+
+        def apply_result(names) -> None:
+            # Only what the review listed: a row edited since keeps its value.
+            for name in names:
+                if name in rows:
+                    rows[name].value = display_value_for(schema[name], result.settings[name])
+            apply_prerequisites()
+
+        out_path = Path(input_path).parent / config_filename(input_path)
+        # OPTIMISE_SETTING_NAMES are quality knobs only -- several of them
+        # (and "input_path" itself) `requires` a stage toggle or upstream
+        # setting Schema validates against its own subset, not the parent
+        # schema, so the documented config schema needs the whole closure,
+        # not just the names the optimiser actually tunes. Every added
+        # prerequisite defaults to what a config meant to be loaded and run
+        # implies (skeletonisation/graph-building on, ilastik off), so
+        # leaving them out of `values` below and letting `dump_config` fill
+        # the schema default is correct.
+        documented_schema = Schema(
+            list(
+                schema.subset(
+                    _names_with_prerequisite_closure(
+                        schema, (*OPTIMISE_SETTING_NAMES, "input_path")
+                    )
+                )
+            ),
+            title="HaemoLynx optimised settings",
+            description=build_report_text(result),
+        )
+        try:
+            dump_config(
+                out_path, documented_schema, values={**result.settings, "input_path": input_path}
+            )
+            wrote_note = f" Wrote {out_path}."
+        except Exception:  # noqa: BLE001 - the proposal stands without its file
+            logger.exception("could not write optimised config to %s", out_path)
+            wrote_note = f" Could not write {out_path} (see log)."
+        bars.finish("Optimised")
+        raw_note = (
+            f" Raw-image cross-check skipped: {raw_image_error}" if raw_image_error else ""
+        )
+        restriction_note = (
+            f" Thick-vessel trials ran unconfined, the vessel masks unread: {restriction_error}"
+            if restriction_error else ""
+        )
+        report.value = propose(result, apply_result) + wrote_note + raw_note + restriction_note
+
+    def failed(error: Exception) -> None:
+        if not still_ours():
+            if isinstance(error, RunCancelled):
+                return
+            logger.debug("stale optimisation worker failed after Clear", exc_info=error)
+            return
+        run_state.stopped()
+        button.enabled = True
+        if isinstance(error, RunCancelled):
+            report.value = CANCELLED
+            return
+        if isinstance(error, _OptimiseRefused):
+            bars.reset()
+            report.value = str(error)
+            return
+        bars.fail(f"Failed: {type(error).__name__}")
+        report.value = f"{type(error).__name__}: {error}"
+        logger.exception("settings optimisation failed", exc_info=error)
+        raise error
+
+    return _start_optimisation_worker(
+        run,
+        run_state=run_state,
+        cancel_flag=cancel_flag,
+        still_ours=still_ours,
+        button=button,
+        bars=bars,
+        report=report,
+        finished=finished,
+        failed=failed,
+        starting_message="Optimising settings...",
+    )
+
+
+def _run_segmentation_on_its_grid(settings: Mapping[str, Any]) -> "np.ndarray | None":
+    """The run's segmented image as its skeletonise read it -- cut and
+    reduced onto the run's grid, binarised -- for a Diameters optimiser after
+    Load run, whose checkpoints keep no image in memory; a run resumed there
+    reads it too. None, said in the log, when there is none to read."""
+    local_settings = dict(settings)
+    segmented_path, refusal = _segmented_image_to_optimise(local_settings)
+    if segmented_path is None:
+        logger.warning("The optimiser's trials read no segmentation: %s", refusal)
+        return None
+    ilastik = pipeline_stages.ilastik_segments(local_settings)
+    if not ilastik:
+        local_settings["input_path"] = segmented_path
+    inputs = segment(local_settings, segmented_path=segmented_path if ilastik else None)
+    volume = pipeline_stages.load_volume_on_run_grid(local_settings, inputs.input_format)
+    return _to_binary_volume_for_skeletonization(
+        volume.image,
+        use_memmap=bool(local_settings.get("use_memmap_loading")),
+        memmap_directory=local_settings.get("memmap_directory"),
+    )
+
+
+#: Settings outside the ``fwhm_`` group the FWHM optimiser reads and never
+#: changes: the image PSF its trials hold the blur at, and the FWHM/EDT ratio a
+#: width is set aside at.
+_FWHM_OPTIMISER_READS = (
+    "raw_section_psf_sigma_xy_um",
+    "raw_section_psf_sigma_z_um",
+    "edt_fwhm_disagreement_warn_ratio",
+)
+
+
+def _optimise_fwhm_settings_for_run(
+    graph: "nx.MultiGraph",
+    voxel_size_zyx: tuple[float, float, float],
+    settings: dict[str, Any],
+    schema: Schema,
+    *,
+    boundaries,
+    progress,
+    groups: "tuple[str, ...] | None",
+    vessel_mask: "np.ndarray | None",
+    sample_edge_count: "int | None",
+    max_passes: int,
+):
+    """`optimise_fwhm_settings` on *graph*, measuring as the run's Diameters
+    stage does: with the haemodynamics config the pipeline builds from
+    *settings*, and calibrating on the vessels its network handling keeps,
+    by *boundaries*' inlets and outlets (on every vessel without them)."""
+    starting_values = {
+        name: value
+        for name, value in settings.items()
+        if name.startswith("fwhm_") or name in _FWHM_OPTIMISER_READS
+    }
+    config = pipeline_stages._haemodynamics_apply_config(
+        settings,
+        schema,
+        voxel_size_zyx=voxel_size_zyx,
+        stain=pipeline_stages.recorded_raw_image_stain(settings, graph),
+    )
+    calibration_edges = (
+        None if boundaries is None
+        else pipeline_stages.edges_network_handling_keeps(settings, graph, boundaries)
+    )
+    if vessel_mask is None:
+        vessel_mask = _run_segmentation_on_its_grid(settings)
+    return optimise_fwhm_settings(
+        graph,
+        voxel_size_zyx=voxel_size_zyx,
+        starting_values=starting_values,
+        progress=progress,
+        groups=groups,
+        vessel_mask=vessel_mask,
+        sample_edge_count=sample_edge_count,
+        max_passes=max_passes,
+        config=config,
+        calibration_edges=calibration_edges,
+    )
+
+
+def _run_fwhm_optimisation_in_background(
+    graph: "nx.MultiGraph",
+    voxel_size_zyx: tuple[float, float, float],
+    settings: dict[str, Any],
+    schema: Schema,
+    rows: dict[str, Any],
+    report,
+    button,
+    bars: "OptimiseProgressBars",
+    *,
+    apply_prerequisites,
+    run_state: RunState,
+    groups: "tuple[str, ...] | None" = None,
+    vessel_mask: "np.ndarray | None" = None,
+    sample_edge_count: "int | None" = None,
+    max_passes: int = 1,
+    boundaries=None,
+    propose,
+):
+    """Run the FWHM settings optimiser off the GUI thread, reporting progress
+    as it goes -- the Diameters tab's own analogue of
+    `_run_optimisation_in_background`, over
+    `haemolynx.optimisation.optimise_fwhm_settings` instead of the
+    skeleton/graph search, against the panel's own current in-memory graph
+    rather than a mask reloaded from disk. Shares *run_state* with "Run
+    pipeline" and "Optimise settings" purely for mutual exclusion and
+    cooperative cancellation -- only one of the three may run at a time
+    against the same `rows`. *vessel_mask*, the run's segmented image, stops
+    each line at the vessel beside as a run's does and lets every trial be
+    checked against decoys and the mask's own widths; *boundaries* (the
+    Boundaries checkpoint) says which vessels the run calibrates on. Like
+    `_run_optimisation_in_background`, it proposes rather than applies: see
+    *propose* there.
+    """
+    from napari.qt.threading import thread_worker
+
+    cancel_flag, still_ours, watched = _cancellable_progress_bridge(run_state, bars)
+
+    @thread_worker
+    def run():
+        local_settings = dict(settings)
+        result = _optimise_fwhm_settings_for_run(
+            graph,
+            voxel_size_zyx,
+            local_settings,
+            schema,
+            boundaries=boundaries,
+            progress=watched,
+            groups=groups,
+            vessel_mask=vessel_mask,
+            sample_edge_count=sample_edge_count,
+            max_passes=max_passes,
+        )
+        return result, local_settings["raw_image_path"]
+
+    def finished(payload) -> None:
+        if not still_ours():
+            return
+        run_state.stopped()
+        button.enabled = True
+        if cancel_flag["cancelled"]:
+            report.value = FINISHED_FIRST
+            return
+        result, raw_path = payload
+
+        def apply_result(names) -> None:
+            # Only what the review listed: a row edited since keeps its value.
+            for name in names:
+                if name in rows:
+                    rows[name].value = display_value_for(schema[name], result.settings[name])
+            apply_prerequisites()
+
+        out_path = Path(raw_path).parent / config_filename(raw_path)
+        # Same reasoning as `_run_optimisation_in_background`'s own
+        # `documented_schema`: FWHM_SETTING_NAMES are quality knobs only, so
+        # the closure pulls in their own prerequisites
+        # (measure_diameters_from_raw_image, ...) for a config that is self-consistent on
+        # its own rather than one that silently depends on values not shown.
+        documented_schema = Schema(
+            list(schema.subset(_names_with_prerequisite_closure(schema, FWHM_SETTING_NAMES))),
+            title="HaemoLynx optimised FWHM settings",
+            description=build_report_text(
+                result,
+                group_names=FWHM_GROUP_NAMES,
+                heading="HaemoLynx FWHM settings, optimised on a sample of the network's "
+                "vessels in the raw image:",
+            ),
+        )
+        try:
+            dump_config(out_path, documented_schema, values=result.settings)
+            wrote_note = f" Wrote {out_path}."
+        except Exception:  # noqa: BLE001 - the proposal stands without its file
+            logger.exception("could not write optimised FWHM config to %s", out_path)
+            wrote_note = f" Could not write {out_path} (see log)."
+        bars.finish("Optimised")
+        report.value = propose(result, apply_result) + wrote_note
+
+    def failed(error: Exception) -> None:
+        if not still_ours():
+            if isinstance(error, RunCancelled):
+                return
+            logger.debug("stale FWHM optimisation worker failed after Clear", exc_info=error)
+            return
+        run_state.stopped()
+        button.enabled = True
+        if isinstance(error, RunCancelled):
+            report.value = CANCELLED
+            return
+        bars.fail(f"Failed: {type(error).__name__}")
+        report.value = f"{type(error).__name__}: {error}"
+        logger.exception("FWHM settings optimisation failed", exc_info=error)
+        raise error
+
+    return _start_optimisation_worker(
+        run,
+        run_state=run_state,
+        cancel_flag=cancel_flag,
+        still_ours=still_ours,
+        button=button,
+        bars=bars,
+        report=report,
+        finished=finished,
+        failed=failed,
+        starting_message="Optimising FWHM settings...",
+    )
+
+
+def _optimise_endothelial_settings_for_run(
+    graph: "nx.MultiGraph",
+    voxel_size_zyx: tuple[float, float, float],
+    settings: dict[str, Any],
+    schema: Schema,
+    *,
+    boundaries,
+    progress,
+    groups: "tuple[str, ...] | None",
+    vessel_mask: "np.ndarray | None",
+    sample_edge_count: "int | None",
+    max_passes: int,
+):
+    """`optimise_endothelial_settings` on *graph*, reading as the run's
+    Diameters stage does: with the haemodynamics config the pipeline builds
+    from *settings*, and calibrating on the vessels its network handling
+    keeps, by *boundaries*' inlets and outlets (on every vessel without them)."""
+    config = pipeline_stages._haemodynamics_apply_config(
+        settings,
+        schema,
+        voxel_size_zyx=voxel_size_zyx,
+        stain=pipeline_stages.recorded_raw_image_stain(settings, graph),
+    )
+    calibration_edges = (
+        None if boundaries is None
+        else pipeline_stages.edges_network_handling_keeps(settings, graph, boundaries)
+    )
+    if vessel_mask is None:
+        vessel_mask = _run_segmentation_on_its_grid(settings)
+    return optimise_endothelial_settings(
+        graph,
+        starting_values={name: settings.get(name) for name in ENDOTHELIAL_SETTING_NAMES},
+        voxel_size_zyx=voxel_size_zyx,
+        config=config,
+        vessel_mask=vessel_mask,
+        calibration_edges=calibration_edges,
+        sample_edge_count=sample_edge_count,
+        progress=progress,
+        groups=groups,
+        max_passes=max_passes,
+    )
+
+
+def _run_endothelial_optimisation_in_background(
+    graph: "nx.MultiGraph",
+    voxel_size_zyx: tuple[float, float, float],
+    settings: dict[str, Any],
+    schema: Schema,
+    rows: dict[str, Any],
+    report,
+    button,
+    bars: "OptimiseProgressBars",
+    *,
+    apply_prerequisites,
+    run_state: RunState,
+    groups: "tuple[str, ...] | None" = None,
+    vessel_mask: "np.ndarray | None" = None,
+    sample_edge_count: "int | None" = None,
+    max_passes: int = 1,
+    boundaries=None,
+    propose,
+):
+    """Run the endothelial settings optimiser off the GUI thread: the
+    Diameters tab's counterpart of `_run_fwhm_optimisation_in_background`
+    for an endothelial raw image, over
+    `haemolynx.optimisation.endothelial_search.optimise_endothelial_settings`.
+    The same mutual exclusion, cancellation and proposal before Apply;
+    *vessel_mask* (the run's segmented image) gives the planted vessels and
+    decoys their tissue, *boundaries* says which vessels the run calibrates on.
+    """
+    from napari.qt.threading import thread_worker
+
+    cancel_flag, still_ours, watched = _cancellable_progress_bridge(run_state, bars)
+
+    @thread_worker
+    def run():
+        local_settings = dict(settings)
+        result = _optimise_endothelial_settings_for_run(
+            graph,
+            voxel_size_zyx,
+            local_settings,
+            schema,
+            boundaries=boundaries,
+            progress=watched,
+            groups=groups,
+            vessel_mask=vessel_mask,
+            sample_edge_count=sample_edge_count,
+            max_passes=max_passes,
+        )
+        return result, local_settings["raw_image_path"]
+
+    def finished(payload) -> None:
+        if not still_ours():
+            return
+        run_state.stopped()
+        button.enabled = True
+        if cancel_flag["cancelled"]:
+            report.value = FINISHED_FIRST
+            return
+        result, raw_path = payload
+
+        def apply_result(names) -> None:
+            # Only what the review listed: a row edited since keeps its value.
+            for name in names:
+                if name in rows:
+                    rows[name].value = display_value_for(schema[name], result.settings[name])
+            apply_prerequisites()
+
+        out_path = Path(raw_path).parent / config_filename(raw_path)
+        documented_schema = Schema(
+            list(schema.subset(_names_with_prerequisite_closure(schema, ENDOTHELIAL_SETTING_NAMES))),
+            title="HaemoLynx optimised endothelial settings",
+            description=build_report_text(
+                result,
+                group_names=ENDOTHELIAL_GROUP_NAMES,
+                heading="HaemoLynx endothelial ring-fit settings, optimised on a sample of the "
+                "network's vessels in the raw image:",
+            ),
+        )
+        try:
+            dump_config(out_path, documented_schema, values=result.settings)
+            wrote_note = f" Wrote {out_path}."
+        except Exception:  # noqa: BLE001 - the proposal stands without its file
+            logger.exception("could not write optimised endothelial config to %s", out_path)
+            wrote_note = f" Could not write {out_path} (see log)."
+        bars.finish("Optimised")
+        report.value = propose(result, apply_result) + wrote_note
+
+    def failed(error: Exception) -> None:
+        if not still_ours():
+            if isinstance(error, RunCancelled):
+                return
+            logger.debug("stale endothelial optimisation worker failed after Clear", exc_info=error)
+            return
+        run_state.stopped()
+        button.enabled = True
+        if isinstance(error, RunCancelled):
+            report.value = CANCELLED
+            return
+        bars.fail(f"Failed: {type(error).__name__}")
+        report.value = f"{type(error).__name__}: {error}"
+        logger.exception("endothelial settings optimisation failed", exc_info=error)
+        raise error
+
+    return _start_optimisation_worker(
+        run,
+        run_state=run_state,
+        cancel_flag=cancel_flag,
+        still_ours=still_ours,
+        button=button,
+        bars=bars,
+        report=report,
+        finished=finished,
+        failed=failed,
+        starting_message="Optimising endothelial settings...",
+    )
+
+
+def _run_segmentation_quality_check_in_background(
+    settings: dict[str, Any],
+    report,
+    button,
+    *,
+    run_state: RunState,
+    segmented_path: "Path | None" = None,
+):
+    """Score the segmented input image off the GUI thread, printing the
+    breakdown to *report* when done. *segmented_path* is the image to score
+    (`_segmented_image_to_optimise`): ilastik's current output while it
+    segments, which is never made here.
+
+    Shares *run_state* with "Run pipeline" and "Optimise settings" purely
+    for mutual exclusion -- a large volume's EDT/connected-components/
+    smoothing pass is real work, so this must never race the other two
+    against the same input. No progress bars: unlike the optimiser's dozens
+    of pipeline sub-stage runs, this is one pass over the mask, reported as
+    a single before/after message like "Run checks" already is.
+    """
+    from napari.qt.threading import thread_worker
+
+    from haemolynx.io import voxel_size_zyx_from_xyz
+    from haemolynx.preprocessing import (
+        clean_segmented_mask_for_skeletonisation,
+        compare_segmentation_to_raw_image,
+        format_segmentation_quality_report,
+        format_segmentation_raw_comparison_report,
+        resolve_stain,
+        score_segmented_mask,
+    )
+
+    cancel_flag = {"cancelled": False}
+
+    def still_ours() -> bool:
+        return run_state.cancel_flag is cancel_flag
+
+    @thread_worker
+    def run():
+        local_settings = dict(settings)
+        inputs = segment(local_settings, segmented_path=segmented_path)
+        # As the run's skeletonise reads it, with the box and the reduction
+        # it came through, which the raw image is cut and reduced by too;
+        # under the low-RAM option, onto disk.
+        volume = pipeline_stages.load_volume_on_run_grid(local_settings, inputs.input_format)
+        voxel_size_xyz = volume.voxel_size_xyz
+        use_memmap = bool(local_settings.get("use_memmap_loading"))
+        mask = _to_binary_volume_for_skeletonization(
+            volume.image, use_memmap=use_memmap, memmap_directory=local_settings.get("memmap_directory")
+        )
+        voxel_size_zyx = voxel_size_zyx_from_xyz(tuple(float(v) for v in voxel_size_xyz))
+        score = score_segmented_mask(
+            mask,
+            voxel_size_zyx=voxel_size_zyx,
+            target_voxels_across_radius=local_settings.get("min_voxels_across_vessel_radius"),
+            boundary_patch_allowance=local_settings.get("expected_boundary_vessel_count"),
+        )
+
+        # Also score the mask after the run's *currently configured*
+        # segmentation_cleanup_* settings, so the report can show whether a
+        # good number reflects the source data or just this pipeline's own
+        # cleanup patching over it -- see segmentation_quality's own module
+        # docstring for why that distinction matters. `raw_segmented_image`
+        # is `None` (nothing to compare) when every cleanup step is off, or
+        # when the segmentation_cleanup master switch itself is off -- a
+        # real run's skeletonise() skips cleanup entirely in that case (see
+        # pipeline.schema's segmentation_cleanup), and this preview must
+        # show the same run the pipeline will actually do.
+        if local_settings["segmentation_cleanup"]:
+            cleanup_kwargs = prefixed_arguments(
+                local_settings, "segmentation_cleanup_",
+                parameters_of(clean_segmented_mask_for_skeletonisation),
+            )
+            cleaned_mask, raw_segmented_image = clean_segmented_mask_for_skeletonisation(
+                mask, voxel_size_zyx=voxel_size_zyx, **cleanup_kwargs
+            )
+        else:
+            cleaned_mask, raw_segmented_image = mask, None
+        after_cleanup = None
+        if raw_segmented_image is not None:
+            after_cleanup = score_segmented_mask(
+                cleaned_mask,
+                voxel_size_zyx=voxel_size_zyx,
+                target_voxels_across_radius=local_settings.get("min_voxels_across_vessel_radius"),
+                boundary_patch_allowance=local_settings.get("expected_boundary_vessel_count"),
+            )
+
+        # Optional: cross-check against the raw (unsegmented) image, when
+        # one is configured -- the Input tab's raw image, the run's one.
+        # Never fatal: a missing/unreadable/mismatched-shape raw file
+        # degrades to a report note, not a failed check -- the mask-only
+        # score above is still useful on its own.
+        raw_comparison = None
+        stain_reading = None
+        raw_image, raw_comparison_error = _load_raw_reference_image_or_none(
+            local_settings,
+            expected_shape=mask.shape,
+            downsample=volume.downsample,
+            voxel_size_xyz=tuple(float(v) for v in voxel_size_xyz),
+            use_memmap=use_memmap,
+            crop=volume.crop,
+        )
+        if raw_image is not None:
+            try:
+                # Compared by what the raw image stains: the lumen itself, or
+                # the wall round it (raw_image_stain, read from the image when
+                # auto).
+                stain, stain_reading = resolve_stain(
+                    local_settings.get("raw_image_stain", "auto"), raw_image, mask, voxel_size_zyx
+                )
+                raw_comparison = compare_segmentation_to_raw_image(
+                    mask, raw_image, voxel_size_zyx=voxel_size_zyx, stain=stain
+                )
+            except Exception as error:  # noqa: BLE001 - degrade to a report note
+                raw_comparison_error = f"{type(error).__name__}: {error}"
+
+        return score, after_cleanup, raw_comparison, raw_comparison_error, stain_reading
+
+    def finished(payload) -> None:
+        if not still_ours():
+            return
+        run_state.stopped()
+        button.enabled = True
+        if cancel_flag["cancelled"]:
+            report.value = FINISHED_FIRST
+            return
+        score, after_cleanup, raw_comparison, raw_comparison_error, stain_reading = payload
+        text = format_segmentation_quality_report(score, after_cleanup=after_cleanup)
+        if raw_comparison is not None:
+            text += "\n\n" + format_segmentation_raw_comparison_report(raw_comparison)
+            if stain_reading is not None:
+                text += f"\n  raw image stain (auto): {stain_reading.describe()}"
+        elif raw_comparison_error is not None:
+            text += f"\n\nRaw-image cross-check skipped: {raw_comparison_error}"
+        report.value = text
+
+    def failed(error: Exception) -> None:
+        if not still_ours():
+            if isinstance(error, RunCancelled):
+                return
+            logger.debug("stale segmented-image check worker failed after Clear", exc_info=error)
+            return
+        run_state.stopped()
+        button.enabled = True
+        if isinstance(error, RunCancelled):
+            report.value = CANCELLED
+            return
+        report.value = f"{type(error).__name__}: {error}"
+        logger.exception("segmented image quality check failed", exc_info=error)
+        raise error
+
+    def stopped() -> None:
+        if not still_ours():
+            return
+        if not run_state.running:
+            return
+        run_state.stopped()
+        button.enabled = True
+        if cancel_flag["cancelled"]:
+            report.value = FINISHED_FIRST
+
+    worker = run(_connect={"errored": failed}, _start_thread=False)
+    worker.returned.connect(finished)
+    worker.finished.connect(stopped)
+    run_state.start(worker=worker, cancel_flag=cancel_flag)
+    button.enabled = False
+    report.value = "Checking segmented image..."
+    worker.start()
+    return worker
 
 
 #: What the About panel says. Written here rather than in the widget so it can
@@ -1014,12 +8078,96 @@ def about_widget():
     cannot answer: where the colour controls live, and what a config is for."""
     from magicgui.widgets import TextEdit
 
-    report = TextEdit(value=about_text())
+    from haemolynx.gui.chrome_tooltips import ABOUT_TOOLTIP
+
+    report = TextEdit(value=about_text(), tooltip=ABOUT_TOOLTIP)
     report.read_only = True
     return report.native
 
 
-def _boundary_controls(viewer, rows, fields, schema, report):
+def _box_tool_widgets(role: str) -> dict[str, Any]:
+    """One role page's box tools, as magicgui widgets in the tab's own style.
+
+    The size is three spin boxes on one labelled row and the six moves one row
+    of buttons, each button named for its direction; the node list is a Qt
+    table in a container of its own, reachable as ``.table`` (and its line of
+    explanation as ``.note``).
+    """
+    from magicgui.widgets import ComboBox, Container, FloatSpinBox, Label, PushButton
+    from qtpy.QtWidgets import QAbstractItemView, QHeaderView, QTableWidget
+
+    from haemolynx.gui.boundary_picking import (
+        BOX_NODE_COLUMNS,
+        DEFAULT_BOX_SIZE_UM,
+        MOVE_DIRECTIONS,
+        role_title,
+    )
+    from haemolynx.gui.chrome_tooltips import ACTION_TOOLTIPS, BOX_MOVE_TOOLTIPS, BOX_SIZE_TOOLTIPS
+
+    size = Container(
+        widgets=[
+            FloatSpinBox(value=v, min=0.5, max=5000.0, step=1.0, label=axis, name=f"size_{axis}",
+                         tooltip=BOX_SIZE_TOOLTIPS[axis])
+            for axis, v in zip("zyx", DEFAULT_BOX_SIZE_UM)
+        ],
+        layout="horizontal", labels=True, label="Box size (um)",
+    )
+    arrows = {"left": "\u25c0 Left", "right": "Right \u25b6", "up": "\u25b2 Up",
+              "down": "\u25bc Down", "back": "Back", "forward": "Forward"}
+    move = Container(
+        widgets=[PushButton(text=arrows[d], name=d, tooltip=BOX_MOVE_TOOLTIPS[d]) for d in MOVE_DIRECTIONS],
+        layout="horizontal", labels=False, label="Move the box",
+    )
+    note = Label(value="Insert a box, move it over the vessel end, then press Scan.")
+    nodes = Container(widgets=[note], labels=False, label="Nodes in the box")
+    table = QTableWidget(0, len(BOX_NODE_COLUMNS))
+    table.setObjectName(f"haemolynx_box_nodes_{role}")
+    table.setHorizontalHeaderLabels(list(BOX_NODE_COLUMNS))
+    table.setSelectionBehavior(QAbstractItemView.SelectRows)
+    table.setSelectionMode(QAbstractItemView.SingleSelection)
+    table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+    table.verticalHeader().setVisible(False)
+    table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+    table.setMinimumHeight(110)
+    table.setToolTip(ACTION_TOOLTIPS["box_nodes"])
+    nodes.native.layout().addWidget(table)
+    nodes.table = table
+    nodes.note = note
+    return {
+        "insert_box": PushButton(text="Insert a box"),
+        "box_choice": ComboBox(choices=["(no box yet)"], label="Box"),
+        "box_size": size,
+        "box_colour": PushButton(text="Box colour..."),
+        "box_step": FloatSpinBox(value=5.0, min=0.1, max=1000.0, step=1.0,
+                                 label="Move step (um)"),
+        "box_move": move,
+        "box_scan": PushButton(text="Scan the box for nodes"),
+        "box_nodes": nodes,
+        "use_node": PushButton(text=f"Use selected node as {role_title(role)}"),
+        "remove_box": PushButton(text="Remove this box"),
+    }
+
+
+@functools.lru_cache(maxsize=512)
+def _resolved_path(path: str) -> Path:
+    """``Path(path).resolve()``, once per path.
+
+    The panel compares every loaded path with its row on each read of the
+    settings, and resolving touches the file system -- on a Mac, a run made on
+    a server names ``/home/...`` paths, an automount point that makes each
+    lookup slow enough that every settings change lagged by half a second.
+    """
+    return Path(path).resolve()
+
+
+def _names_same_file(shown: Any, path: Any) -> bool:
+    """Whether a path row showing *shown* already names *path* (None: empty)."""
+    if shown in (None, "") or path in (None, ""):
+        return shown in (None, "") and path in (None, "")
+    return _resolved_path(str(shown)) == _resolved_path(str(path))
+
+
+def _boundary_controls(viewer, rows, fields, schema, report, boundaries_input=None):
     """The Boundaries tab's "point at it instead of typing it" controls.
 
     Two layers, both editable, both holding exactly what the settings hold --
@@ -1031,23 +8179,43 @@ def _boundary_controls(viewer, rows, fields, schema, report):
     is why there is no cycle to break -- the `applying` guard below is for the
     fact that `events.data` fires twice per edit, not for a feedback loop.
 
+    *boundaries_input* (optional) returns the graph the Boundaries stage would
+    run on -- the '3. Graph' network, before any large-vessel cut -- which is
+    what the box tools list nodes from: a node chosen there has an ID the next
+    Boundaries run will find.
+
     Returns None without a viewer: the panel is buildable outside napari.
     """
     if viewer is None:
         return None
 
-    import napari
-    from magicgui.widgets import ComboBox, Container, FloatSlider, Label, PushButton
+    from magicgui.widgets import (
+        ComboBox,
+        Container,
+        FloatSlider,
+        Label,
+        PushButton,
+    )
 
     from haemolynx.gui.boundary_picking import (
+        AUTOMATED_OVERRIDES_MANUAL_NOTE,
+        BC_BOX_NAMES,
         BC_COORDINATES,
         BC_LAYER_NAMES,
+        BC_NODE_IDS,
         BC_REGION_NAMES,
-        HANDLE,
         band_boxes,
+        node_made_after_boundaries,
+        box_colours,
+        box_from_view_drag,
+        box_mesh,
+        boxes_name,
+        role_boxes,
         ROLES,
         orderable_settings,
         outside_extent,
+        role_disabled_note,
+        role_manual_controls_enabled,
         role_settings,
         role_title,
         shared_settings,
@@ -1056,15 +8224,41 @@ def _boundary_controls(viewer, rows, fields, schema, report):
         coordinate_setting,
         group_for,
         method_setting,
+        node_id_note,
+        node_id_setting,
         settings_for_method,
         settings_from_layers,
         regions_name,
         snap,
         terminal_axis_span,
         terminal_points,
+        toggle_node_id,
         volume_setting,
         wanted_rows,
+        BC_BOX_NODES,
+        box_node_styles,
+        rectangle_from_box,
+        box_around,
+        box_centre,
+        box_node_rows,
+        box_nodes_spec,
+        box_size,
+        move_box,
+        nodes_in_box,
+        resize_box,
+        use_node_for_role,
+        view_centre_zyx,
     )
+    from haemolynx.graph.boundaries import inlets_outlets_from_vessel_masks
+    from haemolynx.gui.results import BOUNDARY_NODES
+    from haemolynx.gui.chrome_tooltips import (
+        ACTION_TOOLTIPS,
+        SHOW_BOUNDARIES_TOOLTIP,
+        SNAP_BOUNDARIES_TOOLTIP,
+        STOP_PICKING_NODES_TOOLTIP,
+    )
+    from haemolynx.gui.graph_click import hit_test_nodes, nearest_node_hit
+    from haemolynx.gui.results import role_colours
 
     #: Which role a new point or region belongs to. Not shown: the sub-tab bar
     #: built in `page` is what the user sees, and this follows it. Keeping the
@@ -1074,7 +8268,14 @@ def _boundary_controls(viewer, rows, fields, schema, report):
 
     #: The two controls that are about the picture rather than about one role.
     show = PushButton(text="Show these boundary conditions")
+    show.tooltip = SHOW_BOUNDARIES_TOOLTIP
     snap_button = PushButton(text="Snap selected to nearest terminal")
+    snap_button.tooltip = SNAP_BOUNDARIES_TOOLTIP
+
+    #: The node-picking button says which way it will go: one press starts
+    #: clicking nodes for the role, the next stops it.
+    PICK_NODES_TEXT = "Pick nodes in the viewer"
+    STOP_PICKING_NODES_TEXT = "Stop picking nodes"
 
     #: Everything else, once per role, so it sits on that role's own page next
     #: to the settings it fills in. A control that acts on "the chosen role"
@@ -1089,19 +8290,40 @@ def _boundary_controls(viewer, rows, fields, schema, report):
             move=PushButton(text="Move or delete what you picked"),
             assign=PushButton(text="Assign selected to this role"),
             clear=PushButton(text="Clear this role's regions"),
+            pick_nodes=PushButton(text=PICK_NODES_TEXT),
+            clear_nodes=PushButton(text="Clear this role's node IDs"),
+            **_box_tool_widgets(name),
         )
         for name in ROLES
     }
+    for _action in actions.values():
+        for _control, _tip in ACTION_TOOLTIPS.items():
+            getattr(_action, _control).tooltip = _tip
+        _readout_hover_text(_action.depth)
 
+    #: The box tools: insert a box, size and move it, list the nodes in it
+    #: and choose one. A volume role's page is these and nothing else; no
+    #: other method shows them.
+    BOX_TOOLS = ("insert_box", "box_choice", "box_size", "box_colour", "box_step", "box_move",
+                 "box_scan", "box_nodes", "use_node", "remove_box")
     #: Which of a role's controls its chosen method has any use for.
     ACTIONS_FOR_METHOD = {
         "coordinates": ("pick", "move", "assign"),
-        "volume": ("draw", "depth", "move", "assign", "clear"),
+        "volume": BOX_TOOLS,
+        "node_ids": ("pick_nodes", "clear_nodes"),
     }
+    CONTROLS = ("pick", "draw", "depth", "move", "assign", "clear",
+                "pick_nodes", "clear_nodes", *BOX_TOOLS)
 
+    #: `node_pick` is the role a click on a graph node goes to, or None when
+    #: clicks are the camera's alone.
+    #: `active_box` is, per role, which of its boxes the box tools act on;
+    #: `box_nodes` the nodes listed for each role's box, in table order.
     state = SimpleNamespace(applying=False, results=None, connected=set(),
                         visible=frozenset(), hidden=frozenset(), tabs=None,
-                        actions={})
+                        actions={}, draw3d=None, node_pick=None,
+                        active_box={}, box_nodes={}, pending_boxes={}, scanned={},
+                        box_colour={})
 
     #: Each role's page, and where each shared row currently sits. Filled in
     #: by `page`; empty until the panel has been laid out.
@@ -1113,7 +8335,7 @@ def _boundary_controls(viewer, rows, fields, schema, report):
         return actions[str(role.value)].depth
 
     def current_values() -> dict[str, Any]:
-        return {name: fields[name].to_setting_value(widget.value)
+        return {name: fields[name].to_setting_value(_safe_widget_value(widget))
                 for name, widget in rows.items()}
 
     def write_rows(proposed: dict[str, Any]) -> None:
@@ -1126,6 +8348,22 @@ def _boundary_controls(viewer, rows, fields, schema, report):
         """The graph a run built, if there is one yet."""
         results = state.results
         return getattr(results, "graph", None) if results is not None else None
+
+    def box_graph():
+        """The graph boundary nodes are chosen from: what Boundaries runs on.
+
+        Not the network on screen, which after a run is the final one -- cut
+        at the large vessels, pruned -- and lacks nodes (and IDs) the
+        Boundaries stage will have. Falls back to it before 3. Graph is saved.
+        """
+        if boundaries_input is not None:
+            try:
+                found = boundaries_input()
+            except Exception:  # noqa: BLE001 - a missing checkpoint is not an error here
+                found = None
+            if found is not None:
+                return found
+        return graph()
 
     def layer(name):
         return viewer.layers[name] if name in viewer.layers else None
@@ -1145,15 +8383,21 @@ def _boundary_controls(viewer, rows, fields, schema, report):
     def unused_warning(values) -> str:
         """Say when a role's picks will not be read, rather than silently fixing it."""
         notes = []
+        listed_ids = BoundaryPicks.from_settings(values).node_ids
         for name in ROLES:
             method = values.get(method_setting(name))
             picked = len(values.get(coordinate_setting(name)) or ())
             boxed = len(values.get(volume_setting(name)) or ())
+            listed = len(listed_ids.get(name, ()))
             if picked and method != "coordinates":
                 notes.append(f"{picked} {name} coordinate(s) but "
                              f"{method_setting(name)} is {method!r}")
-            if boxed and method != "volume":
+            # Under node_ids a box is how the nodes were found, not a pick.
+            if boxed and method not in ("volume", "node_ids"):
                 notes.append(f"{boxed} {name} region(s) but "
+                             f"{method_setting(name)} is {method!r}")
+            if listed and method != "node_ids":
+                notes.append(f"{listed} {name} node ID(s) but "
                              f"{method_setting(name)} is {method!r}")
         return "  Not used: " + "; ".join(notes) + "." if notes else ""
 
@@ -1205,7 +8449,32 @@ def _boundary_controls(viewer, rows, fields, schema, report):
             return {}, True
         axis = values.get("boundary_axis")
         span = terminal_axis_span(graph(), axis) if graph() is not None else None
-        return band_boxes(values, *box, axis_span=span), span is not None
+        bands = band_boxes(values, *box, axis_span=span)
+        # A role the masks (or another automation) choose for never reads its
+        # band: drawing one would show a selection the run does not make.
+        bands = {owner: band for owner, band in bands.items()
+                 if role_manual_controls_enabled(owner, values)}
+        return bands, span is not None
+
+    def masks_choose_note(values) -> str:
+        """While the masks choose the inlets/outlets, say which ones they chose.
+
+        Shows the run's own boundary-nodes layer (hidden by default) -- the
+        nodes the masks picked -- since there is no band or box to draw for a
+        choice the run makes from the masks.
+        """
+        if not inlets_outlets_from_vessel_masks(values):
+            return ""
+        chosen = layer(BOUNDARY_NODES)
+        if chosen is None or not len(chosen.data):
+            return ("  Inlets and outlets: chosen by the large-vessel masks when a run "
+                    "reaches '4. Boundaries' -- none chosen yet.")
+        chosen.visible = True
+        roles = [str(r) for r in _layer_features(chosen).get("role", ())]
+        return (f"  Inlets and outlets: chosen by the large-vessel masks -- "
+                f"{roles.count('inlet')} inlet(s) and {roles.count('outlet')} "
+                f"outlet(s), shown in '{BOUNDARY_NODES}'. Untick 'Inlets outlets "
+                "from vessel masks' to choose them yourself.")
 
     def redraw() -> None:
         """Settings -> layers. One of the two authoritative directions.
@@ -1217,36 +8486,76 @@ def _boundary_controls(viewer, rows, fields, schema, report):
         """
         if state.applying:
             return
+        # A box mid-move is written first, so the redraw reads where it is.
+        flush_boxes()
         state.applying = True
         try:
             values = current_values()
             bands, measured = bands_now(values)
-            group = group_for(values, bands)
-            _apply_layers(viewer, group, report)
+            group = group_for(values, bands, graph())
+            # Straight to `_add_or_update`, not through `_apply_layers`: that
+            # also rebuilds the vessel tube mesh and re-runs the Z-depth
+            # filter, neither of which a boundary edit touches, and doing both
+            # on every edit is what made picking lag.
+            for spec in group.layers:
+                if spec.name in BC_REGION_NAMES and region_layer_holds(spec.name, values):
+                    # Already what the settings say -- typically because the
+                    # settings came *from* it. Rewriting it anyway would reset
+                    # napari's selection and drawing state underneath the user.
+                    continue
+                try:
+                    _add_or_update(viewer, spec)
+                except Exception:  # noqa: BLE001 - one bad layer must not stop the rest
+                    logger.exception("could not show layer %s", spec.name)
             report.value = (f"Boundary conditions: {group.note}"
                             f"{band_note(bands, measured)}"
+                            f"{masks_choose_note(values)}"
                             f"{unused_warning(values)}{offscreen_warning(values)}")
             for name in our_layer_names():
                 listen(layer(name))
             drawn = {spec.name for spec in group.layers}
             for name in BC_REGION_NAMES:
-                # `_apply_layers` only ever adds and updates, so a role that
-                # has nothing left to draw would keep the layer it had --
-                # unless a tool is pointed at it. Pressing Draw makes an empty
-                # layer to draw into, and taking that away would leave the
-                # next click with nowhere to land. Being merely selected is
-                # not enough: napari selects whatever was added last.
+                # `_add_or_update` only ever adds and updates, so a role that
+                # has nothing left to draw would keep the layer it had. Pressing
+                # Draw makes an empty layer to draw into, and taking that away
+                # would leave the next click with nowhere to land -- so a layer
+                # a tool is pointed at is emptied rather than removed. Being
+                # merely selected is not enough: napari selects whatever was
+                # added last.
                 stale = layer(name)
-                if (name not in drawn and stale is not None
-                        and getattr(stale, "mode", "pan_zoom") == "pan_zoom"):
+                if name in drawn or stale is None or not _is_ours(stale):
+                    continue
+                if getattr(stale, "mode", "pan_zoom") == "pan_zoom":
                     viewer.layers.remove(stale)
+                elif len(stale.data):
+                    stale.data = []
+            # Drawn from the settings and never edited, so it simply goes
+            # once no role lists a node.
+            stale = layer(BC_NODE_IDS)
+            if BC_NODE_IDS not in drawn and stale is not None and _is_ours(stale):
+                viewer.layers.remove(stale)
+            draw_boxes(values, bands)
+            for owner in state.box_colour:
+                tint_regions(owner)
             set_depth_range()
+            if state.node_pick is not None:
+                focus_nodes()
         finally:
             state.applying = False
+        refresh_box_tools()
 
-    def sync(*_args) -> None:
+    #: What a layer's `events.data` says once an edit is complete. The same
+    #: edit also fires "adding"/"changing"/"removing" first, and napari's
+    #: rectangle tool fires "adding" before the rectangle exists -- reading
+    #: that one back did nothing but cost a full sync per edit.
+    FINISHED_EDITS = frozenset({"added", "changed", "removed"})
+
+    def sync(event=None, *_args) -> None:
         """Layers -> settings. The other authoritative direction."""
         if state.applying:
+            return
+        action = getattr(event, "action", None)
+        if action is not None and str(getattr(action, "value", action)) not in FINISHED_EDITS:
             return
         state.applying = True
         try:
@@ -1264,12 +8573,10 @@ def _boundary_controls(viewer, rows, fields, schema, report):
                 # empty every role but the last one read.
                 rectangles, rectangle_roles, depths = [], [], []
                 for owner, target in drawn:
-                    handles = handle_indices(target)
-                    roles = roles_of(target, len(target.data), default=owner)
-                    found = depths_of(target, len(target.data))
-                    rectangles += [target.data[index] for index in handles]
-                    rectangle_roles += [roles[index] for index in handles]
-                    depths += [found[index] for index in handles]
+                    found = read_regions(target, owner)
+                    rectangles += found[0]
+                    rectangle_roles += found[1]
+                    depths += found[2]
                 proposed.update(settings_from_layers(
                     rectangles=rectangles,
                     rectangle_roles=rectangle_roles,
@@ -1277,6 +8584,9 @@ def _boundary_controls(viewer, rows, fields, schema, report):
                 ))
             write_rows(proposed)
             values = current_values()
+            # The boxes are drawn from the settings, so they follow an edit
+            # here; the layer that was edited is left exactly as it is.
+            draw_boxes(values)
             picks = BoundaryPicks.from_settings(values)
             report.value = (f"Boundary conditions: {picks.summary()}"
                             f"{unused_warning(values)}{offscreen_warning(values)}")
@@ -1284,23 +8594,86 @@ def _boundary_controls(viewer, rows, fields, schema, report):
             state.applying = False
 
     def handle_indices(target) -> list[int]:
-        """Which shapes are the editable rectangles, not the box outlines.
+        """Which shapes can be read as a region: anything with an area.
 
-        A region is drawn as a rectangle plus the twelve segments of the box it
-        stands for. Only the rectangle is a region; reading the segments back
-        would turn one box into thirteen.
+        Only rectangles are drawn here, but napari's layer controls offer the
+        other tools too; an ellipse or polygon still reads as the box around
+        it, while a line has no area to make one from.
         """
-        parts = list(target.features.get("part", [])) if len(target.features) else []
         kinds = list(target.shape_type)
         return [
             index
             for index in range(len(target.data))
-            # A rectangle the user has just drawn may have no `part` yet, and
-            # an unfilled column reads back as NaN rather than as a string.
-            if (parts[index] if index < len(parts)
-                and isinstance(parts[index], str) else HANDLE) == HANDLE
-            and kinds[index] != "line"
+            if kinds[index] not in ("line", "path")
+            and len(target.data[index]) >= 3
         ]
+
+    def read_regions(target, owner) -> tuple[list, list[str], list[float]]:
+        """A regions layer's rectangles, with each one's role and depth."""
+        handles = handle_indices(target)
+        roles = roles_of(target, len(target.data), default=owner)
+        found = depths_of(target, len(target.data))
+        return ([target.data[index] for index in handles],
+                [roles[index] for index in handles],
+                [found[index] for index in handles])
+
+    def region_layer_holds(name: str, values) -> bool:
+        """Whether a role's regions layer already shows what *values* say."""
+        target = layer(name)
+        owner = next((r for r in ROLES if regions_name(r) == name), None)
+        if target is None or owner is None:
+            return False
+        rectangles, roles, depths = read_regions(target, owner)
+        if len(rectangles) != len(target.data) or any(r != owner for r in roles):
+            return False
+        held = settings_from_layers(rectangles=rectangles, rectangle_roles=roles,
+                                    depths=depths)[volume_setting(owner)]
+        wanted = BoundaryPicks.from_settings(values).to_settings()[volume_setting(owner)]
+        return held == wanted
+
+    def draw_boxes(values=None, bands=None, extra=None) -> None:
+        """Each role's regions as translucent solid boxes, one shade per box.
+
+        Its own Surface layer per role rather than more shapes in the regions
+        layer: a Surface draws in 3D, where a Shapes layer can only show flat
+        rectangles, and it is never edited, so it can be rewritten freely
+        without disturbing a tool working on the regions layer. *extra* is a
+        box still being dragged out in 3D.
+        """
+        values = current_values() if values is None else values
+        if bands is None:
+            bands, _measured = bands_now(values)
+        boxes = role_boxes(BoundaryPicks.from_settings(values), bands, extra=extra)
+        colours = {**dict(role_colours()), **state.box_colour}
+        for owner in ROLES:
+            name = boxes_name(owner)
+            existing = layer(name)
+            if existing is not None and not _is_ours(existing):
+                continue
+            mine = boxes.get(owner)
+            if not mine:
+                if existing is not None:
+                    viewer.layers.remove(existing)
+                continue
+            vertices, faces, which = box_mesh(mine)
+            shades = np.asarray(box_colours(colours[owner], len(mine)), dtype=float)[which]
+            if existing is not None and existing.__class__.__name__.lower() == "surface":
+                _set_tube_mesh(existing, vertices, faces, shades)
+                continue
+            # Adding a layer makes it the active one, and the camera follows
+            # the active layer's `mouse_pan` -- so a box appearing mid-drag
+            # would hand the drag to the camera. Put the selection back.
+            active = viewer.layers.selection.active
+            viewer.add_surface(
+                (vertices, faces), name=name, vertex_colors=shades,
+                opacity=0.35, shading="flat",
+                # Every face of every box, front and back: a box is only
+                # readable as a volume if you can see through to its far side.
+                blending="translucent_no_depth",
+                metadata={OURS: {"kind": "surface", "role": "boundary_boxes"}},
+            )
+            if active is not None and active in viewer.layers:
+                viewer.layers.selection.active = active
 
     def roles_of(target, count, default=None) -> list[str]:
         """Each item's role, filling anything unlabelled with the chosen one.
@@ -1335,26 +8708,16 @@ def _boundary_controls(viewer, rows, fields, schema, report):
         """Follow a layer's edits, once per layer."""
         if target is None or id(target) in state.connected:
             return
+        # Only the data event. There used to be a drag callback here too,
+        # redrawing the layer when the mouse came up -- which ran before
+        # napari's own tool had finished adding the rectangle, so it wiped
+        # the new region and left the tool holding a stale selection (the
+        # `_selected_box` TypeError on the next drag).
         target.events.data.connect(sync)
-        target.mouse_drag_callbacks.append(redraw_when_the_drag_ends)
         state.connected.add(id(target))
 
-    def redraw_when_the_drag_ends(_layer, event):
-        """Redraw once the mouse comes up, not on every step of the drag.
-
-        A region drawn or moved by hand is one rectangle until it is drawn
-        from the settings again, so without this the box a user just made has
-        no depth on screen -- and redrawing on every `events.data` would be
-        replacing the layer's contents underneath the drag that is producing
-        them.
-        """
-        yield
-        while event.type == "mouse_move":
-            yield
-        redraw()
-
     def set_defaults(target) -> None:
-        """Tag whatever napari adds next as this role's, and as a handle.
+        """Tag whatever napari adds next as this role's, at this role's depth.
 
         Every column the layer has, not just the ones this cares about: a
         default that names a subset is refused outright, and the failure is
@@ -1364,9 +8727,6 @@ def _boundary_controls(viewer, rows, fields, schema, report):
         known = {
             "role": str(role.value),
             "depth": float(depth_slider().value),
-            # What the user draws by hand is the region itself; the outline
-            # segments are only ever made from the settings.
-            "part": HANDLE,
         }
         defaults = {name: value for name, value in known.items()
                     if name in target.features}
@@ -1431,12 +8791,17 @@ def _boundary_controls(viewer, rows, fields, schema, report):
         hidden = set()
         for name in orderable_settings():
             # A method row always stays: it is the row that decides which of
-            # the others you need to fill in.
+            # the others you need to fill in. An advanced row (the node IDs a
+            # run fills in) belongs to the role page's own Advanced button,
+            # which no method choice hides.
+            if name in schema and schema[name].advanced:
+                continue
             if name in rows and name not in methods and name not in owned:
                 rows[name].visible = name in wanted
                 if name not in wanted:
                     hidden.add(name)
         refresh_actions()
+        refresh_role_tabs()
         place_shared()
         state.visible = wanted
         state.hidden = frozenset(hidden | {name for name in shared_settings()
@@ -1476,28 +8841,71 @@ def _boundary_controls(viewer, rows, fields, schema, report):
                 rows[name].visible = True
                 shared_home[name] = current
 
+    def refresh_role_tabs() -> None:
+        """Grey out role sub-tabs when automated assignment owns that role.
+
+        The masks choosing the inlets and outlets (``automated_vessel_assignment``
+        and ``inlets_outlets_from_vessel_masks``) disables Inlet and Outlet;
+        small-vessel auto disables Arteriole and Venule. Tabs stay
+        visible -- greyed, not hidden -- unlike vessel-mask option rows.
+        """
+        tabs = getattr(state, "tabs", None)
+        if tabs is None:
+            return
+        values = current_values()
+        for index, name in enumerate(ROLES):
+            enabled = role_manual_controls_enabled(name, values)
+            tabs.setTabEnabled(index, enabled)
+            if not enabled:
+                tabs.setTabToolTip(index, role_disabled_note(name, values))
+            else:
+                tabs.setTabToolTip(index, fields[method_setting(name)].help)
+        if not tabs.isTabEnabled(tabs.currentIndex()):
+            for index in range(tabs.count()):
+                if tabs.isTabEnabled(index):
+                    tabs.setCurrentIndex(index)
+                    break
+
     def refresh_actions() -> None:
         """Show a role's controls only where its method has a use for them."""
         values = current_values()
         for name, action in actions.items():
             method = str(values.get(method_setting(name)))
             useful = set(ACTIONS_FOR_METHOD.get(method, ()))
-            for control in ("pick", "draw", "depth", "move", "assign", "clear"):
-                getattr(action, control).visible = control in useful
+            # Automated assignment overrides the matching manual role tabs.
+            overridden = not role_manual_controls_enabled(name, values)
+            for control in CONTROLS:
+                widget = getattr(action, control)
+                widget.visible = control in useful
+                if overridden:
+                    widget.enabled = False
+                    widget.tooltip = role_disabled_note(name, values)
+                else:
+                    widget.enabled = True
+                    widget.tooltip = ACTION_TOOLTIPS[control]
             state.actions[name] = frozenset(useful)
+            if state.node_pick == name and ("pick_nodes" not in useful or overridden):
+                # The method moved off node_ids, or automation took the role
+                # over: a click must not go on writing IDs nothing reads.
+                disarm_nodes()
+        label_pick_nodes()
 
     def on_settings_changed(*_args) -> None:
         """Follow the form: the layers show what the settings currently say."""
         refresh_rows()
         if state.applying:
             return
-        if any(name in viewer.layers for name in our_layer_names()):
+        if any(name in viewer.layers for name in (*our_layer_names(), BC_NODE_IDS)):
             redraw()
+        else:
+            refresh_box_tools()
 
     def on_show() -> None:
         redraw()
 
     def on_pick() -> None:
+        disarm_3d()
+        disarm_nodes()
         redraw()
         target = layer(BC_COORDINATES)
         if target is None:
@@ -1511,11 +8919,12 @@ def _boundary_controls(viewer, rows, fields, schema, report):
         )
 
     def on_draw() -> None:
-        if viewer.dims.ndisplay == 3:
+        disarm_3d()
+        disarm_nodes()
+        if viewer.dims.ndisplay == 3 and image_extent() is None:
             report.value = (
-                "Regions can only be drawn in the 2D view -- napari does not "
-                "allow editing a Shapes layer in 3D. Switch to 2D, draw the "
-                "rectangle, then come back to 3D to see the box it makes."
+                "Open an image first: a box drawn in 3D runs through the image "
+                "along the line of sight, so it needs an image to run through."
             )
             return
         redraw()
@@ -1535,10 +8944,86 @@ def _boundary_controls(viewer, rows, fields, schema, report):
             listen(target)
         viewer.layers.selection.active = target
         set_defaults(target)
+        if viewer.dims.ndisplay == 3:
+            arm_3d(target)
+            report.value = (
+                f"Drag a rectangle across the 3D view for a {role.value} region. "
+                "Across the screen the box takes what you drag; along the line "
+                "of sight it runs through the whole image (looking down z, the "
+                f"Region depth below: {depth_slider().value:.0f} um). Snap the "
+                "view to XY, XZ or YZ for an exact box -- at an angle it takes "
+                "the smallest box holding the rectangle. The view stops turning "
+                "until the drag is done; press Draw again for another box."
+            )
+            return
         target.mode = "add_rectangle"
         report.value = (
-            f"Draw a rectangle for a {role.value} region. It takes the depth "
-            f"below ({depth_slider().value:.0f} um), centred on the slice you draw it on."
+            f"Draw rectangles for {role.value} regions -- as many as you like. "
+            f"Each takes the depth below ({depth_slider().value:.0f} um), "
+            "centred on the slice you draw it on."
+        )
+
+    def arm_3d(target) -> None:
+        """Let the next drag on *target* make a box instead of turning the view.
+
+        The camera follows the active layer's `mouse_pan`, which is how napari's
+        own 3D plane dragging keeps the view still; the same switch here.
+        """
+        state.draw3d = SimpleNamespace(layer=target, owner=str(role.value))
+        target.mouse_pan = False
+        if draw_in_3d not in target.mouse_drag_callbacks:
+            target.mouse_drag_callbacks.append(draw_in_3d)
+
+    def disarm_3d() -> None:
+        """Give the mouse back to the camera."""
+        armed, state.draw3d = state.draw3d, None
+        if armed is None:
+            return
+        try:
+            armed.layer.mouse_pan = True
+            if draw_in_3d in armed.layer.mouse_drag_callbacks:
+                armed.layer.mouse_drag_callbacks.remove(draw_in_3d)
+        except Exception:  # noqa: BLE001 - a layer removed meanwhile has nothing to restore
+            logger.debug("could not disarm 3D region drawing", exc_info=True)
+
+    def draw_in_3d(target, event):
+        """One box per drag: previewed as it grows, written when the mouse is up."""
+        armed = state.draw3d
+        extent = image_extent()
+        if (armed is None or armed.layer is not target
+                or viewer.dims.ndisplay != 3 or extent is None):
+            return
+        start = np.asarray(event.position, dtype=float)
+        view = getattr(event, "view_direction", None)
+        up = getattr(event, "up_direction", None)
+        if view is None or up is None:
+            view, up = viewer_camera(viewer).view_direction, viewer_camera(viewer).up_direction
+        depth = float(actions[armed.owner].depth.value)
+
+        def box_to(position):
+            return box_from_view_drag(start, position, view, up, *extent, depth=depth)
+
+        yield
+        while event.type == "mouse_move":
+            box = box_to(event.position)
+            draw_boxes(extra={armed.owner: [box]} if box is not None else None)
+            yield
+        box = box_to(event.position)
+        disarm_3d()
+        if box is None:
+            draw_boxes()
+            report.value = (
+                "That drag made no box -- it had no area across the screen, or "
+                "missed the image. Press Draw and drag across the image."
+            )
+            return
+        name = volume_setting(armed.owner)
+        held = BoundaryPicks.from_settings(current_values()).to_settings()[name]
+        # Writing the row redraws: the settings are the one place a box lives.
+        write_rows({name: [*held, box]})
+        report.value = (
+            f"Added a box for {armed.owner}: {box[0]} to {box[1]} um (z, y, x). "
+            "Press Draw for another; the depth slider trims its z extent."
         )
 
     def on_depth_changed(*_args) -> None:
@@ -1591,11 +9076,14 @@ def _boundary_controls(viewer, rows, fields, schema, report):
             return
         if regions and viewer.dims.ndisplay == 3:
             report.value = (
-                "Regions can only be edited in the 2D view -- napari does not "
-                "allow editing a Shapes layer in 3D. Coordinates can be moved "
-                "in either view."
+                "Regions can only be moved or resized in the 2D view -- napari "
+                "does not allow editing a Shapes layer in 3D. In 3D, Draw adds "
+                "a box and Clear removes this role's boxes. Coordinates can be "
+                "moved in either view."
             )
             return
+        disarm_3d()
+        disarm_nodes()
         viewer.layers.selection.active = target
         target.mode = "select"
         report.value = (
@@ -1670,13 +9158,624 @@ def _boundary_controls(viewer, rows, fields, schema, report):
         write_rows({volume_setting(str(role.value)): []})
         redraw()
 
+    # --- the box tools: insert a box, size and move it, choose a node in it.
+
+    def boxes_of(owner: str, values=None) -> list:
+        """*owner*'s boxes: the ones being moved if any, else the setting's."""
+        if owner in state.pending_boxes:
+            return [list(map(list, box)) for box in state.pending_boxes[owner]]
+        values = current_values() if values is None else values
+        return BoundaryPicks.from_settings(values).to_settings()[volume_setting(owner)]
+
+    from qtpy.QtCore import QTimer
+
+    #: Moving or resizing a box redraws only its own two layers at once; the
+    #: setting, the node list and the box's nodes follow once the clicks stop.
+    #: Writing the row on every click redrew every boundary layer twice and
+    #: rebuilt six roles' node lists, which in a full viewer -- vessel tubes
+    #: and all, redrawn per layer change -- made each press lag.
+    BOX_SETTLE_MS = 250
+    settle_timer = QTimer()
+    settle_timer.setSingleShot(True)
+    settle_timer.setInterval(BOX_SETTLE_MS)
+
+    def draw_role_boxes(owner: str, boxes, *, flat: bool, solid: bool) -> None:
+        """Put *owner*'s rectangles (*flat*) and/or 3D boxes (*solid*) at *boxes*."""
+        was = state.applying
+        state.applying = True
+        try:
+            regions = layer(regions_name(owner))
+            if flat and regions is not None and _is_ours(regions) \
+                    and len(regions.data) == len(boxes):
+                regions.data = [rectangle_from_box(lo, hi)[0] for lo, hi in boxes]
+                tint_regions(owner)
+            solids = layer(boxes_name(owner))
+            if solid and solids is not None and _is_ours(solids) and boxes:
+                vertices, faces, which = box_mesh(boxes)
+                shades = np.asarray(
+                    box_colours(box_colour_of(owner), len(boxes)), dtype=float
+                )[which]
+                _set_tube_mesh(solids, vertices, faces, shades)
+        finally:
+            state.applying = was
+
+    def box_colour_of(owner: str):
+        """*owner*'s box colour: the one chosen with Box colour, else the role's."""
+        return state.box_colour.get(owner, dict(role_colours())[owner])
+
+    def tint_regions(owner: str) -> None:
+        """Give *owner*'s 2D rectangles its chosen box colour, if one was chosen.
+
+        The regions layer is drawn in the role's colour from its spec, so a
+        chosen colour is laid over it after every redraw.
+        """
+        colour = state.box_colour.get(owner)
+        regions = layer(regions_name(owner))
+        if colour is None or regions is None or not _is_ours(regions) or not len(regions.data):
+            return
+        rgba = np.tile(np.asarray(colour, dtype=float), (len(regions.data), 1))
+        was = state.applying
+        state.applying = True
+        try:
+            regions.edge_color = rgba
+            regions.face_color = rgba
+        finally:
+            state.applying = was
+
+    def show_box_colour(owner: str) -> None:
+        """The Box colour button wears the colour it will draw in."""
+        r, g, b = (int(round(255 * float(v))) for v in box_colour_of(owner)[:3])
+        text = "black" if 0.299 * r + 0.587 * g + 0.114 * b > 150 else "white"
+        actions[owner].box_colour.native.setStyleSheet(
+            f"background-color: rgb({r}, {g}, {b}); color: {text};")
+
+    def set_box_colour(owner: str, colour) -> None:
+        """Draw *owner*'s boxes, 3D and 2D, in *colour* (RGB or RGBA, 0-1).
+
+        Display only: no setting changes, so a run is unaffected.
+        """
+        rgba = [float(v) for v in colour][:4]
+        if len(rgba) == 3:
+            rgba.append(1.0)
+        state.box_colour[owner] = tuple(rgba)
+        show_box_colour(owner)
+        flush_boxes()
+        draw_boxes()
+        tint_regions(owner)
+
+    def on_box_colour() -> None:
+        from qtpy.QtGui import QColor
+        from qtpy.QtWidgets import QColorDialog
+
+        owner = str(role.value)
+        r, g, b, a = box_colour_of(owner)
+        chosen = QColorDialog.getColor(
+            QColor.fromRgbF(r, g, b, a), actions[owner].box_colour.native,
+            f"{owner.replace('_', ' ')} box colour",
+        )
+        if not chosen.isValid():
+            return
+        set_box_colour(owner, chosen.getRgbF()[:3])
+        report.value = f"{owner} boxes are now drawn in the colour chosen."
+
+    def preview_boxes(owner: str, boxes) -> None:
+        """Show *owner*'s boxes where they now are, touching one layer only.
+
+        Every layer change makes napari recompute the whole scene's extent --
+        vessel tubes included -- and redraw. So a press updates only what the
+        view shows: the translucent 3D box in 3D, the rectangle in 2D. The
+        other follows once, when the presses stop (:func:`flush_boxes`).
+        """
+        state.pending_boxes[owner] = boxes
+        in_3d = viewer.dims.ndisplay == 3
+        draw_role_boxes(owner, boxes, flat=not in_3d, solid=in_3d)
+        settle_timer.start()
+
+    def flush_boxes() -> None:
+        """Write the boxes moved since the last write, then list their nodes."""
+        settle_timer.stop()
+        pending, state.pending_boxes = state.pending_boxes, {}
+        if not pending:
+            return
+        in_3d = viewer.dims.ndisplay == 3
+        for owner, boxes in pending.items():
+            # The layer the presses skipped catches up, once.
+            draw_role_boxes(owner, boxes, flat=in_3d, solid=not in_3d)
+        was = state.applying
+        state.applying = True
+        try:
+            write_rows({volume_setting(owner): boxes for owner, boxes in pending.items()})
+        finally:
+            state.applying = was
+        refresh_box_tools(only=tuple(pending))
+        owner = str(role.value)
+        if owner in pending:
+            boxes = pending[owner]
+            index = active_index(owner, boxes)
+            if index is not None:
+                report.value = (
+                    f"{owner} box {index + 1}: {boxes[index][0]} to {boxes[index][1]} um "
+                    "(z, y, x). Press 'Scan the box for nodes' to list what is in it."
+                )
+
+    settle_timer.timeout.connect(flush_boxes)
+
+    def active_index(owner: str, boxes) -> int | None:
+        """Which of *owner*'s boxes the tools act on: the chosen one, else the last."""
+        if not boxes:
+            return None
+        index = state.active_box.get(owner, len(boxes) - 1)
+        index = min(max(int(index), 0), len(boxes) - 1)
+        state.active_box[owner] = index
+        return index
+
+    def entered_size(owner: str) -> list[float]:
+        return [float(w.value) for w in actions[owner].box_size]
+
+    def view_centre() -> list[float]:
+        dims = viewer.dims
+        return view_centre_zyx(
+            dims.point, tuple(int(a) for a in dims.displayed), viewer_camera(viewer).center
+        )
+
+    def write_boxes(owner: str, boxes, active: int | None) -> None:
+        if active is not None:
+            state.active_box[owner] = active
+        write_rows({volume_setting(owner): boxes})
+        # Writing the row only redraws once the BC layers are on screen.
+        redraw()
+
+    def on_insert_box() -> None:
+        owner = str(role.value)
+        flush_boxes()
+        disarm_3d()
+        disarm_nodes()
+        try:
+            box = box_around(view_centre(), entered_size(owner))
+        except ValueError as error:
+            report.value = f"Could not insert a box: {error}"
+            return
+        boxes = [*boxes_of(owner), box]
+        write_boxes(owner, boxes, len(boxes) - 1)
+        report.value = (
+            f"Inserted box {len(boxes)} for {owner} at the middle of the view: "
+            f"{box[0]} to {box[1]} um (z, y, x). Move it with the arrows, change "
+            "its size above, then press 'Scan the box for nodes' and choose one."
+        )
+
+    def on_box_choice() -> None:
+        owner = str(role.value)
+        flush_boxes()
+        choice = str(actions[owner].box_choice.value or "")
+        if choice.startswith("Box "):
+            state.active_box[owner] = int(choice.split()[1]) - 1
+        refresh_box_tools()
+
+    def on_box_size() -> None:
+        owner = str(role.value)
+        boxes = boxes_of(owner)
+        index = active_index(owner, boxes)
+        if index is None:
+            return
+        try:
+            boxes[index] = resize_box(boxes[index], entered_size(owner))
+        except ValueError as error:
+            report.value = f"Could not resize the box: {error}"
+            return
+        preview_boxes(owner, boxes)
+
+    def on_move_box(direction: str) -> None:
+        owner = str(role.value)
+        boxes = boxes_of(owner)
+        index = active_index(owner, boxes)
+        if index is None:
+            report.value = "Insert a box first, then move it."
+            return
+        displayed = [int(a) - max(0, viewer.dims.ndim - 3) for a in viewer.dims.displayed]
+        camera = {}
+        if viewer.dims.ndisplay == 3:
+            # Relative to how the 3D view is turned, not to the image's axes.
+            camera = {"view_direction": viewer_camera(viewer).view_direction,
+                      "up_direction": viewer_camera(viewer).up_direction}
+        boxes[index] = move_box(boxes[index], direction, float(actions[owner].box_step.value),
+                                displayed, **camera)
+        preview_boxes(owner, boxes)
+        if direction not in ("back", "forward"):
+            return
+        centre = box_centre(boxes[index])
+        if viewer.dims.ndisplay == 2:
+            # A 2D box is drawn on the slice through its centre, so it left
+            # the view with the slice it moved off. The view follows it.
+            offset = max(0, viewer.dims.ndim - 3)
+            depth = next((a for a in range(3) if a not in displayed), None)
+            if depth is not None:
+                viewer.dims.set_point(depth + offset, centre[depth])
+            report.value = (
+                f"{owner} box {index + 1} moved {direction} to the slice at "
+                f"{'zyx'[depth] if depth is not None else 'z'} = "
+                f"{centre[depth if depth is not None else 0]:.1f} um; the view went with it."
+            )
+        else:
+            # Along the line of sight, which a flat (orthographic) 3D view
+            # cannot show: the box looks the same until the view is turned.
+            report.value = (
+                f"{owner} box {index + 1} moved {direction} along your line of sight; "
+                f"centre now (z, y, x) = ({centre[0]:.1f}, {centre[1]:.1f}, {centre[2]:.1f}) um. "
+                "Turn the view to see how deep it sits."
+            )
+
+    def on_remove_box() -> None:
+        owner = str(role.value)
+        flush_boxes()
+        boxes = boxes_of(owner)
+        index = active_index(owner, boxes)
+        if index is None:
+            report.value = f"{owner} has no box to remove."
+            return
+        del boxes[index]
+        write_boxes(owner, boxes, max(index - 1, 0) if boxes else None)
+        if not boxes:
+            state.active_box.pop(owner, None)
+        report.value = f"Removed {owner} box {index + 1}."
+
+    def on_box_scan() -> None:
+        """List and mark the nodes inside the chosen box -- only when asked."""
+        owner = str(role.value)
+        flush_boxes()
+        boxes = boxes_of(owner)
+        if active_index(owner, boxes) is None:
+            report.value = "Insert a box first, then scan it."
+            return
+        refresh_box_tools(only=(owner,), scan=True)
+        found = state.box_nodes.get(owner, [])
+        report.value = (
+            f"{len(found)} node(s) in the box, {sum(n.open_end for n in found)} open "
+            "end(s), listed and drawn yellow (open ends larger, red-rimmed). Click "
+            "one to focus on it."
+            if found else
+            "No nodes in the box. Move or enlarge it, then scan again."
+        )
+
+    def selected_box_node(owner: str):
+        table = actions[owner].box_nodes.table
+        rows_chosen = sorted({i.row() for i in table.selectionModel().selectedRows()})
+        listed = state.box_nodes.get(owner, [])
+        return listed[rows_chosen[0]] if rows_chosen and rows_chosen[0] < len(listed) else None
+
+    def on_box_node_selected(owner: str) -> None:
+        """Pick out the chosen row's node and bring the view to it.
+
+        That node turns cyan and larger among the box's yellow nodes, and the
+        view centres on it, zoomed to a few box-widths -- in 2D on its slice.
+        The 3D angle is kept: any angle can look at a point, and centring is
+        what brings it into focus.
+        """
+        target = layer(BC_BOX_NODES)
+        chosen = selected_box_node(owner)
+        if target is None or chosen is None:
+            return
+        listed = state.box_nodes.get(owner, [])
+        index = listed.index(chosen)
+        if len(target.data) == len(listed):
+            sizes, faces, rims = box_node_styles(listed, index)
+            target.size = sizes
+            target.face_color = faces
+            target.border_color = rims
+        boxes = boxes_of(owner)
+        active = active_index(owner, boxes)
+        span = max(box_size(boxes[active])) if active is not None else 10.0
+        _zoom_viewer_to(viewer, chosen.position, box_um=max(4.0 * span, 30.0))
+        kind = "open end" if chosen.open_end else f"junction of {chosen.degree} vessels"
+        report.value = (f"Node {chosen.node_id} ({kind}) at {chosen.position} um, in cyan. "
+                        f"Press 'Use selected node as {role_title(owner)}' to choose it.")
+
+    def on_use_node() -> None:
+        owner = str(role.value)
+        flush_boxes()
+        chosen = selected_box_node(owner)
+        if chosen is None:
+            report.value = "Click a node in the list of nodes in the box first."
+            return
+        if not role_manual_controls_enabled(owner, current_values()):
+            report.value = role_disabled_note(owner, current_values())
+            return
+        proposed, message = use_node_for_role(current_values(), owner, chosen.node_id)
+        write_rows(proposed)
+        redraw()
+        listed = BoundaryPicks.from_settings(current_values()).node_ids.get(owner, ())
+        kind = "an open end" if chosen.open_end else f"a junction of {chosen.degree} vessels"
+        report.value = (
+            f"{message} It is {kind}. {role_title(owner)} now takes exactly node(s) "
+            f"{list(listed)} (method node_ids); the box stays as a finder."
+        )
+
+    def refresh_box_tools(only: Sequence[str] | None = None, *, scan: bool = False) -> None:
+        """Each role's box list and size, and -- with *scan* -- the nodes in it.
+
+        *only* limits it to those roles. The nodes are found only when asked
+        (the Scan button): scanning on every move was the lag that made the
+        box hard to steer. A box that has moved since its scan has its list
+        and markers cleared, so nodes from where it used to be are never shown.
+        """
+        from qtpy.QtWidgets import QTableWidgetItem
+
+        values = current_values()
+        g = box_graph() if scan else None
+        was = state.applying
+        state.applying = True
+        try:
+            for owner, action in actions.items():
+                if only is not None and owner not in only:
+                    continue
+                boxes = boxes_of(owner, values)
+                index = active_index(owner, boxes)
+                choices = [f"Box {i + 1}" for i in range(len(boxes))] or ["(no box yet)"]
+                action.box_choice.choices = choices
+                action.box_choice.value = choices[index if index is not None else 0]
+                if index is not None:
+                    for widget, size in zip(action.box_size, box_size(boxes[index])):
+                        widget.value = max(float(widget.min), min(float(widget.max), size))
+                here = (index, tuple(map(tuple, boxes[index]))) if index is not None else None
+                if scan and here is not None and g is not None:
+                    state.box_nodes[owner] = nodes_in_box(g, boxes[index])
+                    state.scanned[owner] = here
+                elif state.scanned.get(owner) != here:
+                    # Moved, resized or another box chosen since the scan.
+                    state.box_nodes[owner] = []
+                    state.scanned.pop(owner, None)
+                found = state.box_nodes.get(owner, [])
+                table = action.box_nodes.table
+                if table.rowCount() != len(found) or scan:
+                    table.setRowCount(len(found))
+                    for r, cells in enumerate(box_node_rows(found)):
+                        for c, text in enumerate(cells):
+                            table.setItem(r, c, QTableWidgetItem(text))
+                if index is None:
+                    note = "Insert a box, move it over the vessel end, then press Scan."
+                elif scan and g is None:
+                    note = "Run at least '3. Graph' to list the nodes inside the box."
+                elif owner not in state.scanned:
+                    note = "Press 'Scan the box for nodes' to list the nodes inside it."
+                else:
+                    note = (f"{len(found)} node(s) in box {index + 1}, "
+                            f"{sum(n.open_end for n in found)} of them open ends "
+                            "(listed first). Click one, then Use selected node.")
+                action.box_nodes.note.value = note
+        finally:
+            state.applying = was
+        draw_box_nodes(values)
+
+    def draw_box_nodes(values) -> None:
+        """The open role's box nodes in the viewer, if its page shows the box tools."""
+        owner = str(role.value)
+        shows = "box_nodes" in state.actions.get(owner, ()) and \
+            role_manual_controls_enabled(owner, values)
+        found = state.box_nodes.get(owner, []) if shows else []
+        existing = layer(BC_BOX_NODES)
+        if not shows:
+            if existing is not None and _is_ours(existing):
+                viewer.layers.remove(existing)
+            return
+        if not found and (existing is None or not len(existing.data)):
+            return  # nothing drawn and nothing to draw: no layer update at all
+        # Updated in place, never removed and re-added: removing a layer
+        # rebuilds napari's whole scene graph and forces a garbage collection
+        # (~0.4 s on a full run), and `_add_or_update` removes a Points layer
+        # whenever it shrinks -- which a box moving off a node does every time.
+        spec = box_nodes_spec(found)
+        try:
+            if existing is not None and _is_ours(existing) and \
+                    existing.__class__.__name__ == "Points":
+                options = spec.options
+                existing.data = spec.data
+                existing.features = dict(spec.features)
+                if len(spec.data):
+                    existing.size = options["size"]
+                    existing.face_color = options["face_color"]
+                    existing.border_color = options["border_color"]
+                existing.visible = True
+            else:
+                _add_or_update(viewer, spec)
+        except Exception:  # noqa: BLE001 - drawing must never stop the tab
+            logger.exception("could not draw the nodes in the box")
+
+    # --- node_ids: click a node of the graph to list it for the role. The
+    # click is caught at the viewer rather than on the nodes layer, because a
+    # run replaces that layer whenever its node count changes and a callback
+    # on the old one would silently stop answering.
+
+    #: How far, in screen pixels, the mouse may wander between press and
+    #: release and still be a click rather than a drag that turns the view.
+    CLICK_SLOP_PX = 4.0
+    #: How far from a node dot, in screen pixels, a 3D click may land and
+    #: still take that node.
+    NODE_PICK_SLOP_PX = 8.0
+
+    def label_pick_nodes() -> None:
+        """Each role's button says what pressing it will do."""
+        for name, action in actions.items():
+            armed = state.node_pick == name
+            action.pick_nodes.text = STOP_PICKING_NODES_TEXT if armed else PICK_NODES_TEXT
+            if action.pick_nodes.enabled:
+                action.pick_nodes.tooltip = (STOP_PICKING_NODES_TOOLTIP if armed
+                                             else ACTION_TOOLTIPS["pick_nodes"])
+
+    def focus_nodes() -> None:
+        """Show the nodes layer and make it the active one.
+
+        Active, so napari's status bar names the node under the cursor --
+        that is how the ID being clicked can be read before clicking it.
+        """
+        nodes = layer(NODES)
+        if nodes is None:
+            return
+        nodes.visible = True
+        if viewer.layers.selection.active is not nodes:
+            viewer.layers.selection.active = nodes
+        if getattr(nodes, "mode", "pan_zoom") != "pan_zoom":
+            nodes.mode = "pan_zoom"
+
+    def arm_nodes(owner: str) -> None:
+        state.node_pick = owner
+        if pick_node_click not in viewer.mouse_drag_callbacks:
+            viewer.mouse_drag_callbacks.append(pick_node_click)
+        label_pick_nodes()
+
+    def disarm_nodes() -> None:
+        """Give clicks back to the camera."""
+        state.node_pick = None
+        if pick_node_click in viewer.mouse_drag_callbacks:
+            viewer.mouse_drag_callbacks.remove(pick_node_click)
+        label_pick_nodes()
+
+    def on_pick_nodes() -> None:
+        """Start (or stop) clicking nodes for the open role's node IDs."""
+        owner = str(role.value)
+        if state.node_pick == owner:
+            disarm_nodes()
+            report.value = f"Stopped picking {owner} nodes."
+            return
+        nodes = layer(NODES)
+        if graph() is None or nodes is None or not len(nodes.data):
+            report.value = (
+                "Nothing to pick yet: node IDs name the nodes of the graph a run "
+                "builds, so run at least '3. Graph' first, then click its nodes."
+            )
+            return
+        disarm_3d()
+        arm_nodes(owner)
+        redraw()
+        focus_nodes()
+        report.value = (
+            f"Click a node in the viewer to add it to {owner}'s node IDs; click "
+            "it again to take it off. The status bar names the node under the "
+            "cursor. Dragging still turns the view -- only a click picks. Press "
+            f"'{STOP_PICKING_NODES_TEXT}' when done."
+        )
+
+    def pick_node_at(position, view_direction=None, dims_displayed=None) -> None:
+        """Toggle the node under *position* in the armed role's node IDs."""
+        owner = state.node_pick
+        nodes = layer(NODES)
+        if owner is None or nodes is None:
+            return
+        if not role_manual_controls_enabled(owner, current_values()):
+            disarm_nodes()
+            report.value = role_disabled_note(owner, current_values())
+            return
+        dims = list(dims_displayed or ())
+        try:
+            index = nodes.get_value(
+                position, view_direction=view_direction if len(dims) == 3 else None,
+                dims_displayed=dims or None, world=True,
+            )
+        except TypeError:
+            index = nodes.get_value(position, world=True)
+        hit = hit_test_nodes(index, _layer_features(nodes))
+        if hit is None and len(dims) == 3 and view_direction is not None:
+            # A whole volume in 3D makes each dot a few pixels across, so a
+            # near miss takes the node it was aimed at. Not in 2D, where the
+            # dot is on the slice and a projected miss could reach through
+            # to another slice's node.
+            zoom = float(getattr(viewer_camera(viewer), "zoom", 0.0) or 0.0)
+            hit = nearest_node_hit(
+                nodes.data, _layer_features(nodes), position,
+                max_distance=NODE_PICK_SLOP_PX / zoom if zoom > 0 else 0.0,
+                view_direction=view_direction, dims=dims,
+            )
+        if hit is None:
+            report.value = (
+                f"No node under that click. Click on one of the node dots to "
+                f"add it to {owner}'s node IDs."
+            )
+            return
+        if node_made_after_boundaries(hit.node_id, box_graph(), graph()):
+            report.value = (
+                f"Node {hit.node_id} was added after the Boundaries stage, by an edit: a run "
+                "from Boundaries does not have it and would stop on its ID. Pick a node the "
+                "network had before the edits."
+            )
+            return
+        proposed, action = toggle_node_id(current_values(), owner, hit.node_id)
+        write_rows(proposed)
+        if BC_NODE_IDS not in viewer.layers:
+            # `on_settings_changed` redraws only once something is drawn.
+            redraw()
+        focus_nodes()
+        listed = BoundaryPicks.from_settings(current_values()).node_ids.get(owner, ())
+        report.value = (
+            f"{action} {owner} node IDs: {list(listed)}. Click another node, click "
+            f"one again to take it off, or press '{STOP_PICKING_NODES_TEXT}'."
+            f"{node_id_note(graph(), current_values())}"
+        )
+
+    def _moved_far(start, now) -> bool:
+        if start is None or now is None:
+            return False
+        return float(np.hypot(*(np.asarray(now, dtype=float)[:2]
+                                - np.asarray(start, dtype=float)[:2]))) > CLICK_SLOP_PX
+
+    def pick_node_click(_viewer, event):
+        """A press and release with no drag between them picks a node."""
+        if state.node_pick is None or getattr(event, "button", None) not in (None, 1):
+            return
+        # napari hands the generator the same event object with each later
+        # event swapped in, so the press has to be copied now.
+        position = tuple(float(v) for v in event.position)
+        view_direction = getattr(event, "view_direction", None)
+        if view_direction is not None:
+            view_direction = tuple(float(v) for v in view_direction)
+        dims = list(getattr(event, "dims_displayed", ()) or ())
+        start_pixel = getattr(event, "pos", None)
+        start_pixel = None if start_pixel is None else tuple(start_pixel)
+        dragged = False
+        yield
+        while event.type == "mouse_move":
+            pixel = getattr(event, "pos", None)
+            if _moved_far(start_pixel, pixel) or (
+                pixel is None and tuple(float(v) for v in event.position) != position
+            ):
+                dragged = True
+            yield
+        if dragged:
+            return
+        try:
+            pick_node_at(position, view_direction, dims)
+        except Exception as exc:  # noqa: BLE001 - report it, don't crash the viewer
+            logger.exception("picking a boundary node failed")
+            report.value = f"Picking a node failed: {exc}"
+
+    def on_clear_nodes() -> None:
+        write_rows({node_id_setting(str(role.value)): []})
+        redraw()
+
     for _name in (
         *(name for _role in ROLES
           for name in (method_setting(_role), coordinate_setting(_role),
-                       volume_setting(_role))),
+                       volume_setting(_role), node_id_setting(_role))),
         # The band settings draw a box too, so they move the picture as much
         # as a coordinate does.
         *shared_settings(),
+        # Every switch the role sub-tabs' greying reads, gates included
+        # (graph.vessel_masks_in_use, assigns_large_vessel_branch_orders),
+        # and the Input tab's choice of a synthetic network, whose generator
+        # chooses every role.
+        "network_source",
+        "automated_vessel_assignment",
+        "use_large_vessel_masks",
+        "inlets_outlets_from_vessel_masks",
+        "use_small_vessel_masks_for_boundary_assignment",
+        "split_large_vessel_masks_by_diameter",
+        "assign_large_vessel_branch_orders",
+        "cut_network_at_large_vessel_volumes",
+        # Whether a role's masks are global (io.vessel_masks_are_global): a
+        # venule mask, or classifier, entered or cleared.
+        "large_venule_mask_path",
+        "small_venule_mask_path",
+        "use_ilastik_large_vessel_segmentation",
+        "use_ilastik_small_vessel_segmentation",
+        "ilastik_venule_classifier_path",
+        "ilastik_small_venule_classifier_path",
     ):
         if _name in rows:
             rows[_name].changed.connect(on_settings_changed)
@@ -1710,14 +9809,28 @@ def _boundary_controls(viewer, rows, fields, schema, report):
         wire(_name, _action.assign, on_assign)
         wire(_name, _action.clear, on_clear)
         wire(_name, _action.depth, on_depth_changed)
+        wire(_name, _action.pick_nodes, on_pick_nodes)
+        wire(_name, _action.clear_nodes, on_clear_nodes)
+        wire(_name, _action.insert_box, on_insert_box)
+        wire(_name, _action.box_colour, on_box_colour)
+        wire(_name, _action.box_scan, on_box_scan)
+        wire(_name, _action.box_choice, on_box_choice)
+        wire(_name, _action.remove_box, on_remove_box)
+        wire(_name, _action.use_node, on_use_node)
+        for _spin in _action.box_size:
+            wire(_name, _spin, on_box_size)
+        for _button in _action.box_move:
+            wire(_name, _button, lambda d=_button.name: on_move_box(d))
+        _action.box_nodes.table.itemSelectionChanged.connect(
+            lambda owner=_name: on_box_node_selected(owner))
+        _action.box_nodes.table.itemDoubleClicked.connect(
+            lambda _item, owner=_name: (setattr(role, "value", owner), on_use_node()))
 
     def on_ndisplay(*_args) -> None:
-        drawable = viewer.dims.ndisplay == 2
-        for action in actions.values():
-            action.draw.enabled = drawable
-            action.draw.tooltip = ("" if drawable else
-                                   "napari cannot edit a Shapes layer in the "
-                                   "3D view. Switch to 2D to draw a region.")
+        # A drag armed in 3D would, back in 2D, fight napari's own tools for
+        # the mouse; and napari resets `mouse_pan` on the mode change anyway.
+        disarm_3d()
+        refresh_actions()
 
     viewer.dims.events.ndisplay.connect(on_ndisplay)
     on_ndisplay()
@@ -1736,20 +9849,38 @@ def _boundary_controls(viewer, rows, fields, schema, report):
         """
         from qtpy.QtWidgets import QTabWidget, QVBoxLayout, QWidget
 
+        state.disclosures = {}
+        state.group_boxes = {}
         role_tabs = QTabWidget()
         placed: set[str] = set()
         for name in ROLES:
             mine = [n for n in role_settings(name) if n in rows]
             placed.update(mine)
+            # The node IDs a run fills in sit behind the page's own Advanced
+            # button, below the pick/draw controls.
+            advanced = [n for n in mine if schema[n].advanced]
+            ordinary = [n for n in mine if n not in advanced]
             action = actions[name]
+            nodes = None
+            if advanced:
+                nodes = _AdvancedDisclosure(role_nodes_disclosure(name, advanced), rows)
             holder = Container(
                 widgets=[
-                    *(rows[n] for n in mine),
-                    action.pick, action.draw, action.depth,
+                    *(rows[n] for n in ordinary),
+                    action.pick,
+                    action.insert_box, action.box_choice, action.box_size,
+                    action.box_colour, action.box_step, action.box_move, action.box_scan, action.box_nodes,
+                    action.use_node, action.remove_box,
+                    action.draw, action.depth,
                     action.move, action.assign, action.clear,
+                    action.pick_nodes, action.clear_nodes,
+                    *((nodes.container,) if nodes is not None else ()),
                 ],
                 labels=True,
             )
+            if nodes is not None:
+                _hide_row_label(nodes.container)
+                state.disclosures[nodes.spec.key] = nodes
             holders[name] = holder
             role_tabs.addTab(holder.native, role_title(name))
             role_tabs.setTabToolTip(role_tabs.count() - 1,
@@ -1757,16 +9888,36 @@ def _boundary_controls(viewer, rows, fields, schema, report):
 
         shared = [n for n in shared_settings() if n in rows]
         rest = [n for n in names if n not in placed and n not in shared]
+        # The vessel masks, boxed large and small; the node-ID rows no role
+        # page owns go last, under the role tabs.
+        laid_out = layout_for("assign_boundaries", rest, schema)
+        trailing = tuple(box for box in laid_out.boxes if box.key == "boundary_nodes")
+        leading = TabLayout(boxes=tuple(b for b in laid_out.boxes if b not in trailing))
+        # Shared main/large/small ilastik knobs are reparented here when only
+        # vessel-mask ilastik is on (declared under Input; same widgets).
+        shared_ilastik_holder = Container(widgets=[], labels=False)
+        _flush(shared_ilastik_holder)
 
         body = QWidget()
         layout = QVBoxLayout(body)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(summary.native)
-        if rest:
-            layout.addWidget(Container(widgets=[rows[n] for n in rest],
-                                       labels=True).native)
+        if leading.boxes:
+            masks, _ = _lay_out_boxes(
+                leading, rows, disclosures=state.disclosures,
+                group_boxes=state.group_boxes,
+            )
+            layout.addWidget(masks)
+        layout.addWidget(shared_ilastik_holder.native)
+        layout.addWidget(Label(value=AUTOMATED_OVERRIDES_MANUAL_NOTE).native)
         layout.addWidget(widget.native)
         layout.addWidget(role_tabs)
+        if trailing:
+            node_ids, _ = _lay_out_boxes(
+                TabLayout(boxes=trailing), rows, disclosures=state.disclosures,
+                group_boxes=state.group_boxes,
+            )
+            layout.addWidget(node_ids)
         layout.addStretch(1)
         for name in shared:
             shared_home[name] = None
@@ -1778,6 +9929,9 @@ def _boundary_controls(viewer, rows, fields, schema, report):
 
         role_tabs.currentChanged.connect(on_tab_changed)
         state.tabs = role_tabs
+        state.tab_wheel_guard = _guard_tab_bar_wheel(role_tabs)
+        refresh_role_tabs()
+        state.shared_ilastik_holder = shared_ilastik_holder
         return body
 
     def on_role_changed(*_args) -> None:
@@ -1788,10 +9942,21 @@ def _boundary_controls(viewer, rows, fields, schema, report):
             if tabs.currentIndex() != index:
                 tabs.setCurrentIndex(index)
         place_shared()
+        if state.draw3d is not None and state.draw3d.owner != str(role.value):
+            disarm_3d()
+        if state.node_pick is not None and state.node_pick != str(role.value):
+            # Clicks follow the page being looked at, as a picked point does:
+            # a node clicked with the Outlet page open is an outlet.
+            if "pick_nodes" in state.actions.get(str(role.value), ()) and \
+                    role_manual_controls_enabled(str(role.value), current_values()):
+                arm_nodes(str(role.value))
+            else:
+                disarm_nodes()
         for name in our_layer_names():
             target = layer(name)
             if target is not None:
                 set_defaults(target)
+        draw_box_nodes(current_values())
 
     role.changed.connect(on_role_changed)
 
@@ -1802,7 +9967,6276 @@ def _boundary_controls(viewer, rows, fields, schema, report):
         row_order=row_order, refresh_rows=refresh_rows,
         show=on_show, pick=on_pick, draw=on_draw, snap=on_snap, move=on_move,
         assign=on_assign, clear=on_clear, redraw=redraw, sync=sync,
-        layer_names=(BC_COORDINATES, *BC_REGION_NAMES),
+        draw_in_3d=draw_in_3d,
+        pick_nodes=on_pick_nodes, clear_nodes=on_clear_nodes,
+        insert_box=on_insert_box, remove_box=on_remove_box, flush_boxes=flush_boxes,
+        set_box_colour=set_box_colour,
+        scan_box=on_box_scan,
+        # Moves wait for the clicks to stop before they are written; called
+        # directly (a script, a test) a move is written at once.
+        move_box=lambda direction: (on_move_box(direction), flush_boxes()),
+        use_node=on_use_node, refresh_box_tools=refresh_box_tools,
+        pick_node_at=pick_node_at, pick_node_click=pick_node_click,
+        layer_names=(BC_COORDINATES, BC_NODE_IDS, *BC_REGION_NAMES, *BC_BOX_NAMES),
+        shared_ilastik_holder=lambda: getattr(state, "shared_ilastik_holder", None),
+        disclosures=lambda: dict(getattr(state, "disclosures", {})),
+        group_boxes=lambda: dict(getattr(state, "group_boxes", {})),
+    )
+
+
+def _perturbation_controls(viewer, rows, fields, schema, report):
+    """The Perturbations tab's list of "and what if", built a row at a time.
+
+    One dropdown per perturbation, and choosing a type *reveals* that type's
+    options rather than greying out the other three types' -- the same reason
+    the Boundaries tab hides what a selection method does not read. A "+"
+    below the last one adds another, so a run can ask five questions of one
+    network.
+
+    What each editor writes is the important part. `arteriole_diameter_change_percent`
+    reaches the run only through a perturbation entry's overrides: an editor
+    that wrote into `rows` would move the baseline every perturbation is
+    measured against. These write into ``perturbations[i]["overrides"]``, which
+    reaches the run through the one `perturbations` row and nowhere else.
+
+    :mod:`haemolynx.gui.perturbation_editing` is the whole decision -- which
+    editors a type reveals, what adding and removing do to the list -- and it
+    needs no GUI. This is the Qt layer over it.
+
+    Returns None without a viewer: the panel is buildable outside napari.
+    """
+    if viewer is None:
+        return None
+
+    from magicgui.widgets import ComboBox, Container, Label, LineEdit, PushButton
+
+    from haemolynx.gui.perturbation_editing import (
+        ADD_TOOLTIP,
+        DELETE_SAVED,
+        DELETE_SAVED_TOOLTIP,
+        EDITOR_SETTINGS,
+        NAME_TOOLTIP,
+        OPEN_SAVED_FOLDER,
+        OPEN_SAVED_FOLDER_TOOLTIP,
+        PERTURBATION_TYPES,
+        REMOVE_TOOLTIP,
+        SAVE_TOOLTIP,
+        SAVED_ITEM_TOOLTIP,
+        SAVED_MENU_TOOLTIP,
+        TYPE_TOOLTIP,
+        add_entry,
+        add_saved_entry,
+        display_label_for_setting,
+        display_name_for_type,
+        editor_layout_order,
+        from_settings,
+        name_problems,
+        perturbation_type_choices,
+        remove_entry,
+        rows_for_type,
+        saved_menu,
+        set_name,
+        set_overrides,
+        set_type,
+        starting_values_for_type,
+        summary,
+        to_settings,
+        vessel_ids_with_ends,
+        visible_tab_settings,
+    )
+    from haemolynx.pipeline.saved_perturbations import (
+        delete_saved_perturbation,
+        save_perturbation,
+        saved_perturbation_dir,
+        saved_perturbation_entry,
+        saved_perturbation_for_key,
+        saved_perturbation_path,
+        saved_perturbations,
+    )
+
+    #: The one row the list actually travels in. Everything below edits this.
+    LIST_SETTING = "perturbations"
+
+    state = SimpleNamespace(applying=False, entries=[], editors=[])
+
+    #: Where the per-entry editors are stacked, and the button that adds one.
+    holder = Container(widgets=[], labels=False)
+    add_button = PushButton(text="+  Add a perturbation")
+    add_button.tooltip = ADD_TOOLTIP
+
+    def read_row() -> list[dict[str, Any]]:
+        widget = rows.get(LIST_SETTING)
+        if widget is None:
+            return []
+        return from_settings(
+            {LIST_SETTING: fields[LIST_SETTING].to_setting_value(_safe_widget_value(widget))}
+        )
+
+    #: Called with ``rebuilt`` after the entries change: True when every
+    #: editor was built again (an entry added or removed, a config loaded),
+    #: so an entry's index may name another entry than before.
+    listeners: list[Callable[[bool], None]] = []
+    #: Called just before the editors are built again.
+    before_rebuild: list[Callable[[], None]] = []
+
+    def notify(rebuilt: bool = False) -> None:
+        for listener in list(listeners):
+            listener(rebuilt)
+
+    def write_row(rebuilt: bool = False) -> None:
+        """The entries -> the settings row. The only way they leave here."""
+        widget = rows.get(LIST_SETTING)
+        if widget is None:
+            return
+        state.applying = True
+        try:
+            widget.value = display_value_for(
+                schema[LIST_SETTING], to_settings(state.entries)[LIST_SETTING]
+            )
+        finally:
+            state.applying = False
+        say()
+        notify(rebuilt)
+
+    def say() -> None:
+        problems = name_problems(state.entries)
+        report.value = "Perturbations: " + summary(state.entries) + (
+            "  Fix: " + "; ".join(problems) + "." if problems else ""
+        )
+
+    def overrides_from(editor) -> dict[str, Any]:
+        """What this entry's *visible* editors say, and nothing else.
+
+        The visible editors are the entry's overrides: an option belonging to
+        a type the user has moved away from has stopped being set, rather than
+        lingering as a value nothing applies -- and so has one the entry's own
+        choices hide (a capillary block's probability once it blocks listed
+        vessels instead).
+
+        An empty one is left out rather than sent as None. An override replaces
+        what the run configured, so a blank `pericyte_mask_path` editor would
+        take away the mask the Diameters tab named -- and "unset" is not
+        something a perturbation can meaningfully say.
+        """
+        shown = rows_for_type(editor.type.value)
+        read = {
+            name: fields[name].to_setting_value(editor.editors[name].value)
+            for name in shown
+            if name in editor.editors
+        }
+        values = entry_values(editor)
+        if "capillary_block_vessel_ids" in read:
+            read["capillary_block_vessel_ids"] = vessel_ids_with_ends(
+                read["capillary_block_vessel_ids"], shown_vessel_ends()
+            )
+        return {
+            name: value
+            for name, value in read.items()
+            if value is not None and entry_shows(name, values)
+        }
+
+    def shown_vessel_ends() -> dict[int, tuple]:
+        """The baseline vessels layer's ``branchID -> (u, v, key)``: the
+        network a branchID typed here was read off its hover."""
+        from haemolynx.gui.results import VESSELS
+        from haemolynx.haemodynamics.perturbations import plain
+
+        layer = viewer.layers[VESSELS] if VESSELS in viewer.layers else None
+        features = getattr(layer, "features", None)
+        if features is None or not {"edge_index", "u", "v", "key"} <= set(features.columns):
+            return {}
+        return {
+            int(index): (plain(u), plain(v), plain(key))
+            for index, u, v, key in zip(
+                features["edge_index"], features["u"], features["v"], features["key"]
+            )
+        }
+
+    def entry_shows(name: str, values: Mapping[str, Any]) -> bool:
+        """Whether an entry's option applies, given the whole chain of gates above it."""
+        unmet = unmet_chain(schema, name, values)
+        return fields[name].is_visible(values, unmet) and not unmet
+
+    def entry_values(editor) -> dict[str, Any]:
+        """What this entry's run would read: the baseline, then its own options."""
+        values = {
+            name: fields[name].to_setting_value(_safe_widget_value(widget))
+            for name, widget in rows.items()
+        }
+        for name in rows_for_type(editor.type.value):
+            if name in editor.editors:
+                values[name] = fields[name].to_setting_value(
+                    _safe_widget_value(editor.editors[name])
+                )
+        return values
+
+    def refresh_entry(editor) -> None:
+        """Show this type's options whose own prerequisites this entry meets.
+
+        The same rule a tab row follows, read against the entry's values
+        rather than the baseline's: a pericyte mask path shows only while that
+        entry places its sites from a mask.
+        """
+        values = entry_values(editor)
+        shown = set(rows_for_type(editor.type.value))
+        for name, widget in editor.editors.items():
+            widget.visible = name in shown and entry_row_in_view(name, values)
+            if name in CLASSIFIER_FILLED_ROWS:
+                show_classifier_mask(name, widget, values)
+        editor.advanced.refresh(
+            lambda n: n in shown and entry_row_in_view(n, values), values, schema
+        )
+
+    def entry_row_in_view(name: str, values: Mapping[str, Any]) -> bool:
+        """An option that applies (`entry_shows`), or a mask row whose only
+        unmet gate is the classifier that makes its mask (form.CLASSIFIER_FILLED_ROWS),
+        which stays in view greyed and is not one of the entry's overrides."""
+        if entry_shows(name, values):
+            return True
+        switch = CLASSIFIER_FILLED_ROWS.get(name)
+        unmet = unmet_chain(schema, name, values)
+        return switch is not None and unmet == (f"!{switch}",) and fields[name].is_visible(values, unmet)
+
+    def show_classifier_mask(name: str, widget, values: Mapping[str, Any]) -> None:
+        """Grey a mask row the classifier makes the mask of, naming the file
+        it writes (`classifier_training.classifier_filled_rows`); put it back
+        as the user's row otherwise. Its value is never written as the
+        entry's override while it is greyed (`overrides_from`)."""
+        from haemolynx.gui.classifier_training import classifier_filled_rows
+
+        greyed = entry_row_in_view(name, values) and not entry_shows(name, values)
+        widget.enabled = not greyed
+        if not greyed:
+            widget.tooltip = fields[name].help
+            return
+        unmet = unmet_chain(schema, name, values)
+        widget.tooltip = replace(fields[name], enabled_by=unmet).why_disabled(values)
+        filled = classifier_filled_rows(values)
+        if name not in filled:
+            return
+        if _names_same_file(fields[name].to_setting_value(_safe_widget_value(widget)), filled[name]):
+            return
+        applying = state.applying
+        state.applying = True  # shown, not the entry's override: nothing is written
+        try:
+            widget.value = display_value_for(schema[name], filled[name])
+        finally:
+            state.applying = applying
+
+    def lay_out_editors(editor) -> None:
+        """Name, type, this type's knobs in SETTINGS_FOR_TYPE order, Remove.
+
+        Visibility alone is not enough: editors are built once for every type,
+        so a naive append order buried ``arteriole_diameter_change_percent``
+        under pericyte geometry rows on the combined type. The type's advanced
+        options go behind the entry's own Advanced button, after the rest.
+        """
+        chosen = editor.type.value
+        shown = set(rows_for_type(chosen))
+        order = [name for name in editor_layout_order(chosen) if name in editor.editors]
+        behind = [name for name in order if name in shown and schema[name].advanced]
+        editor.container.clear()
+        editor.advanced.set_rows(behind, editor.editors)
+        editor.container.append(editor.name)
+        editor.container.append(editor.type)
+        # Each mask row has a slot under it for the classifier that can make
+        # that mask, which the panel fills while this entry reads the mask.
+        slot_under = {mask: kind for kind, mask in HOSTED_MASK_SETTINGS.items()}
+        placed: set[str] = set()
+        for name in order:
+            if name not in behind:
+                editor.container.append(editor.editors[name])
+                if name in slot_under:
+                    editor.container.append(editor.classifier_slots[slot_under[name]])
+                    _hide_row_label(editor.classifier_slots[slot_under[name]])
+                    placed.add(slot_under[name])
+        for kind, slot in editor.classifier_slots.items():
+            if kind not in placed:  # its mask row behind the Advanced button
+                editor.container.append(slot)
+                _hide_row_label(slot)
+        editor.container.append(editor.advanced.container)
+        _hide_row_label(editor.advanced.container)
+        editor.container.append(editor.buttons)
+        _hide_row_label(editor.buttons)
+        refresh_entry(editor)
+        editor.shown = frozenset(name for name in editor.editors if name in shown)
+        editor.hidden = frozenset(
+            name for name in editor.editors if name not in shown
+        )
+        editor.layout_order = tuple(
+            name for name in editor_layout_order(chosen) if name in editor.editors
+        )
+        # Appending re-unified the label widths over every row, hidden ones
+        # included; cap them again so the editor fits the tab.
+        _wrap_row_labels(editor.container.native)
+        editor.container.native.updateGeometry()
+
+    def show_the_chosen_type(editor) -> None:
+        """Reveal the chosen type's options and hide every other type's.
+
+        What was shown is recorded as well as applied: `.visible` on a row of
+        a tab that is not on screen reads False whatever was set, so a test
+        cannot ask the widget -- the same reason `_boundary_controls` keeps
+        `state.visible`.
+        """
+        lay_out_editors(editor)
+
+    def build_editor(index: int, entry: Mapping[str, Any]):
+        """One perturbation's controls: name, type, and that type's options."""
+        name_box = LineEdit(value=str(entry.get("name") or ""), label="Name")
+        name_box.tooltip = NAME_TOOLTIP
+        chosen = str(entry.get("type") or PERTURBATION_TYPES[0])
+        type_box = ComboBox(
+            choices=perturbation_type_choices(),
+            value=chosen if chosen in PERTURBATION_TYPES else PERTURBATION_TYPES[0],
+            label="Type",
+        )
+        type_box.tooltip = TYPE_TOOLTIP
+
+        # Built once for every type, and hidden but for the chosen type's:
+        # destroying and rebuilding widgets as the dropdown changes is how a
+        # container ends up holding a row nothing can reach.
+        configured = entry.get("overrides") or {}
+        editors: dict[str, Any] = {}
+        for name in EDITOR_SETTINGS:
+            field = fields.get(name)
+            if field is None:
+                continue
+            widget = _build_row(field)
+            # Display labels (constriction/dilation wording) without renaming
+            # schema keys: the cloned Field still carries the auto snake_case
+            # label from form.label_for.
+            setting = schema[name] if name in schema else None
+            widget.label = display_label_for_setting(
+                name, None if setting is None else setting.unit
+            )
+            if name in configured:
+                widget.value = display_value_for(schema[name], configured[name])
+            elif name in rows:
+                # What the run configured, not the schema's default: the
+                # shown editors become the entry's overrides, and a default
+                # would replace the value a loaded config gave.
+                widget.value = display_value_for(
+                    schema[name], field.to_setting_value(_safe_widget_value(rows[name]))
+                )
+            editors[name] = widget
+
+        remove_button = PushButton(text="Remove")
+        remove_button.tooltip = REMOVE_TOOLTIP
+        save_button = PushButton(text="Save for later runs")
+        save_button.tooltip = SAVE_TOOLTIP
+        editor = SimpleNamespace(
+            index=index,
+            name=name_box,
+            type=type_box,
+            editors=editors,
+            shown=frozenset(),
+            hidden=frozenset(),
+            layout_order=(),
+            remove=remove_button,
+            save=save_button,
+            buttons=Container(
+                widgets=[save_button, remove_button], layout="horizontal", labels=False
+            ),
+            # Empty shell; lay_out_editors fills it in SETTINGS_FOR_TYPE order.
+            container=Container(widgets=[], labels=True),
+            # Under each mask row: where the panel puts the classifier rows of
+            # that mask while this is the entry reading it (form.HOSTED_CLASSIFIER_ROWS).
+            classifier_slots={kind: Container(widgets=[], labels=False) for kind in HOSTED_MASK_SETTINGS},
+            # The chosen type's advanced options; lay_out_editors fills it.
+            advanced=_AdvancedDisclosure(entry_disclosure(index, ()), editors),
+        )
+
+        def on_name(*_args) -> None:
+            if state.applying:
+                return
+            state.entries = set_name(state.entries, index, str(name_box.value))
+            write_row()
+
+        def on_type(*_args) -> None:
+            if state.applying:
+                return
+            state.entries = set_type(state.entries, index, str(type_box.value))
+            show_the_chosen_type(editor)
+            # A type that works one way only starts that way (its mask row
+            # shown); on_override refreshes the rows each value reveals.
+            for name, value in starting_values_for_type(type_box.value).items():
+                if name in editor.editors:
+                    state.applying = True
+                    try:
+                        editor.editors[name].value = display_value_for(schema[name], value)
+                    finally:
+                        state.applying = False
+            # After the reveal: the newly shown editors are now this entry's
+            # overrides, and the ones just hidden are not.
+            state.entries = set_overrides(state.entries, index, overrides_from(editor))
+            write_row()
+
+        def on_override(*_args) -> None:
+            # An option's own prerequisites follow the entry even while the
+            # entries are being rebuilt from a loaded config.
+            refresh_entry(editor)
+            if state.applying:
+                return
+            state.entries = set_overrides(state.entries, index, overrides_from(editor))
+            write_row()
+
+        def on_remove(*_args) -> None:
+            if state.applying:
+                return
+            remove_at(index)
+
+        def on_save(*_args) -> None:
+            if state.applying:
+                return
+            save_at(index)
+
+        name_box.changed.connect(on_name)
+        type_box.changed.connect(on_type)
+        for widget in editors.values():
+            widget.changed.connect(on_override)
+        remove_button.changed.connect(on_remove)
+        save_button.changed.connect(on_save)
+        lay_out_editors(editor)
+        return editor
+
+    def rebuild() -> None:
+        """Lay the editors out again, in the order the entries are in.
+
+        All of them, because removing one moves every later entry's index and
+        an editor knows which entry it edits.
+        """
+        # Anything the panel placed in the editors (the classifier rows under
+        # a mask row) is taken out first: the old editors are deleted, and
+        # what they hold with them.
+        for hook in list(before_rebuild):
+            hook()
+        state.applying = True
+        try:
+            holder.clear()
+            state.editors = []
+            for index, entry in enumerate(state.entries):
+                editor = build_editor(index, entry)
+                state.editors.append(editor)
+                holder.append(editor.container)
+        finally:
+            state.applying = False
+
+    def on_add(*_args) -> None:
+        if state.applying:
+            return
+        state.entries = add_entry(state.entries)
+        rebuild()
+        write_row(rebuilt=True)
+
+    def remove_at(index: int) -> None:
+        """What pressing entry *index*'s "Remove" button does."""
+        state.entries = remove_entry(state.entries, index)
+        rebuild()
+        write_row(rebuilt=True)
+
+    def save_at(index: int) -> bool:
+        """What pressing entry *index*'s "Save for later runs" does: keep it
+        on this machine under its name (`pipeline/saved_perturbations.py`),
+        asking before replacing one saved under the same file name. True once
+        written."""
+        from qtpy.QtWidgets import QMessageBox
+
+        if not 0 <= index < len(state.entries):
+            return False
+        entry = state.entries[index]
+        name = str(entry.get("name") or "")
+        try:
+            path = saved_perturbation_path(name)
+        except ValueError as error:
+            report.value = f"Could not save the perturbation {name!r}:\n{error}"
+            return False
+        if path.exists():
+            answer = QMessageBox.question(
+                _dialog_parent(viewer),
+                "Replace the saved perturbation?",
+                f"A perturbation is already saved as {path.name}. Replace it "
+                "with this one?",
+            )
+            if answer != QMessageBox.Yes:
+                return False
+        try:
+            saved = save_perturbation(entry, schema)
+        except (OSError, ValueError) as error:
+            report.value = f"Could not save the perturbation {name!r}:\n{error}"
+            return False
+        fill_saved_menu()
+        lines = [
+            f"Saved the perturbation {saved.name} ({display_name_for_type(saved.type)}) "
+            f"in {saved.path}"
+        ]
+        if saved.left_out:
+            left_out = [fields[key].label if key in fields else key for key in saved.left_out]
+            lines.append(
+                "Not kept, as they belong to this image (a run it is added to "
+                f"gives its own): {', '.join(left_out)}"
+            )
+        report.value = "\n".join(lines)
+        return True
+
+    from qtpy.QtCore import Qt
+    from qtpy.QtWidgets import QComboBox
+
+    class SavedMenu(QComboBox):
+        """Read from disk as it opens, so a perturbation saved from another
+        panel, or copied into the folder by hand, is listed."""
+
+        def showPopup(self):
+            fill_saved_menu()
+            super().showPopup()
+
+    # Below "+ Add a perturbation": the perturbations saved on this machine,
+    # each added to the end of the list when chosen, and the entries that
+    # open their folder and delete one.
+    saved_dropdown = SavedMenu()
+    saved_dropdown.setObjectName("haemolynx_saved_perturbations")
+    saved_dropdown.setToolTip(SAVED_MENU_TOOLTIP)
+    command_tooltips = {
+        DELETE_SAVED: DELETE_SAVED_TOOLTIP,
+        OPEN_SAVED_FOLDER: OPEN_SAVED_FOLDER_TOOLTIP,
+    }
+
+    def fill_saved_menu() -> None:
+        """List the saved perturbations, read from disk now, showing the
+        menu's prompt."""
+        found = saved_perturbations()
+        saved_dates = {item.key: item.saved for item in found}
+        saved_dropdown.blockSignals(True)
+        try:
+            saved_dropdown.clear()
+            for entry in saved_menu(found):
+                if entry is None:
+                    saved_dropdown.insertSeparator(saved_dropdown.count())
+                    continue
+                text, key = entry
+                saved_dropdown.addItem(text, key)
+                if key is None:
+                    continue
+                if key in command_tooltips:
+                    tooltip = command_tooltips[key]
+                else:
+                    when = (saved_dates.get(key) or "").replace("T", " ")
+                    tooltip = f"{SAVED_ITEM_TOOLTIP} (saved {when})" if when else SAVED_ITEM_TOOLTIP
+                saved_dropdown.setItemData(saved_dropdown.count() - 1, tooltip, Qt.ToolTipRole)
+            saved_dropdown.setCurrentIndex(0)
+        finally:
+            saved_dropdown.blockSignals(False)
+
+    def add_saved(key: str) -> bool:
+        """Add the perturbation saved under *key* to the end of the list,
+        renamed if another already has its name. True once added."""
+        try:
+            saved = saved_perturbation_for_key(key)
+            entry, passed_over = saved_perturbation_entry(saved, schema)
+        except ValueError as error:
+            report.value = f"Could not add the saved perturbation:\n{error}"
+            fill_saved_menu()
+            return False
+        state.entries = add_saved_entry(state.entries, entry)
+        rebuild()
+        write_row(rebuilt=True)
+        added = str(state.entries[-1]["name"])
+        lines = [
+            f"Added the saved perturbation {saved.name}"
+            + (f" as {added}, as another already has its name" if added != saved.name else "")
+        ]
+        if passed_over:
+            lines.append(
+                f"Not added, as this version cannot use them here: {', '.join(passed_over)}"
+            )
+        report.value = "\n".join([*lines, report.value])
+        return True
+
+    def delete_saved(key: str) -> bool:
+        """Delete the perturbation saved under *key*. True once it is gone."""
+        try:
+            saved = saved_perturbation_for_key(key)
+            delete_saved_perturbation(saved)
+        except (OSError, ValueError) as error:
+            report.value = f"Could not delete the saved perturbation:\n{error}"
+            fill_saved_menu()
+            return False
+        fill_saved_menu()
+        report.value = f"Deleted the saved perturbation {saved.name} ({saved.path})"
+        return True
+
+    def on_delete_saved() -> None:
+        from qtpy.QtWidgets import QInputDialog, QMessageBox
+
+        found = saved_perturbations()
+        if not found:
+            return
+        names = [item.name for item in found]
+        name, ok = QInputDialog.getItem(
+            _dialog_parent(viewer),
+            "Delete a saved perturbation",
+            "Saved perturbation to delete:",
+            names,
+            0,
+            False,
+        )
+        if not ok or name not in names:
+            return
+        saved = found[names.index(name)]
+        answer = QMessageBox.question(
+            _dialog_parent(viewer),
+            "Delete the saved perturbation?",
+            f"Delete the saved perturbation {saved.name}? Its file is removed "
+            "and cannot be brought back.",
+        )
+        if answer == QMessageBox.Yes:
+            delete_saved(saved.key)
+
+    def open_saved_folder() -> bool:
+        """Open the folder the saved perturbations are kept in, made first if
+        nothing has been saved yet. True once the system opened it."""
+        folder = saved_perturbation_dir()
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+        except OSError as error:
+            report.value = f"Could not make the folder {folder}:\n{error}"
+            return False
+        opened = _open_in_system(folder)
+        report.value = (
+            f"Opened {folder}" if opened else f"Could not open {folder}; the saved perturbations are there"
+        )
+        return opened
+
+    def on_saved_chosen(index: int) -> None:
+        key = saved_dropdown.itemData(index)
+        if key == DELETE_SAVED:
+            on_delete_saved()
+        elif key == OPEN_SAVED_FOLDER:
+            open_saved_folder()
+        elif key is not None:
+            add_saved(key)
+        saved_dropdown.blockSignals(True)
+        saved_dropdown.setCurrentIndex(0)
+        saved_dropdown.blockSignals(False)
+
+    saved_dropdown.activated.connect(on_saved_chosen)
+    fill_saved_menu()
+
+    def choose_type(index: int, perturbation_type: str) -> None:
+        """What choosing a type in entry *index*'s dropdown does."""
+        if 0 <= index < len(state.editors):
+            state.editors[index].type.value = str(perturbation_type)
+
+    def on_list_changed(*_args) -> None:
+        """The row was edited by hand, or a config was loaded into it."""
+        if state.applying:
+            return
+        state.entries = read_row()
+        rebuild()
+        say()
+        notify(True)
+
+    def pericyte_masks() -> dict[int, Any]:
+        """Each entry whose pericyte mask row is shown: its index -> the mask
+        the row names (None when empty)."""
+        name = "pericyte_mask_path"
+        masks: dict[int, Any] = {}
+        for editor in state.editors:
+            widget = editor.editors.get(name)
+            if widget is None or name not in rows_for_type(editor.type.value):
+                continue
+            if entry_shows(name, entry_values(editor)):
+                masks[editor.index] = fields[name].to_setting_value(_safe_widget_value(widget))
+        return masks
+
+    def set_pericyte_mask(index: int, path: Any) -> None:
+        """Put *path* in entry *index*'s pericyte mask row, as typing it would."""
+        if 0 <= index < len(state.editors):
+            state.editors[index].editors["pericyte_mask_path"].value = display_value_for(
+                schema["pericyte_mask_path"], path
+            )
+
+    add_button.changed.connect(on_add)
+    if LIST_SETTING in rows:
+        rows[LIST_SETTING].changed.connect(on_list_changed)
+    state.entries = read_row()
+    rebuild()
+
+    def classifier_slot(index: int | None, kind: str):
+        """The slot under entry *index*'s mask row of *kind*, or None."""
+        if index is None or not 0 <= index < len(state.editors):
+            return None
+        return state.editors[index].classifier_slots.get(kind)
+
+    def page(stage_summary, names: Sequence[str]):
+        """The tab: the run's own settings, then the list of perturbations."""
+        from qtpy.QtWidgets import QSizePolicy
+
+        flat = [name for name in visible_tab_settings(names) if name in rows]
+        state.disclosures = {}
+        boxes = _box_containers(
+            layout_for("run_perturbations", flat, schema), rows, state.disclosures
+        )
+        settings = Container(widgets=[container for _box, container in boxes], labels=False)
+        _flush(settings)
+        explanation = Label(
+            value=(
+                "Each perturbation re-solves the network from the same "
+                "baseline. The values above are what one starts from; the "
+                "options below are what it changes."
+            )
+        )
+        body = Container(
+            widgets=[stage_summary, settings, explanation, holder, add_button],
+            labels=False,
+        )
+        body.native.layout().addWidget(saved_dropdown)
+        body.native.layout().setContentsMargins(0, 0, 0, 0)
+        # Vertical policy Minimum: the page may grow but never shrinks below
+        # its natural height, so a short dock scrolls the tab instead of the
+        # scroll area squashing every row (and the wrapped explanation) to
+        # its bare minimum height -- the compressed, overlapping rows this
+        # tab showed while each perturbation's editors were being added.
+        body.native.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
+        return body.native
+
+    def refresh_entries() -> None:
+        """Re-read every entry's options against the baseline as it is now."""
+        for editor in state.editors:
+            refresh_entry(editor)
+
+    return SimpleNamespace(
+        page=page,
+        state=state,
+        entries=lambda: list(state.entries),
+        editors=lambda: list(state.editors),
+        add=on_add,
+        remove=remove_at,
+        save=save_at,
+        add_saved=add_saved,
+        delete_saved=delete_saved,
+        open_saved_folder=open_saved_folder,
+        saved_menu=saved_dropdown,
+        fill_saved_menu=fill_saved_menu,
+        choose_type=choose_type,
+        rebuild=rebuild,
+        holder=holder,
+        classifier_slot=classifier_slot,
+        before_rebuild=before_rebuild.append,
+        add_button=add_button,
+        list_setting=LIST_SETTING,
+        refresh_entries=refresh_entries,
+        disclosures=lambda: dict(getattr(state, "disclosures", {})),
+        on_change=listeners.append,
+        pericyte_masks=pericyte_masks,
+        set_pericyte_mask=set_pericyte_mask,
+    )
+
+
+#: Height a tab scroll area reports, not the height of its rows. Qt's
+#: QScrollArea.sizeHint adds the inner widget; that became a 1057px window
+#: minimum on Windows, taller than a 1080p work area with a taskbar.
+TAB_SCROLL_HINT_WIDTH = 420
+TAB_SCROLL_HINT_HEIGHT = 240
+TAB_SCROLL_MIN_HEIGHT = 120
+
+
+def _fitting_scroll_area():
+    """A scroll area whose size hint does not include the widget inside it."""
+    from qtpy.QtCore import QSize, Qt
+    from qtpy.QtWidgets import QScrollArea, QSizePolicy
+
+    class FittingScrollArea(QScrollArea):
+        def sizeHint(self):
+            return QSize(TAB_SCROLL_HINT_WIDTH, TAB_SCROLL_HINT_HEIGHT)
+
+        def minimumSizeHint(self):
+            return QSize(200, TAB_SCROLL_MIN_HEIGHT)
+
+    scroller = FittingScrollArea()
+    scroller.setWidgetResizable(True)
+    scroller.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+    scroller.setMinimumHeight(TAB_SCROLL_MIN_HEIGHT)
+    # A tab scrolls up/down only: a long row label (several settings' names
+    # run past 50 characters) must wrap onto a second line rather than widen
+    # the row and force a sideways scrollbar.
+    scroller.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+    return scroller
+
+
+#: Widest a row's label column may be before its text wraps. magicgui pins
+#: every label in a Container to the widest label's width -- hidden rows
+#: included -- which put a 490px label column on Diameters and a wider one
+#: on each perturbation editor (every type's rows are built, most hidden).
+ROW_LABEL_MAX_WIDTH = 220
+
+#: Characters a dropdown keeps room for once it may shrink below its
+#: longest choice, and the width it may shrink to.
+COMBO_MIN_CONTENTS_LENGTH = 16
+COMBO_MIN_WIDTH = 140
+
+
+def _wrap_row_labels(native) -> None:
+    """Let every row's label wrap, and every dropdown shrink, to fit the tab.
+
+    magicgui gives each row's ``QLabel`` word wrap off, which is fine for a
+    short name but not for e.g. "Segmentation cleanup reconnect max axis
+    angle degrees (degrees)" -- long enough on its own to push a row past a
+    docked panel's width and force the horizontal scrollbar
+    :func:`_fitting_scroll_area` turns off. Wrapping is the general fix,
+    applied to every tab rather than only the ones with today's longest
+    labels, since a future setting name is not something to special-case for.
+    """
+    from qtpy.QtWidgets import QComboBox, QLabel, QSizePolicy, QWidget
+
+    for label in native.findChildren(QLabel):
+        label.setWordWrap(True)
+        # magicgui makes its labels Fixed x Fixed, so a wrapped label still
+        # demanded its whole one-line width (the summaries widened tabs 1
+        # and 5 past the dock) and a single line's height (the Perturbations
+        # tab's wrapped text overlapped the rows below it).
+        policy = label.sizePolicy()
+        if policy.horizontalPolicy() == QSizePolicy.Fixed:
+            label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
+        # Capped, not cleared: magicgui's unified width still lines the
+        # value column up while every label fits under the cap.
+        if label.minimumWidth() > ROW_LABEL_MAX_WIDTH:
+            label.setMinimumWidth(ROW_LABEL_MAX_WIDTH)
+            # A row is as tall as its value widget, not its wrapped label;
+            # reserve the lines the label needs at the capped width.
+            height = label.heightForWidth(ROW_LABEL_MAX_WIDTH)
+            if height > 0:  # -1 when Qt has no wrapped height to give
+                label.setMinimumHeight(height)
+    # A dropdown otherwise demands the width of its longest choice (450px
+    # for the perturbation type); it may shrink now, and its popup still
+    # lists every choice in full.
+    for combo in native.findChildren(QComboBox):
+        combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        combo.setMinimumContentsLength(COMBO_MIN_CONTENTS_LENGTH)
+        # An explicit minimum is what a layout honours over the hint, which
+        # under napari's stylesheet can still measure the longest choice.
+        if combo.minimumWidth() == 0:
+            combo.setMinimumWidth(COMBO_MIN_WIDTH)
+    # A layout caches each widget's size, and Qt skips the relayout for a
+    # hidden widget, so a tab (or a boundary role's page) not on screen kept
+    # the width it had before any of the above. updateGeometry drops a
+    # widget's cached size even while hidden; invalidate drops the layout's.
+    for child in [native, *native.findChildren(QWidget)]:
+        child.updateGeometry()
+        layout = child.layout()
+        if layout is not None:
+            layout.invalidate()
+
+
+def _show_batch_row(widget, label, setup, name: str) -> None:
+    """A path row filled per image by a batch: its file box and button give
+    way to *label* ("Batch run") while *setup* is set and fills it. The row's
+    own value is left as it was, so leaving the batch puts it back."""
+    active = setup is not None and setup.fills(name)
+    for part in (getattr(widget, "line_edit", None), getattr(widget, "choose_btn", None)):
+        if part is not None:
+            part.native.setVisible(not active)
+    label.setVisible(active)
+    if active:
+        label.setToolTip(setup.row_tooltip(name))
+
+
+def _open_in_system(path) -> bool:
+    """Open *path* (a folder or a file) with the system's own program for it."""
+    from qtpy.QtCore import QUrl
+    from qtpy.QtGui import QDesktopServices
+
+    return bool(QDesktopServices.openUrl(QUrl.fromLocalFile(str(path))))
+
+
+class _ClassifierTrainingWindow:
+    """The classifier training window (``gui/classifier_training.py``).
+
+    Paint labels on the run's raw image in a strokes layer; with Live
+    update on, every stroke and every move through the image trains the
+    forest again and classifies only the part of the plane on screen
+    (``classifier.preview.LiveClassifier``), as ilastik does. Save classifier
+    writes it and points the panel's row for this job at it; Segment whole
+    image segments the whole raw image now, into the files the run would
+    write and then uses, and shows them. A large image (or any under the
+    low-RAM option) is read lazily and painted sparsely: nothing the size of
+    the image is ever held. The heavy work runs on a worker thread, one job
+    at a time; a request that comes while one runs is done once it ends.
+
+    *synchronous* runs every job on the calling thread (the tests).
+    """
+
+    #: How long after the last stroke or move the preview starts (ms).
+    DEBOUNCE_MS = 350
+
+    def __init__(
+        self,
+        viewer,
+        values: Mapping[str, Any],
+        row: str,
+        *,
+        on_saved: Callable[[Path], None] | None = None,
+        synchronous: bool = False,
+        current_values: Callable[[], Mapping[str, Any]] | None = None,
+        parent=None,
+    ):
+        from qtpy.QtCore import Qt, QTimer
+        from qtpy.QtWidgets import (
+            QButtonGroup,
+            QCheckBox,
+            QComboBox,
+            QGridLayout,
+            QGroupBox,
+            QHBoxLayout,
+            QLabel,
+            QLineEdit,
+            QPushButton,
+            QVBoxLayout,
+            QWidget,
+        )
+
+        from haemolynx.classifier import SCALE_CHOICES_UM, load_classifier
+        from haemolynx.gui.chrome_tooltips import CLASSIFIER_TRAINING_TOOLTIPS as TIPS
+        from haemolynx.gui.classifier_training import (
+            JOB_TITLES,
+            PURPOSE_TITLES,
+            default_channels,
+            default_classifier_path,
+            default_scales,
+            purposes_for,
+        )
+        from haemolynx.io import tiff_channels
+
+        raw = values.get("raw_image_path")
+        if raw in (None, "") or not Path(raw).is_file():
+            raise ValueError("Choose the raw image on the Input tab first, then train a classifier on it.")
+        self.viewer = viewer
+        self.values = dict(values)
+        self.row = row
+        self.purposes = purposes_for(row)
+        self.raw_path = Path(raw)
+        self.on_saved = on_saved
+        #: The panel's settings as they are now: where Segment whole image
+        #: writes, and how the run reads the raw image, can change after opening.
+        self.current_values = current_values
+        self.synchronous = synchronous
+        self.live = None
+        self._volumes: dict[Any, Any] = {}
+        self._busy = False
+        self._queued: Callable[[], None] | None = None
+        self._retrain = True
+        self._shown: tuple[int, int, Any] | None = None
+        self.strokes = self.preview = self.segmentation = self.image = None
+        self.segmentations: dict[str, Any] = {}
+        self.channel_count = max(1, len(tiff_channels(self.raw_path)))
+
+        existing = values.get(row)
+        self.loaded = None
+        self.loaded_path = Path(existing) if existing not in (None, "") else None
+        self.axis_order = "zyx"
+        if existing not in (None, "") and Path(existing).is_file():
+            try:
+                loaded = load_classifier(existing)
+            except (OSError, ValueError):
+                loaded = None
+            if loaded is not None and loaded.purpose in self.purposes:
+                self.loaded = loaded
+        self.purpose = self.loaded.purpose if self.loaded is not None else self.purposes[0]
+        if self.loaded is not None:
+            scales, channels = self.loaded.spec.scales_um, self.loaded.spec.channels
+            path = Path(existing)
+        else:
+            scales = default_scales(self.purpose)
+            channels = default_channels(values, self.channel_count)
+            path = default_classifier_path(self.raw_path, row)
+
+        # A window of its own, but the panel's child: it takes napari's
+        # stylesheet and theme, which napari sets on its main window only.
+        self.window = QWidget(parent, Qt.WindowType.Window)
+        self.window.setObjectName("haemolynx_classifier_training")
+        self.window.setWindowTitle(f"Train a classifier: {JOB_TITLES[row]}")
+        layout = QVBoxLayout(self.window)
+        layout.addWidget(QLabel(f"Raw image: {self.raw_path.name}"))
+
+        self.job_box = QComboBox()
+        for purpose in self.purposes:
+            self.job_box.addItem(PURPOSE_TITLES[purpose], purpose)
+        self.job_box.setCurrentIndex(self.purposes.index(self.purpose))
+        self.job_box.setToolTip(TIPS["job"])
+        self.job_box.currentIndexChanged.connect(lambda *_a: self._purpose_changed())
+        self.job_box.setVisible(len(self.purposes) > 1)
+        layout.addWidget(self.job_box)
+
+        self.label_box = QGroupBox("Paint")
+        # Three to a line: a job of six labels stays as narrow as the window.
+        self.label_layout = QGridLayout(self.label_box)
+        self.label_group = QButtonGroup(self.window)
+        self.label_group.idClicked.connect(self._choose_label)
+        self._label_buttons()
+        layout.addWidget(self.label_box)
+        self.import_button = QPushButton("Import ilastik labels...")
+        self.import_button.setToolTip(TIPS["import"])
+        self.import_button.clicked.connect(lambda *_a: self.import_ilastik_labels())
+        layout.addWidget(self.import_button)
+
+        preview_row = QHBoxLayout()
+        self.live_box = QCheckBox("Live update")
+        self.live_box.setChecked(True)
+        self.live_box.setToolTip(TIPS["live"])
+        self.update_button = QPushButton("Update now")
+        self.update_button.setToolTip(TIPS["update"])
+        self.update_button.clicked.connect(lambda *_a: self.update(retrain=True))
+        preview_row.addWidget(self.live_box)
+        preview_row.addWidget(self.update_button)
+        layout.addLayout(preview_row)
+
+        self.channel_boxes: dict[int, Any] = {}
+        if self.channel_count > 1:
+            channel_box = QGroupBox("Channels")
+            channel_layout = QHBoxLayout(channel_box)
+            for channel in range(self.channel_count):
+                box = QCheckBox(f"C{channel + 1}")
+                box.setChecked(channel in channels)
+                box.setToolTip(TIPS["channels"])
+                box.toggled.connect(lambda *_a: self._features_changed())
+                self.channel_boxes[channel] = box
+                channel_layout.addWidget(box)
+            layout.addWidget(channel_box)
+
+        scale_box = QGroupBox("Scales (um)")
+        scale_layout = QHBoxLayout(scale_box)
+        self.scale_boxes: dict[float, Any] = {}
+        for scale in SCALE_CHOICES_UM:
+            box = QCheckBox(f"{scale:g}")
+            box.setChecked(scale in scales)
+            box.setToolTip(TIPS["scales"])
+            box.toggled.connect(lambda *_a: self._features_changed())
+            self.scale_boxes[scale] = box
+            scale_layout.addWidget(box)
+        layout.addWidget(scale_box)
+
+        path_row = QHBoxLayout()
+        self.path_edit = QLineEdit(str(path))
+        self.path_edit.setToolTip(TIPS["path"])
+        browse = QPushButton("Browse...")
+        browse.setToolTip(TIPS["browse"])
+        browse.clicked.connect(lambda *_a: self._browse())
+        path_row.addWidget(self.path_edit)
+        path_row.addWidget(browse)
+        layout.addLayout(path_row)
+
+        actions = QHBoxLayout()
+        self.save_button = QPushButton("Save classifier")
+        self.save_button.setToolTip(TIPS["save"])
+        self.save_button.clicked.connect(lambda *_a: self.save())
+        self.segment_button = QPushButton("Segment whole image")
+        self.segment_button.setToolTip(TIPS["segment"])
+        self.segment_button.clicked.connect(lambda *_a: self._segment_clicked())
+        close = QPushButton("Close")
+        close.setToolTip(TIPS["close"])
+        close.clicked.connect(lambda *_a: self.window.close())
+        for button in (self.save_button, self.segment_button, close):
+            actions.addWidget(button)
+        layout.addLayout(actions)
+
+        self.status = QLabel("Reading the raw image...")
+        self.status.setWordWrap(True)
+        layout.addWidget(self.status)
+
+        self.timer = QTimer(self.window)
+        self.timer.setSingleShot(True)
+        self.timer.setInterval(self.DEBOUNCE_MS)
+        self.timer.timeout.connect(lambda: self.update(retrain=self._retrain))
+        #: While the whole image is segmented: what to say of how far it is
+        #: (set from the worker, shown on this thread), and whether to stop.
+        self._segmenting = False
+        self._stop_segmenting = False
+        self._progress_text: str | None = None
+        #: Said before the next training's result (what an import painted).
+        self._note: str | None = None
+        self.progress_timer = QTimer(self.window)
+        self.progress_timer.setInterval(500)
+        self.progress_timer.timeout.connect(self._show_progress)
+        #: The raw image could not be read (too large for memory, say): the
+        #: panel opens a new window rather than showing this one again.
+        self.load_failed = False
+        #: Whether this window holds napari's layer update on a 3D switch
+        #: (its lazily read layers are open): see `_update_3d_guard`.
+        self._blocking = False
+        self._set_enabled(False)
+        self._run(self._load, self._loaded, self._load_failed)
+
+    # ----------------------------------------------------------- plumbing
+
+    def show(self) -> None:
+        self.window.show()
+        self.window.raise_()
+
+    def is_open(self) -> bool:
+        return bool(self.window.isVisible())
+
+    @property
+    def labels(self) -> tuple[str, ...]:
+        from haemolynx.classifier import PURPOSES
+
+        return PURPOSES[self.purpose]
+
+    def _label_buttons(self) -> None:
+        from qtpy.QtWidgets import QRadioButton
+
+        from haemolynx.gui.chrome_tooltips import CLASSIFIER_TRAINING_TOOLTIPS as TIPS
+
+        for button in list(self.label_group.buttons()):
+            self.label_group.removeButton(button)
+            self.label_layout.removeWidget(button)
+            button.hide()  # deleted only once the event loop comes round
+            button.deleteLater()
+        for index, name in enumerate(self.labels):
+            button = QRadioButton(name)
+            button.setToolTip(TIPS["labels"])
+            self.label_group.addButton(button, index + 1)
+            self.label_layout.addWidget(button, index // 3, index % 3)
+        self.label_group.button(min(2, len(self.labels))).setChecked(True)
+
+    def _set_enabled(self, enabled: bool) -> None:
+        for widget in (self.update_button, self.save_button, self.segment_button, self.import_button):
+            widget.setEnabled(enabled)
+
+    def _say(self, text: str) -> None:
+        self.status.setText(text)
+
+    def _run(
+        self,
+        work: Callable[[], Any],
+        done: Callable[[Any], None],
+        failed: Callable[[BaseException], None] | None = None,
+    ) -> None:
+        """Do *work* off the GUI thread, then *done* with its result on it
+        (or *failed* with what it raised; else that is shown). One job at a
+        time: a job asked for meanwhile waits, the latest only."""
+        if self._busy:
+            self._queued = lambda: self._run(work, done, failed)
+            return
+        self._busy = True
+
+        def finish(result=None, error: BaseException | None = None) -> None:
+            self._busy = False
+            if error is not None:
+                if failed is not None:
+                    failed(error)
+                else:
+                    self._say(str(error) or type(error).__name__)
+            else:
+                try:
+                    done(result)
+                except Exception as problem:  # noqa: BLE001 - shown, not raised into Qt
+                    self._say(str(problem))
+            queued, self._queued = self._queued, None
+            if queued is not None:
+                queued()
+
+        if self.synchronous:
+            try:
+                result = work()
+            except Exception as error:  # noqa: BLE001
+                finish(error=error)
+            else:
+                finish(result)
+            return
+        from napari.qt.threading import create_worker
+
+        worker = create_worker(work)
+        worker.returned.connect(lambda result: finish(result))
+        worker.errored.connect(lambda error: finish(error=error))
+        worker.start()
+
+    # -------------------------------------------------------------- setup
+
+    def _spec_choice(self) -> tuple[tuple[float, ...], tuple[int | None, ...]]:
+        scales = tuple(scale for scale, box in self.scale_boxes.items() if box.isChecked())
+        if self.channel_boxes:
+            channels = tuple(c for c, box in self.channel_boxes.items() if box.isChecked())
+        else:
+            channels = (None,)
+        return scales, channels
+
+    def _volumes_for(self, channels):
+        from haemolynx.classifier import read_raw_channels
+        from haemolynx.io.axis_order import axis_order_for_run
+
+        missing = [c for c in channels if c not in self._volumes]
+        if missing and not self.values.get("use_memmap_loading"):
+            # Read whole, an image too large for memory exhausts it (and
+            # takes napari with it): refused, and the low-RAM option asked for.
+            from haemolynx.classifier.memory import memory_bytes, raw_image_memory_bytes
+            from haemolynx.gui.classifier_training import memory_refusal
+
+            needed = raw_image_memory_bytes(self.raw_path, missing, axis_order_for_run(self.values))
+            refusal = memory_refusal(needed, memory_bytes()[0], low_ram=False)
+            if refusal:
+                raise MemoryError(refusal)
+        if missing:
+            raw = read_raw_channels(
+                self.raw_path,
+                missing,
+                axis_order=axis_order_for_run(self.values),
+                voxel_size_policy=self.values.get("voxel_size_policy") or "auto",
+                voxel_size_override_xyz=self.values.get("voxel_size_override_xyz"),
+                use_memmap=bool(self.values.get("use_memmap_loading")),
+                memmap_directory=self.values.get("memmap_directory"),
+            )
+            self.voxel_size_zyx = raw.voxel_size_zyx
+            self.axis_order = raw.axis_order
+            self._volumes.update(zip(missing, raw.volumes))
+        return [self._volumes[c] for c in channels]
+
+    def _make_live(self, scales, channels):
+        import os
+
+        from haemolynx.classifier import new_classifier
+        from haemolynx.classifier.preview import LiveClassifier
+
+        if not scales:
+            raise ValueError("Tick at least one scale.")
+        if not channels:
+            raise ValueError("Tick at least one channel.")
+        volumes = self._volumes_for(channels)
+        loaded = self.loaded
+        if (
+            loaded is not None and loaded.purpose == self.purpose
+            and loaded.spec.scales_um == tuple(sorted(scales)) and loaded.spec.channels == tuple(channels)
+        ):
+            classifier = loaded
+        else:
+            classifier = new_classifier(self.purpose, scales_um=scales, channels=channels)
+        workers = max(1, min(8, (os.cpu_count() or 2) - 1))
+        return LiveClassifier(classifier, volumes, self.voxel_size_zyx, path=str(self.raw_path), workers=workers)
+
+    def _load(self):
+        return self._make_live(*self._spec_choice())
+
+    def _load_failed(self, error: BaseException) -> None:
+        self.load_failed = True
+        self._say(str(error) or type(error).__name__)
+
+    # ------------------------------------------------------- 3D, kept out
+
+    def _lazy_layers_open(self) -> list:
+        """This window's layers read lazily (a large image's, or any under
+        the low-RAM option) still in the viewer."""
+        if not getattr(self, "sparse", False):
+            return []
+        layers = [self.image, self.strokes, self.preview, *self.segmentations.values()]
+        return [layer for layer in layers if layer is not None and layer in self.viewer.layers]
+
+    def _update_3d_guard(self, *_args) -> None:
+        """While a lazily read layer is open, napari's layer update on a
+        switch to 3D is held (it would read the whole image, before any
+        handler of ours could stop it) and the view is put back in 2D
+        (`_keep_2d`); released once they are all removed."""
+        update = getattr(self.viewer, "_update_layers", None)
+        if update is None:
+            return  # napari changed: the lazy readers refuse a whole read instead
+        emitter = self.viewer.dims.events.ndisplay
+        hold = bool(self._lazy_layers_open())
+        if hold and not self._blocking:
+            emitter.block(update)
+            self._blocking = True
+        elif not hold and self._blocking:
+            emitter.unblock(update)
+            self._blocking = False
+
+    def _keep_2d(self, *_args) -> None:
+        from haemolynx.gui.classifier_training import THREE_D_NOTE
+
+        if self._blocking and self.viewer.dims.ndisplay == 3:
+            # Said now, and kept for the next training's line, which the
+            # switch back to 2D starts.
+            self._note = THREE_D_NOTE
+            self.viewer.dims.ndisplay = 2
+            self._say(THREE_D_NOTE)
+            try:
+                from napari.utils.notifications import show_info
+
+                show_info(THREE_D_NOTE)
+            except Exception:  # noqa: BLE001 - the status line says it anyway
+                pass
+
+    def _loaded(self, live) -> None:
+        from haemolynx.classifier.sparse import SparseLabels
+        from haemolynx.gui.classifier_training import (
+            IMAGE_LAYER,
+            PREVIEW_LAYER,
+            STROKES_LAYER,
+            is_large,
+            layer_name,
+            result_colours,
+            stroke_colours,
+        )
+
+        self.live = live
+        scale = tuple(float(v) for v in live.voxel_size_zyx)
+        shape = live.shape
+        self.sparse = is_large(shape, self.values)
+        if self.sparse and self.viewer.dims.ndisplay == 3:
+            # A layer added in 3D is read whole at once.
+            self.viewer.dims.ndisplay = 2
+        if self.image is None:
+            # Tagged as the panel's own: an untagged image layer is taken for
+            # one the user dropped in and made the run's input (written out
+            # whole, the raw image read in full).
+            self.image = self.viewer.add_image(
+                live.volumes[0], name=layer_name(IMAGE_LAYER, self.row), scale=scale, colormap="gray",
+                contrast_limits=list(live.ranges[0]), metadata={OURS: {"classifier_training": self.row}},
+            )
+        if self.preview is None:
+            blank = SparseLabels(shape) if self.sparse else np.zeros(shape, np.uint8)
+            self.preview = self._labels_layer(blank, PREVIEW_LAYER, result_colours(self.purpose), scale)
+            self.preview.opacity = 0.5
+        if self.strokes is None:
+            self.strokes = self._labels_layer(
+                live.painted_labels(sparse=self.sparse), STROKES_LAYER, stroke_colours(self.purpose), scale
+            )
+            self.strokes.brush_size = 3
+            self.strokes.mode = "paint"
+            self.strokes.events.paint.connect(lambda *_a: self._changed(retrain=True))
+            self.viewer.dims.events.current_step.connect(lambda *_a: self._changed(retrain=False))
+            self.viewer.dims.events.order.connect(lambda *_a: self._changed(retrain=False))
+            camera = viewer_camera(self.viewer)
+            camera.events.center.connect(lambda *_a: self._changed(retrain=False))
+            camera.events.zoom.connect(lambda *_a: self._changed(retrain=False))
+            # Kept in 2D while the lazily read layers are open (they would be
+            # read whole in 3D); the hold goes with the last of them.
+            self.viewer.dims.events.ndisplay.connect(self._keep_2d)
+            self.viewer.layers.events.removed.connect(self._update_3d_guard)
+            self.viewer.layers.events.inserted.connect(self._update_3d_guard)
+        self._update_3d_guard()
+        self.strokes.selected_label = self.label_group.checkedId()
+        self.viewer.layers.selection.active = self.strokes
+        self._set_enabled(True)
+        from haemolynx.classifier.sparse import painted_points
+
+        painted = len(painted_points(self.strokes.data)[0])
+        note = self._unfamiliar_note(live)
+        self._say(
+            f"Paint a few strokes of each label on {self.raw_path.name}"
+            + (f" ({painted} voxels painted before)." if painted else ".")
+            + (f" {note}" if note else "")
+        )
+        if painted:
+            self.update(retrain=True)
+
+    def _unfamiliar_note(self, live) -> str:
+        """What to say when the classifier opened here was trained on images
+        unlike this one (``classifier.familiar``); empty otherwise."""
+        from haemolynx.classifier.familiar import unfamiliar_channels, unfamiliar_note
+
+        if self.loaded is None:
+            return ""
+        profiles = dict(zip(live.classifier.spec.channels, live.profile))
+        found = unfamiliar_channels(self.loaded, profiles)
+        return unfamiliar_note(self.raw_path.name, self.loaded_path.name, found) if found else ""
+
+    def _labels_layer(self, data, kind: str, colours, scale, *, name: str | None = None):
+        from napari.utils.colormaps import DirectLabelColormap
+
+        from haemolynx.gui.classifier_training import layer_name
+
+        name = name or layer_name(kind, self.row)
+        if name in self.viewer.layers:
+            self.viewer.layers.remove(name)
+        layer = self.viewer.add_labels(
+            data, name=name, scale=scale, metadata={OURS: {"classifier_training": self.row}}
+        )
+        layer.colormap = DirectLabelColormap(color_dict={None: (0, 0, 0, 0), **colours})
+        return layer
+
+    def _choose_label(self, label: int) -> None:
+        if self.strokes is not None:
+            self.strokes.selected_label = int(label)
+            self.strokes.mode = "paint"
+
+    def _purpose_changed(self) -> None:
+        """Another job (e.g. vessels, arterioles and venules together): the
+        labels change, strokes keep theirs by name, the classifier starts anew."""
+        from napari.utils.colormaps import DirectLabelColormap
+
+        from haemolynx.classifier.sparse import painted_points
+        from haemolynx.gui.classifier_training import remap_strokes, result_colours, stroke_colours
+
+        purpose = self.job_box.currentData()
+        if purpose == self.purpose:
+            return
+        mapping = remap_strokes(self.purpose, purpose)
+        self.purpose = purpose
+        self._label_buttons()
+        if self.strokes is not None:
+            points, values = painted_points(self.strokes.data)
+            if len(points):
+                new = np.array([mapping.get(int(v), 0) for v in values], dtype=np.uint8)
+                self.strokes.data[tuple(points.T.astype(np.int64))] = new
+            self.strokes.colormap = DirectLabelColormap(color_dict={None: (0, 0, 0, 0), **stroke_colours(purpose)})
+            self.preview.colormap = DirectLabelColormap(color_dict={None: (0, 0, 0, 0), **result_colours(purpose)})
+            self.strokes.refresh()
+        self._features_changed()
+
+    def _features_changed(self) -> None:
+        """Another job, other scales or channels: a new classifier, the
+        strokes kept."""
+        if self.live is None:
+            return
+        self._set_enabled(False)
+        self._say("Computing the new features...")
+        self.loaded = None
+
+        def remade(live) -> None:
+            self.live = live
+            self._set_enabled(True)
+            self.update(retrain=True)
+
+        self._run(lambda: self._make_live(*self._spec_choice()), remade)
+
+    def _browse(self) -> None:
+        from qtpy.QtWidgets import QFileDialog
+
+        from haemolynx.classifier import FILE_SUFFIX
+
+        path, _ = QFileDialog.getSaveFileName(
+            self.window, "Save classifier", self.path_edit.text(), f"Classifier (*{FILE_SUFFIX})"
+        )
+        if path:
+            self.path_edit.setText(path)
+
+    # ------------------------------------------------------------ preview
+
+    def _changed(self, *, retrain: bool) -> None:
+        self._retrain = self._retrain or retrain
+        if self.live_box.isChecked() and self.live is not None:
+            if self.synchronous:
+                self.update(retrain=self._retrain)
+            else:
+                self.timer.start()
+
+    def plane_in_view(self) -> tuple[int, int] | None:
+        from haemolynx.gui.classifier_training import plane_in_view
+
+        if self.strokes is None or self.viewer.dims.ndisplay != 2:
+            return None
+        point = self.strokes.world_to_data(self.viewer.dims.point)
+        return plane_in_view(self.viewer.dims.displayed, point, self.strokes.data.shape)
+
+    def window_in_view(self, axis: int):
+        """The part of the plane on screen, cut down to what the preview
+        classifies at once."""
+        from haemolynx.classifier.preview import clip_window
+        from haemolynx.gui.classifier_training import window_in_view
+
+        shape = self.live.shape
+        window = window_in_view(axis, getattr(self.image, "corner_pixels", None), shape)
+        others = [a for a in range(3) if a != axis]
+        return clip_window(window, (shape[others[0]], shape[others[1]]))
+
+    def update(self, *, retrain: bool = True) -> None:
+        """Train (when there are new strokes) and classify the part of the
+        plane on screen."""
+        if self.live is None:
+            return
+        plane = self.plane_in_view()
+        window = self.window_in_view(plane[0]) if plane is not None else None
+        retrain = retrain or self._retrain or self.live.classifier.forest is None
+        self._retrain = False
+        labels = self.strokes.data
+        live = self.live
+
+        def work():
+            if retrain:
+                live.train(labels)
+            if plane is None:
+                return None
+            return plane, window, live.predict_plane(*plane, window=window)
+
+        self._run(work, self._show_plane)
+
+    def _region(self, axis: int, index: int, window) -> tuple:
+        place: list = [slice(None)] * 3
+        place[axis] = index
+        others = [a for a in range(3) if a != axis]
+        for a, (low, high) in zip(others, window):
+            place[a] = slice(low, high)
+        return tuple(place)
+
+    def _show_plane(self, result) -> None:
+        counts = self.live.classifier.voxels_per_label()
+        trained = ", ".join(f"{name} {count}" for name, count in counts.items() if count)
+        # What the step that asked for this training said (an import), kept.
+        note, self._note = self._note, None
+        lead = f"{note} " if note else ""
+        if result is None:
+            self._say(f"{lead}Trained on {trained} voxels. The preview shows in 2D view.")
+            return
+        (axis, index), window, labels = result
+        data = self.preview.data
+        if self._shown is not None:
+            data[self._region(*self._shown)] = 0
+        data[self._region(axis, index, window)] = labels
+        self._shown = (axis, index, window)
+        self.preview.refresh()
+        self._say(f"{lead}Trained on {trained} voxels; showing {'zyx'[axis]} = {index}.")
+
+    # ------------------------------------------------------------ actions
+
+    def save(self) -> None:
+        """Train on every stroke and save; the panel's row then names the file."""
+        from haemolynx.classifier import save_classifier
+
+        if self.live is None:
+            return
+        path = Path(self.path_edit.text().strip() or "classifier")
+        labels = self.strokes.data
+        live = self.live
+
+        def work():
+            classifier = live.train(labels)
+            return save_classifier(classifier, path)
+
+        def saved(written) -> None:
+            self.loaded = self.live.classifier
+            self.loaded_path = Path(written)
+            self._say(f"Saved {written}.")
+            if self.on_saved is not None:
+                self.on_saved(Path(written))
+
+        self._run(work, saved)
+
+    def _strokes_unchanged(self) -> bool:
+        """Whether the classifier saved at :attr:`loaded_path` is the one the
+        window would train now: the same job and features, and trained on
+        exactly the strokes painted on this image."""
+        from haemolynx.classifier.sparse import painted_points
+
+        loaded = self.loaded
+        if (
+            loaded is None or loaded.forest is None or self.loaded_path is None or not self.loaded_path.is_file()
+            or loaded.purpose != self.purpose or self.live is None or loaded.spec != self.live.classifier.spec
+        ):
+            return False
+        points, values = painted_points(self.strokes.data)
+        index = loaded.image_index(self.raw_path)
+        if index is None:
+            return len(points) == 0
+        mine = loaded.training.image == index
+        old_points = loaded.training.points_zyx[mine].astype(np.int64)
+        old_values = loaded.training.classes[mine].astype(np.int64) + 1
+        if len(old_points) != len(points):
+            return False
+
+        def ordered(p, v):
+            order = np.lexsort((p[:, 2], p[:, 1], p[:, 0]))
+            return p[order], v[order]
+
+        a, av = ordered(np.asarray(points, np.int64), np.asarray(values, np.int64))
+        b, bv = ordered(old_points, old_values)
+        return bool(np.array_equal(a, b) and np.array_equal(av, bv))
+
+    def _segment_clicked(self) -> None:
+        """Segment whole image, or, while it runs, stop it."""
+        if self._segmenting:
+            self._stop_segmenting = True
+            self._say("Stopping once the tiles being classified are done...")
+            return
+        self.segment_whole_image()
+
+    def _show_progress(self) -> None:
+        if self._segmenting and self._progress_text and not self._stop_segmenting:
+            self._say(self._progress_text)
+
+    def _segmenting_ended(self) -> None:
+        from haemolynx.gui.chrome_tooltips import CLASSIFIER_TRAINING_TOOLTIPS as TIPS
+
+        self._segmenting = False
+        self.progress_timer.stop()
+        self.segment_button.setText("Segment whole image")
+        self.segment_button.setToolTip(TIPS["segment"])
+
+    def segment_whole_image(self) -> None:
+        """Save the classifier, segment the whole raw image with it into the
+        files the run writes (lazily, under the low-RAM option), and show them.
+        While it runs the button stops it; what was done is kept, and
+        segmenting again with the same classifier picks up there."""
+        from haemolynx.classifier import save_classifier, segment_with_classifiers
+        from haemolynx.gui.chrome_tooltips import CLASSIFIER_TRAINING_TOOLTIPS as TIPS
+        from haemolynx.gui.classifier_training import SEGMENTATION_LAYER, layer_name, mask_colours, row_outputs
+        from haemolynx.pipeline.progress import segmentation_progress_text
+        from haemolynx.pipeline.stages import classifier_run_arguments
+
+        if self.live is None or self._segmenting:
+            return
+        path = Path(self.path_edit.text().strip() or "classifier")
+        labels = self.strokes.data
+        live = self.live
+        values = {**self.values, **(self.current_values() if self.current_values else {})}
+        values["raw_image_path"] = self.raw_path  # the image the strokes were painted on
+        if not values.get("use_memmap_loading"):
+            # The pass reads the image whole again, beside the window's copy.
+            from haemolynx.classifier.memory import memory_bytes, raw_image_memory_bytes
+            from haemolynx.gui.classifier_training import memory_refusal
+            from haemolynx.io.axis_order import axis_order_for_run
+
+            needed = raw_image_memory_bytes(self.raw_path, live.classifier.spec.channels, axis_order_for_run(values))
+            refusal = memory_refusal(needed, memory_bytes()[0], low_ram=False)
+            if refusal:
+                self._say(refusal)
+                return
+        self._segmenting, self._stop_segmenting, self._progress_text = True, False, None
+        self.segment_button.setText("Stop")
+        self.segment_button.setToolTip(TIPS["stop"])
+        self.progress_timer.start()
+        self._say("Segmenting the whole image...")
+
+        def poll() -> None:
+            if self._stop_segmenting:
+                raise _SegmentingStopped()
+
+        def progress(state) -> None:
+            text = segmentation_progress_text(state)
+            if not state.writing and state.total:
+                text += f" ({state.done / state.total:.0%} complete)"
+            self._progress_text = text + "."
+
+        unchanged = self.loaded_path == path and self._strokes_unchanged()
+
+        def work():
+            # The classifier as saved, when this image's strokes are the ones
+            # it was trained on: saved again it would be another file (another
+            # checksum), and a segmentation stopped part-way is taken up only
+            # with the classifier that began it.
+            if not unchanged:
+                save_classifier(live.train(labels), path)
+            outputs = row_outputs(values, self.row, path)
+            segment_with_classifiers(
+                self.raw_path, [(path, outputs)], poll=poll, progress=progress, **classifier_run_arguments(values)
+            )
+            return outputs
+
+        def failed(error: BaseException) -> None:
+            self._segmenting_ended()
+            if isinstance(error, _SegmentingStopped):
+                self.loaded, self.loaded_path = self.live.classifier, path
+                self._say(str(error))
+            else:
+                self._say(str(error) or type(error).__name__)
+
+        def done(outputs) -> None:
+            from haemolynx.classifier.apply import read_written_mask
+
+            self._segmenting_ended()
+            self.loaded = self.live.classifier
+            self.loaded_path = path
+            if self.on_saved is not None:
+                self.on_saved(path)
+            scale = tuple(float(v) for v in self.live.voxel_size_zyx)
+            if self.sparse and self.viewer.dims.ndisplay == 3:
+                self.viewer.dims.ndisplay = 2  # a lazily read mask added in 3D is read whole
+            for mask, output in outputs.items():
+                # Stored in the raw file's own axis order: read back in it, so
+                # it lies over the image layer (canonical z, y, x).
+                data = read_written_mask(
+                    output, self.axis_order, self.live.shape, lazy=self.sparse,
+                    use_memmap=bool(values.get("use_memmap_loading")),
+                    memmap_directory=values.get("memmap_directory"),
+                )
+                layer = self._labels_layer(
+                    data, SEGMENTATION_LAYER, mask_colours(mask), scale,
+                    name=f"{layer_name(SEGMENTATION_LAYER, self.row)} {mask}",
+                )
+                layer.opacity = 0.6
+                self.segmentations[mask] = layer
+            self.segmentation = next(iter(self.segmentations.values()), None)
+            self._update_3d_guard()
+            self._say("Segmented the whole image: " + ", ".join(str(p) for p in outputs.values()) + ".")
+
+        self._run(work, done, failed)
+
+    # ------------------------------------------------------ ilastik labels
+
+    def import_ilastik_labels(self, project: str | Path | None = None, mapping=None) -> int:
+        """Paint the labels of an ilastik project's image that is this raw
+        image onto it as strokes, each ilastik label (numbered from 1) as the
+        label *mapping* names (None: left out), then train. Without *project*
+        a file is asked for, and without *mapping* the window asks, with each
+        label's likely match chosen (``classifier.ilastik_labels``). Returns
+        how many voxels were painted."""
+        from haemolynx.classifier.ilastik_labels import (
+            default_label_mapping,
+            ilastik_label_names,
+            read_ilastik_labels,
+            strokes_from_ilastik,
+        )
+
+        if self.live is None:
+            return 0
+        if project is None:
+            from qtpy.QtWidgets import QFileDialog
+
+            chosen, _ = QFileDialog.getOpenFileName(
+                self.window, "Import ilastik labels", str(self.raw_path.parent), "ilastik project (*.ilp)"
+            )
+            if not chosen:
+                return 0
+            project = chosen
+        project = Path(project)
+        try:
+            names = ilastik_label_names(project)
+            if mapping is None:
+                guess = default_label_mapping(
+                    names, self.labels, vessel_label=self._ilastik_vessel_label()
+                )
+                mapping = self._ask_label_mapping(project, names, guess)
+                if mapping is None:
+                    return 0
+            points, ilastik = read_ilastik_labels(
+                project, self.raw_path, shape_zyx=self.live.shape, axis_order=self.axis_order
+            )
+        except (OSError, ValueError, KeyError) as error:
+            self._say(f"Could not import labels from {project.name}: {error}")
+            return 0
+        points, values = strokes_from_ilastik(points, ilastik, mapping, self.labels)
+        if not len(points):
+            self._say(f"{project.name} has no labels for {self.raw_path.name} that are imported.")
+            return 0
+        self.strokes.data[tuple(points.T.astype(np.int64))] = values
+        self.strokes.refresh()
+        counts = np.bincount(values, minlength=len(self.labels) + 1)
+        shown = ", ".join(
+            f"{names[number - 1]} as {label} ({counts[self.labels.index(label) + 1]})"
+            for number, label in sorted(mapping.items()) if label is not None and number <= len(names)
+        )
+        self._note = f"Imported {len(points)} labelled voxels from {project.name}: {shown}."
+        self._say(f"{self._note} Training...")
+        self.update(retrain=True)
+        return int(len(points))
+
+    def _ilastik_vessel_label(self):
+        """The ilastik label the run reads as vessel for this row's job, as
+        the panel names it (``ilastik_vessel_label`` for the main image)."""
+        values = {**self.values, **(self.current_values() if self.current_values else {})}
+        return values.get("ilastik_vessel_label") if self.row == "pixel_classifier_path" else None
+
+    def _ask_label_mapping(self, project: Path, names, guess):
+        """Ask which label each ilastik label becomes, *guess* chosen; None
+        when cancelled."""
+        from qtpy.QtWidgets import QComboBox, QDialog, QDialogButtonBox, QFormLayout, QLabel
+
+        from haemolynx.gui.chrome_tooltips import ILASTIK_IMPORT_TOOLTIPS as TIPS
+
+        dialog = QDialog(self.window)
+        dialog.setWindowTitle(f"Import labels from {project.name}")
+        form = QFormLayout(dialog)
+        form.addRow(QLabel(f"What each label of {project.name} is here:"))
+        boxes = {}
+        for number, name in enumerate(names, start=1):
+            box = QComboBox()
+            box.addItem("Leave out", None)
+            for label in self.labels:
+                box.addItem(label, label)
+            if guess.get(number) is not None:
+                box.setCurrentIndex(box.findData(guess[number]))
+            box.setToolTip(TIPS["label"])
+            form.addRow(name, box)
+            boxes[number] = box
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        form.addRow(buttons)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return None
+        return {number: box.currentData() for number, box in boxes.items()}
+
+
+class _SegmentingStopped(Exception):
+    """Segment whole image stopped by its button."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "Stopped. What was segmented is kept: Segment whole image picks up from there "
+            "while the classifier is unchanged."
+        )
+
+
+class _BatchRunWindow:
+    """The Batch run window. Its Images tab holds the batch's folders, the two
+    conditions read from the images' file names, the images matched in them
+    with what each came to, and what can be done to one image; its Comparison
+    tab the two conditions tested against each other. Under both: Match again,
+    Check, Compare statistics, Open batch folder, Stop after this image, Leave
+    batch run, Use this batch and Run batch.
+
+    Plain Qt glue; what a batch is, and how it is matched, checked and run, is
+    :mod:`haemolynx.gui.batch_run` and :mod:`haemolynx.io.batch_matching`.
+    *values* returns the panel's form values; *on_use* gets the
+    :class:`~haemolynx.gui.batch_run.BatchSetup` Run pipeline is to run,
+    *on_run* the one to run now, *on_run_again* the setup and the one image's
+    stem to run again; *on_leave* is called to go back to one image, *on_stop*
+    to stop the running batch after its image, *on_open* with an image's
+    ``.haemorun`` to open it, *on_load_settings* with a
+    ``batch_settings.yaml`` to put its settings in the panel, and
+    *on_set_settings* with the settings a folder of other files turns on
+    (:func:`~haemolynx.pipeline.batch.settings_reading_folders`). *parent* is the
+    panel: the window stays a window of its own, but as the panel's child it
+    takes napari's stylesheet (and its theme changes), which napari sets on
+    its main window and so never reaches a parentless one.
+    """
+
+    FOLDER_ROWS = (
+        ("segmented", "Segmented images"),
+        ("raw", "Raw images"),
+        ("large", "Large vessel masks"),
+        ("small", "Small vessel masks"),
+        # The other files read beside each image: a folder entered turns on
+        # what reads them.
+        ("pericyte", "Pericyte masks"),
+        ("cell", "Cell masks"),
+        ("vessel_3d", "Vessel masks (3D distances)"),
+        ("tissue", "Tissue images"),
+        ("capillary_block", "Masks of blocks"),
+        ("output", "Output folder"),
+    )
+    CONDITION_ROWS = (
+        ("condition_a", "Condition A"),
+        ("condition_b", "Condition B"),
+    )
+    DESIGN_CHOICES = (
+        ("Independent images", "independent"),
+        ("Paired by subject", "paired"),
+    )
+    AGGREGATE_CHOICES = (
+        ("Leave the subject out", "none"),
+        ("Median of its images", "median"),
+        ("Mean of its images", "mean"),
+    )
+    #: Rows the window opens tall enough to show.
+    VISIBLE_ROWS = 8
+    #: Lines the report box opens to, and the fewest it gets on a short screen.
+    REPORT_LINES = 6
+    REPORT_MIN_LINES = 3
+
+    def __init__(
+        self,
+        *,
+        schema,
+        values,
+        on_use,
+        on_leave,
+        on_open=None,
+        on_run=None,
+        on_run_again=None,
+        on_stop=None,
+        on_load_settings=None,
+        on_set_settings=None,
+        parent=None,
+    ) -> None:
+        from qtpy.QtCore import Qt
+        from qtpy.QtWidgets import (
+            QAbstractItemView,
+            QCheckBox,
+            QComboBox,
+            QGridLayout,
+            QGroupBox,
+            QHBoxLayout,
+            QLabel,
+            QLineEdit,
+            QPlainTextEdit,
+            QPushButton,
+            QSplitter,
+            QTableWidget,
+            QTabWidget,
+            QVBoxLayout,
+            QWidget,
+        )
+
+        from haemolynx.gui.batch_run import TABLE_COLUMNS
+        from haemolynx.gui.chrome_tooltips import BATCH_RUN_TOOLTIPS as tips
+
+        self._schema = schema
+        self._values = values
+        self._on_use = on_use
+        self._on_leave = on_leave
+        self._on_open = on_open
+        self._on_run = on_run
+        self._on_run_again = on_run_again
+        self._on_stop = on_stop
+        self._on_load_settings = on_load_settings
+        self._on_set_settings = on_set_settings
+        self._filling = False
+        self._running = False
+        self._record = None
+        self.setup = None
+
+        self.native = QWidget(parent, Qt.WindowType.Window)
+        self.native.setWindowTitle("HaemoLynx: Batch run")
+        self.native.setObjectName("haemolynx_batch_run")
+        layout = QVBoxLayout(self.native)
+        self.tabs = QTabWidget()
+        layout.addWidget(self.tabs, 1)
+        images_page = QWidget()
+        images = QVBoxLayout(images_page)
+        images.setContentsMargins(0, 0, 0, 0)
+        self.tabs.addTab(images_page, "Images")
+        self.tabs.setTabToolTip(0, tips["images_tab"])
+
+        # -- Images: the folders --------------------------------------------
+        folders_box = QGroupBox("Images")
+        folders_layout = QVBoxLayout(folders_box)
+        grid = QGridLayout()
+        self.fields: dict[str, Any] = {}
+        self.browse_buttons: dict[str, Any] = {}
+        self.folder_labels: dict[str, Any] = {}
+        for row, (key, text) in enumerate(self.FOLDER_ROWS):
+            edit = QLineEdit()
+            edit.setToolTip(tips[key])
+            edit.editingFinished.connect(lambda: self._folders_changed())
+            browse = QPushButton("Browse...")
+            browse.setToolTip(tips["browse"])
+            browse.clicked.connect(lambda _checked=False, field=edit: self._browse(field))
+            label = QLabel(text)
+            grid.addWidget(label, row, 0)
+            grid.addWidget(edit, row, 1)
+            grid.addWidget(browse, row, 2)
+            self.fields[key] = edit
+            self.browse_buttons[key] = browse
+            self.folder_labels[key] = label
+        folders_layout.addLayout(grid)
+        self.last_batch_button = QPushButton("Use this folder's last batch")
+        self.last_batch_button.setToolTip(tips["last_batch"])
+        self.last_batch_button.setVisible(False)
+        self.last_batch_button.clicked.connect(lambda *_: self.use_last_batch())
+        folders_layout.addWidget(self.last_batch_button)
+        self.skip_done = QCheckBox("Skip images whose folder already has a .haemorun")
+        self.skip_done.setChecked(True)
+        self.skip_done.setToolTip(tips["skip_done"])
+        self.skip_done.toggled.connect(lambda *_: self._skip_done_changed())
+        settings_row = QHBoxLayout()
+        settings_row.addWidget(self.skip_done)
+        settings_row.addStretch(1)
+        self.settings_line = QLabel("")
+        self.settings_line.setToolTip(tips["settings_line"])
+        self.show_settings_button = QPushButton("Show")
+        self.show_settings_button.setToolTip(tips["show_settings"])
+        self.show_settings_button.clicked.connect(lambda *_: self.show_settings())
+        settings_row.addWidget(self.settings_line)
+        settings_row.addWidget(self.show_settings_button)
+        folders_layout.addLayout(settings_row)
+        images.addWidget(folders_box)
+
+        # -- Images: conditions and statistics ----------------------------------
+        conditions_box = QGroupBox("Conditions and statistics")
+        conditions = QGridLayout(conditions_box)
+        self.condition_fields: dict[str, Any] = {}
+        for column, (key, text) in enumerate(self.CONDITION_ROWS):
+            edit = QLineEdit()
+            edit.setPlaceholderText("phrase in the file names, e.g. WT (blank: none)")
+            edit.setToolTip(tips[key])
+            edit.textChanged.connect(lambda *_: self._conditions_changed())
+            conditions.addWidget(QLabel(text), 0, 2 * column)
+            conditions.addWidget(edit, 0, 2 * column + 1)
+            self.condition_fields[key] = edit
+        self.design = QComboBox()
+        for text, design in self.DESIGN_CHOICES:
+            self.design.addItem(text, design)
+        self.design.setToolTip(tips["design"])
+        self.design.currentIndexChanged.connect(lambda *_: self._conditions_changed())
+        self.subject_pattern = QLineEdit()
+        self.subject_pattern.setPlaceholderText(
+            "blank: the text before the condition phrase (11_3_d in 11_3_d_contra_FITC)"
+        )
+        self.subject_pattern.setToolTip(tips["subject_pattern"])
+        self.subject_pattern.textChanged.connect(lambda *_: self._conditions_changed())
+        conditions.addWidget(QLabel("Comparison"), 1, 0)
+        conditions.addWidget(self.design, 1, 1)
+        conditions.addWidget(QLabel("Subject ID pattern"), 1, 2)
+        conditions.addWidget(self.subject_pattern, 1, 3)
+        self.aggregate = QComboBox()
+        for text, aggregate in self.AGGREGATE_CHOICES:
+            self.aggregate.addItem(text, aggregate)
+        self.aggregate.setToolTip(tips["aggregate"])
+        self.aggregate.currentIndexChanged.connect(lambda *_: self._conditions_changed())
+        conditions.addWidget(QLabel("Several images of a subject"), 2, 2)
+        conditions.addWidget(self.aggregate, 2, 3)
+        self.exclude_sections = QLineEdit()
+        self.exclude_sections.setPlaceholderText(
+            "statistics sections to leave out, comma-separated, e.g. Dead Ends (blank: none)"
+        )
+        self.exclude_sections.setToolTip(tips["exclude_sections"])
+        self.exclude_sections.textChanged.connect(lambda *_: self._sections_changed())
+        conditions.addWidget(QLabel("Leave out sections"), 3, 0)
+        conditions.addWidget(self.exclude_sections, 3, 1, 1, 3)
+        images.addWidget(conditions_box)
+        self._refresh_design_rows()
+
+        # -- Images: the table, what can be done to one image, the report -------
+        table_page = QWidget()
+        table_layout = QVBoxLayout(table_page)
+        table_layout.setContentsMargins(0, 0, 0, 0)
+        self.table = QTableWidget(0, len(TABLE_COLUMNS))
+        self.table.setHorizontalHeaderLabels(list(TABLE_COLUMNS))
+        self.table.horizontalHeaderItem(TABLE_COLUMNS.index("Peak RAM")).setToolTip(tips["peak_ram"])
+        self.table.setToolTip(tips["table"])
+        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.table.horizontalHeader().setStretchLastSection(True)
+        # No order until a header is clicked: the images as matched, by name.
+        self.table.horizontalHeader().setSortIndicator(-1, Qt.AscendingOrder)
+        self.table.setSortingEnabled(True)
+        self.table.itemChanged.connect(self._ticked)
+        self.table.cellDoubleClicked.connect(self._double_clicked)
+        self.table.itemSelectionChanged.connect(lambda: self._refresh_row_actions())
+        self.table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._row_menu)
+        table_layout.addWidget(self.table, 1)
+        rows = QHBoxLayout()
+        self.tick_buttons: dict[str, Any] = {}
+        for key, text in (("all", "Tick all"), ("none", "Tick none"), ("failed", "Tick failed")):
+            button = QPushButton(text)
+            button.setToolTip(tips[f"tick_{key}"])
+            button.clicked.connect(lambda _checked=False, which=key: self.tick(which))
+            rows.addWidget(button)
+            self.tick_buttons[key] = button
+        rows.addStretch(1)
+        self.row_buttons: dict[str, Any] = {}
+        for key, text in (
+            ("open_run", "Open run"),
+            ("open_folder", "Open folder"),
+            ("show_error", "Show error"),
+            ("run_again", "Run again"),
+        ):
+            button = QPushButton(text)
+            button.setToolTip(tips[key])
+            button.setEnabled(False)
+            button.clicked.connect(lambda _checked=False, which=key: self.row_action(which))
+            rows.addWidget(button)
+            self.row_buttons[key] = button
+        table_layout.addLayout(rows)
+        self.details = QPlainTextEdit()
+        self.details.setReadOnly(True)
+        self.details.setToolTip(tips["details"])
+        self.splitter = QSplitter(Qt.Vertical)
+        self.splitter.addWidget(table_page)
+        self.splitter.addWidget(self.details)
+        self.splitter.setStretchFactor(0, 1)
+        self.splitter.setCollapsible(0, False)
+        self.splitter.setSizes([1, 0])
+        images.addWidget(self.splitter, 1)
+
+        # -- Comparison ---------------------------------------------------------
+        comparison_page = QWidget()
+        comparison = QVBoxLayout(comparison_page)
+        self.comparison_note = QLabel("")
+        self.comparison_note.setWordWrap(True)
+        comparison.addWidget(self.comparison_note)
+        self.comparison_table = QTableWidget(0, 0)
+        self.comparison_table.setToolTip(tips["comparison_table"])
+        self.comparison_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.comparison_table.horizontalHeader().setStretchLastSection(True)
+        comparison.addWidget(self.comparison_table, 1)
+        comparison_buttons = QHBoxLayout()
+        comparison_buttons.addStretch(1)
+        self.refresh_comparison_button = QPushButton("Read again")
+        self.refresh_comparison_button.setToolTip(tips["refresh_comparison"])
+        self.refresh_comparison_button.clicked.connect(lambda *_: self.refresh_comparison())
+        self.open_comparison_button = QPushButton("Open comparison CSV")
+        self.open_comparison_button.setToolTip(tips["open_comparison"])
+        self.open_comparison_button.clicked.connect(lambda *_: self.open_comparison())
+        comparison_buttons.addWidget(self.refresh_comparison_button)
+        comparison_buttons.addWidget(self.open_comparison_button)
+        comparison.addLayout(comparison_buttons)
+        self.tabs.addTab(comparison_page, "Comparison")
+        self.tabs.setTabToolTip(1, tips["comparison_tab"])
+
+        # -- Under both tabs ----------------------------------------------------
+        self.status = QLabel("")
+        self.status.setWordWrap(True)
+        layout.addWidget(self.status)
+        buttons = QHBoxLayout()
+        self.match_button = QPushButton("Match again")
+        self.match_button.setToolTip(tips["match"])
+        self.check_button = QPushButton("Check")
+        self.check_button.setToolTip(tips["check"])
+        self.compare_button = QPushButton("Compare statistics")
+        self.compare_button.setToolTip(tips["compare"])
+        self.open_folder_button = QPushButton("Open batch folder")
+        self.open_folder_button.setToolTip(tips["open_batch_folder"])
+        self.stop_button = QPushButton("Stop after this image")
+        self.stop_button.setToolTip(tips["stop"])
+        self.stop_button.setEnabled(False)
+        self.leave_button = QPushButton("Leave batch run")
+        self.leave_button.setToolTip(tips["leave"])
+        self.use_button = QPushButton("Use this batch")
+        self.use_button.setToolTip(tips["use"])
+        self.run_button = QPushButton("Run batch")
+        self.run_button.setToolTip(tips["run"])
+        for button in (self.match_button, self.check_button, self.compare_button, self.open_folder_button):
+            buttons.addWidget(button)
+        buttons.addStretch(1)
+        for button in (self.stop_button, self.leave_button, self.use_button, self.run_button):
+            buttons.addWidget(button)
+        layout.addLayout(buttons)
+        self.match_button.clicked.connect(lambda *_: self.match())
+        self.check_button.clicked.connect(lambda *_: self.check())
+        self.compare_button.clicked.connect(lambda *_: self.compare())
+        self.open_folder_button.clicked.connect(lambda *_: self.open_batch_folder())
+        self.stop_button.clicked.connect(lambda *_: self.stop())
+        self.use_button.clicked.connect(lambda *_: self.use())
+        self.leave_button.clicked.connect(lambda *_: self.leave())
+        self.run_button.clicked.connect(lambda *_: self.run())
+
+        row_height = self.table.verticalHeader().defaultSectionSize()
+        self.native.resize(1100, 560 + row_height * self.VISIBLE_ROWS)
+
+    # -- folders ---------------------------------------------------------
+
+    def _browse(self, field) -> None:
+        from qtpy.QtWidgets import QFileDialog
+
+        chosen = QFileDialog.getExistingDirectory(self.native, "Choose a folder", field.text())
+        if chosen:
+            field.setText(chosen)
+            self._folders_changed()
+
+    def _sizes(self) -> tuple[str, ...]:
+        from haemolynx.pipeline.batch import batch_mask_sizes
+
+        return batch_mask_sizes(self._values())
+
+    def _roles(self) -> tuple[str, ...]:
+        from haemolynx.pipeline.batch import batch_file_roles
+
+        return batch_file_roles(self._values(), self._schema)
+
+    def _from_raw(self) -> bool:
+        from haemolynx.pipeline.batch import batch_from_raw
+
+        return batch_from_raw(self._values())
+
+    def _images_key(self) -> str:
+        """The folder row the images are listed from."""
+        return "raw" if self._from_raw() else "segmented"
+
+    def _refresh_mask_rows(self) -> None:
+        """Grey what the settings do not read, saying what would: the
+        segmented folder while ilastik segments the raw images, a mask size
+        no switch uses; an other file's row not read says what a folder in
+        it turns on."""
+        from haemolynx.gui.batch_run import mask_switch_hint, turned_on_text
+        from haemolynx.gui.form import label_for
+        from haemolynx.io.batch_matching import FILE_ROLES
+        from haemolynx.pipeline.batch import settings_reading_folders
+
+        sizes = self._sizes()
+        values = self._values()
+        from_raw = self._from_raw()
+        images = "raw" if from_raw else "segmented"
+        self.fields["segmented"].setEnabled(not from_raw)
+        self.browse_buttons["segmented"].setEnabled(not from_raw)
+        self.fields["segmented"].setPlaceholderText(
+            f"not read: ilastik segments each raw image ('{label_for('use_ilastik_segmentation')}')"
+            if from_raw
+            else ""
+        )
+        self.fields["raw"].setPlaceholderText(
+            "each raw image here is one run, segmented by ilastik"
+            if from_raw
+            else "blank: the segmented folder"
+        )
+        for size in ("large", "small"):
+            used = size in sizes
+            self.fields[size].setEnabled(used)
+            self.browse_buttons[size].setEnabled(used)
+            self.fields[size].setPlaceholderText(
+                f"blank: the {images} folder" if used else mask_switch_hint(self._schema, values, size)
+            )
+        roles = self._roles()
+        for role in FILE_ROLES:
+            if role.key in roles:
+                text = (
+                    f"blank: {role.fallback}"
+                    if role.fallback
+                    else f"blank: none (one {role.label} for every image is refused)"
+                )
+            else:
+                turned = settings_reading_folders(values, self._schema, (role.key,))
+                text = (
+                    f"not read: a folder here turns on {turned_on_text(turned)}"
+                    if turned
+                    else "not read by these settings"
+                )
+            self.fields[role.key].setPlaceholderText(text)
+        self._fit_rows()
+
+    def _turn_on_readers(self) -> None:
+        """Turn on in the panel what reads each other file given a folder,
+        saying what was turned on in the report box."""
+        from haemolynx.gui.batch_run import turned_on_text
+        from haemolynx.io.batch_matching import FILE_ROLE_KEYS
+        from haemolynx.pipeline.batch import settings_reading_folders
+
+        if self._on_set_settings is None or self._filling:
+            return
+        keys = [key for key in FILE_ROLE_KEYS if self.fields[key].text().strip()]
+        turned = settings_reading_folders(self._values(), self._schema, keys)
+        if not turned:
+            return
+        self._on_set_settings(turned)
+        self._refresh_mask_rows()
+        self._refresh_settings_line()
+        self._report([f"Turned on {turned_on_text(turned)} in the panel, to read the folders given."])
+
+    def _refresh_settings_line(self) -> None:
+        from haemolynx.gui.batch_run import settings_changed
+
+        changed = settings_changed(self._values(), self._schema)
+        self.settings_line.setText(
+            f"Settings: the panel's, {len(changed)} differ from the defaults"
+            if changed
+            else "Settings: the panel's, all at their defaults"
+        )
+        self.show_settings_button.setEnabled(bool(changed))
+
+    def show_settings(self) -> None:
+        """List, in the report box, the settings every image runs with that
+        differ from their defaults."""
+        from haemolynx.gui.batch_run import settings_changed
+
+        values = self._values()
+        lines = [f"{name}: {values.get(name)}" for name in settings_changed(values, self._schema)]
+        self._report(["Settings every image runs with that differ from the defaults:", *lines])
+
+    def _folders_changed(self) -> None:
+        """A folder typed or chosen: turn on what reads its files, offer the
+        output folder's last batch, and match again once there are images and
+        somewhere to put them."""
+        self._turn_on_readers()
+        self._refresh_last_batch()
+        if self.fields[self._images_key()].text().strip() and self.fields["output"].text().strip():
+            self.match()
+
+    def _refresh_last_batch(self) -> None:
+        from haemolynx.gui.batch_run import SETTINGS_FILENAME, read_batch_settings
+
+        output = self.fields["output"].text().strip()
+        self._record = read_batch_settings(Path(output) / SETTINGS_FILENAME) if output else None
+        self.last_batch_button.setVisible(self._record is not None)
+        self._fit_rows()
+
+    def use_last_batch(self) -> bool:
+        """Fill the window from the output folder's ``batch_settings.yaml``
+        -- its folders, conditions, comparison and sections -- and put the
+        settings it ran with in the panel; then match. Whether there was one."""
+        if self._record is None:
+            self._refresh_last_batch()
+        record = self._record
+        if record is None:
+            return False
+        if self._on_load_settings is not None:
+            self._on_load_settings(record.path)
+        self._filling = True
+        try:
+            self._show_folders(record.folders)
+            self.fields["output"].setText(str(record.output_root))
+            self._show_conditions(record.conditions, record.exclude_sections)
+        finally:
+            self._filling = False
+        self._refresh_design_rows()
+        self._refresh_settings_line()
+        matched = self.match()
+        self._say(f"Filled from {record.path}, and the panel's settings with it. " + self.status.text())
+        return matched
+
+    def _show_folders(self, folders) -> None:
+        from haemolynx.io.batch_matching import FILE_ROLE_KEYS, IMAGE_FOLDER_ROLES
+
+        for key in IMAGE_FOLDER_ROLES + FILE_ROLE_KEYS:
+            value = getattr(folders, key)
+            self.fields[key].setText("" if value is None else str(value))
+
+    def _show_conditions(self, conditions, exclude_sections) -> None:
+        for key, condition in zip(("condition_a", "condition_b"), (conditions.a, conditions.b)):
+            self.condition_fields[key].setText("" if condition is None else condition.label)
+        self.design.setCurrentIndex(self.design.findData(conditions.design))
+        self.subject_pattern.setText(conditions.subject_pattern)
+        self.aggregate.setCurrentIndex(self.aggregate.findData(conditions.aggregate))
+        self.exclude_sections.setText(", ".join(exclude_sections))
+
+    def open(self, setup=None) -> None:
+        """Show the window, filled from *setup* (the batch in use) if any."""
+        from haemolynx.pipeline.batch import default_output_root
+
+        if setup is not None:
+            self.setup = setup
+            self._show_folders(setup.folders)
+            self.fields["output"].setText(str(setup.output_root))
+            self._filling = True
+            try:
+                self.skip_done.setChecked(setup.skip_done)
+                self._show_conditions(setup.conditions, setup.exclude_sections)
+            finally:
+                self._filling = False
+            self._refresh_design_rows()
+        elif not self.fields["output"].text():
+            default = default_output_root(self._values())
+            if default is not None:
+                self.fields["output"].setText(str(default))
+        self._refresh_mask_rows()
+        self._refresh_settings_line()
+        self._refresh_last_batch()
+        self._fill_table()
+        self.refresh_comparison()
+        self.native.show()
+        self._fit_rows()
+        self.native.raise_()
+
+    # -- conditions ------------------------------------------------------
+
+    def _conditions(self):
+        from haemolynx.statistics.batch_comparison import PAIRED, BatchConditions
+
+        paired = self.design.currentData() == PAIRED
+        return BatchConditions.from_text(
+            self.condition_fields["condition_a"].text(),
+            self.condition_fields["condition_b"].text(),
+            paired=paired,
+            subject_pattern=self.subject_pattern.text() if paired else None,
+            aggregate=self.aggregate.currentData() if paired else None,
+        )
+
+    def _excluded_sections(self) -> tuple[str, ...]:
+        from haemolynx.statistics.batch_comparison import parse_sections
+
+        return parse_sections(self.exclude_sections.text())
+
+    def _sections_changed(self) -> None:
+        from dataclasses import replace
+
+        if self._filling or self.setup is None:
+            return
+        self.setup = replace(self.setup, exclude_sections=self._excluded_sections())
+
+    def _skip_done_changed(self) -> None:
+        """The images done before: skipped, or run again, as the box says."""
+        from dataclasses import replace
+
+        if self._filling or self.setup is None:
+            return
+        self.setup = replace(self.setup, skip_done=self.skip_done.isChecked())
+        self._fill_table()
+
+    def _refresh_design_rows(self) -> None:
+        from haemolynx.statistics.batch_comparison import PAIRED
+
+        paired = self.design.currentData() == PAIRED
+        self.subject_pattern.setEnabled(paired)
+        self.aggregate.setEnabled(paired)
+
+    def _conditions_changed(self) -> None:
+        """Each image's condition, again, as the phrases are typed."""
+        from dataclasses import replace
+
+        self._refresh_design_rows()
+        if self._filling or self.setup is None:
+            return
+        self.setup = replace(self.setup, conditions=self._conditions())
+        self._fill_table()
+        counts = self.setup.condition_counts()
+        problem = self.setup.conditions.problem()
+        self._say(problem or (f"Conditions: {counts}." if counts else ""))
+
+    def compare(self) -> None:
+        """Write the batch statistics from the images already run in the
+        output folder, by the conditions as they are now."""
+        from dataclasses import replace
+
+        from haemolynx.gui.batch_run import write_statistics
+
+        if self.setup is None and not self.match():
+            return
+        self.setup = replace(
+            self.setup, conditions=self._conditions(), exclude_sections=self._excluded_sections()
+        )
+        problem = self.setup.conditions.problem()
+        if problem:
+            self._say(problem)
+            return
+        written = write_statistics(
+            self.setup.output_root,
+            [match.stem for match in self.setup.selected()],
+            self.setup.conditions,
+            exclude_sections=self.setup.exclude_sections,
+        )
+        self._say(written.message if written is not None else "No image is ticked.")
+        self.refresh_comparison()
+
+    # -- the comparison --------------------------------------------------
+
+    def _comparison_path(self) -> Path | None:
+        from haemolynx.statistics.batch_comparison import COMPARISON_FILENAME
+
+        output = self.setup.output_root if self.setup is not None else self.fields["output"].text().strip()
+        return Path(output) / COMPARISON_FILENAME if output else None
+
+    def refresh_comparison(self) -> None:
+        """Show the output folder's comparison CSV, most significant first."""
+        from qtpy.QtWidgets import QTableWidgetItem
+
+        from haemolynx.gui.batch_run import comparison_table, comparison_tested
+
+        path = self._comparison_path()
+        header, rows = comparison_table(path.parent) if path is not None else ([], [])
+        self.comparison_table.clear()
+        self.comparison_table.setColumnCount(len(header))
+        self.comparison_table.setRowCount(len(rows))
+        self.comparison_table.setHorizontalHeaderLabels(header)
+        for row, cells in enumerate(rows):
+            for column, text in enumerate(cells):
+                item = QTableWidgetItem(text)
+                item.setToolTip(text)
+                self.comparison_table.setItem(row, column, item)
+        self.comparison_table.resizeColumnsToContents()
+        self.open_comparison_button.setEnabled(bool(rows))
+        self.comparison_note.setText(
+            f"{comparison_tested(header, rows)} of {len(rows)} statistics tested (the rest "
+            "have too few images, or one value everywhere), smallest q first, from "
+            f"{path}."
+            if rows
+            else "No comparison yet: set Condition A and B, with Statistics on, then run the "
+            "batch or press Compare statistics."
+        )
+
+    def open_comparison(self) -> None:
+        path = self._comparison_path()
+        if path is None or not path.is_file():
+            self._say("No comparison CSV yet.")
+            return
+        _open_in_system(path)
+
+    # -- matching --------------------------------------------------------
+
+    def _folders(self):
+        """The batch's folders as the window holds them: only those the
+        settings read (no segmented folder while ilastik segments, no mask
+        size or other file nothing reads)."""
+        from haemolynx.io.batch_matching import BatchFolders
+
+        sizes = self._sizes()
+        roles = self._roles()
+        from_raw = self._from_raw()
+        text = {key: self.fields[key].text().strip() for key, _label in self.FOLDER_ROWS}
+        return BatchFolders(
+            None if from_raw else text["segmented"],
+            raw=text["raw"] or None,
+            large=text["large"] if "large" in sizes and text["large"] else None,
+            small=text["small"] if "small" in sizes and text["small"] else None,
+            from_raw=from_raw,
+            **{key: text[key] or None for key in roles},
+        )
+
+    def match(self) -> bool:
+        """Match the folders' images; says why not in the window when it cannot."""
+        from dataclasses import replace
+
+        from haemolynx.gui.batch_run import (
+            BatchSetup,
+            read_summary_figures,
+            read_summary_statuses,
+            stems_done_before,
+        )
+        from haemolynx.io.batch_matching import match_batch
+
+        self._turn_on_readers()
+        self._refresh_mask_rows()
+        self._refresh_settings_line()
+        output = self.fields["output"].text().strip()
+        if not output:
+            self._say("Choose an output folder: each image's outputs go in a folder of its own in it.")
+            return False
+        try:
+            folders = self._folders()
+            matches = match_batch(folders, self._sizes(), self._roles())
+        except ValueError as error:
+            self._say(str(error))
+            return False
+        unticked = self.setup.unticked if self.setup is not None else frozenset()
+        setup = BatchSetup(
+            folders=folders,
+            output_root=Path(output),
+            matches=matches,
+            unticked=frozenset(unticked) & {match.stem for match in matches},
+            skip_done=self.skip_done.isChecked(),
+            conditions=self._conditions(),
+            exclude_sections=self._excluded_sections(),
+            done_before=stems_done_before(output, matches),
+            last_statuses=read_summary_statuses(output),
+            figures=read_summary_figures(output),
+        )
+        self.setup = setup
+        self._fill_table()
+        self.refresh_comparison()
+        attention = sum(not match.ok for match in matches)
+        counts = setup.condition_counts()
+        kind = "raw image(s), each segmented by ilastik," if folders.from_raw else "segmented image(s)"
+        self._say(
+            f"{len(matches)} {kind} in {folders.images}"
+            + (f"; {attention} need attention" if attention else "")
+            + (f"; {counts}." if counts else ".")
+            if matches
+            else f"No {'raw' if folders.from_raw else 'segmented'} images found in {folders.images}."
+        )
+        self.setup = replace(setup, skip_done=self.skip_done.isChecked())
+        return bool(matches)
+
+    def check(self) -> None:
+        from haemolynx.gui.batch_run import check_setup
+
+        # The images as matched, with any ties chosen; Match reads the folders again.
+        if self.setup is None and not self.match():
+            return
+        try:
+            self.setup, lines = check_setup(self._values(), self._schema, self.setup)
+        except Exception as error:  # noqa: BLE001 - reported in the window
+            self._say(f"Could not read the settings: {error}")
+            return
+        self._fill_table()
+        failing = [stem for stem, error in self.setup.checked.items() if error]
+        self._say(
+            f"Checks failed for {len(failing)} image(s)."
+            if failing
+            else f"All {len(self.setup.checked)} ticked image(s) passed their checks."
+        )
+        self._report(lines)
+
+    def _ready(self) -> bool:
+        """The batch as the window shows it, ready to hand over; says why not."""
+        from dataclasses import replace
+
+        if self.setup is None and not self.match():
+            return False
+        self.setup = replace(
+            self.setup,
+            skip_done=self.skip_done.isChecked(),
+            conditions=self._conditions(),
+            exclude_sections=self._excluded_sections(),
+        )
+        if not self.setup.selected():
+            self._say("No image is ticked.")
+            return False
+        if self.setup.conditions.problem():
+            self._say(self.setup.conditions.problem())
+            return False
+        return True
+
+    def use(self) -> None:
+        if not self._ready():
+            return
+        self._on_use(self.setup)
+        self.native.hide()
+
+    def run(self) -> None:
+        """Use this batch and run it now, keeping the window open to watch."""
+        if self._running or self._on_run is None or not self._ready():
+            return
+        self._on_run(self.setup)
+
+    def stop(self) -> None:
+        if self._on_stop is not None and self._on_stop():
+            self.stop_button.setEnabled(False)
+            self.stop_button.setText("Stopping after this image")
+
+    def leave(self) -> None:
+        self._on_leave()
+        self.native.hide()
+
+    def set_running(self, running: bool) -> None:
+        """A batch started (True) or ended: Run and Run again wait for it to
+        end, and Stop after this image is for it alone."""
+        self._running = running
+        self.run_button.setEnabled(not running)
+        self.stop_button.setEnabled(running)
+        self.stop_button.setText("Stop after this image")
+        self._refresh_row_actions()
+
+    def show_finished(self, setup, message: str | None = None) -> None:
+        """The batch as it ended: each image's status in the table, and its
+        comparison read again."""
+        self.setup = setup
+        self._fill_table()
+        self.refresh_comparison()
+        if message:
+            self._say(message)
+
+    def show_progress(self, setup, stem: str, text: str | None = None) -> None:
+        """The batch as it runs: each image's status so far, the row of *stem*
+        (the image that started or ended) in view, and *text*, the batch's
+        progress line."""
+        self.setup = setup
+        self._fill_table()
+        row = self._row_of(stem)
+        if row is not None:
+            self.table.scrollToItem(self.table.item(row, 1))
+        if text:
+            self._say(text)
+
+    def open_batch_folder(self) -> None:
+        output = self.setup.output_root if self.setup is not None else self.fields["output"].text().strip()
+        if not output or not Path(output).is_dir():
+            self._say("The output folder does not exist yet.")
+            return
+        _open_in_system(Path(output))
+
+    # -- one image -------------------------------------------------------
+
+    def _row_of(self, stem: str) -> int | None:
+        from qtpy.QtCore import Qt
+
+        for row in range(self.table.rowCount()):
+            item = self.table.item(row, 1)
+            if item is not None and item.data(Qt.UserRole) == stem:
+                return row
+        return None
+
+    def _match_at(self, row: int):
+        from qtpy.QtCore import Qt
+
+        item = self.table.item(row, 1)
+        if self.setup is None or item is None:
+            return None
+        stem = item.data(Qt.UserRole)
+        return next((match for match in self.setup.matches if match.stem == stem), None)
+
+    def _selected_match(self):
+        rows = {index.row() for index in self.table.selectionModel().selectedRows()}
+        return self._match_at(min(rows)) if rows else None
+
+    def _error_of(self, match) -> str:
+        """The selected image's error: its traceback from this batch, else
+        what its status says of a failure."""
+        details = self.setup.error_details.get(match.stem, "")
+        if details:
+            return details
+        row = self._row_of(match.stem)
+        status = self.table.item(row, self.table.columnCount() - 1) if row is not None else None
+        text = status.text() if status is not None else ""
+        return text if "failed" in text else ""
+
+    def _row_actions(self, match) -> dict[str, bool]:
+        """Which of the row's actions *match* allows now."""
+        from haemolynx.gui.batch_run import haemorun_path
+        from haemolynx.pipeline.batch import image_output_folder
+
+        if match is None or self.setup is None:
+            return {key: False for key in self.row_buttons}
+        return {
+            "open_run": haemorun_path(self.setup.output_root, match).is_file() and not self._running,
+            "open_folder": image_output_folder(self.setup.output_root, match).is_dir(),
+            "show_error": bool(self._error_of(match)),
+            "run_again": match.ok and not self._running and self._on_run_again is not None,
+        }
+
+    def _refresh_row_actions(self) -> None:
+        for key, allowed in self._row_actions(self._selected_match()).items():
+            self.row_buttons[key].setEnabled(allowed)
+
+    def row_action(self, which: str, match=None) -> None:
+        """Open run, Open folder, Show error or Run again, on *match* or the
+        selected image."""
+        from haemolynx.gui.batch_run import haemorun_path
+        from haemolynx.pipeline.batch import image_output_folder
+
+        match = match if match is not None else self._selected_match()
+        if match is None or not self._row_actions(match).get(which):
+            return
+        if which == "open_run":
+            self._on_open(haemorun_path(self.setup.output_root, match))
+        elif which == "open_folder":
+            _open_in_system(image_output_folder(self.setup.output_root, match))
+        elif which == "show_error":
+            self._report([f"{match.stem}:", self._error_of(match)])
+        elif which == "run_again":
+            self._on_run_again(self.setup, match.stem)
+
+    def _row_menu(self, position) -> None:
+        from qtpy.QtWidgets import QMenu
+
+        row = self.table.rowAt(position.y())
+        match = self._match_at(row) if row >= 0 else None
+        if match is None:
+            return
+        self.table.selectRow(row)
+        menu = QMenu(self.table)
+        allowed = self._row_actions(match)
+        for key, button in self.row_buttons.items():
+            action = menu.addAction(button.text())
+            action.setEnabled(allowed[key])
+            action.triggered.connect(lambda _checked=False, which=key: self.row_action(which, match))
+        menu.exec_(self.table.viewport().mapToGlobal(position))
+
+    def tick(self, which: str) -> None:
+        """Tick every image ("all"), none, or only those whose last outcome
+        (this batch's, else the folder's last summary's) is a failure."""
+        from dataclasses import replace
+
+        if self.setup is None:
+            return
+        stems = [match.stem for match in self.setup.matches]
+        if which == "all":
+            unticked = frozenset()
+        elif which == "none":
+            unticked = frozenset(stems)
+        else:
+
+            def failed(stem: str) -> bool:
+                status = self.setup.checked.get(stem) or self.setup.last_statuses.get(stem, "")
+                return status.startswith("failed")
+
+            unticked = frozenset(stem for stem in stems if not failed(stem))
+        self.setup = replace(self.setup, unticked=unticked)
+        self._fill_table()
+
+    # -- the table -------------------------------------------------------
+
+    def _say(self, text: str) -> None:
+        self.status.setText(text)
+
+    def _report(self, lines) -> None:
+        """Put *lines* in the report box, opening it if it is folded away:
+        to a third of the space or REPORT_LINES lines, never at the cost of
+        the table's VISIBLE_ROWS rows unless the screen is too short for both."""
+        self.details.setPlainText("\n".join(lines))
+        if lines and self.splitter.sizes()[1] == 0:
+            want = self._report_height(self.REPORT_LINES)
+            page = self._fit_rows(want)
+            total = sum(self.splitter.sizes()) or 400
+            if page is None:
+                report = total // 3
+            else:
+                report = max(
+                    min(max(want, total // 3), total - page),
+                    self._report_height(self.REPORT_MIN_LINES),
+                )
+            self.splitter.setSizes([total - report, report])
+
+    def _report_height(self, lines: int) -> int:
+        details = self.details
+        margin = int(details.document().documentMargin())
+        return details.fontMetrics().lineSpacing() * lines + 2 * (details.frameWidth() + margin)
+
+    def _fit_rows(self, report: int | None = None) -> int | None:
+        """Grow the window, as far as its screen allows, until the table shows
+        VISIBLE_ROWS rows whole above *report* pixels of report box (the
+        box's own height when None); a window made taller is never shrunk.
+        The height the table's half of the splitter needs for those rows, or
+        None while the window is hidden and nothing is laid out."""
+        from qtpy.QtCore import QEvent
+        from qtpy.QtWidgets import QApplication
+
+        if not self.native.isVisible():
+            return None
+        QApplication.sendPostedEvents(None, QEvent.Type.LayoutRequest)
+        sizes = self.splitter.sizes()
+        if report is None:
+            report = sizes[1]
+        rows = self.VISIBLE_ROWS * self.table.verticalHeader().defaultSectionSize()
+        page = sizes[0] + rows - self.table.viewport().height()
+        grow = page + report - sum(sizes)
+        screen = self.native.screen()
+        if grow > 0 and screen is not None:
+            available = screen.availableGeometry()
+            frame = self.native.frameGeometry()
+            border = frame.height() - self.native.height()
+            height = min(self.native.height() + grow, available.height() - border)
+            if height > self.native.height():
+                self.native.resize(self.native.width(), height)
+                top = min(frame.top(), available.bottom() + 1 - (height + border))
+                if top < frame.top():
+                    self.native.move(frame.left(), max(top, available.top()))
+                QApplication.sendPostedEvents(None, QEvent.Type.LayoutRequest)
+        return page
+
+    def _fill_table(self) -> None:
+        from qtpy.QtCore import Qt
+        from qtpy.QtWidgets import QComboBox, QTableWidgetItem
+
+        from haemolynx.gui.batch_run import TABLE_COLUMNS, table_rows, tied_cells
+
+        self._filling = True
+        self.table.setSortingEnabled(False)
+        try:
+            setup = self.setup
+            rows = table_rows(setup) if setup is not None else []
+            self.table.setColumnHidden(
+                TABLE_COLUMNS.index("Other files"),
+                setup is None or not any(match.files for match in setup.matches),
+            )
+            self.table.setRowCount(len(rows))
+            for row, cells in enumerate(rows):
+                match = setup.matches[row]
+                tick = QTableWidgetItem("")
+                tick.setFlags(tick.flags() | Qt.ItemIsUserCheckable)
+                tick.setCheckState(Qt.Checked if cells[0] == "yes" else Qt.Unchecked)
+                self.table.setItem(row, 0, tick)
+                for column, text in enumerate(cells[1:], start=1):
+                    item = QTableWidgetItem(text)
+                    item.setToolTip(text)
+                    self.table.setItem(row, column, item)
+                    self.table.removeCellWidget(row, column)
+                self.table.item(row, 1).setData(Qt.UserRole, match.stem)
+                for column, (role, tied) in tied_cells(match).items():
+                    choice = QComboBox()
+                    choice.addItems(["choose..."] + [path.name for path in tied])
+                    choice.setToolTip(
+                        "Several files match. Pick one; the same choice is made for every image"
+                    )
+                    choice.currentIndexChanged.connect(
+                        lambda index, m=match, r=role, t=tied: self._choose(m, r, t, index)
+                    )
+                    self.table.setCellWidget(row, column, choice)
+            self.table.resizeColumnsToContents()
+        finally:
+            self.table.setSortingEnabled(True)
+            self._filling = False
+        self._refresh_row_actions()
+
+    def _ticked(self, item) -> None:
+        from dataclasses import replace
+
+        from qtpy.QtCore import Qt
+
+        if self._filling or self.setup is None or item.column() != 0:
+            return
+        match = self._match_at(item.row())
+        if match is None:
+            return
+        unticked = set(self.setup.unticked)
+        if item.checkState() == Qt.Checked:
+            unticked.discard(match.stem)
+        else:
+            unticked.add(match.stem)
+        self.setup = replace(self.setup, unticked=frozenset(unticked))
+
+    def _choose(self, match, role, tied, index: int) -> None:
+        if index <= 0 or self.setup is None:
+            return
+        self.setup = self.setup.choose(role, tied[index - 1], match)
+        self._fill_table()
+
+    def _double_clicked(self, row: int, _column: int) -> None:
+        from haemolynx.gui.batch_run import haemorun_path
+
+        match = self._match_at(row)
+        if match is None or self._on_open is None:
+            return
+        path = haemorun_path(self.setup.output_root, match)
+        if path.is_file():
+            self._on_open(path)
+        else:
+            self._say(f"No .haemorun for this image yet ({path}).")
+
+
+#: The Post processing stage's tab, between Haemodynamics and Perturbations.
+#: Its page is its own (no setting rows), and it has no "Run from this stage": its
+#: Regenerate graph / Continue are that.
+POST_PROCESSING_TAB = post_processing_tab_title()
+
+#: How wide a box, in microns, zooming to a junction fits on screen.
+JUNCTION_ZOOM_BOX_UM = 60.0
+
+#: Status line of the post-processing tab's click-in-the-viewer edits.
+_POST_PROCESSING_EDIT_STATUS = {
+    "idle": (
+        "Not editing. Press Delete vessel, Add vessel, Add bridge or Remove bridge, "
+        "then click in the viewer. A click on a ring chooses its item in the list."
+    ),
+    "delete-armed": (
+        "Delete vessel: click a vessel in the viewer to remove it. Press Delete "
+        "vessel again to stop."
+    ),
+    "add-armed": (
+        "Add vessel: click a node to start from, or a point on a vessel where a "
+        "new node should form."
+    ),
+    "deleted": "Vessel deleted. Click another, or press Delete vessel again to stop.",
+    "bridge-armed": (
+        "Add bridge: click a vessel where the bridge should stop; a node forms "
+        "there. Then click the part of the vessel on the side that bridges."
+    ),
+    "unbridge-armed": (
+        "Remove bridge: click a bridge (drawn dashed) to make it a normal vessel. "
+        "Press Remove bridge again to stop."
+    ),
+}
+
+#: A press that moves further than this (screen pixels) before it is let go
+#: is a drag -- turning or panning the view -- not a click.
+_CLICK_DRAG_TOLERANCE_PX = 4.0
+
+
+def _canvas_size_px(viewer) -> tuple[float, ...]:
+    """The viewer's canvas in screen pixels, ``(height, width)``: napari keeps
+    ``viewer.canvas.size`` in step with the window. Empty when there is none."""
+    size = getattr(getattr(viewer, "canvas", None), "size", None)
+    return tuple(float(v) for v in size) if size is not None else ()
+
+
+def _zoom_viewer_to(viewer, position_zyx, box_um: float = JUNCTION_ZOOM_BOX_UM) -> None:
+    """Centre the camera on *position_zyx* (microns) and zoom to a *box_um* box.
+
+    In a 2D view the slider of every axis not on screen moves to the point
+    too, so the junction is in the slice being shown. The zoom comes from the
+    canvas size, not from resetting the view first: a reset redraws the whole
+    scene once more, on every click.
+    """
+    from haemolynx.gui.post_processing import camera_center_for, zoom_for_canvas
+
+    if viewer is None:
+        return
+    try:
+        offset = max(0, int(viewer.dims.ndim) - 3)
+        position = [0.0] * offset + [float(c) for c in np.asarray(position_zyx, dtype=float)[:3]]
+        displayed = tuple(int(axis) for axis in viewer.dims.displayed)
+        if int(viewer.dims.ndisplay) == 2:
+            for axis in range(offset, len(position)):
+                if axis not in displayed:
+                    viewer.dims.set_point(axis, position[axis])
+        camera = viewer_camera(viewer)
+        camera.center = camera_center_for(position, displayed)
+        zoom = zoom_for_canvas(_canvas_size_px(viewer), box_um)
+        if zoom is not None:
+            camera.zoom = zoom
+    except Exception:  # noqa: BLE001 - zooming is a convenience, never fatal
+        logger.exception("could not zoom the viewer to %s", position_zyx)
+
+
+def _zyx_to_camera_vector(viewer, vector_zyx) -> tuple[float, ...]:
+    """A ``(z, y, x)`` direction the way napari's 3D camera takes one: in the
+    order of the displayed dims, which a snap or a dims reorder permutes."""
+    offset = max(0, int(viewer.dims.ndim) - 3)
+    vector = np.asarray(vector_zyx, dtype=float)[-3:]
+    return tuple(float(vector[int(axis) - offset]) for axis in viewer.dims.displayed)
+
+
+def _camera_vector_to_zyx(viewer, vector) -> np.ndarray | None:
+    """napari's camera direction *vector* (displayed-dims order) as ``(z, y, x)``;
+    None when there is none or the view is not of the three spatial dims."""
+    if vector is None:
+        return None
+    offset = max(0, int(viewer.dims.ndim) - 3)
+    values = np.asarray(vector, dtype=float).ravel()
+    displayed = [int(axis) - offset for axis in viewer.dims.displayed]
+    if len(values) != 3 or sorted(displayed) != [0, 1, 2]:
+        return None
+    zyx = np.zeros(3)
+    for value, axis in zip(values, displayed):
+        zyx[axis] = value
+    return zyx
+
+
+#: The raw panel's two pictures of each plane, left to right, and their size.
+_RAW_PANEL_PICTURES = ("Segmentation", "Raw image")
+_RAW_PANEL_PIXELS = 170
+#: What the raw panel draws over its pictures: the chosen item as the viewer
+#: draws it (cyan), the other centrelines, the 5 um bar.
+_RAW_PANEL_ITEM_COLOUR = "#00e5ff"
+_RAW_PANEL_OTHER_COLOUR = "#9a9a9a"
+_RAW_PANEL_BAR_COLOUR = "#ff9f0a"
+
+
+def _raw_panel_pixmap(picture, view, pixels: int = _RAW_PANEL_PIXELS):
+    """One of the raw panel's pictures (``gui.raw_panel.PanelView``) as a
+    *pixels*-square QPixmap, with the chosen item, the other centrelines and
+    the 5 um bar drawn over it."""
+    from qtpy.QtCore import QPointF, Qt
+    from qtpy.QtGui import QColor, QImage, QPainter, QPen, QPixmap
+
+    grey = np.ascontiguousarray(np.clip(np.asarray(picture, dtype=float) * 255.0, 0, 255).astype(np.uint8))
+    rows, columns = grey.shape
+    image = QImage(grey.data, columns, rows, columns, QImage.Format_Grayscale8).copy()
+    pixmap = QPixmap.fromImage(image).scaled(pixels, pixels, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.Antialiasing)
+
+    def at(fraction) -> QPointF:
+        return QPointF(float(fraction[0]) * pixels, float(fraction[1]) * pixels)
+
+    painter.setPen(Qt.NoPen)
+    painter.setBrush(QColor(_RAW_PANEL_OTHER_COLOUR))
+    for fraction in view.other_dots:
+        painter.drawEllipse(at(fraction), 1.2, 1.2)
+    painter.setBrush(QColor(_RAW_PANEL_ITEM_COLOUR))
+    for fraction in view.item_dots:
+        painter.drawEllipse(at(fraction), 1.4, 1.4)
+    painter.setBrush(Qt.NoBrush)
+    painter.setPen(QPen(QColor(_RAW_PANEL_ITEM_COLOUR), 1.8))
+    for line in view.item_lines:
+        for a, b in zip(line[:-1], line[1:]):
+            painter.drawLine(at(a), at(b))
+    x0, x1, y = view.scale_bar
+    painter.setPen(QPen(QColor(_RAW_PANEL_BAR_COLOUR), 3.0))
+    painter.drawLine(at((x0, y)), at((x1, y)))
+    painter.end()
+    return pixmap
+
+
+def _post_processing_controls(
+    viewer, report, *, results, boundary_roles, regenerate, running, settings=None,
+    paused=None, paused_after=None, segmentation=None,
+):
+    """The "7. Post processing" page: fix the solved network by hand.
+
+    *results* returns the panel's current ResultLayers (or None), *boundary_roles*
+    the run's boundary node ids by role, *regenerate(graph, stop_after=...)*
+    runs the Post processing stage on an edited graph (and on to *stop_after*,
+    or the end) and says whether it started, *running* says whether a run is
+    under way and *settings* (optional) returns the panel's settings -- where
+    Add vessel finds the raw data file and the run's centreline smoothing.
+    *paused* says whether a run is paused here (Mid-run postprocessing), and
+    *paused_after* after which stage call (``"solve"``, or ``"post_process"``
+    after a Regenerate graph while paused). *segmentation(image, settings)*
+    returns the MaskSupport post processing keeps for the run's segmented
+    *image*, or None, so the review lists read the segmentation through the
+    same one rather than a second copy. Callables, because the panel builds
+    them before what they read.
+
+    Two buttons at the foot of the page take the edits on. Regenerate graph
+    brings them in line -- branch orders, lengths, diameters by the run's own
+    methods, thick-vessel bridges -- and reruns Haemodynamics on the edited
+    network (the pipeline's ``post_process`` stage); when a run is paused
+    here it stays paused, and after a finished run it goes on through
+    Perturbations to Export.
+    Continue, while paused, does the same and carries the run on.
+
+    The page edits one working copy of the graph: the junction table's
+    Delete and Split, and the edit box's click-in-the-viewer Delete vessel,
+    Add vessel, Add bridge (a first click cuts a vessel, a second on it makes
+    that side of the cut a zero-resistance bridge) and Remove bridge (the
+    bridge clicked becomes a vessel again). The Review dropdown chooses the one list Scan network makes
+    (None at first: a scan then neither lists, marks nor zooms to anything).
+    "4+ junctions" shows the junction list, its table and their buttons.
+    The others are :mod:`haemolynx.graph.network_review`'s checks, made off
+    the GUI thread when they read the segmented image, optionally only round
+    the view centre; each item's buttons act on it, and every decision is
+    kept with the run (``state.review_decisions``) and added to
+    ``{stem}_{kind}_review.csv``. A regenerate's change to the network is
+    reported on the scan after it. "Short loops"
+    lists the short loops still
+    to review, shortest first: picking one zooms to it and lists its sides,
+    and Delete this side or Keep decides it -- a decision kept with the run
+    (``state.loop_reviews``, saved in the ``.haemorun``) and added to
+    ``{stem}_loop_review.csv`` with the loop's measures. Add vessel traces a
+    vessel click by click: from a node, or a
+    point on a vessel (where a node will form), through each point clicked
+    after it -- every leg found by A* through the segmented mask or the raw
+    data, as the box's dropdown says, and drawn as soon as it is -- until a
+    click lands on another node or vessel, which finishes it. The graph rules
+    live in :mod:`haemolynx.graph.post_processing` and the colours and click
+    geometry in :mod:`haemolynx.gui.post_processing`; this is only the Qt glue.
+    Clicks only recolour the vessels layer already on screen (and its tubes);
+    the layer is rebuilt only after an edit changes the network.
+    """
+    from qtpy.QtWidgets import (
+        QAbstractItemView,
+        QCheckBox,
+        QComboBox,
+        QDoubleSpinBox,
+        QGridLayout,
+        QGroupBox,
+        QHBoxLayout,
+        QHeaderView,
+        QLabel,
+        QLineEdit,
+        QListWidget,
+        QPlainTextEdit,
+        QPushButton,
+        QTableWidget,
+        QTableWidgetItem,
+        QVBoxLayout,
+        QWidget,
+    )
+
+    from haemolynx.graph import (
+        DEFAULT_SPLIT_CONNECTOR_LENGTH_UM,
+        IntensityCostField,
+        VesselEnd,
+        add_traced_vessel,
+        boundary_roles_with_edits,
+        bridge_vessel_side,
+        connectivity_rows,
+        delete_loop_side,
+        delete_vessels,
+        edge_keys,
+        has_pending_edits,
+        mask_cost_field,
+        merge_junctions,
+        prune_disconnected_branches,
+        record_drawn_vessel_support,
+        set_resistance_node,
+        set_terminal_role,
+        set_vessel_diameter,
+        short_loops,
+        split_junction,
+        trace_path,
+        unbridge_vessel,
+        vessel_path,
+        write_connectivity_csv,
+    )
+    from haemolynx.graph.lumen_loops import LOOP_SEARCH_UM
+    from haemolynx.graph.thick_vessel_junctions import IS_ZERO_RESISTANCE
+    from haemolynx.graph.network_review import (
+        DEAD_ENDS,
+        LOST_SKELETON,
+        REVIEW_KINDS,
+        UNCOVERED_MASK,
+        flow_reference,
+        within,
+        z_range_around,
+    )
+    from haemolynx.gui.chrome_tooltips import POST_PROCESSING_TOOLTIPS as tips
+    from haemolynx.gui.post_processing import (
+        ACTION_DELETE_ITEM,
+        ACTION_DELETE_SELECTED,
+        ACTION_DRAW_ALONG,
+        ACTION_JOIN,
+        ACTION_JOIN_AHEAD,
+        ACTION_KEEP,
+        ACTION_LABELS,
+        ACTION_MAKE_INLET,
+        ACTION_MAKE_OUTLET,
+        ACTION_MARK_BLIND,
+        ACTION_MARK_OPEN,
+        ACTION_MERGE,
+        ACTION_REMOVE_TERMINAL,
+        ACTION_RESISTANCE_END,
+        ACTION_RESISTANCE_START,
+        ACTION_SET_DIAMETER,
+        ACTION_TRACE_ON,
+        ACTION_UNBRIDGE,
+        DEAD_END_SHOW,
+        DEAD_END_SHOW_ALL,
+        DEAD_END_SHOW_BY_LABEL,
+        REVIEW_JUNCTIONS,
+        action_applies,
+        REVIEW_LIST_BY_KEY,
+        REVIEW_LIST_BY_LABEL,
+        REVIEW_LISTS,
+        REVIEW_LOOPS,
+        REVIEW_MARKERS,
+        REVIEW_NONE,
+        REVIEW_REGION,
+        REVIEW_TABLE_COLUMNS,
+        ReviewDecision,
+        append_review_record,
+        dead_ends_shown,
+        find_review_items,
+        listed_interior_dead_ends,
+        remove_interior_dead_ends_label,
+        remove_listed_interior_dead_ends,
+        remove_listed_pieces,
+        remove_pieces_label,
+        removes_listed_interior_dead_ends,
+        removes_listed_pieces,
+        item_still_there,
+        items_to_review,
+        resistance_pair_shown,
+        network_summary,
+        review_box_um,
+        review_csv_path,
+        review_label,
+        review_marker_layer,
+        review_mask_support,
+        review_needs_missing,
+        review_record,
+        review_region_layer,
+        review_table_rows,
+        summary_change,
+        vessel_end_nearest,
+        view_centre_zyx,
+        ADDED_NODES,
+        BRIDGE_CUT,
+        NEEDS_SKELETON,
+        HIGH_DEGREE_JUNCTIONS,
+        JUNCTION_TABLE_COLUMNS,
+        KEPT,
+        LOOP_TABLE_COLUMNS,
+        NEW_VESSEL_POINTS,
+        NEW_VESSEL_TRACE,
+        POST_PROCESSING_LAYERS,
+        SIDE_DELETED,
+        TRACE_SOURCES,
+        TRACE_THROUGH_RAW,
+        LoopReview,
+        VesselTrace,
+        added_nodes_layer,
+        added_vessel_ids,
+        append_loop_review,
+        branch_id_of,
+        branch_ids_of,
+        bridge_cut_layer,
+        junction_under_click,
+        loop_branch_ids,
+        loop_label,
+        loop_review_csv_path,
+        loop_review_row,
+        loop_side_rows,
+        loop_view,
+        loops_to_review,
+        marker_colours,
+        marker_pick_um,
+        marker_under_click,
+        CONNECTIVITY_EXPORT_CHOICES,
+        INLET_TO_OUTLET_ONLY,
+        default_connectivity_csv_path,
+        describe_vessels,
+        junction_label,
+        junction_marker_layer,
+        junction_table_rows,
+        nearest_node,
+        parse_branch_ids,
+        point_on_path_under_click,
+        point_under_click,
+        scan_network,
+        segments_where,
+        status_colours,
+        trace_layers,
+        vessel_status,
+        withdraw_csv_row,
+    )
+    from haemolynx.gui.raw_panel import (
+        ACROSS_IT,
+        HALF_THICKNESS_UM,
+        OWN_PLANE,
+        centreline_points,
+        edge_lines,
+        panel_views,
+    )
+    from haemolynx.gui.results import FWHM_RAW
+
+    state = SimpleNamespace(
+        graph=None,
+        scan=None,
+        inlets=(),
+        outlets=(),
+        protected=frozenset(),
+        decisions={},
+        node=None,
+        vessels=[],
+        #: "idle", "delete" (click a vessel), "add" (trace a new one),
+        #: "bridge" (make part of a vessel a bridge) or "unbridge" (a bridge
+        #: a vessel again).
+        mode="idle",
+        #: Where Add bridge cuts the vessel clicked first, ``(edge, point)``,
+        #: until a second click picks the side that becomes the bridge.
+        bridge_cut=None,
+        #: The vessel Add vessel is tracing (a VesselTrace), until it finishes.
+        trace=None,
+        #: Nodes Add vessel formed on existing vessels, drawn until Regenerate.
+        added_nodes=[],
+        #: (image data, its cost field): made once, the first time a vessel
+        #: is traced through it, and reused while the image stays the same.
+        routing=None,
+        #: The same for the raw data, and why it could not be had, if not.
+        raw=None,
+        raw_problem=None,
+        #: The raw panel's other centrelines: ``(graph, its edge count,
+        #: their points)``, read again when the network changes.
+        raw_panel_centrelines=None,
+        #: The connectivity CSV exported last, for Open 2D connectivity map.
+        connectivity_csv=None,
+        #: A weak reference to the run's graph the last scan copied into
+        #: ``graph``: the tab's working graph is the run on screen's only while
+        #: the viewer still shows that graph or the working graph itself.
+        scanned_from=None,
+        #: Manual loop review: the short loops still to review (ShortLoops,
+        #: shortest first), the one picked and its row in the list.
+        loops=[],
+        loop=None,
+        loop_row=None,
+        #: Every decision made about a loop (LoopReviews), kept with the run:
+        #: a kept loop is not listed again.
+        loop_reviews=[],
+        #: Where the decisions were written last.
+        loop_csv=None,
+        #: The review list a scan made (a network_review kind, or None), its
+        #: items still to review, the one picked, its row, and its vessels
+        #: as the table lists them.
+        review_key=None,
+        review_items=[],
+        review_item=None,
+        review_row=None,
+        review_edges=[],
+        #: An edit since a mask list was made: its items may be out of date.
+        review_stale=False,
+        #: The decisions made since the list was made: an item acted on stays
+        #: off it until the next scan, though a list made again would find it.
+        review_acted=[],
+        #: The dead-end list's Show filter (a DEAD_END_SHOW key), and every
+        #: item the list holds before that filter.
+        dead_end_show=DEAD_END_SHOW_ALL,
+        review_unfiltered=[],
+        #: "Trace on from the tip"'s decision, written once the trace is
+        #: finished (dropped with the trace if it is not).
+        pending_review=None,
+        #: (centre, radius) the list was made round; radius 0 is everywhere.
+        review_scope=(None, 0.0),
+        #: A list being made off the GUI thread, and the worker making it.
+        scanning=False,
+        review_worker=None,
+        #: Every decision made about a review item (ReviewDecisions), kept
+        #: with the run: a kept item is not listed again.
+        review_decisions=[],
+        #: (segmented image, its MaskSupport): made once per image.
+        support=None,
+        #: The network as the run that was scanned solved it (a
+        #: NetworkSummary), and as it was before the regenerate under way,
+        #: for the next scan to say what changed.
+        summary_scanned=None,
+        summary_before=None,
+        #: Undo: the network the tab's edits began from (the run's own graph,
+        #: which the tab never edits), and each edit and decision since, oldest
+        #: first. Undo makes the network again from the first by every edit
+        #: but the last: copying the whole graph at every click took longer
+        #: than the click (0.8 s for a 57,000-vessel network).
+        undo_base=None,
+        undo=[],
+    )
+
+    page = QWidget()
+    page.setObjectName("haemolynx_post_processing")
+    layout = QVBoxLayout(page)
+    intro = QLabel(
+        "Fix the network by hand: vessels to add or delete, and the list "
+        "chosen under Review -- junctions where four or more vessels meet, "
+        "short loops, or one of the checks on the network -- to work through. "
+        "Edits stay in the viewer until Regenerate graph brings them in "
+        "line with the rest of the network and reruns Haemodynamics on it. With "
+        "Mid-run postprocessing on (1. Input), a run pauses here after "
+        "Haemodynamics and Continue runs Perturbations onwards."
+    )
+    intro.setWordWrap(True)
+    review_choice = QComboBox()
+    review_choice.setObjectName("haemolynx_post_processing_review_choice")
+    review_choice.addItems([entry.label for entry in REVIEW_LISTS])
+    review_choice.setToolTip(tips["review_choice"])
+    region = QDoubleSpinBox()
+    region.setObjectName("haemolynx_post_processing_region")
+    region.setRange(0.0, 100000.0)
+    region.setDecimals(0)
+    region.setSingleStep(50.0)
+    region.setSuffix(" µm")
+    region.setSpecialValueText("the whole network")
+    region.setToolTip(tips["region"])
+    scan_button = QPushButton("Scan network")
+    scan_button.setToolTip(tips["scan"])
+    status = QLabel("Not scanned yet.")
+    status.setWordWrap(True)
+    junction_list = QListWidget()
+    junction_list.setObjectName("haemolynx_post_processing_junctions")
+    junction_list.setToolTip(tips["junctions"])
+    junction_list.setMinimumHeight(80)
+    table = QTableWidget(0, len(JUNCTION_TABLE_COLUMNS))
+    table.setObjectName("haemolynx_post_processing_vessels")
+    table.setToolTip(tips["table"])
+    table.setHorizontalHeaderLabels(list(JUNCTION_TABLE_COLUMNS))
+    table.setSelectionBehavior(QAbstractItemView.SelectRows)
+    table.setSelectionMode(QAbstractItemView.ExtendedSelection)
+    table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+    table.verticalHeader().setVisible(False)
+    table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+    table.setMinimumHeight(120)
+    delete_button = QPushButton("Delete selected vessels")
+    delete_button.setToolTip(tips["delete"])
+    leave_button = QPushButton("Leave as is")
+    leave_button.setToolTip(tips["leave"])
+    split_button = QPushButton("Split into bifurcations with a vessel of")
+    split_button.setToolTip(tips["split"])
+    connector = QDoubleSpinBox()
+    connector.setToolTip(tips["connector"])
+    connector.setRange(0.5, 500.0)
+    connector.setDecimals(1)
+    connector.setSuffix(" µm")
+    connector.setValue(DEFAULT_SPLIT_CONNECTOR_LENGTH_UM)
+    edit_box = QGroupBox("Edit by clicking in the viewer")
+    edit_layout = QVBoxLayout(edit_box)
+    edit_status = QLabel(_POST_PROCESSING_EDIT_STATUS["idle"])
+    edit_status.setWordWrap(True)
+    # Checkable: a lit button shows what a click in the viewer does, and
+    # pressing it again stops (an Add vessel stops by itself when it finishes).
+    click_delete_button = QPushButton("Delete vessel")
+    click_delete_button.setToolTip(tips["click_delete"])
+    click_delete_button.setCheckable(True)
+    add_button = QPushButton("Add vessel")
+    add_button.setToolTip(tips["add"])
+    add_button.setCheckable(True)
+    trace_source = QComboBox()
+    trace_source.setObjectName("haemolynx_post_processing_trace_source")
+    trace_source.addItems(list(TRACE_SOURCES))
+    trace_source.setToolTip(tips["trace_source"])
+    add_bridge_button = QPushButton("Add bridge")
+    add_bridge_button.setObjectName("haemolynx_post_processing_add_bridge")
+    add_bridge_button.setToolTip(tips["add_bridge"])
+    add_bridge_button.setCheckable(True)
+    remove_bridge_button = QPushButton("Remove bridge")
+    remove_bridge_button.setObjectName("haemolynx_post_processing_remove_bridge")
+    remove_bridge_button.setToolTip(tips["remove_bridge"])
+    remove_bridge_button.setCheckable(True)
+    edit_layout.addWidget(edit_status)
+    edit_row = QHBoxLayout()
+    for button in (click_delete_button, add_button, trace_source):
+        edit_row.addWidget(button)
+    edit_layout.addLayout(edit_row)
+    edit_row = QHBoxLayout()
+    for button in (add_bridge_button, remove_bridge_button):
+        edit_row.addWidget(button)
+    edit_layout.addLayout(edit_row)
+    branch_ids = QLineEdit()
+    branch_ids.setObjectName("haemolynx_post_processing_branch_ids")
+    branch_ids.setPlaceholderText("branchIDs, e.g. 12, 40")
+    branch_ids.setToolTip(tips["branch_ids"])
+    delete_ids_button = QPushButton("Delete by branch ID")
+    delete_ids_button.setToolTip(tips["delete_ids"])
+    ids_row = QHBoxLayout()
+    ids_row.addWidget(branch_ids, 1)
+    ids_row.addWidget(delete_ids_button)
+    edit_layout.addLayout(ids_row)
+
+    prune_button = QPushButton("Prune disconnected and dead-end branches")
+    prune_button.setToolTip(tips["prune"])
+    # The connectivity export: built here, because it exports the network
+    # this page edits, but placed on the Export tab with the run's other files.
+    connectivity_box = QGroupBox("Network connectivity")
+    connectivity_box.setObjectName("haemolynx_connectivity_box")
+    connectivity_layout = QVBoxLayout(connectivity_box)
+    connectivity_choice = QComboBox()
+    connectivity_choice.setObjectName("haemolynx_connectivity_choice")
+    connectivity_choice.addItems(list(CONNECTIVITY_EXPORT_CHOICES))
+    connectivity_choice.setToolTip(tips["connectivity_choice"])
+    export_connectivity_button = QPushButton("Export connectivity CSV")
+    export_connectivity_button.setObjectName("haemolynx_post_processing_export_connectivity")
+    export_connectivity_button.setToolTip(tips["export_connectivity"])
+    connectivity_map_button = QPushButton("Open 2D connectivity map")
+    connectivity_map_button.setObjectName("haemolynx_connectivity_map")
+    connectivity_map_button.setToolTip(tips["connectivity_map"])
+    connectivity_status = QLabel("")
+    connectivity_status.setObjectName("haemolynx_connectivity_status")
+    connectivity_status.setWordWrap(True)
+    connectivity_layout.addWidget(connectivity_choice)
+    connectivity_row = QHBoxLayout()
+    connectivity_row.addWidget(export_connectivity_button)
+    connectivity_row.addWidget(connectivity_map_button)
+    connectivity_layout.addLayout(connectivity_row)
+    connectivity_layout.addWidget(connectivity_status)
+    regenerate_graph_button = QPushButton("Regenerate graph")
+    regenerate_graph_button.setObjectName("haemolynx_post_processing_regenerate_graph")
+    regenerate_graph_button.setToolTip(tips["regenerate_graph"])
+    continue_button = QPushButton("Continue")
+    continue_button.setObjectName("haemolynx_post_processing_continue")
+    continue_button.setToolTip(tips["continue"])
+    commit_status = QLabel("")
+    commit_status.setObjectName("haemolynx_post_processing_commit_status")
+    commit_status.setWordWrap(True)
+    log_box = QPlainTextEdit()
+    log_box.setObjectName("haemolynx_post_processing_log")
+    log_box.setReadOnly(True)
+    log_box.setToolTip(tips["log"])
+    log_box.setMinimumHeight(110)
+    undo_button = QPushButton("Undo last edit")
+    undo_button.setObjectName("haemolynx_post_processing_undo")
+    undo_button.setToolTip(tips["undo"])
+    undo_button.setEnabled(False)
+
+    # Everything the 4+ junction correction needs, nested under its checkbox
+    # and hidden until it is ticked.
+    junction_box = QWidget()
+    junction_box.setObjectName("haemolynx_post_processing_junction_box")
+    junction_layout = QVBoxLayout(junction_box)
+    junction_layout.setContentsMargins(ADVANCED_INDENT_PX, 0, 0, 0)
+    colours = QLabel(
+        "A magenta ring marks each junction, and its vessels are magenta too. "
+        "The chosen junction's ring and vessels are cyan and the vessels "
+        "selected in the table yellow. Click a ring in the viewer to choose it."
+    )
+    colours.setWordWrap(True)
+    junction_layout.addWidget(colours)
+    junction_layout.addWidget(QLabel("Junctions where 4+ vessels meet:"))
+    junction_layout.addWidget(junction_list)
+    junction_layout.addWidget(QLabel("Vessels at the selected junction:"))
+    junction_layout.addWidget(table)
+    row = QHBoxLayout()
+    row.addWidget(delete_button)
+    row.addWidget(leave_button)
+    junction_layout.addLayout(row)
+    row = QHBoxLayout()
+    row.addWidget(split_button)
+    row.addWidget(connector)
+    junction_layout.addLayout(row)
+    junction_box.setVisible(False)
+
+    # Short loops: the same shape -- a list, a table of the chosen loop's
+    # sides and the buttons deciding it -- shown while it is the list chosen.
+    loop_list = QListWidget()
+    loop_list.setObjectName("haemolynx_post_processing_loops")
+    loop_list.setToolTip(tips["loops"])
+    loop_list.setMinimumHeight(80)
+    loop_table = QTableWidget(0, len(LOOP_TABLE_COLUMNS))
+    loop_table.setObjectName("haemolynx_post_processing_loop_sides")
+    loop_table.setToolTip(tips["loop_table"])
+    loop_table.setHorizontalHeaderLabels(list(LOOP_TABLE_COLUMNS))
+    loop_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+    loop_table.setSelectionMode(QAbstractItemView.SingleSelection)
+    loop_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+    loop_table.verticalHeader().setVisible(False)
+    loop_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+    loop_table.setMinimumHeight(90)
+    loop_delete_button = QPushButton("Delete this side")
+    loop_delete_button.setToolTip(tips["loop_delete"])
+    loop_keep_button = QPushButton("Keep")
+    loop_keep_button.setToolTip(tips["loop_keep"])
+    loop_summary = QLabel("")
+    loop_summary.setObjectName("haemolynx_post_processing_loop_summary")
+    loop_summary.setWordWrap(True)
+    loop_box = QWidget()
+    loop_box.setObjectName("haemolynx_post_processing_loop_box")
+    loop_layout = QVBoxLayout(loop_box)
+    loop_layout.setContentsMargins(ADVANCED_INDENT_PX, 0, 0, 0)
+    loop_colours = QLabel(
+        "The chosen loop's vessels are cyan and the side selected in its table yellow."
+    )
+    loop_colours.setWordWrap(True)
+    loop_layout.addWidget(loop_colours)
+    loop_layout.addWidget(loop_summary)
+    loop_layout.addWidget(QLabel("Short loops, shortest first:"))
+    loop_layout.addWidget(loop_list)
+    loop_layout.addWidget(QLabel("Sides of the selected loop:"))
+    loop_layout.addWidget(loop_table)
+    row = QHBoxLayout()
+    row.addWidget(loop_delete_button)
+    row.addWidget(loop_keep_button)
+    loop_layout.addLayout(row)
+    loop_box.setVisible(False)
+
+    # Every other review list: its items, the chosen item's vessels, and the
+    # buttons its list offers (ReviewList.actions), the others hidden.
+    review_box = QWidget()
+    review_box.setObjectName("haemolynx_post_processing_review_box")
+    review_layout = QVBoxLayout(review_box)
+    review_layout.setContentsMargins(ADVANCED_INDENT_PX, 0, 0, 0)
+    review_colours = QLabel(
+        "A magenta ring marks each item, and its vessels are magenta too. The "
+        "chosen item's ring and vessels are cyan and the vessels selected in "
+        "its table yellow. Click a ring in the viewer to choose its item."
+    )
+    review_colours.setWordWrap(True)
+    review_summary = QLabel("")
+    review_summary.setObjectName("haemolynx_post_processing_review_summary")
+    review_summary.setWordWrap(True)
+    review_items = QListWidget()
+    review_items.setObjectName("haemolynx_post_processing_review_items")
+    review_items.setToolTip(tips["review_items"])
+    review_items.setMinimumHeight(80)
+    review_why = QLabel("")
+    review_why.setObjectName("haemolynx_post_processing_review_why")
+    review_why.setWordWrap(True)
+    review_table = QTableWidget(0, len(REVIEW_TABLE_COLUMNS))
+    review_table.setObjectName("haemolynx_post_processing_review_table")
+    review_table.setToolTip(tips["review_table"])
+    review_table.setHorizontalHeaderLabels(list(REVIEW_TABLE_COLUMNS))
+    review_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+    review_table.setSelectionMode(QAbstractItemView.ExtendedSelection)
+    review_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+    review_table.verticalHeader().setVisible(False)
+    review_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+    review_table.setMinimumHeight(90)
+    review_buttons = {}
+    for action, text in ACTION_LABELS.items():
+        button = QPushButton(text)
+        button.setObjectName(f"haemolynx_post_processing_review_{action}")
+        button.setToolTip(tips[f"review_{action}"])
+        review_buttons[action] = button
+    review_diameter = QDoubleSpinBox()
+    review_diameter.setObjectName("haemolynx_post_processing_review_diameter")
+    review_diameter.setToolTip(tips["review_diameter"])
+    review_diameter.setRange(0.1, 1000.0)
+    review_diameter.setDecimals(2)
+    review_diameter.setSuffix(" µm")
+    review_diameter.setValue(5.0)
+    # The dead-end list's own filter, and the button that acts on every piece
+    # with no junction it lists.
+    dead_end_show = QComboBox()
+    dead_end_show.setObjectName("haemolynx_post_processing_dead_end_show")
+    dead_end_show.setToolTip(tips["dead_end_show"])
+    dead_end_show.addItems([label for _key, label in DEAD_END_SHOW])
+    dead_end_show_row = QWidget()
+    dead_end_show_layout = QHBoxLayout(dead_end_show_row)
+    dead_end_show_layout.setContentsMargins(0, 0, 0, 0)
+    dead_end_show_layout.addWidget(QLabel("Show:"))
+    dead_end_show_layout.addWidget(dead_end_show, 1)
+    dead_end_show_row.setVisible(False)
+    remove_pieces_button = QPushButton(remove_pieces_label(0))
+    remove_pieces_button.setObjectName("haemolynx_post_processing_remove_pieces")
+    remove_pieces_button.setToolTip(tips["remove_pieces"])
+    remove_pieces_button.setVisible(False)
+    # And the one that acts on every interior dead end it lists.
+    remove_dead_ends_button = QPushButton(remove_interior_dead_ends_label(0))
+    remove_dead_ends_button.setObjectName("haemolynx_post_processing_remove_interior_dead_ends")
+    remove_dead_ends_button.setToolTip(tips["remove_interior_dead_ends"])
+    remove_dead_ends_button.setVisible(False)
+    review_layout.addWidget(review_colours)
+    review_layout.addWidget(review_summary)
+    review_layout.addWidget(dead_end_show_row)
+    review_layout.addWidget(review_items)
+    review_layout.addWidget(remove_pieces_button)
+    review_layout.addWidget(remove_dead_ends_button)
+    review_layout.addWidget(review_why)
+    review_layout.addWidget(QLabel("Vessels of the chosen item:"))
+    review_layout.addWidget(review_table)
+    row = QHBoxLayout()
+    for action in (ACTION_MERGE, ACTION_DELETE_SELECTED, ACTION_DELETE_ITEM, ACTION_TRACE_ON, ACTION_JOIN):
+        row.addWidget(review_buttons[action])
+    review_layout.addLayout(row)
+    row = QHBoxLayout()
+    for action in (ACTION_JOIN_AHEAD, ACTION_MARK_BLIND, ACTION_MARK_OPEN, ACTION_DRAW_ALONG):
+        row.addWidget(review_buttons[action])
+    review_layout.addLayout(row)
+    row = QHBoxLayout()
+    for action in (ACTION_MAKE_INLET, ACTION_MAKE_OUTLET, ACTION_REMOVE_TERMINAL):
+        row.addWidget(review_buttons[action])
+    review_layout.addLayout(row)
+    row = QHBoxLayout()
+    for action in (ACTION_RESISTANCE_START, ACTION_RESISTANCE_END):
+        row.addWidget(review_buttons[action])
+    review_layout.addLayout(row)
+    row = QHBoxLayout()
+    row.addWidget(review_buttons[ACTION_UNBRIDGE])
+    row.addWidget(review_buttons[ACTION_SET_DIAMETER])
+    row.addWidget(review_diameter)
+    row.addWidget(review_buttons[ACTION_KEEP])
+    review_layout.addLayout(row)
+    review_box.setVisible(False)
+
+    # The raw image at the chosen loop or review item (gui/raw_panel.py): the
+    # item in its own plane and across it, the segmentation beside the run's
+    # raw image, as the marked grids draw them. Off until ticked, since the
+    # raw image is read the first time it is shown.
+    raw_check = QCheckBox("Show the raw image at the chosen item")
+    raw_check.setObjectName("haemolynx_post_processing_raw_check")
+    raw_check.setToolTip(tips["raw_panel"])
+    raw_status = QLabel("")
+    raw_status.setObjectName("haemolynx_post_processing_raw_status")
+    raw_status.setWordWrap(True)
+    raw_grid = QWidget()
+    raw_grid.setObjectName("haemolynx_post_processing_raw_grid")
+    raw_grid_layout = QGridLayout(raw_grid)
+    raw_grid_layout.setContentsMargins(0, 0, 0, 0)
+    raw_pictures = {}
+    for column, name in enumerate(_RAW_PANEL_PICTURES):
+        raw_grid_layout.addWidget(QLabel(name), 0, column)
+    for plane_row, plane in enumerate((OWN_PLANE, ACROSS_IT)):
+        raw_grid_layout.addWidget(QLabel(f"{plane}:"), 1 + 2 * plane_row, 0, 1, len(_RAW_PANEL_PICTURES))
+        for column, name in enumerate(_RAW_PANEL_PICTURES):
+            picture = QLabel()
+            picture.setObjectName(f"haemolynx_post_processing_raw_picture_{plane_row}_{column}")
+            picture.setFixedSize(_RAW_PANEL_PIXELS, _RAW_PANEL_PIXELS)
+            picture.setToolTip(tips["raw_picture"])
+            raw_grid_layout.addWidget(picture, 2 + 2 * plane_row, column)
+            raw_pictures[(plane, name)] = picture
+    raw_grid.setVisible(False)
+    raw_box = QWidget()
+    raw_box.setObjectName("haemolynx_post_processing_raw_box")
+    raw_layout = QVBoxLayout(raw_box)
+    raw_layout.setContentsMargins(ADVANCED_INDENT_PX, 0, 0, 0)
+    raw_layout.addWidget(raw_check)
+    raw_layout.addWidget(raw_status)
+    raw_layout.addWidget(raw_grid)
+    raw_box.setVisible(False)
+
+    layout.addWidget(intro)
+    row = QHBoxLayout()
+    row.addWidget(QLabel("Review:"))
+    row.addWidget(review_choice, 1)
+    layout.addLayout(row)
+    row = QHBoxLayout()
+    row.addWidget(QLabel("Only within"))
+    row.addWidget(region, 1)
+    row.addWidget(QLabel("of the view centre"))
+    layout.addLayout(row)
+    layout.addWidget(scan_button)
+    layout.addWidget(status)
+    layout.addWidget(junction_box)
+    layout.addWidget(loop_box)
+    layout.addWidget(review_box)
+    layout.addWidget(raw_box)
+    layout.addWidget(edit_box)
+    layout.addWidget(prune_button)
+    layout.addWidget(QLabel("What was changed:"))
+    layout.addWidget(log_box)
+    layout.addWidget(undo_button)
+    layout.addWidget(regenerate_graph_button)
+    layout.addWidget(commit_status)
+    layout.addWidget(continue_button)
+
+    def layer(name):
+        return viewer.layers[name] if viewer is not None and name in viewer.layers else None
+
+    def log_edit(text: str) -> None:
+        """One line in the tab's own log, and the same in napari's run log."""
+        log_box.appendPlainText(f"{datetime.now():%H:%M:%S}  {text}")
+        logger.info("Post processing: %s", text)
+
+    # --- Undo -------------------------------------------------------------------
+
+    def undo_state():
+        """What an edit or a decision changes besides the network, as it is now."""
+        return SimpleNamespace(
+            added_nodes=list(state.added_nodes),
+            inlets=state.inlets,
+            outlets=state.outlets,
+            protected=state.protected,
+            decisions=dict(state.decisions),
+            review_decisions=len(state.review_decisions),
+            loop_reviews=len(state.loop_reviews),
+            # The list these items are of: put back only while it is still the one made.
+            review_key=state.review_key,
+            review_acted=list(state.review_acted),
+            review_unfiltered=list(state.review_unfiltered),
+        )
+
+    def remember(what: str, replay=None, before=None) -> None:
+        """Keep *what* was just done for Undo. *replay* makes the same edit on
+        a graph and returns the graph after it; None for a decision, which
+        leaves the network as it was. *before* is :func:`undo_state` from
+        before it, by default now: a decision is remembered before it is kept."""
+        state.undo.append(SimpleNamespace(
+            what=what, replay=replay, before=undo_state() if before is None else before, written=[],
+        ))
+        refresh_buttons()
+
+    def edit(what: str, change, *args, **kwargs):
+        """``change(graph, *args, **kwargs)`` on the working graph, kept for
+        Undo; returns what *change* returns. A refused edit raises before it
+        changes anything, and leaves nothing to undo."""
+        before = undo_state()
+        result = change(state.graph, *args, **kwargs)
+
+        def replay(graph):
+            change(graph, *args, **kwargs)
+            return graph
+
+        remember(what, replay, before)
+        return result
+
+    def note_written(path, row) -> None:
+        """A decisions CSV row the latest edit or decision wrote, for Undo to take back."""
+        if state.undo:
+            state.undo[-1].written.append((path, row))
+
+    def forget_undo(base=None) -> None:
+        """Nothing to undo: the network edits begin from is *base*."""
+        state.undo = []
+        state.undo_base = base
+
+    def on_undo() -> None:
+        """Take the last edit or decision back: the network made again from
+        the one the edits began from, by every edit before it, and the tab's
+        lists, its decisions and the rows it wrote to a decisions CSV as they
+        were before it."""
+        if not state.undo or state.graph is None:
+            return
+        if running():
+            report.value = ALREADY_RUNNING
+            return
+        entry = state.undo[-1]
+        graph = state.graph
+        if entry.replay is not None:
+            try:
+                graph = copy_graph(state.undo_base)
+                if graph is None:
+                    raise ValueError("the network the edits began from could not be copied")
+                for earlier in state.undo[:-1]:
+                    if earlier.replay is not None:
+                        graph = earlier.replay(graph)
+            except Exception as error:  # noqa: BLE001 - the network stays as it is
+                logger.exception("Post processing: could not undo %s", entry.what)
+                status.setText(f"Could not undo {entry.what}: {error}")
+                return
+        state.undo.pop()
+        stop_editing()
+        before = entry.before
+        state.graph = graph
+        state.added_nodes = before.added_nodes
+        state.inlets, state.outlets, state.protected = before.inlets, before.outlets, before.protected
+        state.decisions = before.decisions
+        del state.review_decisions[before.review_decisions:]
+        del state.loop_reviews[before.loop_reviews:]
+        if before.review_key is not None and before.review_key == state.review_key:
+            state.review_acted = before.review_acted
+            state.review_unfiltered = before.review_unfiltered
+        else:
+            # Another list has been made since: its items stay its own, less
+            # the decisions taken back.
+            state.review_acted = [d for d in state.review_acted if d in state.review_decisions]
+        withdrawn = 0
+        for path, row in reversed(entry.written):
+            try:
+                withdrawn += withdraw_csv_row(path, row)
+            except OSError:
+                logger.exception("Post processing: could not take a row back out of %s", path)
+        text = f"Undid: {entry.what}" + (
+            f"; {withdrawn} row(s) taken back out of the decisions CSV" if withdrawn else ""
+        )
+        log_edit(text)
+        rescan(prefer=state.node)
+        status.setText(f"{text}.")
+        report.value = f"Post processing: {text}."
+
+    def selected_rows() -> list[int]:
+        rows = sorted({index.row() for index in table.selectionModel().selectedRows()})
+        return [r for r in rows if r < len(state.vessels)]
+
+    def selected_side() -> int | None:
+        """The side of the chosen loop selected in its table (from 0), if any."""
+        if state.loop is None:
+            return None
+        rows = sorted({index.row() for index in loop_table.selectionModel().selectedRows()})
+        return rows[0] if rows and rows[0] < len(state.loop.sides) else None
+
+    def selected_review_rows() -> list[int]:
+        rows = sorted({index.row() for index in review_table.selectionModel().selectedRows()})
+        return [r for r in rows if r < len(state.review_edges)]
+
+    def listed_ids() -> list[int]:
+        """branchIDs of the vessels the rings shown mark: those of every
+        review item listed, or every vessel at a 4+ junction."""
+        if state.graph is None:
+            return []
+        if state.review_items:
+            return branch_ids_of(state.graph, (edge for item in state.review_items for edge in item.edges))
+        if junctions_on() and state.scan is not None:
+            return branch_ids_of(state.graph, state.graph.edges(list(state.scan.junctions), keys=True))
+        return []
+
+    def recolour_rings() -> None:
+        """The chosen item's (or junction's) ring cyan, the others magenta:
+        in place, no rebuild."""
+        rings = layer(REVIEW_MARKERS)
+        if rings is not None and len(rings.data) == len(state.review_items):
+            chosen = next((i for i, item in enumerate(state.review_items) if item is state.review_item), None)
+            rings.border_color = marker_colours(len(rings.data), chosen)
+        rings = layer(HIGH_DEGREE_JUNCTIONS)
+        if rings is not None:
+            ids = list(_layer_features(rings).get("node_id", ()))
+            if len(ids) == len(rings.data):
+                chosen = next((i for i, node in enumerate(ids) if state.node is not None and node == state.node), None)
+                rings.border_color = marker_colours(len(rings.data), chosen)
+
+    def recolour() -> None:
+        """Colour the vessels layer (and its tubes) by status, and the rings
+        by which is chosen: cheap, no rebuild."""
+        recolour_rings()
+        vessels = layer(VESSELS)
+        if vessels is None or state.scan is None:
+            return
+        features = _layer_features(vessels)
+        if "edge_index" not in features or len(features["edge_index"]) != len(vessels.data):
+            return
+        chosen = selected_rows()
+        in_loop: list[int] = []
+        loop_side: list[int] = []
+        if state.loop is not None and state.graph is not None:
+            in_loop = loop_branch_ids(state.graph, state.loop)
+            side = selected_side()
+            if side is not None:
+                loop_side = loop_branch_ids(state.graph, state.loop, side)
+        in_item: list[int] = []
+        item_selected: list[int] = []
+        if state.review_item is not None and state.graph is not None:
+            ids = [branch_id_of(state.graph, edge) for edge in state.review_edges]
+            in_item = [i for i in ids if i is not None]
+            item_selected = [ids[r] for r in selected_review_rows() if ids[r] is not None]
+        labels = vessel_status(
+            np.asarray(features["edge_index"]),
+            at_junction=[v.branch_id for v in state.vessels] + in_loop + in_item,
+            selected=[state.vessels[r].branch_id for r in chosen] + loop_side + item_selected,
+            added=added_vessel_ids(state.graph) if state.graph is not None else (),
+            listed=listed_ids(),
+        )
+        vessels.edge_color = status_colours(labels)
+        vessels.visible = True
+        # A vessels layer drawn as tubes retints them on its own edge_color
+        # event; retinting again rebuilds the whole mesh a second time.
+        if not getattr(vessels, "_haemolynx_follow_tubes", False):
+            _maybe_retint_vessel_tubes(vessels)
+
+    def review_entry():
+        """The Review dropdown's entry (a ReviewList)."""
+        return REVIEW_LIST_BY_LABEL.get(review_choice.currentText(), REVIEW_LISTS[0])
+
+    def junctions_on() -> bool:
+        return review_entry().key == REVIEW_JUNCTIONS
+
+    def draw_markers() -> None:
+        if viewer is None or state.graph is None or state.scan is None:
+            return
+        drop_layer(HIGH_DEGREE_JUNCTIONS)
+        if not junctions_on():
+            return
+        spec = junction_marker_layer(state.graph, state.scan)
+        if len(spec.data):
+            viewer.add_points(
+                spec.data,
+                name=spec.name,
+                features=dict(spec.features),
+                metadata={OURS: {"post_processing": True}},
+                **spec.options,
+            )
+            # napari selects a layer it has just added, and a click goes to the
+            # selected layer: hand selection back to the vessels.
+            vessels = layer(VESSELS)
+            if vessels is not None:
+                viewer.layers.selection.active = vessels
+            attach_click_callbacks()
+
+    def drop_layer(name: str) -> None:
+        existing = layer(name)
+        if existing is not None:
+            _process_pending_qt_events()
+            viewer.layers.remove(existing)
+            _process_pending_qt_events()
+
+    def put_layers(specs, names) -> None:
+        """Show the tab's own layers *specs*; any of *names* not among them goes.
+
+        Each is replaced whole: they are a handful of points or segments. napari
+        selects a layer it has just added, and a click goes to the selected
+        layer, so selection is handed back to the vessels afterwards.
+        """
+        if viewer is None:
+            return
+        wanted = {spec.name: spec for spec in specs if len(spec.data)}
+        for name in names:
+            drop_layer(name)
+            spec = wanted.get(name)
+            if spec is None:
+                continue
+            add = viewer.add_points if spec.kind == "points" else viewer.add_vectors
+            add(
+                spec.data,
+                name=spec.name,
+                features=dict(spec.features),
+                metadata={OURS: {"post_processing": True}},
+                **spec.options,
+            )
+        vessels = layer(VESSELS)
+        if vessels is not None and wanted:
+            viewer.layers.selection.active = vessels
+        attach_click_callbacks()
+
+    def draw_trace() -> None:
+        """Draw the vessel being traced as it stands, or take it away."""
+        specs = trace_layers(state.trace) if state.trace is not None else ()
+        put_layers(specs, (NEW_VESSEL_TRACE, NEW_VESSEL_POINTS))
+
+    def draw_added_nodes() -> None:
+        if state.graph is None:
+            return
+        state.added_nodes = [n for n in state.added_nodes if n in state.graph]
+        put_layers([added_nodes_layer(state.graph, state.added_nodes)], (ADDED_NODES,))
+
+    def draw_bridge_cut() -> None:
+        """Mark where Add bridge will cut, or take the mark away."""
+        put_layers([bridge_cut_layer(state.bridge_cut[1] if state.bridge_cut else None)], (BRIDGE_CUT,))
+
+    def redraw_network() -> None:
+        """Rebuild the vessels/nodes layers from the edited graph, then recolour."""
+        current = results()
+        if viewer is None or current is None or state.graph is None:
+            return
+        _apply_layers(viewer, current.layers_for_graph(state.graph))
+        attach_click_callbacks()
+        recolour()
+
+    def show_vessels(node) -> None:
+        state.node = node
+        table.blockSignals(True)
+        table.clearSelection()
+        if node is None or state.graph is None or node not in state.graph:
+            state.vessels = []
+            table.setRowCount(0)
+        else:
+            state.vessels, rows = junction_table_rows(state.graph, node)
+            table.setRowCount(len(rows))
+            for r, cells in enumerate(rows):
+                for c, text in enumerate(cells):
+                    table.setItem(r, c, QTableWidgetItem(text))
+        table.blockSignals(False)
+
+    def fill_list(prefer=None) -> None:
+        junctions = list(state.scan.junctions)
+        status.setText(state.scan.summary)
+        junction_list.blockSignals(True)
+        junction_list.clear()
+        for node in junctions:
+            junction_list.addItem(junction_label(state.graph, node, state.decisions.get(node)))
+        junction_list.blockSignals(False)
+        if not junctions_on():
+            # Picking one would list its vessels, turn them cyan and zoom to it.
+            show_vessels(None)
+            recolour()
+            return
+        if prefer not in junctions:
+            prefer = next((n for n in junctions if n not in state.decisions), None)
+            if prefer is None and junctions:
+                prefer = junctions[0]
+        if prefer is None:
+            show_vessels(None)
+            recolour()
+            return
+        junction_list.setCurrentRow(junctions.index(prefer))
+
+    def rescan(prefer=None, *, redraw: bool = True) -> None:
+        state.scan = scan_network(state.graph)
+        state.decisions = {n: d for n, d in state.decisions.items() if n in state.scan.junctions}
+        show_vessels(None)
+        if redraw:
+            redraw_network()
+        draw_markers()
+        draw_added_nodes()
+        fill_list(prefer)
+        rescan_loops(state.loop_row)
+        refresh_review(state.review_row)
+        refresh_buttons()
+
+    def is_paused() -> bool:
+        return bool(paused()) if paused is not None else False
+
+    def refresh_buttons() -> None:
+        """Which of the two hand-over buttons applies now, and why."""
+        busy = bool(running())
+        held = is_paused()
+        pending = has_pending_edits(state.graph)
+        regenerate_graph_button.setEnabled(not busy and pending)
+        continue_button.setEnabled(not busy and held)
+        undo_button.setEnabled(not busy and bool(state.undo) and state.graph is not None)
+        # Paused after the first solve, or after a Regenerate graph while paused.
+        where = (
+            "Paused after Regenerate graph"
+            if paused_after is not None and paused_after() == POST_PROCESS
+            else "Paused after Haemodynamics"
+        )
+        if busy:
+            text = "A run is going."
+        elif held and pending:
+            text = (
+                f"{where}, with edits not yet in the model. "
+                "Regenerate graph brings them in line, reruns Haemodynamics and "
+                "stays paused; Continue does the same and runs Perturbations onwards."
+            )
+        elif held:
+            text = f"{where}. Continue runs Perturbations onwards."
+        elif pending:
+            text = (
+                "Edits not yet in the model. Regenerate graph brings them in line, "
+                "reruns Haemodynamics on them and runs Perturbations through Export."
+            )
+        else:
+            text = ""
+        commit_status.setText(text)
+
+    def on_review_choice_changed(_text) -> None:
+        """Show the chosen list's page and put the others' away. Nothing is
+        listed until Scan network makes the list: a mask check can take a
+        while on a large stack."""
+        key = review_entry().key
+        junction_box.setVisible(key == REVIEW_JUNCTIONS)
+        loop_box.setVisible(key == REVIEW_LOOPS)
+        review_box.setVisible(key in REVIEW_KINDS)
+        refresh_raw_panel()
+        if state.scan is None:
+            return
+        drop_layer(HIGH_DEGREE_JUNCTIONS)
+        junction_list.clear()
+        show_vessels(None)
+        state.loops, state.loop, state.loop_row = [], None, None
+        loop_list.clear()
+        show_loop(None)
+        loop_summary.setText("")
+        clear_review()
+        recolour()
+        if key == REVIEW_NONE:
+            status.setText(f"{state.scan.vessel_count} vessels; no list chosen.")
+        else:
+            status.setText(f"Press Scan network to list {review_entry().label.lower()}.")
+
+    def on_junction_changed(row: int, zoom: bool = True) -> None:
+        if state.scan is None or not 0 <= row < len(state.scan.junctions):
+            return
+        node = state.scan.junctions[row]
+        show_vessels(node)
+        recolour()
+        pos = state.graph.nodes[node].get("pos")
+        if zoom and pos is not None:
+            _zoom_viewer_to(viewer, pos)
+
+    def on_scan() -> None:
+        if running():
+            report.value = ALREADY_RUNNING
+            return
+        current = results()
+        graph = getattr(current, "_graph", None) if current is not None else None
+        if graph is None:
+            status.setText("Nothing to check yet: run the pipeline through at least Boundaries first.")
+            return
+        # The inlets and outlets the Terminal nodes list set since the last
+        # regenerate are kept on the graph, until the stage takes them.
+        roles = boundary_roles_with_edits(boundary_roles(), graph)
+        state.inlets = tuple(roles.get("inlet", ()) or ())
+        state.outlets = tuple(roles.get("outlet", ()) or ())
+        state.protected = protected_nodes(roles, graph)
+        stop_editing()
+        # The viewer shows this tab's own edited graph until Regenerate: its
+        # added nodes are still the ones to mark. Any other graph is a new run.
+        new_run = graph is not state.graph
+        if new_run:
+            state.added_nodes = []
+            # The tab edits a copy: the run's own graph is what Undo starts from.
+            forget_undo(graph)
+        state.raw = state.raw_problem = None
+        state.graph = copy_graph(graph)
+        state.scanned_from = weakref.ref(graph) if state.graph is not None else None
+        state.decisions = {}
+        clear_review()
+        # The vessels on screen are already this graph: recolour, no rebuild.
+        rescan(redraw=False)
+        attach_click_callbacks()
+        text = scanned_text()
+        status.setText(text)
+        if new_run:
+            # A new run's network as solved: what the next regenerate is
+            # measured against, and -- after one -- what it changed.
+            summary = network_summary(graph, state.inlets, state.outlets)
+            if state.summary_before is not None:
+                change = summary_change(state.summary_before, summary)
+                if change:
+                    text = f"{text} Since Regenerate: {change}."
+                    status.setText(text)
+                state.summary_before = None
+            state.summary_scanned = summary
+        report.value = f"Post processing: {text}"
+        log_edit(f"Scanned the network: {text}")
+        scan_review()
+
+    def scanned_text() -> str:
+        """What the status line says a scan found, for the list chosen."""
+        key = review_entry().key
+        if key == REVIEW_LOOPS:
+            return loop_counts()
+        if key == REVIEW_JUNCTIONS:
+            return state.scan.summary
+        return f"{state.scan.vessel_count} vessels" + ("; no list chosen." if key == REVIEW_NONE else ".")
+
+    def graph_on_screen():
+        """The network the viewer shows: the tab's working graph while it is
+        still the run on screen's (the viewer draws it, or the run's graph the
+        last scan copied it from), else the run's own graph. A run since the
+        scan -- a Run from this stage that threw the edits away included --
+        replaces both, and its network is the one on screen."""
+        current = results()
+        shown = getattr(current, "_graph", None) if current is not None else None
+        if state.graph is not None and shown is not None:
+            scanned_from = state.scanned_from() if state.scanned_from is not None else None
+            if shown is state.graph or shown is scanned_from:
+                return state.graph
+        return shown
+
+    def export_connectivity(path, *, only_inlet_to_outlet: bool | None = None) -> Path | None:
+        """Write how the network on screen is connected to *path*.
+
+        *only_inlet_to_outlet* defaults to the box's dropdown.
+        """
+        if only_inlet_to_outlet is None:
+            only_inlet_to_outlet = connectivity_choice.currentText() == INLET_TO_OUTLET_ONLY
+        graph = graph_on_screen()
+        if graph is None:
+            connectivity_status.setText(
+                "Nothing to export yet: run the pipeline through at least Boundaries first."
+            )
+            return None
+        # The inlets and outlets the Terminal nodes list set since the last
+        # regenerate are kept on the graph, as the scan reads them.
+        roles = boundary_roles_with_edits(boundary_roles(), graph)
+        inlets = tuple(roles.get("inlet", ()) or ())
+        outlets = tuple(roles.get("outlet", ()) or ())
+        if only_inlet_to_outlet and not (
+            any(n in graph for n in inlets) and any(n in graph for n in outlets)
+        ):
+            connectivity_status.setText(
+                "This network has no inlet or no outlet yet, so there is nothing "
+                "between them to export; run through Boundaries first."
+            )
+            return None
+        rows = connectivity_rows(
+            graph,
+            inlets,
+            outlets,
+            arteriole_boundary_nodes=tuple(roles.get("arteriole_boundary", ()) or ()),
+            venule_boundary_nodes=tuple(roles.get("venule_boundary", ()) or ()),
+            only_inlet_to_outlet=only_inlet_to_outlet,
+        )
+        try:
+            written = write_connectivity_csv(path, rows)
+        except OSError as error:
+            connectivity_status.setText(f"Could not write {path}: {error.strerror or error}")
+            return None
+        state.connectivity_csv = written
+        which = (
+            f"{len(rows)} of {graph.number_of_edges()} vessels (inlet to outlet only)"
+            if only_inlet_to_outlet else f"all {len(rows)} vessels"
+        )
+        stale = (
+            " Edits not yet regenerated: their lengths and diameters may be out of date."
+            if has_pending_edits(graph) else ""
+        )
+        log_edit(f"Exported the connectivity of {which} to {written}")
+        connectivity_status.setText(f"Wrote the connectivity of {which} to {written}.{stale}")
+        report.value = f"Connectivity CSV written to {written}."
+        return written
+
+    def pick_connectivity_csv() -> str | None:
+        """Ask for a connectivity CSV to draw, starting at the one exported last."""
+        from qtpy.QtWidgets import QFileDialog
+
+        start = str(state.connectivity_csv) if state.connectivity_csv is not None else ""
+        source, _filter = QFileDialog.getOpenFileName(
+            _dialog_parent(viewer), "Draw a connectivity CSV", start, "CSV (*.csv)"
+        )
+        return source or None
+
+    def open_connectivity_map(csv_path=None) -> Path | None:
+        """Draw a connectivity CSV as a 2D map and open it in the browser.
+
+        *csv_path* defaults to the CSV exported last, else one asked for.
+        """
+        import tempfile
+        import webbrowser
+
+        from haemolynx.visualization.connectivity_map import write_connectivity_map
+
+        source = csv_path or state.connectivity_csv or pick_connectivity_csv()
+        if not source:
+            return None
+        source = Path(source)
+        try:
+            try:
+                html_path = write_connectivity_map(source)
+            except OSError:
+                html_path = write_connectivity_map(
+                    source, Path(tempfile.gettempdir()) / f"{source.stem}_map.html"
+                )
+        except Exception as error:  # noqa: BLE001 - a bad file must not crash the panel
+            connectivity_status.setText(f"Could not draw {source}: {error}")
+            return None
+        webbrowser.open(html_path.resolve().as_uri())
+        connectivity_status.setText(f"Opened the 2D connectivity map: {html_path}")
+        return html_path
+
+    def on_export_connectivity() -> None:
+        from qtpy.QtWidgets import QFileDialog
+
+        values = None
+        if settings is not None:
+            try:
+                values = settings()
+            except Exception:  # noqa: BLE001 - only the suggested filename depends on it
+                values = None
+        path, _filter = QFileDialog.getSaveFileName(
+            _dialog_parent(viewer),
+            "Export network connectivity",
+            default_connectivity_csv_path(values),
+            "CSV (*.csv)",
+        )
+        if path:
+            export_connectivity(path)
+
+    def on_connectivity_map() -> None:
+        # Always asked, so any CSV can be drawn: the one exported last is
+        # where the picker starts.
+        source = pick_connectivity_csv()
+        if source:
+            open_connectivity_map(source)
+
+    def on_delete() -> None:
+        if state.graph is None or state.node is None:
+            status.setText("Scan the network and pick a junction first.")
+            return
+        rows = selected_rows()
+        if not rows:
+            status.setText("Select one or more vessels in the table first.")
+            return
+        node = state.node
+        edges = [state.vessels[r].edge for r in rows]
+        degree = state.graph.degree(node)
+        described = describe_vessels(state.graph, edges)
+        try:
+            edit(f"deleting {described} at node {node}", delete_vessels, edges, protected=state.protected)
+        except ValueError as error:
+            status.setText(str(error))
+            log_edit(f"Node {node} ({degree} vessels): delete refused, {error}")
+            return
+        log_edit(f"Node {node} ({degree} vessels): deleted {described}")
+        drop_trace_after_edit()
+        rescan(prefer=node)
+        report.value = (
+            f"Post processing: deleted {len(edges)} vessel(s) at node {node}. "
+            f"{state.scan.summary}"
+        )
+
+    def on_split() -> None:
+        if state.graph is None or state.node is None:
+            status.setText("Scan the network and pick a junction first.")
+            return
+        node = state.node
+        degree = state.graph.degree(node)
+        length = float(connector.value())
+        try:
+            new_nodes = edit(
+                f"splitting node {node}",
+                split_junction,
+                node,
+                connector_length_um=length,
+                reserved_ids=state.protected,
+            )
+        except ValueError as error:
+            status.setText(str(error))
+            log_edit(f"Node {node} ({degree} vessels): split refused, {error}")
+            return
+        moves = []
+        for new in new_nodes:
+            ends = sorted((o for _, o in state.graph.edges(new) if o != node), key=str)
+            moves.append(
+                f"vessels to node(s) {', '.join(map(str, ends))} moved to new node {new}"
+            )
+        diameter = next(
+            (d.get("diameter_um") for n in new_nodes[:1] for d in state.graph.get_edge_data(node, n).values()),
+            None,
+        )
+        size = f", {diameter:.3g} µm across" if diameter is not None else ""
+        log_edit(
+            f"Node {node} ({degree} vessels): split into bifurcations with "
+            f"{length:g} µm connector(s){size}; {'; '.join(moves)}"
+        )
+        drop_trace_after_edit()
+        rescan()
+        report.value = (
+            f"Post processing: split node {node} into bifurcations "
+            f"(new node(s) {', '.join(str(n) for n in new_nodes)}). {state.scan.summary}"
+        )
+
+    def on_prune() -> None:
+        if state.graph is None:
+            status.setText("Scan the network first.")
+            return
+        if not state.inlets or not state.outlets:
+            status.setText(
+                "This run has no inlet or no outlet nodes, so there is nothing to "
+                "tell a connected branch from a disconnected one."
+            )
+            return
+        inlets, outlets, protected = state.inlets, state.outlets, state.protected
+        before = undo_state()
+        try:
+            pruned, stats = prune_disconnected_branches(
+                state.graph, inlets, outlets, protected=protected
+            )
+        except ValueError as error:
+            status.setText(str(error))
+            log_edit(f"Prune refused, {error}")
+            return
+        if not stats["removed_vessels"] and not stats["removed_nodes"]:
+            status.setText("Nothing to prune: every vessel is on an inlet-to-outlet path.")
+            log_edit("Prune: nothing to remove, every vessel is on an inlet-to-outlet path")
+            return
+        remember(
+            "the prune",
+            lambda graph: prune_disconnected_branches(graph, inlets, outlets, protected=protected)[0],
+            before,
+        )
+        removed = stats["removed_edges"]
+        lost = stats["removed_boundary_nodes"]
+        what = (
+            f"{stats['removed_components']} disconnected piece(s), "
+            f"{stats['removed_dead_end_vessels']} dead-end vessel(s) and "
+            f"{stats['removed_loop_vessels']} on loops off one node, "
+            f"{stats['removed_vessels']} vessel(s)"
+        )
+        if stats["junctions_merged"]:
+            what += (
+                f", and joined the two vessels left at {stats['junctions_merged']} "
+                "junction(s) into one"
+            )
+        log_edit(
+            f"Pruned {what}: {describe_vessels(state.graph, removed)}"
+            + (f"; boundary node(s) removed with them: {', '.join(map(str, lost))}" if lost else "")
+        )
+        stop_editing()
+        state.graph = pruned
+        state.inlets = tuple(n for n in state.inlets if n in pruned)
+        state.outlets = tuple(n for n in state.outlets if n in pruned)
+        rescan(prefer=state.node)
+        dropped = stats["removed_boundary_nodes"]
+        extra = (
+            f", with boundary node(s) {', '.join(str(n) for n in dropped)}" if dropped else ""
+        )
+        report.value = f"Post processing: pruned {what}{extra}. {state.scan.summary}"
+
+    def on_leave() -> None:
+        if state.scan is None or state.node is None:
+            return
+        remember(f"leaving node {state.node} as it is")
+        state.decisions[state.node] = "left as is"
+        log_edit(f"Node {state.node} ({state.graph.degree(state.node)} vessels): left as is")
+        fill_list()
+
+    # --- Manual loop review ------------------------------------------------------
+
+    def loops_on() -> bool:
+        return review_entry().key == REVIEW_LOOPS
+
+    def show_loop(loop) -> None:
+        """List *loop*'s sides in the table (None: an empty table)."""
+        state.loop = loop
+        loop_table.blockSignals(True)
+        loop_table.clearSelection()
+        if loop is None or state.graph is None:
+            loop_table.setRowCount(0)
+        else:
+            rows = loop_side_rows(state.graph, loop)
+            loop_table.setRowCount(len(rows))
+            for r, cells in enumerate(rows):
+                for c, text in enumerate(cells):
+                    loop_table.setItem(r, c, QTableWidgetItem(text))
+        loop_table.blockSignals(False)
+        refresh_raw_panel()
+
+    def loop_counts() -> str:
+        kept = sum(review.decision == KEPT for review in state.loop_reviews)
+        opened = len(state.loop_reviews) - kept
+        return (
+            f"{len(state.loops)} short loop(s) to review, up to "
+            f"{LOOP_SEARCH_UM:g} µm round; {kept} kept and {opened} opened so far."
+        )
+
+    def rescan_loops(prefer_row=None) -> None:
+        """List the loops still to review and pick the one at *prefer_row* --
+        where the loop just decided was, so the next one comes up -- or the first."""
+        state.loops = []
+        if state.graph is not None and loops_on():
+            state.loops = loops_to_review(
+                short_loops(state.graph, cut_at=state.protected), state.loop_reviews
+            )
+        loop_list.blockSignals(True)
+        loop_list.clear()
+        for number, loop in enumerate(state.loops, start=1):
+            loop_list.addItem(loop_label(loop, number))
+        loop_list.blockSignals(False)
+        loop_summary.setText(loop_counts() if state.graph is not None else "")
+        if not state.loops:
+            state.loop_row = None
+            show_loop(None)
+            recolour()
+            return
+        row = prefer_row if isinstance(prefer_row, int) else 0
+        loop_list.setCurrentRow(min(max(row, 0), len(state.loops) - 1))
+
+    def zoom_to_loop(loop) -> None:
+        """Centre the camera on *loop* and fit it; in 3D, look along its normal."""
+        if viewer is None:
+            return
+        camera = viewer_camera(viewer)
+        three_d = int(viewer.dims.ndisplay) == 3
+        towards = up = None
+        if three_d:
+            towards = _camera_vector_to_zyx(viewer, getattr(camera, "view_direction", None))
+            up = _camera_vector_to_zyx(viewer, getattr(camera, "up_direction", None))
+        view = loop_view(loop.points_um, towards=towards, up=up)
+        if three_d:
+            try:
+                camera.set_view_direction(
+                    _zyx_to_camera_vector(viewer, view.view_direction),
+                    _zyx_to_camera_vector(viewer, view.up_direction),
+                )
+            except Exception:  # noqa: BLE001 - turning is a convenience, never fatal
+                logger.exception("could not turn the viewer to the loop's plane")
+        _zoom_viewer_to(viewer, view.centre_um, box_um=view.box_um)
+
+    def on_loop_changed(row: int) -> None:
+        if not 0 <= row < len(state.loops):
+            return
+        state.loop_row = row
+        loop = state.loops[row]
+        show_loop(loop)
+        recolour()
+        zoom_to_loop(loop)
+
+    def loop_review_record(loop, review):
+        """The CSV row for *review*, measured on the network as it stands now
+        -- before a deletion takes the side away -- with the segmented mask in
+        the viewer when there is one."""
+        image = layer(IMAGE)
+        local = read_settings() or {}
+        gap = local.get("bridge_max_background_gap_um")
+        try:
+            return loop_review_row(
+                state.graph, loop, review,
+                mask=None if image is None else image.data,
+                voxel_size_zyx=voxel_size(),
+                max_background_gap_um=None if gap is None else float(gap),
+            )
+        except Exception:  # noqa: BLE001 - the decision still counts without the mask's measures
+            logger.exception("could not measure the loop against the segmented mask")
+            return loop_review_row(state.graph, loop, review, voxel_size_zyx=voxel_size())
+
+    def write_loop_review(row) -> str:
+        """Add *row* to the run's loop review CSV; what to say about it."""
+        path = loop_review_csv_path(read_settings())
+        if path is None:
+            return (
+                " Not written to a CSV: the output folder (1. Input) is not set "
+                "or is not on this machine yet."
+            )
+        try:
+            state.loop_csv = append_loop_review(path, [row])
+        except OSError as error:
+            return f" Could not write {path}: {error.strerror or error}."
+        note_written(state.loop_csv, row)
+        return f" Recorded in {state.loop_csv.name}."
+
+    def now() -> str:
+        return datetime.now().isoformat(timespec="seconds")
+
+    def on_loop_keep() -> None:
+        if state.graph is None or state.loop is None:
+            loop_summary.setText("Scan the network and pick a loop first.")
+            return
+        loop = state.loop
+        described = describe_vessels(state.graph, loop.edges)
+        review = LoopReview.of(loop, KEPT, time=now())
+        remember(f"keeping the {loop.length_um:.3g} µm loop")
+        written = write_loop_review(loop_review_record(loop, review))
+        state.loop_reviews.append(review)
+        log_edit(f"Loop of {loop.length_um:.3g} µm round kept: {described}")
+        rescan_loops(state.loop_row)
+        loop_summary.setText(loop_counts() + written)
+
+    def on_loop_delete() -> None:
+        if state.graph is None or state.loop is None:
+            loop_summary.setText("Scan the network and pick a loop first.")
+            return
+        side = selected_side()
+        if side is None:
+            loop_summary.setText("Select the side to delete in the table first.")
+            return
+        loop = state.loop
+        described = describe_vessels(state.graph, loop.sides[side])
+        review = LoopReview.of(loop, SIDE_DELETED, side=side + 1, time=now())
+        record = loop_review_record(loop, review)
+        try:
+            edit(
+                f"deleting side {side + 1} of the {loop.length_um:.3g} µm loop",
+                delete_loop_side, loop, side, protected=state.protected,
+            )
+        except ValueError as error:
+            loop_summary.setText(str(error))
+            log_edit(f"Loop of {loop.length_um:.3g} µm round: delete of side {side + 1} refused, {error}")
+            return
+        written = write_loop_review(record)
+        state.loop_reviews.append(review)
+        log_edit(f"Loop of {loop.length_um:.3g} µm round opened: deleted side {side + 1}, {described}")
+        drop_trace_after_edit()
+        rescan(prefer=state.node)
+        loop_summary.setText(loop_counts() + written)
+        report.value = (
+            f"Post processing: deleted side {side + 1} of a {loop.length_um:.3g} µm loop. "
+            f"{len(state.loops)} short loop(s) left to review."
+        )
+
+    # --- the other review lists -----------------------------------------------------
+
+    def view_centre():
+        """The point mid-screen, physical (z, y, x); None without a viewer."""
+        if viewer is None:
+            return None
+        try:
+            offset = max(0, int(viewer.dims.ndim) - 3)
+            displayed = [int(axis) - offset for axis in viewer.dims.displayed]
+            point = [float(p) for p in list(viewer.dims.point)[offset:]]
+            return view_centre_zyx(viewer_camera(viewer).center, displayed, point)
+        except Exception:  # noqa: BLE001 - the whole network is listed instead
+            logger.exception("could not read the view centre")
+            return None
+
+    def region_scope():
+        """``(centre, radius)`` a scan is limited to; radius 0 is everywhere."""
+        radius = float(region.value())
+        return (view_centre() if radius > 0 else None), radius
+
+    def segmented_image():
+        image = layer(IMAGE)
+        return None if image is None else image.data
+
+    def run_skeleton():
+        """The run's skeleton, whole: the skeleton layer's own boolean
+        volume, not one a Z-depth window has clipped."""
+        skeleton_layer = layer(SKELETON)
+        if skeleton_layer is None:
+            return None
+        data, _thick = _thick_thin_skeleton_state(skeleton_layer)
+        if data is None:
+            data = _z_window_cache(skeleton_layer)
+        if data is None:
+            data = skeleton_layer.data
+        return np.asarray(data, dtype=bool)
+
+    def image_extent(image, voxel):
+        if image is None:
+            return None
+        return tuple((np.asarray(np.shape(image)[-3:], dtype=float) - 1.0) * np.asarray(voxel, dtype=float))
+
+    def review_roles() -> dict:
+        """The boundary nodes by role, as the network on the tab has them."""
+        roles = dict(boundary_roles() or {})
+        roles["inlet"], roles["outlet"] = state.inlets, state.outlets
+        graph = state.graph
+        return {
+            role: tuple(n for n in (nodes or ()) if graph is not None and n in graph)
+            for role, nodes in roles.items()
+        }
+
+    def protected_nodes(roles, graph=None) -> frozenset:
+        """The nodes no edit may delete or merge away: every boundary node,
+        and the two the two-point resistance is found between."""
+        graph = state.graph if graph is None else graph
+        pair = None if graph is None else resistance_pair_shown(
+            graph, roles.get("inlet", ()) or (), roles.get("outlet", ()) or ()
+        )
+        return frozenset(n for nodes in roles.values() for n in (nodes or ())) | frozenset(pair or ())
+
+    def review_counts() -> str:
+        entry = REVIEW_LIST_BY_KEY.get(state.review_key) or review_entry()
+        mine = [d for d in state.review_decisions if d.kind == entry.key]
+        kept = sum(d.decision == KEPT for d in mine)
+        text = (
+            f"{len(state.review_items)} item(s) in {entry.label.lower()} to review; "
+            f"{kept} kept and {len(mine) - kept} acted on so far."
+        )
+        if state.review_stale:
+            text += " The network was edited since this list was made: Scan network again to bring it up to date."
+        return text
+
+    def refresh_review_buttons() -> None:
+        """Show the chosen list's buttons only, usable once an item is picked."""
+        entry = review_entry()
+        for action, button in review_buttons.items():
+            button.setVisible(action in entry.actions)
+            button.setEnabled(
+                state.review_item is not None and not state.scanning
+                and action_applies(state.review_item, action)
+            )
+        review_diameter.setVisible(ACTION_SET_DIAMETER in entry.actions)
+        dead_end_show_row.setVisible(entry.key == DEAD_ENDS)
+        removes = entry.key == state.review_key and removes_listed_pieces(state.review_key, state.dead_end_show)
+        remove_pieces_button.setVisible(removes)
+        remove_pieces_button.setText(remove_pieces_label(len(state.review_items)))
+        remove_pieces_button.setEnabled(removes and bool(state.review_items) and not state.scanning)
+        removes = entry.key == state.review_key and removes_listed_interior_dead_ends(
+            state.review_key, state.dead_end_show
+        )
+        interior = len(listed_interior_dead_ends(state.review_items)) if removes else 0
+        remove_dead_ends_button.setVisible(removes)
+        remove_dead_ends_button.setText(remove_interior_dead_ends_label(interior))
+        remove_dead_ends_button.setEnabled(bool(interior) and not state.scanning)
+        scan_button.setEnabled(not state.scanning)
+
+    def shown(items) -> list:
+        """The items the list shows: the dead ends of the kind Show picks,
+        every item of any other list."""
+        return dead_ends_shown(items, state.dead_end_show) if state.review_key == DEAD_ENDS else list(items)
+
+    def show_review_item(item) -> None:
+        """List *item*'s vessels in the table (None: an empty table)."""
+        state.review_item = item
+        review_table.blockSignals(True)
+        review_table.clearSelection()
+        if item is None or state.graph is None:
+            state.review_edges = []
+            review_table.setRowCount(0)
+            review_why.setText("")
+        else:
+            state.review_edges, rows = review_table_rows(
+                state.graph, item, flow_reference=flow_reference(state.graph, state.inlets)
+            )
+            review_table.setRowCount(len(rows))
+            for r, cells in enumerate(rows):
+                for c, text in enumerate(cells):
+                    review_table.setItem(r, c, QTableWidgetItem(text))
+            review_why.setText(item.why)
+            widths = [state.graph.edges[e].get("diameter_um") for e in state.review_edges]
+            suggested = (item.measures or {}).get("edt_diameter_um") or next(
+                (float(w) for w in widths if w), None
+            )
+            if suggested:
+                review_diameter.setValue(float(suggested))
+        review_table.blockSignals(False)
+        region_layer = (
+            [review_region_layer(item)] if item is not None and item.kind in (UNCOVERED_MASK, LOST_SKELETON) else []
+        )
+        put_layers(region_layer, (REVIEW_REGION,))
+        refresh_review_buttons()
+        refresh_raw_panel()
+
+    def fill_review(prefer_row=None) -> None:
+        """List the review items and pick the one at *prefer_row* -- where the
+        item just decided was, so the next one comes up -- or the first."""
+        review_items.blockSignals(True)
+        review_items.clear()
+        for number, item in enumerate(state.review_items, start=1):
+            review_items.addItem(review_label(item, number))
+        review_items.blockSignals(False)
+        review_summary.setText(review_counts() if state.review_key else "")
+        put_layers([review_marker_layer(state.review_items)] if state.review_items else [], (REVIEW_MARKERS,))
+        if not state.review_items:
+            state.review_row = None
+            show_review_item(None)
+            recolour()
+            return
+        row = prefer_row if isinstance(prefer_row, int) else 0
+        review_items.setCurrentRow(min(max(row, 0), len(state.review_items) - 1))
+
+    def clear_review() -> None:
+        """Forget the list made last, and take its markers away."""
+        state.review_key = None
+        state.review_items, state.review_item, state.review_row, state.review_edges = [], None, None, []
+        state.review_unfiltered = []
+        state.review_stale = False
+        state.review_acted = []
+        review_items.blockSignals(True)
+        review_items.clear()
+        review_items.blockSignals(False)
+        review_summary.setText("")
+        show_review_item(None)
+        put_layers((), (REVIEW_MARKERS, REVIEW_REGION))
+
+    def on_review_item_changed(row: int, zoom: bool = True) -> None:
+        if not 0 <= row < len(state.review_items):
+            return
+        state.review_row = row
+        item = state.review_items[row]
+        show_review_item(item)
+        recolour()
+        if zoom:
+            _zoom_viewer_to(viewer, item.centre_um, box_um=review_box_um(item))
+
+    def make_review(key, graph, *, image, roles, values, scope, voxel, support, skeleton=None):
+        """The items of list *key* on *graph*, and the MaskSupport used (made
+        here when *support* is None and the list reads the mask). Touches no
+        widget, so a mask list can run off the GUI thread."""
+        uses_mask = REVIEW_LIST_BY_KEY[key].uses_mask
+        centre, radius = scope
+        z_range = None
+        if uses_mask:
+            if support is None:
+                support = kept_support(image, values) or review_mask_support(image, voxel, values)
+            z_range = z_range_around(centre, radius, voxel, int(np.shape(image)[-3]))
+        items = find_review_items(
+            key, graph, support=support if uses_mask else None, roles=roles, settings=values,
+            extent_um=image_extent(image, voxel), z_range=z_range, skeleton=skeleton,
+        )
+        return within(items, centre, radius), support
+
+    def finish_review(key, items, image=None, support=None) -> None:
+        """A list was made: show it, unless the tab has moved on since."""
+        state.scanning = False
+        if support is not None and image is not None:
+            state.support = (image, support)
+        entry = REVIEW_LIST_BY_KEY[key]
+        if review_entry().key != key or state.graph is None:
+            refresh_review_buttons()
+            return
+        state.review_key = key
+        state.review_unfiltered = items_to_review(
+            [item for item in items if item_still_there(state.graph, item)], state.review_decisions
+        )
+        state.review_items = shown(state.review_unfiltered)
+        state.review_stale = False
+        state.review_acted = []
+        fill_review()
+        status.setText(review_counts())
+        report.value = f"Post processing: {review_counts()}"
+        log_edit(f"Listed {entry.label.lower()}: {len(state.review_items)} item(s)")
+        refresh_review_buttons()
+
+    def scan_review() -> None:
+        """Make the review list chosen -- off the GUI thread when it reads
+        the segmented image, which can take a while on a large stack."""
+        entry = review_entry()
+        if entry.key not in REVIEW_KINDS or state.graph is None:
+            return
+        image = segmented_image()
+        skeleton = run_skeleton() if NEEDS_SKELETON in entry.needs else None
+        roles = review_roles()
+        missing = review_needs_missing(
+            entry, state.graph, has_mask=image is not None,
+            inlets=roles.get("inlet", ()), outlets=roles.get("outlet", ()),
+            has_skeleton=skeleton is not None,
+        )
+        if missing:
+            text = f"{entry.label} needs {missing}, which this run does not have."
+            review_summary.setText(text)
+            status.setText(text)
+            return
+        values = read_settings() or {}
+        voxel = voxel_size()
+        state.review_scope = region_scope()
+        cached = state.support[1] if state.support is not None and state.support[0] is image else None
+        options = dict(image=image, roles=roles, values=values, scope=state.review_scope, voxel=voxel, support=cached,
+                       skeleton=skeleton)
+        if not entry.uses_mask:
+            items, _support = make_review(entry.key, state.graph, **options)
+            finish_review(entry.key, items)
+            return
+        from napari.qt.threading import thread_worker
+
+        graph = copy_graph(state.graph)
+        state.scanning = True
+        refresh_review_buttons()
+        status.setText(f"Scanning the network for {entry.label.lower()}...")
+
+        @thread_worker
+        def work():
+            return make_review(entry.key, graph, **options)
+
+        def failed(error) -> None:
+            state.scanning = False
+            refresh_review_buttons()
+            status.setText(f"Could not list {entry.label.lower()}: {error}")
+            logger.error("could not list %s: %s", entry.label, error)
+
+        worker = work()
+        worker.returned.connect(lambda result: finish_review(entry.key, result[0], image, result[1]))
+        worker.errored.connect(failed)
+        state.review_worker = worker
+        worker.start()
+
+    def refresh_review(prefer_row=None) -> None:
+        """After an edit: a list that does not read the mask is made again; a
+        mask list loses what the edit took away and says it may be out of
+        date. Either way an item acted on stays off it until the next scan."""
+        if state.review_key is None or state.graph is None or state.scanning:
+            return
+        entry = REVIEW_LIST_BY_KEY[state.review_key]
+        if entry.uses_mask:
+            items = [item for item in state.review_unfiltered if item_still_there(state.graph, item)]
+            state.review_stale = True
+        else:
+            image = segmented_image()
+            items, _support = make_review(
+                entry.key, state.graph, image=image, roles=review_roles(), values=read_settings() or {},
+                scope=state.review_scope, voxel=voxel_size(), support=None,
+            )
+            items = items_to_review(items, state.review_decisions)
+        state.review_unfiltered = [item for item in items if not any(d.matches(item) for d in state.review_acted)]
+        state.review_items = shown(state.review_unfiltered)
+        fill_review(prefer_row)
+
+    def on_dead_end_show_changed(text: str) -> None:
+        """Show the dead ends of another kind: the list the scan made, less
+        what was decided or taken away since."""
+        state.dead_end_show = DEAD_END_SHOW_BY_LABEL.get(text, DEAD_END_SHOW_ALL)
+        if state.review_key == DEAD_ENDS and state.graph is not None:
+            state.review_items = shown(
+                item for item in state.review_unfiltered
+                if item_still_there(state.graph, item) and not any(d.matches(item) for d in state.review_acted)
+            )
+            fill_review()
+        refresh_review_buttons()
+
+    def record_for(item, decision: str):
+        """The decision about *item* and its CSV row, read before the edit
+        it records changes the network."""
+        review = ReviewDecision.of(item, decision, time=now())
+        return review, review_record(state.graph, item, review, voxel_size_zyx=voxel_size())
+
+    def keep_record(review, row) -> str:
+        """Keep *review* with the run and add *row* to its list's CSV; what to say about it."""
+        state.review_decisions.append(review)
+        state.review_acted = [*state.review_acted, review]
+        path = review_csv_path(read_settings(), review.kind)
+        if path is None:
+            return (
+                " Not written to a CSV: the output folder (1. Input) is not set "
+                "or is not on this machine yet."
+            )
+        try:
+            written = append_review_record(path, row)
+        except OSError as error:
+            return f" Could not write {path}: {error.strerror or error}."
+        note_written(written, row)
+        return f" Recorded in {written.name}."
+
+    def chosen_item():
+        if state.graph is None or state.review_item is None:
+            review_summary.setText("Scan the network and pick an item first.")
+            return None
+        return state.review_item
+
+    def after_review_edit(text: str, written: str) -> None:
+        drop_trace_after_edit()
+        rescan(prefer=state.node)
+        review_summary.setText(review_counts() + written)
+        report.value = f"Post processing: {text}. {review_counts()}"
+
+    def on_review_keep() -> None:
+        item = chosen_item()
+        if item is None:
+            return
+        remember(f"keeping {item.why}")
+        written = keep_record(*record_for(item, KEPT))
+        log_edit(f"Kept: {item.why}")
+        state.review_items = [i for i in state.review_items if i is not item]
+        fill_review(state.review_row)
+        review_summary.setText(review_counts() + written)
+
+    def on_review_delete(selected_only: bool) -> None:
+        item = chosen_item()
+        if item is None:
+            return
+        if selected_only:
+            rows = selected_review_rows()
+            if not rows:
+                review_summary.setText("Select one or more vessels in the table first.")
+                return
+            edges = [state.review_edges[r] for r in rows]
+        else:
+            edges = list(state.review_edges)
+        described = describe_vessels(state.graph, edges)
+        review, row = record_for(item, "deleted")
+        try:
+            edit(f"deleting {described}", delete_vessels, edges, protected=state.protected)
+        except ValueError as error:
+            review_summary.setText(str(error))
+            log_edit(f"Delete of {described} refused, {error}")
+            return
+        written = keep_record(review, row)
+        log_edit(f"Deleted {described} ({item.why})")
+        after_review_edit(f"deleted {len(edges)} vessel(s)", written)
+
+    def on_remove_listed_pieces() -> None:
+        """Delete every piece with no junction the dead-end list shows, each
+        as Delete all its vessels would, one decision and CSV row per piece."""
+        if state.graph is None or not removes_listed_pieces(state.review_key, state.dead_end_show):
+            return
+        done = edit(
+            "removing the listed pieces with no junction", remove_listed_pieces,
+            list(state.review_items), protected=state.protected, time=now(), voxel_size_zyx=voxel_size(),
+        )
+        written = record_dead_end_removals(done.decisions, done.rows)
+        text = (
+            f"removed {done.pieces} piece(s) with no junction "
+            f"({done.vessels} vessel(s), {done.length_um:.0f} µm)"
+        )
+        if done.refused:
+            text += f"; {len(done.refused)} left because a boundary node is on it"
+        if done.skipped:
+            text += f"; {done.skipped} skipped, no longer a piece with no junction"
+        log_edit(text[0].upper() + text[1:])
+        after_review_edit(text, written)
+
+    def on_remove_listed_interior_dead_ends() -> None:
+        """Delete every interior dead end the dead-end list shows back to its
+        junction, merging each junction left with two vessels, one decision
+        and CSV row per dead end."""
+        if state.graph is None or not removes_listed_interior_dead_ends(state.review_key, state.dead_end_show):
+            return
+        done = edit(
+            "removing the listed interior dead ends", remove_listed_interior_dead_ends,
+            list(state.review_items), protected=state.protected, time=now(), voxel_size_zyx=voxel_size(),
+        )
+        written = record_dead_end_removals(done.decisions, done.rows)
+        text = (
+            f"removed {done.dead_ends} interior dead end(s) ({done.vessels} vessel(s), "
+            f"{done.length_um:.0f} µm) and merged {done.merged} junction(s) they left with two vessels"
+        )
+        if done.left_degree_2:
+            text += f"; {done.left_degree_2} such junction(s) stay, a boundary node, a thick-vessel bridge or a loop"
+        if done.held:
+            text += f"; {done.held} left because a boundary node would lose its last vessel"
+        if done.bridged:
+            text += f"; {done.bridged} left because a thick-vessel bridge is on it"
+        if done.skipped:
+            text += f"; {done.skipped} skipped, changed since the scan"
+        log_edit(text[0].upper() + text[1:])
+        after_review_edit(text, written)
+
+    def record_dead_end_removals(decisions, rows) -> str:
+        """Keep a removal's decisions with the run and add its rows to the
+        dead-end review CSV; what to say of the CSV."""
+        if not rows:
+            return ""
+        state.review_decisions.extend(decisions)
+        path = review_csv_path(read_settings(), DEAD_ENDS)
+        if path is None:
+            return " Not written to a CSV: the output folder (1. Input) is not set or is not on this machine yet."
+        try:
+            for row in rows:
+                append_review_record(path, row)
+                note_written(path, row)
+        except OSError as error:
+            return f" Could not write {path}: {error.strerror or error}."
+        return f" Recorded in {path.name}."
+
+    def on_review_merge() -> None:
+        item = chosen_item()
+        if item is None:
+            return
+        u, v, key = item.edges[0]
+        review, row = record_for(item, "merged")
+        try:
+            merged = edit(
+                f"merging junctions {u} and {v}", merge_junctions, u, v, key, protected=state.protected
+            )
+        except ValueError as error:
+            review_summary.setText(str(error))
+            log_edit(f"Merge of junctions {u} and {v} refused, {error}")
+            return
+        written = keep_record(review, row)
+        log_edit(f"Merged junctions {u} and {v} into node {merged}")
+        after_review_edit(f"merged junctions {u} and {v} into node {merged}", written)
+
+    def on_review_trace_on() -> None:
+        item = chosen_item()
+        if item is None:
+            return
+        tip = item.nodes[0]
+        if tip not in state.graph:
+            review_summary.setText(f"Node {tip} is no longer in the network: scan it again.")
+            return
+        drop_trace()
+        # Written when the trace is finished, not before: until then nothing
+        # has been traced on.
+        state.pending_review = record_for(item, "traced on")
+        written = ""
+        log_edit(f"Tracing on from dead end {tip}")
+        state.mode = "add"
+        attach_click_callbacks()
+        vessels = layer(VESSELS)
+        if vessels is not None:
+            viewer.layers.selection.active = vessels
+        state.trace = VesselTrace.starting_at(VesselEnd.at_node(tip), state.graph)
+        show_mode()
+        draw_trace()
+        set_edit_status(
+            f"Starting at node {tip}. Click along the vessel to trace it; click another "
+            "node or vessel to finish it, or press Add vessel to cancel."
+        )
+        review_summary.setText(review_counts() + written)
+
+    def on_review_join() -> None:
+        item = chosen_item()
+        if item is None:
+            return
+        a, b = item.nodes[:2]
+        if a not in state.graph or b not in state.graph:
+            review_summary.setText("An end of this pair is no longer in the network: scan it again.")
+            return
+        route = trace_route()
+        path = trace_path(
+            route.cost,
+            tuple(np.asarray(state.graph.nodes[a]["pos"], dtype=float)[:3]),
+            tuple(np.asarray(state.graph.nodes[b]["pos"], dtype=float)[:3]),
+            voxel_size_zyx=voxel_size(),
+        )
+        review, row = record_for(item, "joined")
+        try:
+            added = edit(
+                f"joining dead ends {a} and {b}", add_traced_vessel,
+                VesselEnd.at_node(a), VesselEnd.at_node(b), path,
+                reserved_ids=state.protected, voxel_size_zyx=voxel_size(),
+                smoothing=smoothing_settings(),
+            )
+        except ValueError as error:
+            review_summary.setText(str(error))
+            log_edit(f"Join of dead ends {a} and {b} refused, {error}")
+            return
+        written = keep_record(review, row)
+        state.added_nodes.extend(added.new_nodes)
+        log_edit(
+            f"Joined dead ends {a} and {b}: added {describe_vessels(state.graph, [added.edge])}, "
+            f"traced {route.how}{route.note}" + segmentation_note(added.edge)
+        )
+        after_review_edit(f"joined dead ends {a} and {b}", written)
+
+    def on_review_mark_dead_end(kind: str, words: str) -> None:
+        """A person's verdict on the chosen dead end, kept on its node
+        (graph.mark_dead_end_kind) and in the decisions. Whether it leaves the
+        image is the solve's boundary condition there, so Regenerate graph
+        solves the network again with it."""
+        from haemolynx.graph.post_processing import mark_dead_end_kind
+
+        item = chosen_item()
+        if item is None:
+            return
+        tip = item.nodes[0]
+        if tip not in state.graph or state.graph.degree(tip) != 1:
+            review_summary.setText(f"Node {tip} is no longer a dead end: scan the network again.")
+            return
+        review, row = record_for(item, words)
+        edit(f"marking dead end {tip} as {words}", mark_dead_end_kind, tip, kind)
+        written = keep_record(review, row)
+        log_edit(f"Marked dead end {tip} as {words}")
+        # The viewer holds the tab's graph, as after any edit, so a run saved
+        # now keeps the mark.
+        redraw_network()
+        state.review_items = [i for i in state.review_items if i is not item]
+        fill_review(state.review_row)
+        review_summary.setText(review_counts() + written)
+        refresh_buttons()
+
+    def on_review_set_terminal_role(role) -> None:
+        """Make the chosen terminal node an inlet or an outlet, or neither
+        (graph.set_terminal_role): the lists are kept on the tab's graph, and
+        Regenerate graph solves the network between them."""
+        item = chosen_item()
+        if item is None:
+            return
+        node = item.nodes[0]
+        if node not in state.graph:
+            review_summary.setText(f"Node {node} is no longer in the network: scan the network again.")
+            return
+        words = f"made an {role}" if role else "taken off the inlets and outlets"
+        review, row = record_for(item, words)
+        try:
+            roles = edit(f"node {node} {words}", set_terminal_role, review_roles(), node, role)
+        except ValueError as error:
+            review_summary.setText(str(error))
+            return
+        state.inlets = tuple(roles.get("inlet", ()) or ())
+        state.outlets = tuple(roles.get("outlet", ()) or ())
+        state.protected = protected_nodes(roles)
+        written = keep_record(review, row)
+        text = f"Node {node} {words}: {len(state.inlets)} inlet(s), {len(state.outlets)} outlet(s)"
+        log_edit(text)
+        # Redrawn like any edit, so the viewer holds the tab's graph and a
+        # scan before Regenerate keeps the lists on it.
+        after_review_edit(text, written)
+
+    def on_review_set_resistance_node(end: str) -> None:
+        """Make the chosen node the two-point resistance's start or end
+        (graph.set_resistance_node): the pair is kept on the tab's graph, and
+        Regenerate graph finds the resistance between them. A choice, not a
+        verdict on the node: nothing is written to a decisions CSV, and the
+        list keeps the node, now at its top."""
+        item = chosen_item()
+        if item is None:
+            return
+        node = item.nodes[0]
+        if node not in state.graph:
+            review_summary.setText(f"Node {node} is no longer in the network: scan the network again.")
+            return
+        try:
+            pair = edit(
+                f"node {node} as the two-point {end}", set_resistance_node,
+                resistance_pair_shown(state.graph, state.inlets, state.outlets), node, end,
+            )
+        except ValueError as error:
+            review_summary.setText(str(error))
+            return
+        state.protected = protected_nodes(review_roles())
+        text = f"Two-point resistance from node {pair[0]} to node {pair[1]}"
+        log_edit(text)
+        after_review_edit(text, "")
+        # The node moved to the top of the list: keep it chosen there.
+        row = next((r for r, listed in enumerate(state.review_items) if listed.nodes[:1] == (node,)), None)
+        if row is not None:
+            review_items.setCurrentRow(row)
+
+    def on_review_join_ahead() -> None:
+        item = chosen_item()
+        if item is None:
+            return
+        tip = item.nodes[0]
+        edge = item.measures.get("ahead_edge")
+        point = item.measures.get("ahead_point_um")
+        if edge is None or point is None:
+            review_summary.setText("No vessel lies straight ahead of this dead end to join it to.")
+            return
+        if tip not in state.graph or not state.graph.has_edge(*edge):
+            review_summary.setText("This dead end or the vessel ahead has changed: scan the network again.")
+            return
+        route = trace_route()
+        path = trace_path(
+            route.cost,
+            tuple(np.asarray(state.graph.nodes[tip]["pos"], dtype=float)[:3]),
+            tuple(float(c) for c in point),
+            voxel_size_zyx=voxel_size(),
+        )
+        review, row = record_for(item, "joined to the vessel ahead")
+        try:
+            added = edit(
+                f"joining dead end {tip} to the vessel ahead", add_traced_vessel,
+                VesselEnd.at_node(tip), VesselEnd.on_vessel(edge, point), path,
+                reserved_ids=state.protected, voxel_size_zyx=voxel_size(),
+                smoothing=smoothing_settings(),
+            )
+        except ValueError as error:
+            review_summary.setText(str(error))
+            log_edit(f"Join of dead end {tip} to the vessel ahead refused, {error}")
+            return
+        written = keep_record(review, row)
+        state.added_nodes.extend(added.new_nodes)
+        log_edit(
+            f"Joined dead end {tip} to the vessel ahead: added "
+            f"{describe_vessels(state.graph, [added.edge])}, traced {route.how}{route.note}"
+            + segmentation_note(added.edge)
+        )
+        after_review_edit(f"joined dead end {tip} to the vessel ahead", written)
+
+    def on_review_draw_along() -> None:
+        """Add the vessel the skeleton re-trace would draw for the chosen
+        piece of skeleton the graph does not follow: along its own skeleton,
+        from the vessel it meets at one end to the one at the other."""
+        item = chosen_item()
+        if item is None:
+            return
+        path = getattr(item, "path_um", None)
+        if path is None:
+            review_summary.setText("This piece meets the network in one place only: trace it with Add vessel.")
+            return
+        path = np.asarray(path, dtype=float)
+        ends = [vessel_end_nearest(state.graph, point) for point in (path[0], path[-1])]
+        if any(end is None for end in ends):
+            review_summary.setText("No vessel lies at an end of this piece any more: scan the network again.")
+            return
+        review, row = record_for(item, "drawn along the skeleton")
+        try:
+            added = edit(
+                "drawing a vessel along the skeleton", add_traced_vessel, ends[0], ends[1], path,
+                reserved_ids=state.protected, voxel_size_zyx=voxel_size(),
+                smoothing=smoothing_settings(),
+            )
+        except ValueError as error:
+            review_summary.setText(str(error))
+            log_edit(f"Drawing along the skeleton refused, {error}")
+            return
+        written = keep_record(review, row)
+        state.added_nodes.extend(added.new_nodes)
+        log_edit(
+            f"Drew {describe_vessels(state.graph, [added.edge])} along "
+            f"{float(item.measures.get('length_um') or 0.0):.3g} µm of skeleton the graph did not follow"
+            + segmentation_note(added.edge)
+        )
+        after_review_edit("drew a vessel along the skeleton", written)
+
+    def on_review_set_diameter() -> None:
+        item = chosen_item()
+        if item is None:
+            return
+        rows = selected_review_rows()
+        edges = [state.review_edges[r] for r in rows]
+        if not edges and len(state.review_edges) == 1:
+            edges = list(state.review_edges)
+        if not edges:
+            review_summary.setText("Select the vessels to give the diameter in the table first.")
+            return
+        width = float(review_diameter.value())
+        described = describe_vessels(state.graph, edges)
+        review, row = record_for(item, f"diameter set to {width:g} um")
+        try:
+            edit(f"setting {described} to {width:g} µm across", set_vessel_diameter, edges, width)
+        except ValueError as error:
+            review_summary.setText(str(error))
+            return
+        written = keep_record(review, row)
+        log_edit(f"Set the diameter of {described} to {width:g} µm")
+        after_review_edit(f"set {len(edges)} vessel(s) to {width:g} µm across", written)
+
+    # --- editing by clicking in the viewer ------------------------------------
+
+    def set_edit_status(key: str) -> None:
+        edit_status.setText(_POST_PROCESSING_EDIT_STATUS.get(key, key))
+
+    def show_mode() -> None:
+        """Light the button of the mode clicks are in, and only that one."""
+        for button, mode in (
+            (click_delete_button, "delete"), (add_button, "add"),
+            (add_bridge_button, "bridge"), (remove_bridge_button, "unbridge"),
+        ):
+            button.blockSignals(True)
+            button.setChecked(state.mode == mode)
+            button.blockSignals(False)
+
+    def drop_trace() -> None:
+        """Forget the vessel being traced; the network never had it."""
+        state.pending_review = None
+        if state.trace is not None:
+            state.trace = None
+            draw_trace()
+
+    def drop_bridge_cut() -> None:
+        """Forget where Add bridge would cut; the network was never cut there."""
+        if state.bridge_cut is not None:
+            state.bridge_cut = None
+            draw_bridge_cut()
+
+    def drop_trace_after_edit() -> None:
+        """Another edit changed the network under a trace or a bridge's cut:
+        start it again."""
+        if state.bridge_cut is not None:
+            drop_bridge_cut()
+            set_edit_status(
+                "The network changed, so the bridge's cut was dropped: click the "
+                "vessel to cut it again."
+            )
+        if state.trace is None:
+            return
+        drop_trace()
+        set_edit_status(
+            "The network changed, so the vessel being traced was dropped: click "
+            "where to start it again."
+        )
+
+    def stop_editing() -> None:
+        state.mode = "idle"
+        drop_trace()
+        drop_bridge_cut()
+        show_mode()
+        set_edit_status("idle")
+
+    def attach_click_callbacks() -> None:
+        """(Re-)attach to the vessels/nodes layers, which a rebuild can swap,
+        and to the tab's own layers, in case one of them is selected."""
+        for name in (VESSELS, NODES, *POST_PROCESSING_LAYERS):
+            target = layer(name)
+            if target is not None and on_press not in target.mouse_drag_callbacks:
+                target.mouse_drag_callbacks.append(on_press)
+
+    def arm(mode: str) -> None:
+        if state.graph is None:
+            show_mode()
+            set_edit_status("Scan the network first.")
+            return
+        if state.mode == mode:
+            # The lit button pressed again: stop, dropping an unfinished vessel.
+            tracing = state.trace is not None
+            cutting = state.bridge_cut is not None
+            stop_editing()
+            if tracing:
+                set_edit_status("Add vessel cancelled: the network is as it was before.")
+            elif cutting:
+                set_edit_status("Add bridge cancelled: the vessel was not cut.")
+            return
+        drop_trace()
+        drop_bridge_cut()
+        state.mode = mode
+        attach_click_callbacks()
+        # napari hands a click to the selected layer: make it one that listens.
+        vessels = layer(VESSELS)
+        if vessels is not None:
+            viewer.layers.selection.active = vessels
+        show_mode()
+        set_edit_status(f"{mode}-armed")
+
+    def voxel_size() -> tuple[float, float, float]:
+        return tuple(float(v) for v in getattr(results(), "_voxel_size_zyx", (1.0, 1.0, 1.0)))
+
+    def read_settings():
+        if settings is None:
+            return None
+        try:
+            return settings()
+        except Exception:  # noqa: BLE001 - the defaults do without them
+            logger.exception("post processing could not read the settings")
+            return None
+
+    def smoothing_settings():
+        """The run's centreline smoothing, for a traced vessel: None when the run
+        does not smooth, the pipeline's defaults when there are no settings."""
+        local = read_settings()
+        if local is None:
+            return {}
+        if not local.get("smooth_centrelines", True):
+            return None
+        return {
+            "method": local.get("centreline_smoothing_method", "taubin"),
+            "iterations": int(local.get("centreline_smoothing_iterations", 10)),
+            "max_deviation": float(local.get("centreline_max_deviation", 1.0)),
+        }
+
+    def mask_routing():
+        """The segmented image and its cost field, made once per image."""
+        image = layer(IMAGE)
+        if image is None:
+            return None, None
+        data = image.data
+        if state.routing is None or state.routing[0] is not data:
+            set_edit_status("Preparing the segmented image to trace new vessels through...")
+            _process_pending_qt_events()
+            state.routing = (
+                data,
+                mask_cost_field(np.asanyarray(data), use_memmap=True, voxel_size_zyx=voxel_size()),
+            )
+        return state.routing
+
+    def mask_support():
+        """The segmented image read as graph building reads it for every
+        bridge it draws (review_mask_support: a MaskSupport at the run's
+        bridge limits) -- the review lists' own, kept in state.support, made
+        here when no list has made it yet; None without a segmented image."""
+        image = segmented_image()
+        if image is None:
+            return None
+        if state.support is None or state.support[0] is not image:
+            values = read_settings() or {}
+            state.support = (image, kept_support(image, values) or review_mask_support(image, voxel_size(), values))
+        return state.support[1]
+
+    def kept_support(image, values):
+        """Post processing's own reading of the segmented *image*, kept on the
+        run's volume, or None: the lists then make one of their own."""
+        if segmentation is None or image is None:
+            return None
+        try:
+            return segmentation(image, values)
+        except Exception:  # noqa: BLE001 - the lists make their own instead
+            logger.exception("Post processing: could not reuse the run's reading of the segmentation")
+            return None
+
+    def segmentation_note(edge) -> str:
+        """How the vessel just drawn sits in the segmentation, for its log
+        line -- what the post_process stage writes on it
+        (graph.record_drawn_vessel_support), read now so a vessel traced
+        through tissue the segmentation never showed is seen as such at
+        once. "" without a segmented image; a diagnostic, it never stops an
+        edit."""
+        support = mask_support()
+        if support is None:
+            return ""
+        try:
+            (record,) = record_drawn_vessel_support(state.graph, [edge], support)
+        except Exception:  # noqa: BLE001 - the vessel stays, unjudged
+            logger.exception("Post processing: could not read the drawn vessel against the segmentation")
+            return ""
+        return f"; {record.describe()}"
+
+    def load_raw(say=None):
+        """The run's raw image: ``(volume, None)``, or ``(None, why not)``.
+        *say* puts up the line saying it is being read (the edit box's)."""
+        from haemolynx.haemodynamics.fwhm_diameter import load_single_channel_tiff_volume
+        from haemolynx.io import axis_order_for_run, resolve_image_path_with_optional_zip
+
+        local = read_settings() or {}
+        path = local.get("raw_image_path")
+        if not path:
+            return None, "no raw image is set on the Input tab"
+        if say is None:
+            set_edit_status("Reading the raw data file to trace new vessels through...")
+        else:
+            say("Reading the raw image...")
+        _process_pending_qt_events()
+        channel = local.get("raw_image_channel")
+        try:
+            raw = load_single_channel_tiff_volume(
+                resolve_image_path_with_optional_zip(Path(path)),
+                axis_order=axis_order_for_run(local),
+                use_memmap=bool(local.get("use_memmap_loading")),
+                memmap_directory=local.get("memmap_directory"),
+                channel=None if channel is None else int(channel),
+            )
+            # Cut to the crop_on_import box the network was built in, and
+            # reduced onto its grid, if either.
+            raw = raw_volume_like_graph(
+                raw, state.graph, description="raw data file",
+                use_memmap=bool(local.get("use_memmap_loading")),
+                memmap_directory=local.get("memmap_directory"),
+            )
+        except Exception as error:  # noqa: BLE001 - reported; the mask is used instead
+            return None, f"could not read {path}: {error}"
+        image = layer(IMAGE)
+        if image is not None and tuple(np.shape(raw)) != tuple(np.shape(image.data)):
+            return None, (
+                f"the raw data is {tuple(np.shape(raw))} voxels but the segmented "
+                f"image {tuple(np.shape(image.data))}"
+            )
+        return raw, None
+
+    def raw_routing(say=None):
+        """The raw data and its cost field -- FWHM's own copy when it is in the
+        viewer, else the run's raw image, read once -- and why not, if not."""
+        fwhm = layer(FWHM_RAW)
+        if fwhm is not None:
+            data = fwhm.data
+            if state.raw is None or state.raw[0] is not data:
+                state.raw = (data, IntensityCostField(data, voxel_size_zyx=voxel_size()))
+            return state.raw, None
+        if state.raw is None and state.raw_problem is None:
+            data, state.raw_problem = load_raw(say)
+            if data is not None:
+                state.raw = (data, IntensityCostField(data, voxel_size_zyx=voxel_size()))
+        return state.raw, state.raw_problem
+
+    # --- The raw image at the chosen item -----------------------------------------
+
+    def raw_panel_shown() -> bool:
+        return loops_on() or review_entry().key in REVIEW_KINDS
+
+    def raw_panel_item():
+        """The loop or review item the raw panel draws, or None."""
+        if loops_on():
+            return state.loop
+        return state.review_item if review_entry().key in REVIEW_KINDS else None
+
+    def other_centrelines() -> np.ndarray:
+        """The network's centrelines as points, read again when it changes."""
+        graph = state.graph
+        cached = state.raw_panel_centrelines
+        if cached is None or cached[0] is not graph or cached[1] != graph.number_of_edges():
+            cached = (graph, graph.number_of_edges(), centreline_points(graph))
+            state.raw_panel_centrelines = cached
+        return cached[2]
+
+    def refresh_raw_panel() -> None:
+        """Draw the chosen item in the segmentation and the raw image, when
+        the box is ticked; the raw image is read the first time."""
+        raw_box.setVisible(raw_panel_shown())
+        on = raw_check.isChecked() and raw_panel_shown()
+        raw_grid.setVisible(on)
+        for picture in raw_pictures.values():
+            picture.clear()
+        if not on:
+            raw_status.setText("")
+            return
+        item = raw_panel_item()
+        if item is None or state.graph is None:
+            raw_status.setText("Choose an item in the list to see it here.")
+            return
+        support = mask_support()
+        mask = None if support is None else support.mask
+        routing, problem = raw_routing(say=raw_status.setText)
+        raw = None if routing is None else routing[0]
+        if raw is not None and mask is not None and tuple(np.shape(raw)) != tuple(np.shape(mask)):
+            raw, problem = None, (
+                f"the raw image is {tuple(np.shape(raw))} voxels but the segmented image {tuple(np.shape(mask))}"
+            )
+        if mask is None and raw is None:
+            raw_status.setText(f"Nothing to draw: there is no segmented image in the viewer, and {problem}.")
+            return
+        try:
+            views = panel_views(
+                item.points_um, centre_um=item.centre_um, voxel_size_zyx=voxel_size(), mask=mask, raw=raw,
+                item_lines_um=edge_lines(state.graph, item.edges), other_points_um=other_centrelines(),
+            )
+        except Exception:  # noqa: BLE001 - a picture is a convenience, never fatal
+            logger.exception("Post processing: could not draw the raw image at the chosen item")
+            raw_status.setText("Could not draw the chosen item; the log says why.")
+            return
+        for view in views:
+            for name, picture in zip(_RAW_PANEL_PICTURES, (view.segmentation, view.raw)):
+                label = raw_pictures[(view.plane.label, name)]
+                if picture is None:
+                    label.setText("None")
+                else:
+                    label.setPixmap(_raw_panel_pixmap(picture, view))
+        text = (
+            f"Each plane {2.0 * views[0].plane.radius_um:.0f} µm across, read {HALF_THICKNESS_UM:g} µm "
+            "either side; the chosen item cyan, the other centrelines grey, the bar 5 µm."
+        )
+        raw_status.setText(text if raw is not None else f"{text} No raw image: {problem}.")
+
+    def trace_route():
+        """How the next leg of a trace is found, as the dropdown asks.
+
+        ``cost`` is the A* cost field (None: a straight line), ``volume`` and
+        ``pick`` how a 3D click's depth is read, ``how`` the words for it, and
+        ``note`` why it is not what the dropdown asked, if it is not.
+        """
+        note = ""
+        if trace_source.currentText() == TRACE_THROUGH_RAW:
+            raw, problem = raw_routing()
+            if raw is not None:
+                return SimpleNamespace(
+                    cost=raw[1], volume=raw[0], pick="brightest",
+                    how="through the raw data", note="",
+                )
+            note = f" (no raw data to trace through: {problem})"
+        mask, cost = mask_routing()
+        if cost is not None:
+            return SimpleNamespace(
+                cost=cost, volume=mask, pick="first", how="through the segmented mask", note=note,
+            )
+        return SimpleNamespace(
+            cost=None, volume=None, pick="first", how="as a straight line",
+            note=note or " (no segmented image in the viewer to trace through)",
+        )
+
+    def vessel_hit(event, keep=None):
+        """The vessel a click hit -- among those ``keep(edge, data)`` keeps,
+        when given (``segments_where``)."""
+        from haemolynx.gui.graph_click import hit_test_vessels
+
+        vessels = layer(VESSELS)
+        if vessels is None:
+            return None
+        data, features = vessels.data, _layer_features(vessels)
+        if keep is not None:
+            data, features = segments_where(state.graph, data, features, keep)
+            if not len(data):
+                return None
+        return hit_test_vessels(
+            data, features, event.position,
+            view_direction=getattr(event, "view_direction", None),
+            dims=list(getattr(event, "dims_displayed", ()) or ()),
+        )
+
+    def hit_edge(hit):
+        """The ``(u, v, key)`` of a vessel hit, as plain values."""
+        return tuple(c.item() if isinstance(c, np.generic) else c for c in (hit.u, hit.v, hit.key))
+
+    def end_under_click(event, position, view, dims):
+        """The node, or the point on a vessel, a click landed on -- or None."""
+        node = nearest_node(state.graph, position, view_direction=view, dims=dims or None)
+        if node is not None:
+            return VesselEnd.at_node(node)
+        hit = vessel_hit(event)
+        if hit is None:
+            return None
+        edge = tuple(c.item() if isinstance(c, np.generic) else c for c in (hit.u, hit.v, hit.key))
+        if not state.graph.has_edge(*edge):
+            return None
+        point = point_on_path_under_click(
+            vessel_path(state.graph, edge), position, view_direction=view, dims=dims or None
+        )
+        return VesselEnd.on_vessel(edge, point)
+
+    def delete_clicked(hit) -> None:
+        edge = (hit.u, hit.v, hit.key)
+        described = describe_vessels(state.graph, [edge])
+        try:
+            edit(f"deleting {described}", delete_vessels, [edge], protected=state.protected)
+        except ValueError as error:
+            set_edit_status(str(error))
+            log_edit(f"Delete of {described} (clicked) refused, {error}")
+            return
+        log_edit(f"Deleted {described} (clicked in the viewer)")
+        rescan(prefer=state.node)
+        set_edit_status("deleted")
+
+    def bridge_clicked(event) -> None:
+        """One click of Add bridge: the first cuts a vessel (the cut is only
+        drawn until the second), the second -- on the same vessel -- picks
+        the side of the cut that becomes the bridge."""
+        position = np.asarray(event.position, dtype=float)
+        dims = list(getattr(event, "dims_displayed", ()) or ())
+        view = getattr(event, "view_direction", None) if len(dims) == 3 else None
+        if state.bridge_cut is not None and not state.graph.has_edge(*state.bridge_cut[0]):
+            drop_bridge_cut()
+        if state.bridge_cut is None:
+            hit = vessel_hit(event, lambda _edge, data: not data.get(IS_ZERO_RESISTANCE))
+            if hit is None:
+                set_edit_status(
+                    "Add bridge: that missed. Click a vessel (not a bridge) where the "
+                    "bridge should stop."
+                )
+                return
+            edge = hit_edge(hit)
+            point = point_on_path_under_click(
+                vessel_path(state.graph, edge), position, view_direction=view, dims=dims or None
+            )
+            state.bridge_cut = (edge, tuple(float(c) for c in point))
+            draw_bridge_cut()
+            set_edit_status(
+                f"Cutting {branch_label(edge)} at the green point. Click it on the side "
+                "of the point that bridges; press Add bridge again to cancel."
+            )
+            return
+        edge, cut = state.bridge_cut
+        cut_vessel = (frozenset(edge[:2]), edge[2])
+        hit = vessel_hit(event, lambda other, _data: (frozenset(other[:2]), other[2]) == cut_vessel)
+        if hit is None:
+            set_edit_status(
+                f"Click {branch_label(edge)} itself, on the side of the green point "
+                "that bridges, or press Add bridge again to cancel."
+            )
+            return
+        side = point_on_path_under_click(
+            vessel_path(state.graph, edge), position, view_direction=view, dims=dims or None
+        )
+        side = tuple(float(c) for c in side)
+        graph = state.graph
+        described = describe_vessels(graph, [edge])
+        before = set(graph.nodes)
+        try:
+            bridge = edit(
+                f"making part of {described} a bridge", bridge_vessel_side, edge, cut, side,
+                reserved_ids=state.protected, protected=state.protected,
+            )
+        except ValueError as error:
+            set_edit_status(f"{error}. Or press Add bridge again to cancel.")
+            return
+        new_nodes = [n for n in bridge[:2] if n not in before]
+        state.added_nodes.extend(new_nodes)
+        state.bridge_cut = None
+        draw_bridge_cut()
+        length = float(graph.edges[bridge].get("length") or 0.0)
+        log_edit(
+            f"Made {length:.3g} µm of {described} a bridge, from node {bridge[0]} to node {bridge[1]}"
+            + (f"; new node {new_nodes[0]} cut it" if new_nodes else "")
+        )
+        rescan(prefer=state.node)
+        set_edit_status(
+            f"Made {length:.3g} µm a bridge ({branch_label(bridge)}), from node {bridge[0]} to node "
+            f"{bridge[1]}. Click another vessel to cut, or press Add bridge to stop."
+        )
+
+    def unbridge_clicked(event) -> None:
+        """One click of Remove bridge: the bridge clicked becomes a vessel."""
+        hit = vessel_hit(event, lambda _edge, data: bool(data.get(IS_ZERO_RESISTANCE)))
+        if hit is None:
+            set_edit_status(
+                "Remove bridge: that missed. Click a bridge (drawn dashed), or press "
+                "Remove bridge again to stop."
+            )
+            return
+        unbridge(hit_edge(hit), "clicked in the viewer")
+
+    def unbridge(edge, how: str, review=None) -> bool:
+        """Make bridge *edge* a vessel, kept for Undo and logged; *review* is
+        the list decision and CSV row it records. Says why when refused."""
+        described = describe_vessels(state.graph, [edge])
+        try:
+            vessel = edit(f"making {described} a vessel", unbridge_vessel, edge, protected=state.protected)
+        except ValueError as error:
+            set_edit_status(str(error))
+            if review is not None:
+                review_summary.setText(str(error))
+            log_edit(f"Making {described} a vessel refused, {error}")
+            return False
+        written = keep_record(*review) if review is not None else ""
+        log_edit(
+            f"Made {described} a normal vessel ({how}): now {branch_label(vessel)}, "
+            f"node {vessel[0]} to node {vessel[1]}"
+        )
+        drop_trace_after_edit()
+        rescan(prefer=state.node)
+        text = (
+            f"{described[0].upper()}{described[1:]} is a normal vessel now: {branch_label(vessel)}, "
+            f"node {vessel[0]} to node {vessel[1]}; Regenerate graph measures it."
+        )
+        set_edit_status(text)
+        if review is not None:
+            review_summary.setText(review_counts() + written)
+            report.value = f"Post processing: {text} {review_counts()}"
+        return True
+
+    def on_review_unbridge() -> None:
+        item = chosen_item()
+        if item is None:
+            return
+        unbridge(tuple(item.edges[0]), "from the list", record_for(item, "unbridged"))
+
+    def add_clicked(event) -> None:
+        """One click of Add vessel: start, trace on to a point, or finish."""
+        position = np.asarray(event.position, dtype=float)
+        dims = list(getattr(event, "dims_displayed", ()) or ())
+        view = getattr(event, "view_direction", None) if len(dims) == 3 else None
+        end = end_under_click(event, position, view, dims)
+        if state.trace is None:
+            if end is None:
+                set_edit_status(
+                    "Add vessel: that missed. Click a node, or a point on a vessel, "
+                    "to start from."
+                )
+                return
+            state.trace = VesselTrace.starting_at(end, state.graph)
+            draw_trace()
+            where = (
+                f"a new node on {branch_label(end.edge)} (green; it forms when the "
+                "vessel is finished)"
+                if end.on_a_vessel
+                else f"node {end.node}"
+            )
+            set_edit_status(
+                f"Starting at {where}. Click along the vessel to trace it; click "
+                "another node or vessel to finish it."
+            )
+            return
+        route = trace_route()
+        if end is not None:
+            finish_trace(end, route)
+            return
+        target = point_under_click(
+            position, view_direction=view, dims=dims or None, volume=route.volume,
+            voxel_size_zyx=voxel_size(), pick=route.pick, near_um=state.trace.last_point,
+        )
+        leg = trace_path(route.cost, state.trace.last_point, target, voxel_size_zyx=voxel_size())
+        if len(leg) < 2:
+            set_edit_status("The trace is already there: click further along the vessel.")
+            return
+        state.trace.extend(leg, target, route.how)
+        draw_trace()
+        set_edit_status(
+            f"Point {len(state.trace.waypoints_um)} traced {route.how}{route.note}. "
+            "Click on along the vessel, or on a node or vessel to finish it; press "
+            "Add vessel again to cancel."
+        )
+
+    def branch_label(edge) -> str:
+        branch_id = branch_id_of(state.graph, edge)
+        if branch_id is None:
+            return f"the vessel {edge[0]}-{edge[1]}"
+        return f"branchID {branch_id}"
+
+    def finish_trace(end, route) -> None:
+        """The click landed on a node or vessel: add the traced vessel, ending there."""
+        graph, trace = state.graph, state.trace
+        leg = trace_path(
+            route.cost, trace.last_point, end.position(graph), voxel_size_zyx=voxel_size()
+        )
+        cut = [e.edge for e in (trace.start, end) if e.on_a_vessel]
+        described_cut = describe_vessels(graph, cut)
+        try:
+            added = edit(
+                "the vessel added", add_traced_vessel, trace.start, end, trace.extended(leg),
+                reserved_ids=state.protected, voxel_size_zyx=voxel_size(),
+                smoothing=smoothing_settings(),
+            )
+        except ValueError as error:
+            set_edit_status(f"{error}. Or press Add vessel again to cancel.")
+            return
+        routes = " then ".join(dict.fromkeys([*trace.routes, route.how]))
+        clicks = len(trace.waypoints_um) + 2
+        state.added_nodes.extend(added.new_nodes)
+        if state.pending_review is not None:
+            keep_record(*state.pending_review)
+            state.pending_review = None
+        state.trace = None
+        state.mode = "idle"
+        show_mode()
+        draw_trace()
+        new_nodes = ", ".join(str(n) for n in added.new_nodes)
+        log_edit(
+            f"Added {describe_vessels(graph, [added.edge])}, traced {routes} in {clicks} clicks"
+            + (f"; new node(s) {new_nodes} cut {described_cut} in two" if added.new_nodes else "")
+            + segmentation_note(added.edge)
+        )
+        rescan(prefer=state.node)
+        u, v, _key = added.edge
+        size = (
+            f"{added.diameter_um:.3g} µm across" if added.diameter_um is not None
+            else "the table's diameter"
+        )
+        set_edit_status(
+            f"Added {branch_label(added.edge)}: {graph.edges[added.edge]['length']:.3g} µm "
+            f"from node {u} to node {v}, traced {routes}{route.note}, {size}."
+            + (
+                f" New node(s) {new_nodes} (green) cut the vessel(s) it joined in two."
+                if added.new_nodes else ""
+            )
+            + " Press Add vessel to add another."
+        )
+
+    def on_delete_ids() -> None:
+        if state.graph is None:
+            set_edit_status("Scan the network first.")
+            return
+        keys = edge_keys(state.graph)
+        try:
+            ids = parse_branch_ids(branch_ids.text(), len(keys))
+        except ValueError as error:
+            set_edit_status(str(error))
+            return
+        described = describe_vessels(state.graph, [keys[i] for i in ids])
+        try:
+            edit(
+                f"deleting branchID(s) {', '.join(str(i) for i in ids)}", delete_vessels,
+                [keys[i] for i in ids], protected=state.protected,
+            )
+        except ValueError as error:
+            set_edit_status(str(error))
+            log_edit(f"Delete by branch ID of {described} refused, {error}")
+            return
+        log_edit(f"Deleted by branch ID: {described}")
+        drop_trace_after_edit()
+        branch_ids.clear()
+        rescan(prefer=state.node)
+        set_edit_status(
+            f"Deleted branchID(s) {', '.join(str(i) for i in ids)}. branchIDs of the "
+            "vessels after them have moved down: hover a vessel for its new one."
+        )
+
+    def rings_shown() -> bool:
+        """Whether rings are on screen for a click to choose from."""
+        if state.review_items:
+            return True
+        return junctions_on() and state.scan is not None and bool(state.scan.junctions)
+
+    def choose_ring(event) -> None:
+        """A click with no edit armed: one landing on a ring chooses its item
+        (or junction) in the list, as picking its row would, but leaves the
+        camera where it is -- the ring is already on screen."""
+        position = np.asarray(event.position, dtype=float)
+        dims = list(getattr(event, "dims_displayed", ()) or ())
+        view = getattr(event, "view_direction", None) if len(dims) == 3 else None
+        reach = marker_pick_um(getattr(viewer_camera(viewer), "zoom", None))
+        if state.review_items:
+            row = marker_under_click(
+                [item.centre_um for item in state.review_items], position,
+                view_direction=view, dims=dims or None, max_distance=reach,
+            )
+            if row is None:
+                return
+            review_items.blockSignals(True)
+            review_items.setCurrentRow(row)
+            review_items.blockSignals(False)
+            on_review_item_changed(row, zoom=False)
+            return
+        if not rings_shown():
+            return
+        junctions = list(state.scan.junctions)
+        node = junction_under_click(
+            state.graph, junctions, position, view_direction=view, dims=dims or None, max_distance=reach,
+        )
+        if node is None:
+            return
+        row = junctions.index(node)
+        junction_list.blockSignals(True)
+        junction_list.setCurrentRow(row)
+        junction_list.blockSignals(False)
+        on_junction_changed(row, zoom=False)
+
+    def on_click(_layer, event) -> None:
+        """One click in the viewer: a press let go where it was pressed."""
+        if state.graph is None:
+            return
+        try:
+            if state.mode == "idle":
+                choose_ring(event)
+            elif state.mode == "delete":
+                hit = vessel_hit(event)
+                if hit is not None:
+                    delete_clicked(hit)
+            elif state.mode == "bridge":
+                bridge_clicked(event)
+            elif state.mode == "unbridge":
+                unbridge_clicked(event)
+            else:
+                add_clicked(event)
+        except Exception as error:  # noqa: BLE001 - a click must not crash the viewer
+            logger.exception("post-processing click failed")
+            set_edit_status(f"error: {error}")
+
+    def on_press(layer_, event):
+        """napari's press-drag-release callback, handing :func:`on_click` only clicks.
+
+        A press that moves before it is let go is turning or panning the view --
+        between the clicks of a trace, often -- and must not add a point,
+        delete a vessel or choose a ring.
+        """
+        if state.graph is None or (state.mode == "idle" and not rings_shown()):
+            return
+        if getattr(event, "button", 1) not in (None, 1):
+            return
+        pressed = getattr(event, "pos", None)
+        pressed = None if pressed is None else np.asarray(pressed, dtype=float)
+        dragged = False
+        yield
+        while getattr(event, "type", None) == "mouse_move":
+            pos = getattr(event, "pos", None)
+            if (
+                pressed is not None
+                and pos is not None
+                and float(np.linalg.norm(np.asarray(pos, dtype=float) - pressed))
+                > _CLICK_DRAG_TOLERANCE_PX
+            ):
+                dragged = True
+            yield
+        if not dragged:
+            on_click(layer_, event)
+
+    # --- leaving -----------------------------------------------------------------
+
+    def remove_layers() -> None:
+        if viewer is None:
+            return
+        for name in POST_PROCESSING_LAYERS:
+            if name in viewer.layers:
+                _process_pending_qt_events()
+                viewer.layers.remove(viewer.layers[name])
+                _process_pending_qt_events()
+        for name in (VESSELS, NODES):
+            target = layer(name)
+            if target is not None and on_press in target.mouse_drag_callbacks:
+                target.mouse_drag_callbacks.remove(on_press)
+
+    def hand_over(graph, *, stop_after, note: str, waiting: str) -> None:
+        """Start the run that takes *graph* on, and clear the tab for it.
+
+        The tab keeps its edits when the run does not start (a failed check
+        says why in the report box): nothing is lost to a refused run.
+        """
+        stop_editing()
+        if not regenerate(graph, stop_after=stop_after):
+            refresh_buttons()
+            return
+        log_edit(note)
+        # What the regenerated network is compared with when it is scanned.
+        state.summary_before = state.summary_scanned
+        drop_working_graph(waiting)
+
+    def drop_working_graph(text: str) -> None:
+        """Forget the tab's working graph and what it lists, saying *text*.
+        The loop and review decisions stay: they are the run's, and are
+        matched to the next network's loops and items by position."""
+        stop_editing()
+        clear_review()
+        remove_layers()
+        state.graph = state.scan = state.node = None
+        state.scanned_from = None
+        state.vessels = []
+        state.added_nodes = []
+        state.loops, state.loop, state.loop_row = [], None, None
+        forget_undo()
+        junction_list.clear()
+        table.setRowCount(0)
+        loop_list.clear()
+        loop_table.setRowCount(0)
+        loop_summary.setText("")
+        status.setText(text)
+        refresh_buttons()
+
+    def discard_edits() -> None:
+        """A run from an earlier tab starts again from a network without the
+        edits: they go, or Regenerate graph would hand the old network on."""
+        if state.graph is None:
+            return
+        if has_pending_edits(state.graph):
+            log_edit("Discarded the edits not yet regenerated: a run from an earlier tab replaces the network")
+        drop_working_graph("Not scanned yet.")
+
+    def on_regenerate_graph() -> None:
+        """The edits in line and Haemodynamics rerun; paused, the run stays
+        paused, else it goes on to Export."""
+        if state.graph is None or not has_pending_edits(state.graph):
+            status.setText("No outstanding edits to regenerate: the network is in line.")
+            return
+        if running():
+            report.value = ALREADY_RUNNING
+            return
+        held = is_paused()
+        hand_over(
+            state.graph,
+            stop_after=regenerate_stop_after(held),
+            note=(
+                f"Regenerating the graph ({state.graph.number_of_edges()} vessels): "
+                "branch orders, lengths, diameters and bridges of the edited vessels, "
+                "then Haemodynamics rerun on it"
+                + ("; the run stays paused" if held else "; then Perturbations to Export")
+            ),
+            waiting=(
+                "Regenerating the graph; the tab scans it again once it is done."
+                if held
+                else "Regenerating the graph and re-solving; scan again once it finishes."
+            ),
+        )
+
+    def on_continue() -> None:
+        """A paused run: the edits (if any) in line with Haemodynamics rerun
+        on them, then Perturbations onwards."""
+        if not is_paused():
+            status.setText(
+                "No run is paused here. Turn on Mid-run postprocessing (1. Input) "
+                "for a run to stop here after Haemodynamics."
+            )
+            return
+        if running():
+            report.value = ALREADY_RUNNING
+            return
+        graph = state.graph
+        if graph is None:
+            current = results()
+            graph = getattr(current, "_graph", None) if current is not None else None
+        if graph is None:
+            status.setText("Nothing to continue from: run the pipeline again.")
+            return
+        hand_over(
+            graph,
+            stop_after=None,
+            note=(
+                f"Continuing the run from the edited network ({graph.number_of_edges()} "
+                "vessels): the edits in line and Haemodynamics rerun on them, then "
+                "Perturbations onwards"
+            ),
+            waiting="Continuing the run; scan again once it finishes.",
+        )
+
+    scan_button.clicked.connect(on_scan)
+    review_choice.currentTextChanged.connect(on_review_choice_changed)
+    junction_list.currentRowChanged.connect(on_junction_changed)
+    table.itemSelectionChanged.connect(recolour)
+    delete_button.clicked.connect(on_delete)
+    split_button.clicked.connect(on_split)
+    leave_button.clicked.connect(on_leave)
+    review_items.currentRowChanged.connect(on_review_item_changed)
+    review_table.itemSelectionChanged.connect(recolour)
+    review_buttons[ACTION_KEEP].clicked.connect(on_review_keep)
+    review_buttons[ACTION_DELETE_SELECTED].clicked.connect(lambda: on_review_delete(True))
+    review_buttons[ACTION_DELETE_ITEM].clicked.connect(lambda: on_review_delete(False))
+    review_buttons[ACTION_MERGE].clicked.connect(on_review_merge)
+    review_buttons[ACTION_TRACE_ON].clicked.connect(on_review_trace_on)
+    review_buttons[ACTION_JOIN].clicked.connect(on_review_join)
+    review_buttons[ACTION_DRAW_ALONG].clicked.connect(on_review_draw_along)
+    review_buttons[ACTION_JOIN_AHEAD].clicked.connect(on_review_join_ahead)
+    review_buttons[ACTION_MARK_BLIND].clicked.connect(
+        lambda: on_review_mark_dead_end("blind", "a real blind end")
+    )
+    review_buttons[ACTION_MARK_OPEN].clicked.connect(
+        lambda: on_review_mark_dead_end("leaves_image", "leaving the image")
+    )
+    review_buttons[ACTION_SET_DIAMETER].clicked.connect(on_review_set_diameter)
+    review_buttons[ACTION_UNBRIDGE].clicked.connect(on_review_unbridge)
+    review_buttons[ACTION_MAKE_INLET].clicked.connect(lambda: on_review_set_terminal_role("inlet"))
+    review_buttons[ACTION_MAKE_OUTLET].clicked.connect(lambda: on_review_set_terminal_role("outlet"))
+    review_buttons[ACTION_REMOVE_TERMINAL].clicked.connect(lambda: on_review_set_terminal_role(None))
+    review_buttons[ACTION_RESISTANCE_START].clicked.connect(lambda: on_review_set_resistance_node("start"))
+    review_buttons[ACTION_RESISTANCE_END].clicked.connect(lambda: on_review_set_resistance_node("end"))
+    dead_end_show.currentTextChanged.connect(on_dead_end_show_changed)
+    remove_pieces_button.clicked.connect(on_remove_listed_pieces)
+    remove_dead_ends_button.clicked.connect(on_remove_listed_interior_dead_ends)
+    refresh_review_buttons()
+    loop_list.currentRowChanged.connect(on_loop_changed)
+    raw_check.toggled.connect(lambda _on: refresh_raw_panel())
+    loop_table.itemSelectionChanged.connect(recolour)
+    loop_delete_button.clicked.connect(on_loop_delete)
+    loop_keep_button.clicked.connect(on_loop_keep)
+    prune_button.clicked.connect(on_prune)
+    export_connectivity_button.clicked.connect(on_export_connectivity)
+    connectivity_map_button.clicked.connect(on_connectivity_map)
+    click_delete_button.clicked.connect(lambda: arm("delete"))
+    add_button.clicked.connect(lambda: arm("add"))
+    add_bridge_button.clicked.connect(lambda: arm("bridge"))
+    remove_bridge_button.clicked.connect(lambda: arm("unbridge"))
+
+    def on_trace_source_changed(_text) -> None:
+        # Choosing again retries raw data that could not be had (a Raw data
+        # file set since, say); raw data already read is kept.
+        state.raw_problem = None
+
+    trace_source.currentTextChanged.connect(on_trace_source_changed)
+    delete_ids_button.clicked.connect(on_delete_ids)
+    branch_ids.returnPressed.connect(on_delete_ids)
+    regenerate_graph_button.clicked.connect(on_regenerate_graph)
+    continue_button.clicked.connect(on_continue)
+    undo_button.clicked.connect(on_undo)
+    # Off until there is something to take on; the panel refreshes them once
+    # what `running` and `paused` read exists.
+    for button in (regenerate_graph_button, continue_button):
+        button.setEnabled(False)
+
+    def forget() -> None:
+        """The panel was cleared: drop the working graph and its edits."""
+        stop_editing()
+        state.graph = state.scan = state.node = None
+        state.vessels = []
+        state.added_nodes = []
+        state.decisions = {}
+        forget_undo()
+        state.raw = state.raw_problem = None
+        state.raw_panel_centrelines = None
+        state.loops, state.loop, state.loop_row = [], None, None
+        state.loop_reviews = []
+        state.loop_csv = None
+        clear_review()
+        state.review_decisions = []
+        state.support = None
+        state.summary_scanned = state.summary_before = None
+        state.scanned_from = None
+        # The CSV exported last was the cleared run's: the map's picker no
+        # longer starts there, and the status line no longer reports it.
+        state.connectivity_csv = None
+        connectivity_status.setText("")
+        junction_list.clear()
+        table.setRowCount(0)
+        loop_list.clear()
+        loop_table.setRowCount(0)
+        loop_summary.setText("")
+        status.setText("Not scanned yet.")
+        refresh_raw_panel()
+        refresh_buttons()
+
+    return SimpleNamespace(
+        page=page,
+        state=state,
+        scan=on_scan,
+        refresh=refresh_buttons,
+        forget=forget,
+        discard_edits=discard_edits,
+        regenerate_graph_button=regenerate_graph_button,
+        continue_button=continue_button,
+        undo_button=undo_button,
+        commit_status=commit_status,
+        scan_button=scan_button,
+        review_choice=review_choice,
+        region=region,
+        junction_box=junction_box,
+        junction_list=junction_list,
+        table=table,
+        delete_button=delete_button,
+        split_button=split_button,
+        connector=connector,
+        leave_button=leave_button,
+        loop_box=loop_box,
+        loop_list=loop_list,
+        loop_table=loop_table,
+        loop_delete_button=loop_delete_button,
+        loop_keep_button=loop_keep_button,
+        loop_summary=loop_summary,
+        review_box=review_box,
+        review_items=review_items,
+        review_table=review_table,
+        review_buttons=review_buttons,
+        review_diameter=review_diameter,
+        review_why=review_why,
+        review_summary=review_summary,
+        raw_box=raw_box,
+        raw_check=raw_check,
+        raw_status=raw_status,
+        raw_grid=raw_grid,
+        raw_pictures=raw_pictures,
+        dead_end_show=dead_end_show,
+        remove_pieces_button=remove_pieces_button,
+        remove_dead_ends_button=remove_dead_ends_button,
+        click_delete_button=click_delete_button,
+        add_button=add_button,
+        add_bridge_button=add_bridge_button,
+        remove_bridge_button=remove_bridge_button,
+        trace_source=trace_source,
+        branch_ids=branch_ids,
+        delete_ids_button=delete_ids_button,
+        prune_button=prune_button,
+        export_connectivity_button=export_connectivity_button,
+        export_connectivity=export_connectivity,
+        connectivity_box=connectivity_box,
+        connectivity_choice=connectivity_choice,
+        connectivity_map_button=connectivity_map_button,
+        connectivity_status=connectivity_status,
+        open_connectivity_map=open_connectivity_map,
+        log_box=log_box,
+        status=status,
+        edit_status=edit_status,
+        on_click=on_click,
+        on_press=on_press,
     )
 
 
@@ -1818,8 +16252,25 @@ def settings_widget(napari_viewer=None):
     script would.
     """
     import napari
-    from magicgui.widgets import CheckBox, ComboBox, Container, Label, PushButton, TextEdit
-    from qtpy.QtWidgets import QScrollArea, QTabWidget, QVBoxLayout, QWidget
+    from magicgui.widgets import (
+        CheckBox,
+        ComboBox,
+        Container,
+        Label,
+        PushButton,
+        SpinBox,
+        TextEdit,
+    )
+    from qtpy.QtCore import Qt
+    from qtpy.QtWidgets import (
+        QGroupBox,
+        QHBoxLayout,
+        QSizePolicy,
+        QStackedWidget,
+        QTabWidget,
+        QVBoxLayout,
+        QWidget,
+    )
 
     viewer = napari_viewer if napari_viewer is not None else napari.current_viewer()
 
@@ -1829,9 +16280,15 @@ def settings_widget(napari_viewer=None):
     rows: dict[str, Any] = {}
     fields: dict[str, Field] = {}
     tab_widget = QTabWidget()
+    tab_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+    tab_widget.setMinimumHeight(120)
 
     report = TextEdit(value="Ready.")
     report.read_only = True
+    # QTextEdit's default hint is a multi-line slab; the status line should not
+    # be what pushes the dock taller than a 1080p work area.
+    report.native.setMinimumHeight(48)
+    report.native.setMaximumHeight(96)
 
     # Two passes. Every row has to exist before anything that reads them can be
     # built, and the boundary controls read them -- so rows first, pages second.
@@ -1840,42 +16297,312 @@ def settings_widget(napari_viewer=None):
             rows[field.name] = _build_row(field)
             fields[field.name] = field
 
+    # A channel drop-down lists the channels of the file its image setting
+    # names, and follows it as that changes.
+    for channel_name, path_name in CHANNEL_SETTINGS.items():
+        if channel_name in rows and path_name in rows:
+            _follow_image_channels(rows[channel_name], rows[path_name])
+
+    #: Every Advanced button on the panel, by key (see haemolynx.gui.layout).
+    advanced_disclosures: dict[str, _AdvancedDisclosure] = {}
+
+    # Shared ilastik knobs are one block -- the ordinary rows, then their own
+    # Advanced button -- that place_shared_ilastik moves between Input and
+    # Boundaries. The block stays hidden while it has no parent: a visible
+    # widget with no parent is a floating top-level window.
+    shared_ilastik_names = [name for name in SHARED_ILASTIK_SETTINGS if name in rows]
+    shared_ilastik_rows = Container(
+        widgets=[rows[n] for n in shared_ilastik_names if not schema[n].advanced],
+        labels=True,
+    )
+    _flush(shared_ilastik_rows)
+    shared_ilastik_advanced = _AdvancedDisclosure(
+        shared_ilastik_disclosure(
+            [n for n in shared_ilastik_names if schema[n].advanced]
+        ),
+        rows,
+        always_visible=True,
+    )
+    advanced_disclosures[shared_ilastik_advanced.spec.key] = shared_ilastik_advanced
+    shared_ilastik_block = Container(
+        widgets=[shared_ilastik_rows, shared_ilastik_advanced.container], labels=False
+    )
+    _flush(shared_ilastik_block)
+    shared_ilastik_block.visible = False
+
+    # The pericyte and block masks' classifier rows: one block each, moved by
+    # place_hosted_classifiers to where the mask is read (the Perturbations
+    # tab, or the pericyte measurements), hidden while nothing reads it.
+    hosted_blocks: dict[str, Any] = {}
+    for kind, hosted_names in HOSTED_CLASSIFIER_ROWS.items():
+        block = Container(widgets=[rows[n] for n in hosted_names if n in rows], labels=True)
+        _flush(block)
+        block.visible = False
+        hosted_blocks[kind] = block
+    #: The Pericyte measurements box's holder, filled as the tabs are built;
+    #: where each block is ("measurements", or ("perturbations", entry index))
+    #: and the container holding it.
+    hosted_holders: dict[str, Any] = {}
+    hosted_placement: dict[str, Any] = {kind: None for kind in HOSTED_CLASSIFIER_ROWS}
+    hosted_in: dict[str, Any] = {kind: None for kind in HOSTED_CLASSIFIER_ROWS}
+
+    # Perturbations claims legacy flags and typed-entry options so Field
+    # objects exist, but only ALWAYS_VISIBLE_TAB_SETTINGS are parented as flat
+    # rows. Editors clone their own widgets. Hide the rest and tuck them under
+    # a hidden holder: Diameters-section hide_when_unmet would otherwise set
+    # them visible under run_haemodynamics=True, and a visible widget with no
+    # parent is a floating top-level window (``147a545`` + ``30c605e``).
+    from haemolynx.gui.perturbation_editing import orphaned_tab_settings
+
+    orphaned_perturbation_rows: frozenset[str] = frozenset()
+    for tab in tabs:
+        if tab.stage.call == "run_perturbations":
+            orphaned_perturbation_rows = frozenset(
+                orphaned_tab_settings(field.name for field in tab.fields)
+            )
+            break
+    orphan_holder = Container(widgets=[], labels=False)
+    orphan_holder.visible = False
+    for name in orphaned_perturbation_rows:
+        if name in rows:
+            rows[name].visible = False
+            orphan_holder.append(rows[name])
+
+    # FORCED_HIDDEN_SETTINGS: never parented as a flat tab row for
+    # the same reason as the perturbation rows above -- park them in the
+    # same hidden holder rather than leaving them as a floating window.
+    for name in FORCED_HIDDEN_SETTINGS:
+        if name in rows:
+            rows[name].visible = False
+            orphan_holder.append(rows[name])
+
     #: Stages that lay their own page out, keyed by the stage function they
     #: belong to rather than by the tab's title, so renaming a tab cannot
     #: silently drop them. Any future stage-specific page has a home here.
     pages: dict[str, Any] = {}
-    boundaries = _boundary_controls(viewer, rows, fields, schema, report)
+    boundaries = _boundary_controls(
+        viewer, rows, fields, schema, report,
+        # `checkpoints` is created below; read only when a box is listed.
+        boundaries_input=lambda: getattr(checkpoints.get("build_network"), "graph", None),
+    )
     if boundaries is not None:
         pages["assign_boundaries"] = boundaries.page
+    perturbations = _perturbation_controls(viewer, rows, fields, schema, report)
+    if perturbations is not None:
+        pages["run_perturbations"] = perturbations.page
+
+        def release_hosted_from_entries() -> None:
+            """Take the classifier rows out of an entry's slot before the
+            entries are built again: deleted with the old editors otherwise."""
+            for kind, block in hosted_blocks.items():
+                if not isinstance(hosted_placement[kind], tuple):
+                    continue
+                block.visible = False
+                slot = hosted_in[kind]
+                if slot is not None and any(w is block for w in slot):
+                    slot.remove(block)
+                hosted_in[kind] = None
+                hosted_placement[kind] = None
+
+        perturbations.before_rebuild(release_hosted_from_entries)
+    # Hand edits between Haemodynamics and Perturbations: the post_process stage's
+    # page, which has no setting rows of its own. Its callables read `view`,
+    # `checkpoints` and `run_state` when clicked, all of which exist by then.
+    post_processing = _post_processing_controls(
+        viewer,
+        report,
+        results=lambda: view.results,
+        boundary_roles=lambda: checkpoints._carried_boundary_roles(),
+        regenerate=lambda graph, stop_after=None: regenerate_from_graph(
+            graph, stop_after=stop_after
+        ),
+        running=lambda: run_state.running,
+        settings=lambda: _settings(),
+        paused=lambda: run_state.paused,
+        paused_after=lambda: run_state.paused_after,
+        segmentation=lambda image, values: _kept_segmentation_support(image, values),
+    )
+    pages[POST_PROCESS] = lambda _summary, _names: post_processing.page
+
+    #: Snapshots from the last run that showed layers: what "Run from this
+    #: stage" on a tab needs from the previous tab. Cleared when the layers
+    #: are, and replaced when a new run that shows layers starts.
+    checkpoints = StageCheckpoints()
+
+    def _kept_segmentation_support(image, values):
+        """The MaskSupport post processing keeps on the run's volume, when the
+        viewer's segmented *image* is that volume's; None otherwise (a run
+        loaded from a file before its first Regenerate)."""
+        checkpoint = checkpoints.get("skeletonise")
+        volume = getattr(checkpoint, "output", None)
+        if volume is None or getattr(volume, "image", None) is not image:
+            return None
+        return pipeline_stages.post_process_segmentation_support(values or {}, volume)
+
+    revert_buttons: dict[str, Any] = {}
+    from haemolynx.gui.chrome_tooltips import REVERT_STAGE_TOOLTIP, stage_tab_tooltip
+
+    #: The batch set up in the Batch run window, while there is one (None:
+    #: Run pipeline runs the one image the Input tab names), and the "Batch
+    #: run" text shown in each path row it fills -- predeclared, since
+    #: `apply_prerequisites` reads them from its first call.
+    #: The batch Run pipeline runs (None: the Input tab's one image), whether
+    #: one is running now, and whether it is to stop after its image.
+    batch_mode = SimpleNamespace(setup=None, running=False, stop=False)
+    batch_row_labels: dict[str, Any] = {}
+    #: The Input tab's boxes by key, so the chrome built further down (the
+    #: check and optimise buttons) can join the box it belongs to.
+    input_boxes: dict[str, Any] = {}
+    #: Input-tab holder that receives the shared ilastik block when main
+    #: segmentation uses ilastik. Boundaries gets a holder of its own.
+    input_shared_ilastik_holder: Any = None
+    #: Diameters-tab container, so "Optimise FWHM settings" (built further
+    #: down, once its own click handler exists) can be inserted right after
+    #: the measure_diameters_from_raw_image row.
+    diameters_settings: Any = None
+    #: Which tab currently parents the shared ilastik rows.
+    shared_ilastik_placement: dict[str, str | None] = {"host": None}
+    #: Predeclared so `apply_prerequisites` (defined below, but already
+    #: called once before these are built) can safely check them on its very
+    #: first call -- see the `thick_vessel_row` guard just below for the
+    #: same "not built yet" pattern.
+    optimise_fwhm_button: Any = None
+    #: The FWHM optimiser's options and its review box, shown with the button.
+    fwhm_optimise_box: Any = None
+    #: "Optimise endothelial settings" and its box: the same, for the ring fit.
+    optimise_endothelial_button: Any = None
+    endothelial_optimise_box: Any = None
+    #: A nested QGroupBox (e.g. "Connectivity/Network Analysis" on "8.
+    #: Additional measurements") boxes a run of settings that all share one
+    #: `requires` gate on the section above it. Left always visible, an
+    #: unmet gate hides every row inside but not the box itself, so a user
+    #: sees an empty frame with a title and nothing in it rather than the
+    #: box simply not being there -- apply_prerequisites (below) hides the
+    #: box itself once none of its own rows are visible.
+    section_group_boxes: dict[str, tuple[Any, list[str]]] = {}
 
     for tab in tabs:
         summary = Label(value=tab.stage.summary)
         build = pages.get(tab.stage.call or "")
-        names = [field.name for field in tab.fields]
+        # Shared ilastik knobs start unparented; place_shared_ilastik hosts
+        # them, and place_hosted_classifiers the classifier rows of the
+        # pericyte and block masks. FORCED_HIDDEN_SETTINGS are parked in orphan_holder.
+        names = [
+            field.name
+            for field in tab.fields
+            if field.name not in SHARED_ILASTIK_SETTING_SET
+            and field.name not in HOSTED_CLASSIFIER_SETTING_SET
+            and field.name not in FORCED_HIDDEN_SETTINGS
+        ]
         if build is not None:
             native = build(summary, names)
         else:
-            native = Container(
-                widgets=[summary, *(rows[name] for name in names)],
-                labels=True,
-            ).native
-        # A plain QScrollArea rather than `Container(scrollable=True)`: the
+            # Boxes and Advanced buttons are decided by haemolynx.gui.layout:
+            # a later section on a tab is a nested checkbox's own children
+            # (e.g. "Connectivity/Network Analysis" under "Statistics and
+            # measurements") and gets a group box of its own, and every
+            # advanced row goes behind a button under the row it belongs to.
+            native, containers = _lay_out_boxes(
+                layout_for(tab.stage.call, names, schema),
+                rows,
+                disclosures=advanced_disclosures,
+                group_boxes=section_group_boxes,
+                lead=[summary],
+            )
+            if tab.stage.call == "segment":
+                input_boxes = containers
+                input_shared_ilastik_holder = Container(widgets=[], labels=False)
+                _flush(input_shared_ilastik_holder)
+                leading_input = containers.get("run_segmentation")
+                if leading_input is not None:
+                    leading_input.append(input_shared_ilastik_holder)
+                    _hide_row_label(input_shared_ilastik_holder)
+            elif tab.stage.call == "assign_diameters":
+                diameters_settings = containers.get("diameters")
+            if "pericyte_measurements" in containers:
+                # The pericyte classifier's rows, while only the measurements read its mask.
+                hosted_holders["measurements"] = Container(widgets=[], labels=False)
+                _flush(hosted_holders["measurements"])
+                containers["pericyte_measurements"].append(hosted_holders["measurements"])
+                _hide_row_label(hosted_holders["measurements"])
+        # A bounded QScrollArea rather than `Container(scrollable=True)`: the
         # magicgui one reports the full height of its contents, so a tab with
         # 39 rows stretches the whole napari window instead of scrolling.
-        # QScrollArea's own size hint ignores the widget inside it, which is
-        # exactly what keeps the panel a sensible size. Its scrollbars default
-        # to appearing only when needed, vertically and horizontally.
-        scroller = QScrollArea()
-        scroller.setWidgetResizable(True)
-        scroller.setWidget(native)
+        # Qt's QScrollArea.sizeHint *adds* the inner widget's hint, which on
+        # Windows becomes the dock's minimum height -- taller than a 1080p
+        # work area, then QWindowsWindow::setGeometry warns and clamps.
+        page = QWidget()
+        page_layout = QVBoxLayout(page)
+        page_layout.setContentsMargins(0, 0, 0, 0)
+        page_layout.addWidget(native)
+        if tab.stage.call == "export_results":
+            # Post processing owns the button (it exports the network edited
+            # there, if any); it sits here with the run's other exports.
+            page_layout.addWidget(post_processing.connectivity_box)
+        # "Run from this stage" lives in shared chrome below "Show each
+        # topology step", not inside the tab page: one button per tab that
+        # has a predecessor, shown for the active tab and centered on the
+        # panel. After a full run it drops this tab and later work, then
+        # reruns from here using the previous tab's checkpoint.
+        if previous_tab(tab.stage.title) is not None and tab.stage.call != POST_PROCESS:
+            revert = PushButton(text="Run from this stage")
+            revert.enabled = False
+            revert.tooltip = REVERT_STAGE_TOOLTIP
+            revert.native.setObjectName("haemolynx_revert")
+            revert_buttons[tab.stage.title] = revert
+        page_layout.addStretch(1)
+        scroller = _fitting_scroll_area()
+        scroller.setWidget(page)
         tab_widget.addTab(scroller, tab.stage.title)
-        if tab.stage.call:
-            index = tab_widget.count() - 1
-            tab_widget.setTabToolTip(index, f"{tab.stage.call}(settings, ...)")
+        tab_widget.setTabToolTip(tab_widget.count() - 1, stage_tab_tooltip(tab.stage))
 
+    # The pages that lay themselves out keep their own Advanced buttons and
+    # boxes; the panel refreshes them with everything else.
+    for controls in (boundaries, perturbations):
+        if controls is None:
+            continue
+        advanced_disclosures.update(controls.disclosures())
+        section_group_boxes.update(getattr(controls, "group_boxes", dict)())
+
+    # Per-tab Revert pages, stacked in tab order: empty for the first tab,
+    # centered button for every later one. The stack tracks the tab widget so
+    # the chrome below show-steps always shows the active tab's Revert.
+    revert_stack = QStackedWidget()
+    revert_stack.setObjectName("haemolynx_revert_stack")
+    for tab in tabs:
+        slot = QWidget()
+        slot.setObjectName("haemolynx_revert_slot")
+        row = QHBoxLayout(slot)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.addStretch(1)
+        button = revert_buttons.get(tab.stage.title)
+        if button is not None:
+            row.addWidget(button.native, 0, Qt.AlignHCenter)
+        row.addStretch(1)
+        revert_stack.addWidget(slot)
+
+    def sync_revert_stack(index: int) -> None:
+        if 0 <= index < revert_stack.count():
+            revert_stack.setCurrentIndex(index)
+
+    tab_widget.currentChanged.connect(sync_revert_stack)
+    sync_revert_stack(tab_widget.currentIndex())
     #: What a loaded config said each path setting was, before its FileEdit
     #: made it absolute. Empty until a config is opened.
     loaded_paths: dict[str, Any] = {}
+    #: Directory of the last loaded or saved config, for relative-path rebasing.
+    loaded_config_dir: list[Path | None] = [None]
+    #: Last path the Load/Save dialogues used, so they reopen in the same place.
+    last_config_path: list[str] = ["config.yaml"]
+    #: Last path the Save run / Load run dialogues used.
+    last_run_path: list[str] = [RUN_SNAPSHOT_FILENAME]
+    #: The worker writing a run in the background, while there is one.
+    saving_run: list[Any] = [None]
+    #: The worker running the checks in the background, while there is one.
+    checking: list[Any] = [None]
+    #: The rows the run on show was made with (started, or loaded), which a
+    #: saved run keeps as its settings; None with no run.
+    run_values: list[dict[str, Any] | None] = [None]
 
     #: What pointing the run at an open layer put into the form, and which
     #: layer it was. `settings` is None until a layer has been adopted.
@@ -1892,7 +16619,7 @@ def settings_widget(napari_viewer=None):
         it, because then the absolute path is what the user chose.
         """
         values = {
-            name: fields[name].to_setting_value(widget.value)
+            name: fields[name].to_setting_value(_safe_widget_value(widget))
             for name, widget in rows.items()
         }
         for name, original in loaded_paths.items():
@@ -1900,17 +16627,118 @@ def settings_widget(napari_viewer=None):
             if current is None:
                 continue
             try:
-                unchanged = Path(current) == Path(original).resolve()
+                unchanged = Path(current) == _resolved_path(str(original))
             except (TypeError, ValueError, OSError):
                 continue
             if unchanged:
                 values[name] = original
         return values
 
+    #: The classifier training window open for each classifier row.
+    training_windows: dict[str, Any] = {}
+
+    def vessel_masks_from_classifier(path) -> str | None:
+        """Make the Boundaries tab's vessel masks with the main image's
+        classifier at *path* when it also finds arterioles and venules --
+        the large masks', and the small masks' too for one telling large from
+        small -- turning those masks on; what the panel says, or None."""
+        from haemolynx.gui.classifier_training import (
+            classifier_vessel_mask_roles,
+            vessel_mask_note,
+            vessel_mask_settings_for,
+        )
+
+        roles = classifier_vessel_mask_roles(path)
+        if not roles:
+            return None
+        for name, value in vessel_mask_settings_for(path, roles).items():
+            if name in rows:
+                rows[name].value = display_value_for(schema[name], value)
+                loaded_paths.pop(name, None)
+        return vessel_mask_note(roles)
+
+    def open_classifier_training(row_name: str, *, synchronous: bool = False):
+        """Open the training window for *row_name*'s classifier: saving one
+        fills the row and turns its switch on."""
+        from haemolynx.classifier.forest import SCIKIT_LEARN_MISSING, scikit_learn_available
+        from haemolynx.gui.classifier_training import CLASSIFIER_SWITCHES
+
+        open_window = training_windows.get(row_name)
+        if open_window is not None and open_window.is_open() and not open_window.load_failed:
+            open_window.show()
+            return open_window
+        if open_window is not None and open_window.load_failed:
+            # Its image could not be read (too large for memory): opened
+            # again, with the settings as they are now (the low-RAM option ticked).
+            open_window.window.close()
+        if not scikit_learn_available():
+            report.value = SCIKIT_LEARN_MISSING
+            return None
+
+        def saved(path: Path) -> None:
+            from haemolynx.gui.form import EXCLUSIVE_SWITCHES
+
+            rows[row_name].value = str(path)
+            switch = CLASSIFIER_SWITCHES[row_name]
+            # Saving one for this job chooses it over ilastik's project.
+            if EXCLUSIVE_SWITCHES.get(switch) in rows:
+                rows[EXCLUSIVE_SWITCHES[switch]].value = False
+            if switch in rows:
+                rows[switch].value = True
+            lines = [f"Saved the classifier to {path}; runs use it for this job."]
+            if row_name == "pixel_classifier_path":
+                # Saved over the same file the row already named, the row
+                # does not change: its job may have.
+                note = vessel_masks_from_classifier(path)
+                if note:
+                    lines.append(note)
+            report.value = "\n".join(lines)
+
+        try:
+            window = _ClassifierTrainingWindow(
+                viewer, current_values(), row_name, on_saved=saved, synchronous=synchronous,
+                current_values=current_values, parent=panel,
+            )
+        except (OSError, ValueError) as error:
+            report.value = str(error)
+            return None
+        training_windows[row_name] = window
+        window.show()
+        return window
+
+    from haemolynx.gui.chrome_tooltips import TRAIN_CLASSIFIER_TOOLTIP
+    from haemolynx.gui.classifier_training import CLASSIFIER_ROWS
+
+    for classifier_row in CLASSIFIER_ROWS:
+        # A FileEdit has a fixed set of widgets: the button joins its Qt row,
+        # beside "Select file", and so shows and hides with the row.
+        row_layout = getattr(getattr(rows.get(classifier_row), "native", None), "layout", lambda: None)()
+        if row_layout is None:
+            continue
+        train_button = PushButton(text="Train...")
+        train_button.tooltip = TRAIN_CLASSIFIER_TOOLTIP
+        train_button.changed.connect(lambda *_args, name=classifier_row: open_classifier_training(name))
+        row_layout.addWidget(train_button.native)
+        rows[classifier_row]._haemolynx_train_button = train_button
+
     def use_layer(layer) -> None:
         """Point the run at *layer*: its own file, or its array written out."""
+        from haemolynx.graph.boundaries import network_is_synthetic
+        from haemolynx.gui.layers import source_path_of
+        from haemolynx.io import axis_order_for_file
+
+        if network_is_synthetic(current_values()):
+            report.value = (
+                "The run draws a synthetic network, so the open image is not its input: "
+                "set the Input tab's Input to Segmented image to analyse the layer."
+            )
+            return
+        # The layer's axes are its file's, so under auto that file's labels say them.
+        axis_order = axis_order_for_file(
+            str(current_values().get("image_axis_order") or "zyx"), source_path_of(layer)
+        )
         try:
-            chosen = input_for_layer(layer, _export_dir(current_values()))
+            chosen = input_for_layer(layer, _export_dir(current_values()), axis_order)
         except ValueError as error:
             report.value = str(error)
             return
@@ -1919,7 +16747,7 @@ def settings_widget(napari_viewer=None):
 
             target = Path(chosen.settings["input_path"])
             target.parent.mkdir(parents=True, exist_ok=True)
-            tifffile.imwrite(target, layer.data)
+            tifffile.imwrite(target, data_for_pipeline(layer))
         for name, value in chosen.settings.items():
             if name in rows:
                 rows[name].value = value
@@ -1929,22 +16757,318 @@ def settings_widget(napari_viewer=None):
         adopted.name = getattr(layer, "name", None)
         apply_prerequisites()
         note = chosen.note
-        applied = _scale_layer_from_its_file(layer, chosen.settings.get("input_path"))
+        applied = _scale_layer_from_its_file(
+            layer, chosen.settings.get("input_path"), axis_order
+        )
         if applied is not None:
             note += (
-                f" Scaled the layer to {tuple(round(v, 4) for v in applied)} (z, y, x) "
-                "microns, from the file, so it sits where the results will."
+                f" Scaled the layer to {tuple(round(v, 4) for v in applied)} "
+                f"({', '.join(axis_order)}) microns, from the file, so it sits where "
+                "the results will."
             )
         report.value = note
 
-    def apply_prerequisites(*_args) -> None:
-        """Grey out settings whose prerequisite is unmet, and say why."""
+    def place_shared_ilastik() -> None:
+        """Host the shared ilastik block on Input or Boundaries (same widgets).
+
+        The block -- the shared rows and their own Advanced button -- is
+        deliberately left out of the initial tab containers and moved later.
+        A magicgui widget with no Qt parent that is set visible becomes a
+        top-level window beside napari — the same failure ``place_shared``
+        already guards against for boundary-method rows. Hide before detach,
+        show only after a successful append, and never record a host that did
+        not actually receive the block.
+        """
         values = current_values()
+        host = shared_ilastik_host(values)
+        boundaries_holder = None
+        if boundaries is not None:
+            getter = getattr(boundaries, "shared_ilastik_holder", None)
+            boundaries_holder = getter() if callable(getter) else getter
+
+        if host == shared_ilastik_placement["host"]:
+            # Already placed (or correctly unhosted). Do not poke ``visible``
+            # here: setting True on an unparented block opens a floating window.
+            return
+
+        # Hide before remove: a visible widget with no parent is a window of
+        # its own (see Boundaries ``place_shared``).
+        shared_ilastik_block.visible = False
+        for holder in (input_shared_ilastik_holder, boundaries_holder):
+            if holder is not None and any(w is shared_ilastik_block for w in holder):
+                holder.remove(shared_ilastik_block)
+
+        attached: str | None = None
+        if host == "input" and input_shared_ilastik_holder is not None:
+            input_shared_ilastik_holder.append(shared_ilastik_block)
+            attached = "input"
+        elif host == "boundaries" and boundaries_holder is not None:
+            boundaries_holder.append(shared_ilastik_block)
+            attached = "boundaries"
+        if attached is not None:
+            shared_ilastik_block.visible = True
+
+        shared_ilastik_placement["host"] = attached
+        # Moving rows into a container re-unifies its label widths.
+        _wrap_row_labels(tab_widget)
+
+    def place_hosted_classifiers() -> None:
+        """Host the pericyte and block masks' classifier rows where their
+        mask is read (`form.hosted_classifier_host`): under the mask row of
+        the first perturbation reading it, else in the pericyte measurements,
+        else nowhere. As place_shared_ilastik: hidden before it is detached,
+        shown only once attached, a place recorded only when it took the rows."""
+        values = current_values()
+        moved = False
+        for kind, block in hosted_blocks.items():
+            host = hosted_classifier_host(kind, values)
+            where: Any = None
+            target = None
+            if host == "perturbations" and perturbations is not None:
+                index = hosted_classifier_entry(kind, values)
+                target = perturbations.classifier_slot(index, kind)
+                where = ("perturbations", index)
+            elif host == "measurements":
+                target = hosted_holders.get("measurements")
+                where = "measurements"
+            if target is None:
+                where = None
+            if where == hosted_placement[kind] and hosted_in[kind] is target:
+                continue
+            block.visible = False
+            current = hosted_in[kind]
+            if current is not None and any(w is block for w in current):
+                current.remove(block)
+            hosted_in[kind] = None
+            if target is not None:
+                target.append(block)
+                block.visible = True
+                hosted_in[kind] = target
+            hosted_placement[kind] = where
+            moved = True
+        if moved:
+            _wrap_row_labels(tab_widget)
+
+    def chain_met(name: str, values: Mapping[str, Any]) -> bool:
+        """Whether every gate above *name* holds (haemolynx.gui.form.unmet_chain)."""
+        return not unmet_chain(schema, name, values)
+
+    def row_shows(name: str, values: Mapping[str, Any], gates: Mapping[str, Any]) -> bool:
+        """Whether *name*'s row would show: a hidden row needs its whole chain
+        met by *gates* (as the rows themselves are judged: an auto stain as
+        read, a set batch's image rows filled), bar a path gate it names
+        itself (the raw image), which greys it."""
+        return fields[name].is_visible(values, unmet_chain(schema, name, gates))
+
+    #: What the last run read the raw image's stain as when the setting is
+    #: auto (the graph's raw_image_stain, with its reading): None until a run
+    #: has read it, or once another raw image or channel is named. Filled by
+    #: refresh_stain_reading, below the view; "graph" and "image" are the
+    #: run's graph it was read off and the raw image named when it arrived.
+    stain_read: dict[str, Any] = {"stain": None, "reading": None, "graph": None, "image": None}
+
+    def resolved_raw_image_stain(values: Mapping[str, Any]) -> str | None:
+        """The stain the run measures by: the setting, or what the last run
+        read an ``auto`` as; None for an ``auto`` no run has read yet."""
+        stain = values.get("raw_image_stain")
+        return stain if stain in ("plasma_column", "endothelial") else stain_read["stain"]
+
+    def fill_classifier_rows(values: Mapping[str, Any]) -> None:
+        """Point each row a classifier makes the mask of at the file it writes
+        (`classifier_training.classifier_filled_rows`): the row stays in view,
+        greyed, naming it. Not while a batch is set, which fills those rows
+        image by image and leaves the panel's own as they were."""
+        from haemolynx.gui.classifier_training import classifier_filled_rows
+
+        if batch_mode.setup is not None:
+            return
+        for name, path in classifier_filled_rows(values).items():
+            if name not in rows:
+                continue
+            if _names_same_file(fields[name].to_setting_value(_safe_widget_value(rows[name])), path):
+                continue
+            rows[name].value = display_value_for(schema[name], path)
+            loaded_paths.pop(name, None)
+
+    def apply_prerequisites(*_args) -> None:
+        """Apply schema prerequisites: hide nested rows, grey others."""
+        # Pinned before the values snapshot below, not inside the rows loop:
+        # a dependent row reading a forced value to compute its own `enabled`
+        # would otherwise use the stale, not-yet-forced value.
+        values = current_values()
+        for name in FORCED_HIDDEN_SETTINGS:
+            forced = forced_hidden_value(name, values)
+            if name in rows and rows[name].value != forced:
+                rows[name].value = forced
+        values = current_values()
+        fill_classifier_rows(values)
+        values = current_values()
+        # The gates are judged with raw_image_stain as the run resolved it: a
+        # row needing a plasma label or a wall (the FWHM and endothelial
+        # method rows) follows what an "auto" read, not the word "auto".
+        gates = values
+        resolved = resolved_raw_image_stain(values)
+        if resolved is not None and resolved != values.get("raw_image_stain"):
+            gates = {**values, "raw_image_stain": resolved}
+        # A set batch fills the image rows for each image: what needs a raw
+        # image (ilastik's switch among them) is not greyed for the panel's
+        # own row being empty.
+        if batch_mode.setup is not None:
+            gates = batch_mode.setup.gates(gates)
+        place_shared_ilastik()
+        place_hosted_classifiers()
+        # The "Use open layer" row is an image run's: a synthetic network
+        # reads no layer.
+        try:
+            open_layer_row = layer_row
+        except NameError:
+            open_layer_row = None
+        if open_layer_row is not None:
+            from haemolynx.graph.boundaries import network_is_synthetic
+
+            open_layer_row.visible = not network_is_synthetic(values)
         for name, widget in rows.items():
+            if name in SHARED_ILASTIK_SETTING_SET:
+                # Visibility and parent belong to place_shared_ilastik.
+                widget.enabled = True
+                widget.tooltip = fields[name].help
+                continue
+            if name in orphaned_perturbation_rows:
+                # Never parented as flat tab rows; typed editors clone their
+                # own widgets. Do not reveal — visible + no parent is a
+                # window.
+                widget.visible = False
+                widget.enabled = True
+                widget.tooltip = fields[name].help
+                continue
+            if name == "do_fwhm_measurement":
+                # Turning on "Measure diameters from the raw image" turns
+                # this on (below); a resumed run may turn it off on its own,
+                # to keep diameters already measured. The row stays in the
+                # layout so the decoy-check button and the raw-section
+                # fallback keep their place, but the checkbox is not shown.
+                widget.visible = False
+                widget.enabled = True
+                widget.tooltip = fields[name].help
+                continue
+            if name in FORCED_HIDDEN_SETTINGS:
+                # Value already pinned above -- just keep it hidden.
+                widget.visible = False
+                widget.enabled = True
+                widget.tooltip = fields[name].help
+                continue
             field = fields[name]
-            enabled = field.is_enabled(values)
+            # The whole chain of gates above the row, not only its own.
+            unmet = unmet_chain(schema, name, gates)
+            enabled = not unmet
+            if field.hide_when_unmet:
+                # Input / Diameters / FWHM / Boundaries vessel / Graph
+                # centreline options: only relevant nested knobs appear. A
+                # row whose only unmet gate is the raw image it names stays,
+                # greyed, so what to set is in view; a hidden row is left
+                # enabled, as it always was.
+                # (Computed, not read back: a row on a tab that is not
+                # current reads as hidden whatever its gates say.)
+                visible = field.is_visible(values, unmet)
+                widget.visible = visible
+                enabled = enabled or not visible
+            tooltip = field.help if enabled else replace(field, enabled_by=unmet).why_disabled(gates)
+            partner = exclusive_partner_in_effect(schema, name, gates) if enabled else None
+            if partner is not None:
+                # The image's other way of being segmented is on: a run uses one.
+                enabled, tooltip = False, exclusive_reason(partner)
             widget.enabled = enabled
-            widget.tooltip = field.help if enabled else field.why_disabled(values)
+            widget.tooltip = tooltip
+            if name in batch_row_labels:
+                _show_batch_row(widget, batch_row_labels[name], batch_mode.setup, name)
+
+        for group, section_names in section_group_boxes.values():
+            # Not `rows[name].visible`: magicgui reads that back through the
+            # widget's own composite Qt visibility, which is masked by the
+            # group's *current* (possibly still-hidden, from the previous
+            # call) state -- reading it here would latch the group hidden
+            # forever once hidden once. `field.is_visible` is the pure,
+            # ancestor-independent answer the per-row loop above just used.
+            group.setVisible(any(row_shows(name, values, gates) for name in section_names))
+
+        # Each Advanced button hides when none of its rows would show, and
+        # counts the rows holding something other than where the panel started.
+        for disclosure in advanced_disclosures.values():
+            disclosure.refresh(
+                lambda name: row_shows(name, values, gates), values, schema, ADVANCED_BASELINE
+            )
+        if perturbations is not None:
+            perturbations.refresh_entries()
+
+        # Large-vessel-network mode relabels the thick-vessel checkbox: once
+        # both are on, "thick vessel skeletonisation" is no longer the
+        # user-facing action -- turning large vessels into network members
+        # (Large_Art/Large_Ven) is. use_large_vessel_masks alone is not the
+        # trigger: that flag also drives the long-standing cut-away
+        # workflow, unrelated to this feature, so relabeling on it alone
+        # would mislabel that ordinary case. Checking
+        # use_thick_vessel_skeletonisation's own current value too (not
+        # just trusting assign_large_vessel_branch_orders to stay
+        # consistent, since schema `requires` does not enforce that at the
+        # raw-value level) avoids showing the relabeled text for an
+        # inconsistent stored config where the checkbox itself reads
+        # unchecked.
+        # "Optimise FWHM settings" (below the measurement checkbox): visible
+        # only while FWHM could run -- diameters measured from the raw image,
+        # and its stain not set to endothelial -- a deliberate difference
+        # from "Optimise settings" on the Input tab, which stays visible and
+        # only ever toggles `.enabled`. Hiding it entirely (rather than
+        # greying it out) matches every other `hide_when_unmet` FWHM row
+        # right next to it.
+        # Without haemodynamics the Diameters stage measures nothing, whatever
+        # the measuring box (hidden then) still holds.
+        measures_diameters = bool(values.get("run_haemodynamics")) and bool(
+            values.get("measure_diameters_from_raw_image")
+        )
+        fwhm_could_run = (
+            measures_diameters
+            and bool(values.get("raw_image_path"))
+            and resolved_raw_image_stain(values) != "endothelial"
+        )
+        if optimise_fwhm_button is not None:
+            optimise_fwhm_button.visible = fwhm_could_run
+        if fwhm_optimise_box is not None:
+            fwhm_optimise_box.visible = fwhm_could_run
+        # "Optimise endothelial settings": visible exactly when the ring fit
+        # would run -- diameters measured from the raw image, its stain
+        # endothelial as set or as the last run read an auto -- and never
+        # for a synthetic network, which reads no image.
+        from haemolynx.graph.boundaries import network_is_synthetic
+
+        ring_fit_could_run = (
+            measures_diameters
+            and bool(values.get("raw_image_path"))
+            and resolved_raw_image_stain(values) == "endothelial"
+            and not network_is_synthetic(values)
+        )
+        if optimise_endothelial_button is not None:
+            optimise_endothelial_button.visible = ring_fit_could_run
+        if endothelial_optimise_box is not None:
+            endothelial_optimise_box.visible = ring_fit_could_run
+        # The optimisers grey while the run draws a synthetic network (no
+        # image to try settings on) -- once the buttons exist, further down.
+        try:
+            refresh_buttons = refresh_single_image_buttons
+        except NameError:
+            refresh_buttons = None
+        if refresh_buttons is not None:
+            refresh_buttons(values)
+
+        thick_vessel_row = rows.get("use_thick_vessel_skeletonisation")
+        if thick_vessel_row is not None:
+            large_vessel_network_mode = bool(
+                values.get("use_thick_vessel_skeletonisation")
+            ) and assigns_large_vessel_branch_orders(values)
+            thick_vessel_row.label = (
+                "Also segment large vessels"
+                if large_vessel_network_mode
+                else fields["use_thick_vessel_skeletonisation"].label
+            )
 
     for name, value in DISPLAY_SETTINGS_OFF_IN_NAPARI.items():
         if name in rows:
@@ -1952,9 +17076,218 @@ def settings_widget(napari_viewer=None):
 
     for widget in rows.values():
         widget.changed.connect(apply_prerequisites)
+
+    #: User-facing values of the resume skip toggles before Revert turns them
+    #: off. Restored by "Clear layers and state".
+    skip_toggle_snapshot: dict[str, bool] = {}
+    revert_setting_skips = False
+
+    def snapshot_skip_toggles(*_args) -> None:
+        if revert_setting_skips:
+            return
+        for name in SKIP_FOR_RESUME:
+            if name in rows:
+                skip_toggle_snapshot[name] = bool(rows[name].value)
+
     apply_prerequisites()
+    snapshot_skip_toggles()
+    for name in SKIP_FOR_RESUME:
+        if name in rows:
+            rows[name].changed.connect(snapshot_skip_toggles)
+
+    def measuring_turns_fwhm_measurement_on(*_args) -> None:
+        """"Do FWHM measurement" has no checkbox of its own, so measuring
+        from the raw image turns it on: left off by an old config or a
+        resume, FWHM would keep the diameters already on the graph."""
+        if rows["measure_diameters_from_raw_image"].value and not rows["do_fwhm_measurement"].value:
+            rows["do_fwhm_measurement"].value = True
+
+    if "measure_diameters_from_raw_image" in rows and "do_fwhm_measurement" in rows:
+        rows["measure_diameters_from_raw_image"].changed.connect(measuring_turns_fwhm_measurement_on)
+
+    #: True while a config or a saved run fills the rows: the vessel-mask
+    #: paths it names are what the user asked for, not the search's to replace.
+    restoring_settings = [False]
+    #: The trigger settings as the vessel-mask search last saw them, and what
+    #: it filled each mask row with (`gui/vessel_mask_search.py`).
+    mask_search_seen = {name: current_values().get(name) for name in MASK_SEARCH_TRIGGERS}
+    mask_rows_filled: dict[str, Any] = {}
+    #: While a preset loads, every line the searches report, not just the last.
+    preset_search_lines: list[list[str] | None] = [None]
+
+    def search_for_vessel_masks(*_args) -> None:
+        """Fill a vessel-mask role's rows from the masks beside the input image
+        when the role comes into use, or the input image changes while it is."""
+        values = current_values()
+        before = dict(mask_search_seen)
+        mask_search_seen.update({name: values.get(name) for name in MASK_SEARCH_TRIGGERS})
+        if restoring_settings[0]:
+            return
+        fill = fill_vessel_mask_rows(values, roles_to_search(before, values), mask_rows_filled)
+        for name, value in fill.values.items():
+            if name in rows:
+                rows[name].value = display_value_for(schema[name], value)
+                loaded_paths.pop(name, None)
+                mask_rows_filled[name] = value
+        if fill.lines:
+            report.value = "\n".join(fill.lines)
+            if preset_search_lines[0] is not None:
+                preset_search_lines[0].extend(fill.lines)
+
+    for name in MASK_SEARCH_TRIGGERS:
+        if name in rows:
+            rows[name].changed.connect(search_for_vessel_masks)
+
+    def classifier_row_fills_vessel_masks(*_args) -> None:
+        """A classifier chosen in the main image's row that also finds
+        arterioles and venules makes the Boundaries tab's vessel masks; never
+        while a config or a saved run fills the rows."""
+        if restoring_settings[0]:
+            return
+        note = vessel_masks_from_classifier(current_values().get("pixel_classifier_path"))
+        if note:
+            report.value = note
+
+    if "pixel_classifier_path" in rows:
+        rows["pixel_classifier_path"].changed.connect(classifier_row_fills_vessel_masks)
+
+    def pericyte_mask_rows() -> dict[str, Any]:
+        """The pericyte mask rows the panel shows -- Pericyte measurements'
+        while it is ticked, and each perturbation entry's revealed one --
+        and what each names. Not a row the classifier names its own mask in
+        (form.CLASSIFIER_FILLED_ROWS): that is the classifier's, not the
+        follower's, while its switch is on."""
+        from haemolynx.gui.classifier_training import classifier_filled_rows
+
+        values = current_values()
+        shown: dict[str, Any] = {}
+        if (
+            values.get("measure_pericytes")
+            and PERICYTE_MEASUREMENT_FIELD in rows
+            and PERICYTE_MEASUREMENT_FIELD not in classifier_filled_rows(values)
+        ):
+            shown[PERICYTE_MEASUREMENT_FIELD] = values.get(PERICYTE_MEASUREMENT_FIELD)
+        if perturbations is not None:
+            for index, value in perturbations.pericyte_masks().items():
+                shown[pericyte_perturbation_field(index)] = value
+        return shown
+
+    #: The pericyte mask rows in use as the follower last saw them, the
+    #: images they were looked for beside, and what the panel filled each
+    #: row with (`gui/pericyte_mask_search.py`).
+    pericyte_rows_seen: dict[str, Any] = pericyte_mask_rows()
+    pericyte_references_seen = [
+        tuple(str(current_values().get(name) or "") for name in PERICYTE_REFERENCE_SETTINGS)
+    ]
+    pericyte_rows_filled: dict[str, Any] = {}
+    filling_pericyte_rows = [False]
+
+    def follow_pericyte_masks(*_args, rebuilt: bool = False) -> None:
+        """Fill the pericyte mask rows from the mask beside the input image
+        as each comes into use, and a mask entered into one into the others;
+        never while a config or a saved run fills the rows."""
+        if filling_pericyte_rows[0]:
+            return
+        values = current_values()
+        references = tuple(values.get(name) for name in PERICYTE_REFERENCE_SETTINGS)
+        reference_key = tuple(str(value or "") for value in references)
+        references_changed = reference_key != pericyte_references_seen[0]
+        before = dict(pericyte_rows_seen)
+        after = pericyte_mask_rows()
+        pericyte_rows_seen.clear()
+        pericyte_rows_seen.update(after)
+        pericyte_references_seen[0] = reference_key
+        if rebuilt:
+            # The entries were numbered afresh: what the panel filled an
+            # entry's row with is known by the mask it still holds.
+            refilled = pericyte_filled_after_renumbering(pericyte_rows_filled, after)
+            pericyte_rows_filled.clear()
+            pericyte_rows_filled.update(refilled)
+        if restoring_settings[0] or rebuilt:
+            return
+        fill = update_pericyte_mask_rows(
+            before, after, pericyte_rows_filled,
+            references=references, references_changed=references_changed,
+        )
+        for name in fill.released:
+            pericyte_rows_filled.pop(name, None)
+        filling_pericyte_rows[0] = True
+        try:
+            for name, path in fill.values.items():
+                pericyte_rows_filled[name] = path
+                index = pericyte_perturbation_index(name)
+                if index is not None and perturbations is not None:
+                    perturbations.set_pericyte_mask(index, path)
+                elif name in rows:
+                    rows[name].value = display_value_for(schema[name], path)
+                    loaded_paths.pop(name, None)
+        finally:
+            filling_pericyte_rows[0] = False
+        if fill.values:
+            pericyte_rows_seen.clear()
+            pericyte_rows_seen.update(pericyte_mask_rows())
+        if fill.lines:
+            # After the vessel-mask search's lines when the input image changed.
+            lines = ([report.value] if references_changed and report.value else []) + list(fill.lines)
+            report.value = "\n".join(lines)
+
+    for name in PERICYTE_MASK_TRIGGERS:
+        if name in rows:
+            rows[name].changed.connect(follow_pericyte_masks)
+    # The pericyte classifier takes the rows it names its mask in from the
+    # follower while it is on, and gives them back when it goes off.
+    if "use_pixel_classifier_pericyte_segmentation" in rows:
+        rows["use_pixel_classifier_pericyte_segmentation"].changed.connect(follow_pericyte_masks)
+    if perturbations is not None:
+        perturbations.on_change(lambda rebuilt: follow_pericyte_masks(rebuilt=rebuilt))
+
+    #: The trigger settings as the template-basis follower last saw them.
+    template_basis_seen = {name: current_values().get(name) for name in TEMPLATE_BASIS_TRIGGERS}
+
+    def follow_template_basis(*_args) -> None:
+        """Set Segmentation source to a synthetic template's diameter basis
+        when the template is picked (`gui/template_basis.py`); never while a
+        config or a saved run fills the rows."""
+        values = current_values()
+        before = dict(template_basis_seen)
+        template_basis_seen.update({name: values.get(name) for name in TEMPLATE_BASIS_TRIGGERS})
+        if restoring_settings[0]:
+            return
+        update = template_basis_update(before, values)
+        if update.value is not None and TEMPLATE_BASIS_TARGET in rows:
+            rows[TEMPLATE_BASIS_TARGET].value = display_value_for(schema[TEMPLATE_BASIS_TARGET], update.value)
+        if update.line:
+            report.value = update.line
+
+    for name in TEMPLATE_BASIS_TRIGGERS:
+        if name in rows:
+            rows[name].changed.connect(follow_template_basis)
 
     bars = ProgressBars()
+    run_state = RunState(bars=bars)
+
+    # The run's own narration, in a dock of its own rather than in the panel:
+    # its lines are wide and there are thousands of them, and the panel is a
+    # narrow column of settings. One instance, owned here, because it is fed by
+    # the run this panel starts -- which is why it is not a widget contribution
+    # in `napari.yaml`, where a second, menu-launched one would sit empty.
+    log_view = LogView()
+    log_dock = None
+    if viewer is not None:
+        log_dock = viewer.window.add_dock_widget(
+            log_view.native, name=LOG_DOCK_NAME, area="bottom"
+        )
+        _give_bottom_docks_the_corners(viewer)
+
+    def show_log() -> None:
+        """Put the log window back in front, in case the user closed it."""
+        if log_dock is None:
+            return
+        try:
+            log_dock.setVisible(True)
+            log_dock.raise_()
+        except Exception:  # noqa: BLE001 - a dock already gone is survivable
+            logger.debug("could not show the log window", exc_info=True)
 
     layer_row: Any = None
     if viewer is not None:
@@ -1978,6 +17311,10 @@ def settings_widget(napari_viewer=None):
             choices=image_layers, label="Use open layer", nullable=True
         )
         use_button = PushButton(text="Use this layer as the input")
+        from haemolynx.gui.chrome_tooltips import OPEN_LAYER_TOOLTIP, USE_LAYER_TOOLTIP
+
+        layer_picker.tooltip = OPEN_LAYER_TOOLTIP
+        use_button.tooltip = USE_LAYER_TOOLTIP
         layer_row = Container(
             widgets=[layer_picker, use_button], layout="horizontal", labels=True
         )
@@ -1999,9 +17336,20 @@ def settings_widget(napari_viewer=None):
                 applying = False
 
         def on_layer_added(event) -> None:
-            """A dropped image becomes the input, panel already open or not."""
+            """A dropped image becomes the input, panel already open or not.
+
+            Not one of our own: a run that shows results adds Image-kind
+            layers for its own output (the large-vessel mask volumes, in
+            particular -- see `vessel_mask_volume_layers`). Without this
+            check, showing those masks silently repointed the *next* run's
+            input_path at whichever one was added last, since every added
+            Image layer was treated as something the user just dropped in.
+            """
             layer_picker.reset_choices()
-            adopt(getattr(event, "value", None))
+            layer = getattr(event, "value", None)
+            if _is_ours(layer):
+                return
+            adopt(layer)
 
         def on_layer_removed(_event) -> None:
             layer_picker.reset_choices()
@@ -2014,26 +17362,1142 @@ def settings_widget(napari_viewer=None):
         viewer.layers.events.removed.connect(on_layer_removed)
 
         images = [
-            layer for layer in viewer.layers if isinstance(layer, napari.layers.Image)
+            layer
+            for layer in viewer.layers
+            if isinstance(layer, napari.layers.Image) and not _is_ours(layer)
         ]
         active = viewer.layers.selection.active
-        if isinstance(active, napari.layers.Image):
+        if isinstance(active, napari.layers.Image) and not _is_ours(active):
             adopt(active)
         elif images:
             adopt(images[-1])
 
+    #: The Input tab's "Check and optimise" box, and the Advanced button its
+    #: own settings sit behind: the check and optimise buttons go in the box,
+    #: before that button, and their less-used options behind it.
+    check_box = input_boxes.get("check_and_optimise")
+    check_advanced = advanced_disclosures.get("segment:box:check_and_optimise")
+
+    def into_check_box(widget, position: int) -> None:
+        if check_box is not None:
+            check_box.insert(position, widget)
+
+    def behind_check_advanced(widget) -> None:
+        if check_advanced is not None:
+            check_advanced.add(widget)
+        elif check_box is not None:
+            check_box.append(widget)
+
+    #: "Optimise settings": empirically choose Skeletonise/Graph tab values
+    #: from the segmented input image. The button lives on the Input tab
+    #: itself, in its "Check and optimise" box; its progress bars are
+    #: plain Qt (`OptimiseProgressBars.native`), so they join the shared panel
+    #: chrome beside the pipeline's own `bars.native` rather than being forced
+    #: into a magicgui Container, which only accepts magicgui widgets.
+    optimise_button = PushButton(text="Optimise settings")
+    from haemolynx.gui.chrome_tooltips import OPTIMISE_SETTINGS_TOOLTIP
+
+    optimise_button.tooltip = OPTIMISE_SETTINGS_TOOLTIP
+    into_check_box(optimise_button, 0)
+    optimise_bars = OptimiseProgressBars()
+    #: What a run would change, under the button, until Apply or Discard.
+    optimise_review = _OptimiseReview(current_values, report, what="optimised settings")
+    into_check_box(optimise_review.container, 1)
+
+    #: "Optimisation downsampling": how coarse a copy of the image the search
+    #: runs on, independent of the resolution a real pipeline run always uses
+    #: -- see haemolynx.optimisation.search.estimate_downsample_factor_for_time_budget
+    #: for what "Auto" picks. Kept as a display-label -> factor mapping, since
+    #: "None" (auto-detect) is not a value a ComboBox choice can hold directly.
+    _DOWNSAMPLE_CHOICES: dict[str, Any] = {
+        "Auto": None,
+        "Off": 1,
+        "2x": 2,
+        "4x": 4,
+        "8x": 8,
+        "16x": 16,
+    }
+    downsample_dropdown = ComboBox(
+        label="Optimisation downsampling",
+        choices=list(_DOWNSAMPLE_CHOICES),
+        value="Auto",
+    )
+    downsample_dropdown.tooltip = (
+        "Search a coarser copy of the image to make Optimise settings faster; "
+        "it only affects the optimiser, never the run. Auto keeps a typical "
+        "vessel at least three voxels across"
+    )
+    behind_check_advanced(downsample_dropdown)
+
+    from haemolynx.gui.chrome_tooltips import (
+        FWHM_OPTIMISE_GROUP_TOOLTIPS,
+        OPTIMISE_GROUP_TOOLTIPS,
+        OPTIMISE_TOOLTIPS,
+    )
+
+    #: "Optimisation passes": repeat the whole search from where the last pass
+    #: ended (`max_passes`), stopping early once a pass changes nothing.
+    passes_spinbox = SpinBox(label="Optimisation passes", value=1, min=1, max=5)
+    passes_spinbox.tooltip = OPTIMISE_TOOLTIPS["passes"]
+    behind_check_advanced(passes_spinbox)
+
+    #: "Choose optimisation types": restricts Optimise settings to a subset of
+    #: its eleven groups. The per-group checkboxes stay hidden until asked for --
+    #: most runs want every group, so the list only appears once asked for.
+    from haemolynx.optimisation import GROUP_LABELS, GROUP_NAMES
+
+    choose_groups_checkbox = CheckBox(text="Choose optimisation types", value=False)
+    choose_groups_checkbox.tooltip = (
+        "Optimise only the groups ticked below, instead of every Skeletonise "
+        "and Graph setting"
+    )
+    behind_check_advanced(choose_groups_checkbox)
+
+    group_checkboxes: dict[str, Any] = {
+        name: CheckBox(text=GROUP_LABELS[name], value=True, tooltip=OPTIMISE_GROUP_TOOLTIPS[name])
+        for name in GROUP_NAMES
+    }
+    group_checkboxes_container = Container(widgets=list(group_checkboxes.values()), labels=False)
+    group_checkboxes_container.visible = False
+    behind_check_advanced(group_checkboxes_container)
+
+    #: "Check segmented image": scores the raw segmented input mask, 0-10,
+    #: before any pipeline stage runs on it -- see
+    #: haemolynx.preprocessing.segmentation_quality for the five 0-2
+    #: sub-scores. A read-only diagnostic: never writes to `rows`, unlike
+    #: "Optimise settings" beside it.
+    check_image_button = PushButton(text="Check segmented image")
+    from haemolynx.gui.chrome_tooltips import CHECK_SEGMENTED_IMAGE_TOOLTIP
+
+    check_image_button.tooltip = CHECK_SEGMENTED_IMAGE_TOOLTIP
+    into_check_box(check_image_button, 0)
+
+    #: "Optimise FWHM settings": empirically choose the FWHM diameter-
+    #: measurement settings from the current in-memory graph and its raw
+    #: image -- the Diameters tab's own analogue of "Optimise settings" on
+    #: the Input tab. Placed right after the measure_diameters_from_raw_image
+    #: row and before the FWHM settings, per its own visibility rule
+    #: (`apply_prerequisites`, above) rather than always shown: there is
+    #: nothing to search until FWHM measurement itself is turned on.
+    optimise_fwhm_button = PushButton(text="Optimise FWHM settings")
+    optimise_fwhm_button.tooltip = (
+        "Try FWHM settings on a sample of this network's vessels in the raw "
+        "image and propose the best for this tab. The current diameters are "
+        "not changed"
+    )
+    #: Its options -- which groups, how many vessels, how many passes -- behind
+    #: a toggle, and its review box: one box under the button, shown with it.
+    from haemolynx.optimisation import FWHM_GROUP_LABELS
+
+    fwhm_options_toggle = CheckBox(text="FWHM optimiser options", value=False)
+    fwhm_options_toggle.tooltip = OPTIMISE_TOOLTIPS["fwhm_options"]
+    fwhm_choose_groups = CheckBox(text="Choose FWHM optimisation types", value=False)
+    fwhm_choose_groups.tooltip = OPTIMISE_TOOLTIPS["fwhm_choose_groups"]
+    fwhm_group_checkboxes: dict[str, Any] = {
+        name: CheckBox(text=FWHM_GROUP_LABELS[name], value=True, tooltip=FWHM_OPTIMISE_GROUP_TOOLTIPS[name])
+        for name in FWHM_GROUP_NAMES
+    }
+    fwhm_group_container = Container(widgets=list(fwhm_group_checkboxes.values()), labels=False)
+    fwhm_group_container.visible = False
+    #: Display label -> sample size; ``None`` is Auto (see
+    #: `optimise_fwhm_settings`'s own `sample_edge_count`).
+    _FWHM_SAMPLE_CHOICES: dict[str, Any] = {
+        "Auto": None,
+        "25 vessels": 25,
+        "50 vessels": 50,
+        "100 vessels": 100,
+        "200 vessels": 200,
+        "Every vessel": 2**31 - 1,
+    }
+    fwhm_sample_dropdown = ComboBox(
+        label="FWHM optimisation sample", choices=list(_FWHM_SAMPLE_CHOICES), value="Auto"
+    )
+    fwhm_sample_dropdown.tooltip = OPTIMISE_TOOLTIPS["fwhm_sample"]
+    fwhm_passes_spinbox = SpinBox(label="Optimisation passes", value=1, min=1, max=5)
+    fwhm_passes_spinbox.tooltip = OPTIMISE_TOOLTIPS["passes"]
+    fwhm_options_container = Container(
+        widgets=[fwhm_choose_groups, fwhm_group_container, fwhm_sample_dropdown, fwhm_passes_spinbox]
+    )
+    fwhm_options_container.visible = False
+    fwhm_review = _OptimiseReview(current_values, report, what="optimised FWHM settings")
+    fwhm_optimise_box = Container(
+        widgets=[fwhm_options_toggle, fwhm_options_container, fwhm_review.container], labels=False
+    )
+    fwhm_options_toggle.changed.connect(
+        lambda *_args: setattr(fwhm_options_container, "visible", bool(fwhm_options_toggle.value))
+    )
+    fwhm_choose_groups.changed.connect(
+        lambda *_args: setattr(fwhm_group_container, "visible", bool(fwhm_choose_groups.value))
+    )
+    if diameters_settings is not None:
+        measure_row_index = list(diameters_settings).index(rows["measure_diameters_from_raw_image"])
+        diameters_settings.insert(measure_row_index + 1, optimise_fwhm_button)
+        diameters_settings.insert(measure_row_index + 2, fwhm_optimise_box)
+    # OptimiseProgressBars.native is a plain Qt widget, not a magicgui one --
+    # like the Input tab's own `optimise_bars`, it joins the shared bottom
+    # chrome (below the tabs, added further down) rather than the magicgui
+    # Container above, which only accepts magicgui widgets.
+    optimise_fwhm_bars = OptimiseProgressBars()
+
+    def on_optimise_fwhm_settings() -> None:
+        if run_state.running:
+            report.value = ALREADY_RUNNING
+            return
+        if batch_mode.setup is not None:
+            report.value = SINGLE_IMAGE_IN_BATCH
+            return
+        if network_is_synthetic(current_values()):
+            report.value = OPTIMISE_SYNTHETIC_TOOLTIP
+            return
+        if view.results is None or getattr(view.results, "_graph", None) is None:
+            report.value = (
+                "Nothing to optimise yet: run the pipeline through at least Graph first."
+            )
+            return
+        values = current_values()
+        raw_path = values.get("raw_image_path")
+        if not raw_path or not Path(raw_path).is_file():
+            report.value = (
+                "Choose the raw image on the Input tab first, then press Optimise FWHM settings."
+            )
+            return
+        results = view.results
+        graph = copy_graph(results._graph)
+        voxel_size_zyx = tuple(
+            float(v) for v in getattr(results, "_voxel_size_zyx", (1.0, 1.0, 1.0))
+        )
+        skeletonised = checkpoints.get("skeletonise")
+        groups = None
+        if fwhm_choose_groups.value:
+            groups = tuple(name for name, box in fwhm_group_checkboxes.items() if box.value)
+        fwhm_review.clear()
+        _run_fwhm_optimisation_in_background(
+            graph,
+            voxel_size_zyx,
+            _settings(),
+            schema,
+            rows,
+            report,
+            optimise_fwhm_button,
+            optimise_fwhm_bars,
+            apply_prerequisites=apply_prerequisites,
+            run_state=run_state,
+            groups=groups,
+            vessel_mask=getattr(getattr(skeletonised, "output", None), "image", None),
+            sample_edge_count=_FWHM_SAMPLE_CHOICES.get(fwhm_sample_dropdown.value),
+            max_passes=int(fwhm_passes_spinbox.value),
+            boundaries=checkpoints.get("assign_boundaries"),
+            propose=fwhm_review.propose,
+        )
+
+    optimise_fwhm_button.changed.connect(lambda *_args: on_optimise_fwhm_settings())
+
+    #: "Optimise endothelial settings": the same for an endothelial raw image,
+    #: whose diameters the ring fit reads instead of FWHM. It sits where the
+    #: FWHM button does, and only one of the two is ever shown.
+    from haemolynx.gui.chrome_tooltips import ENDOTHELIAL_OPTIMISE_TOOLTIPS
+
+    optimise_endothelial_button = PushButton(text="Optimise endothelial settings")
+    optimise_endothelial_button.tooltip = ENDOTHELIAL_OPTIMISE_TOOLTIPS["button"]
+    endothelial_options_toggle = CheckBox(text="Endothelial optimiser options", value=False)
+    endothelial_options_toggle.tooltip = ENDOTHELIAL_OPTIMISE_TOOLTIPS["options"]
+    endothelial_choose_groups = CheckBox(text="Choose endothelial optimisation types", value=False)
+    endothelial_choose_groups.tooltip = ENDOTHELIAL_OPTIMISE_TOOLTIPS["choose_groups"]
+    endothelial_group_checkboxes: dict[str, Any] = {
+        name: CheckBox(text=ENDOTHELIAL_GROUP_LABELS[name], value=True)
+        for name in ENDOTHELIAL_GROUP_NAMES
+    }
+    for _name, _box in endothelial_group_checkboxes.items():
+        _box.tooltip = ENDOTHELIAL_OPTIMISE_TOOLTIPS[_name]
+    endothelial_group_container = Container(
+        widgets=list(endothelial_group_checkboxes.values()), labels=False
+    )
+    endothelial_group_container.visible = False
+    endothelial_sample_dropdown = ComboBox(
+        label="Endothelial optimisation sample", choices=list(_FWHM_SAMPLE_CHOICES), value="Auto"
+    )
+    endothelial_sample_dropdown.tooltip = ENDOTHELIAL_OPTIMISE_TOOLTIPS["sample"]
+    endothelial_passes_spinbox = SpinBox(label="Optimisation passes", value=1, min=1, max=5)
+    endothelial_passes_spinbox.tooltip = OPTIMISE_TOOLTIPS["passes"]
+    endothelial_options_container = Container(
+        widgets=[
+            endothelial_choose_groups, endothelial_group_container,
+            endothelial_sample_dropdown, endothelial_passes_spinbox,
+        ]
+    )
+    endothelial_options_container.visible = False
+    endothelial_review = _OptimiseReview(
+        current_values, report, what="optimised endothelial settings"
+    )
+    endothelial_optimise_box = Container(
+        widgets=[
+            endothelial_options_toggle, endothelial_options_container,
+            endothelial_review.container,
+        ],
+        labels=False,
+    )
+    endothelial_options_toggle.changed.connect(
+        lambda *_args: setattr(
+            endothelial_options_container, "visible", bool(endothelial_options_toggle.value)
+        )
+    )
+    endothelial_choose_groups.changed.connect(
+        lambda *_args: setattr(
+            endothelial_group_container, "visible", bool(endothelial_choose_groups.value)
+        )
+    )
+    if diameters_settings is not None:
+        after_fwhm = list(diameters_settings).index(fwhm_optimise_box) + 1
+        diameters_settings.insert(after_fwhm, optimise_endothelial_button)
+        diameters_settings.insert(after_fwhm + 1, endothelial_optimise_box)
+    optimise_endothelial_bars = OptimiseProgressBars()
+
+    def on_optimise_endothelial_settings() -> None:
+        from haemolynx.graph.boundaries import network_is_synthetic
+
+        if run_state.running:
+            report.value = ALREADY_RUNNING
+            return
+        if batch_mode.setup is not None:
+            report.value = SINGLE_IMAGE_IN_BATCH
+            return
+        values = current_values()
+        if network_is_synthetic(values):
+            report.value = (
+                "A synthetic network reads no image: there is no endothelial stain to optimise "
+                "the ring fit on."
+            )
+            return
+        if view.results is None or getattr(view.results, "_graph", None) is None:
+            report.value = (
+                "Nothing to optimise yet: run the pipeline through at least Graph first."
+            )
+            return
+        raw_path = values.get("raw_image_path")
+        if not raw_path or not Path(raw_path).is_file():
+            report.value = (
+                "Choose the raw image on the Input tab first, then press Optimise endothelial "
+                "settings."
+            )
+            return
+        results = view.results
+        graph = copy_graph(results._graph)
+        voxel_size_zyx = tuple(
+            float(v) for v in getattr(results, "_voxel_size_zyx", (1.0, 1.0, 1.0))
+        )
+        skeletonised = checkpoints.get("skeletonise")
+        groups = None
+        if endothelial_choose_groups.value:
+            groups = tuple(
+                name for name, box in endothelial_group_checkboxes.items() if box.value
+            )
+        endothelial_review.clear()
+        _run_endothelial_optimisation_in_background(
+            graph,
+            voxel_size_zyx,
+            _settings(),
+            schema,
+            rows,
+            report,
+            optimise_endothelial_button,
+            optimise_endothelial_bars,
+            apply_prerequisites=apply_prerequisites,
+            run_state=run_state,
+            groups=groups,
+            vessel_mask=getattr(getattr(skeletonised, "output", None), "image", None),
+            sample_edge_count=_FWHM_SAMPLE_CHOICES.get(endothelial_sample_dropdown.value),
+            max_passes=int(endothelial_passes_spinbox.value),
+            boundaries=checkpoints.get("assign_boundaries"),
+            propose=endothelial_review.propose,
+        )
+
+    optimise_endothelial_button.changed.connect(
+        lambda *_args: on_optimise_endothelial_settings()
+    )
+    apply_prerequisites()
+
+    def _toggle_group_checkboxes(*_args) -> None:
+        group_checkboxes_container.visible = bool(choose_groups_checkbox.value)
+
+    choose_groups_checkbox.changed.connect(_toggle_group_checkboxes)
+
     load_button = PushButton(text="Load config...")
+    view_button = PushButton(text="View controls")
     save_button = PushButton(text="Save config...")
     check_button = PushButton(text="Run checks")
     run_button = PushButton(text="Run pipeline")
-    clear_button = PushButton(text="Clear layers")
+    clear_button = PushButton(text="Clear layers and state")
+    save_run_button = PushButton(text="Save run...")
+    load_run_button = PushButton(text="Load run...")
+
+    from haemolynx.gui.chrome_tooltips import (
+        ARROW_LENGTH_TOOLTIP,
+        CLEAR_LAYERS_TOOLTIP,
+        LOAD_CONFIG_TOOLTIP,
+        LOAD_RUN_TOOLTIP,
+        DELETE_PRESET_TOOLTIP,
+        PRESET_TOOLTIP,
+        REOPEN_VIEW_TOOLTIP,
+        SAVE_PRESET_TOOLTIP,
+        SAVED_PRESET_TOOLTIP,
+        REPORT_TOOLTIP,
+        RUN_CHECKS_TOOLTIP,
+        RUN_PIPELINE_TOOLTIP,
+        SAVE_CONFIG_TOOLTIP,
+        HELP_TOOLTIP,
+        SAVE_RUN_TOOLTIP,
+        SCALE_BAR_TOOLTIP,
+        SHOW_RESULTS_TOOLTIP,
+        SHOW_STEPS_TOOLTIP,
+        SNAPSHOT_TOOLTIP,
+        SWEEP_TOOLTIP,
+        LAYER_SET_TOOLTIP,
+        TUBE_DIAMETER_TOOLTIP,
+        VESSEL_DRAW_TOOLTIP,
+        VIEW_TOGGLE_TOOLTIPS,
+        Z_DEPTH_TOOLTIP,
+        Z_DEPTH_TOOLTIPS,
+    )
+
+    report.tooltip = REPORT_TOOLTIP
+    load_button.tooltip = LOAD_CONFIG_TOOLTIP
+    view_button.tooltip = REOPEN_VIEW_TOOLTIP
+    view_button.enabled = viewer is not None
+    save_button.tooltip = SAVE_CONFIG_TOOLTIP
+    check_button.tooltip = RUN_CHECKS_TOOLTIP
+    run_button.tooltip = RUN_PIPELINE_TOOLTIP
+    clear_button.tooltip = CLEAR_LAYERS_TOOLTIP
+    save_run_button.tooltip = SAVE_RUN_TOOLTIP
+    load_run_button.tooltip = LOAD_RUN_TOOLTIP
+    save_run_button.native.setObjectName("haemolynx_save_run")
+    load_run_button.native.setObjectName("haemolynx_load_run")
+
+    # A standard set of settings to start from, under Load/Save config. It
+    # holds nothing once loaded (see `load_preset`), so loading a config or a
+    # run puts it back to None. Below the standard ones, the presets the user
+    # saved on this machine (`pipeline/saved_presets.py`), and the entries
+    # that save and delete them.
+    from qtpy.QtWidgets import QComboBox, QLabel
+
+    preset_label = QLabel("Preset")
+    preset_label.setToolTip(PRESET_TOOLTIP)
+    preset_dropdown = QComboBox()
+    preset_dropdown.setObjectName("haemolynx_preset")
+    preset_dropdown.setToolTip(PRESET_TOOLTIP)
+    command_tooltips = {SAVE_PRESET: SAVE_PRESET_TOOLTIP, DELETE_PRESET: DELETE_PRESET_TOOLTIP}
+
+    def fill_preset_menu(shown: str | None = None) -> None:
+        """List the presets, the saved ones read from disk now, showing the
+        entry keyed *shown* (None: the "None" entry)."""
+        saved = saved_presets()
+        saved_dates = {preset.key: preset.saved for preset in saved}
+        preset_dropdown.blockSignals(True)
+        try:
+            preset_dropdown.clear()
+            for entry in preset_menu(saved):
+                if entry is None:
+                    preset_dropdown.insertSeparator(preset_dropdown.count())
+                    continue
+                text, key = entry
+                preset_dropdown.addItem(text, key)
+                if key is None:
+                    continue
+                if key in PRESETS:
+                    tooltip = PRESETS[key]["description"]
+                elif key in command_tooltips:
+                    tooltip = command_tooltips[key]
+                else:
+                    when = (saved_dates.get(key) or "").replace("T", " ")
+                    tooltip = f"{SAVED_PRESET_TOOLTIP} (saved {when})" if when else SAVED_PRESET_TOOLTIP
+                preset_dropdown.setItemData(preset_dropdown.count() - 1, tooltip, Qt.ToolTipRole)
+            index = preset_dropdown.findData(shown) if shown is not None else 0
+            preset_dropdown.setCurrentIndex(max(index, 0))
+        finally:
+            preset_dropdown.blockSignals(False)
+        preset_shown[0] = preset_dropdown.currentData()
+        # The list it opens is as wide as its longest name, every entry in
+        # view, whatever its width.
+        preset_dropdown.setMaxVisibleItems(preset_dropdown.count())
+        preset_dropdown.view().setMinimumWidth(preset_dropdown.view().sizeHintForColumn(0) + 24)
+
+    #: The preset entry shown, which a Save or Delete entry puts back once done.
+    preset_shown: list[str | None] = [None]
+
+    def remember_shown_preset(index: int) -> None:
+        key = preset_dropdown.itemData(index)
+        if key not in command_tooltips:
+            preset_shown[0] = key
+
+    preset_dropdown.currentIndexChanged.connect(remember_shown_preset)
+    fill_preset_menu()
+    # Fills the room left of the run-file buttons; `_wrap_row_labels` lets it
+    # shrink with the panel, as every dropdown does.
+    preset_dropdown.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
     # What a run puts in the viewer, and how it is coloured. These are panel
     # controls rather than settings: a config file is read by CLI runs too,
     # where "show it in napari" means nothing.
     show_results = CheckBox(value=True, text="Show each stage in the viewer")
     show_steps = CheckBox(value=False, text="Show each topology step")
+    show_results.tooltip = SHOW_RESULTS_TOOLTIP
+    show_steps.tooltip = SHOW_STEPS_TOOLTIP
+    show_results.native.setObjectName("haemolynx_show_results")
+    show_steps.native.setObjectName("haemolynx_show_steps")
+    from qtpy.QtCore import Qt
+    from qtpy.QtWidgets import (
+        QButtonGroup, QCheckBox, QFormLayout, QHBoxLayout,
+        QLabel, QMenu, QPushButton, QRadioButton, QToolButton, QWidget,
+    )
+    from superqt import QDoubleSlider
+
+    z_depth_label = QLabel("Z-depth filter (µm)")
+    z_depth_slider = _double_range_pair("haemolynx_z_depth_slider")
+    z_depth_slider.setEnabled(False)
+    z_depth_label.setToolTip(Z_DEPTH_TOOLTIP)
+    z_depth_slider.setToolTip(Z_DEPTH_TOOLTIP)
+    z_depth_slider._lo.setToolTip(Z_DEPTH_TOOLTIPS["min"])
+    z_depth_slider._hi.setToolTip(Z_DEPTH_TOOLTIPS["max"])
+
+    vessel_draw_label = QLabel("Vessels")
+    vessel_draw_label.setObjectName("haemolynx_vessel_draw_label")
+    # Radios, not a combo: the view dock floats over the vispy canvas, and a
+    # QComboBox popup there often never receives the click that should swap
+    # Tubes/Lines.
+    vessel_draw = QWidget()
+    vessel_draw.setObjectName("haemolynx_vessel_draw")
+    tubes_radio = QRadioButton("Tubes")
+    lines_radio = QRadioButton("Lines")
+    tubes_radio.setObjectName("haemolynx_vessel_draw_tubes")
+    lines_radio.setObjectName("haemolynx_vessel_draw_lines")
+    draw_group = QButtonGroup(vessel_draw)
+    draw_group.setExclusive(True)
+    draw_group.addButton(tubes_radio)
+    draw_group.addButton(lines_radio)
+    draw_row_layout = QHBoxLayout(vessel_draw)
+    draw_row_layout.setContentsMargins(0, 0, 0, 0)
+    draw_row_layout.addWidget(tubes_radio)
+    draw_row_layout.addWidget(lines_radio)
+    vessel_draw.tubes = tubes_radio
+    vessel_draw.lines = lines_radio
+
+    def _vessel_draw_text() -> str:
+        return "Lines" if lines_radio.isChecked() else "Tubes"
+
+    def _set_vessel_draw_text(text: str) -> None:
+        if text == "Lines":
+            lines_radio.setChecked(True)
+        else:
+            tubes_radio.setChecked(True)
+
+    vessel_draw.currentText = _vessel_draw_text
+    vessel_draw.setCurrentText = _set_vessel_draw_text
+    vessel_draw.setToolTip(VESSEL_DRAW_TOOLTIP)
+    tubes_radio.setToolTip(VESSEL_DRAW_TOOLTIP)
+    lines_radio.setToolTip(VESSEL_DRAW_TOOLTIP)
+    vessel_draw_label.setToolTip(VESSEL_DRAW_TOOLTIP)
+    if _vessel_draw_mode == VESSEL_DRAW_LINES:
+        lines_radio.setChecked(True)
+    else:
+        tubes_radio.setChecked(True)
+
+    # Each tube at its vessel's own diameter, or every one at the same width:
+    # the tubes layer's own "tube diameter" choice, without selecting it. A
+    # menu on a button, as Showing is, for the reason the radios are radios.
+    tube_diameter_label = QLabel("Tube diameter")
+    tube_diameter_label.setObjectName("haemolynx_tube_diameter_label")
+    tube_diameter_button = QToolButton()
+    tube_diameter_button.setObjectName("haemolynx_tube_diameter")
+    tube_diameter_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+    tube_diameter_menu = QMenu(tube_diameter_button)
+    tube_diameter_menu.setObjectName("haemolynx_tube_diameter_menu")
+    tube_diameter_button.setMenu(tube_diameter_menu)
+    tube_diameter_label.setToolTip(TUBE_DIAMETER_TOOLTIP)
+    tube_diameter_button.setToolTip(TUBE_DIAMETER_TOOLTIP)
+    # Uniform's width, beside the button while Uniform is the choice.
+    tube_uniform_width = _uniform_width_box("haemolynx_view_tube_uniform_width")
+    tube_diameter_field = QWidget()
+    tube_diameter_field.setObjectName("haemolynx_tube_diameter_field")
+    tube_diameter_field_layout = QHBoxLayout(tube_diameter_field)
+    tube_diameter_field_layout.setContentsMargins(0, 0, 0, 0)
+    tube_diameter_field_layout.addWidget(tube_diameter_button)
+    tube_diameter_field_layout.addWidget(tube_uniform_width)
+    tube_diameter_field_layout.addStretch(1)
+    #: The view dock's fit, once it is defined further down.
+    tube_diameter_resize: dict[str, Any] = {"fit": None}
+
+    def choose_tube_diameter(key: str) -> None:
+        set_tube_diameter(viewer, key)
+        refresh_tube_diameter()
+
+    def on_tube_uniform_width_changed(value: float) -> None:
+        set_tube_uniform_diameter(viewer, value)
+        refresh_tube_diameter()
+
+    def refresh_tube_diameter(*_args) -> None:
+        """Tick the session's choice and show its width, the width only for
+        Uniform; greyed out while lines are drawn."""
+        try:
+            for action in tube_diameter_menu.actions():
+                action.setChecked(action.data() == _tube_diameter)
+            tube_diameter_button.setText(TUBE_DIAMETER_LABELS[_tube_diameter])
+            _show_uniform_width(tube_uniform_width)
+            uniform = _tube_diameter == TUBE_DIAMETER_UNIFORM
+            was_shown = not tube_uniform_width.isHidden()
+            tube_uniform_width.setVisible(uniform)
+            tubes = _vessel_draw_mode == VESSEL_DRAW_TUBES
+            for widget in (tube_diameter_label, tube_diameter_button, tube_uniform_width):
+                widget.setEnabled(tubes)
+        except RuntimeError:
+            # The dock's Qt widgets outlive the panel on teardown.
+            logger.debug("tube-diameter menu is gone", exc_info=True)
+            return
+        if uniform != was_shown and callable(tube_diameter_resize["fit"]):
+            tube_diameter_resize["fit"]()
+
+    tube_uniform_width.valueChanged.connect(on_tube_uniform_width_changed)
+    for key in TUBE_DIAMETERS:
+        action = tube_diameter_menu.addAction(TUBE_DIAMETER_LABELS[key])
+        action.setCheckable(True)
+        action.setData(key)
+        action.triggered.connect(
+            lambda _checked=False, key=key: choose_tube_diameter(key)
+        )
+    refresh_tube_diameter()
+    if viewer is not None:
+        viewer._haemolynx_refresh_tube_diameter = refresh_tube_diameter
+
+    # Which network is drawn: the baseline, or one perturbation. A menu on a
+    # button rather than a QComboBox, whose popup over the floating dock
+    # missed clicks (see the Tubes/Lines radios); it only appears once a
+    # perturbation has layers to swap to.
+    layer_set_label = QLabel("Showing")
+    layer_set_label.setObjectName("haemolynx_layer_set_label")
+    layer_set_button = QToolButton()
+    layer_set_button.setObjectName("haemolynx_layer_set")
+    layer_set_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+    layer_set_menu = QMenu(layer_set_button)
+    layer_set_menu.setObjectName("haemolynx_layer_set_menu")
+    layer_set_button.setMenu(layer_set_menu)
+    layer_set_label.setToolTip(LAYER_SET_TOOLTIP)
+    layer_set_button.setToolTip(LAYER_SET_TOOLTIP)
+
+    def choose_layer_set(key: str | None) -> None:
+        if viewer is None:
+            return
+        show_layer_set(viewer, key)
+        refresh_layer_sets()
+        # The Statistics tab follows the network shown.
+        refresh_statistics()
+
+    def refresh_layer_sets(*_args) -> None:
+        """List the networks in the viewer; hide the row with only the baseline.
+
+        The row stays while a perturbation is shown even after its layers
+        went, so there is always a way back to the baseline.
+        """
+        from haemolynx.gui.layer_sets import layer_set_choices
+
+        try:
+            perturbations = _perturbation_sets_in(viewer)
+            shown = _layer_set_shown(viewer) if viewer is not None else None
+            choices = layer_set_choices(perturbations)
+            layer_set_menu.clear()
+            for label, key in choices:
+                action = layer_set_menu.addAction(label)
+                action.setCheckable(True)
+                action.setChecked(key == shown)
+                action.setData(key)
+                action.triggered.connect(
+                    lambda _checked=False, key=key: choose_layer_set(key)
+                )
+            label = next((label for label, key in choices if key == shown), str(shown))
+            layer_set_button.setText(label)
+            layer_set_row.setVisible(bool(perturbations) or shown is not None)
+            refresh_sweep_controls()
+            colour_by.refresh()
+            colour_range.follow_the_layer()
+            refresh_view_toggles()
+        except RuntimeError:
+            # The dock's Qt widgets outlive the panel on teardown.
+            logger.debug("layer-set menu is gone", exc_info=True)
+
+    scale_bar_box = QCheckBox("Scale bar")
+    scale_bar_box.setObjectName("haemolynx_scale_bar")
+    scale_bar_box.setChecked(False)
+    scale_bar_box.setToolTip(SCALE_BAR_TOOLTIP)
+
+    # One checkbox per kind of layer that is turned on and off most: the
+    # shown network's flow-direction arrows and nodes, the terminal
+    # (boundary) nodes, the skeleton and the segmented image. Each box
+    # mirrors its layer -- ticked while the layer is visible, greyed out
+    # while the run has no such layer -- so a tick here and a tick in the
+    # layer list always agree.
+    from qtpy.QtWidgets import QGridLayout
+
+    from haemolynx.gui.layer_sets import (
+        SCALE_BAR_CELL,
+        VIEW_TOGGLE_CELLS,
+        VIEW_TOGGLES,
+        toggle_layer_name,
+        toggle_states,
+    )
+
+    view_toggle_row = QWidget()
+    view_toggle_row.setObjectName("haemolynx_view_toggle_row")
+    view_toggle_layout = QGridLayout(view_toggle_row)
+    view_toggle_layout.setContentsMargins(0, 0, 0, 0)
+    view_toggles: dict[str, QCheckBox] = {}
+    for role, label in VIEW_TOGGLES:
+        box = QCheckBox(label)
+        box.setObjectName(f"haemolynx_show_{role.replace(' ', '_')}")
+        box.setToolTip(VIEW_TOGGLE_TOOLTIPS[role])
+        box.setEnabled(False)
+        view_toggle_layout.addWidget(box, *VIEW_TOGGLE_CELLS[role])
+        view_toggles[role] = box
+    view_toggle_layout.addWidget(scale_bar_box, *SCALE_BAR_CELL)
+
+    def refresh_view_toggles(*_args) -> None:
+        """Tick each box as its layer is; grey it out when there is no layer."""
+        try:
+            if viewer is None:
+                visible: dict[str, bool] = {}
+            else:
+                visible = {
+                    layer.name: bool(layer.visible)
+                    for layer in viewer.layers if _is_ours(layer)
+                }
+            shown = _layer_set_shown(viewer) if viewer is not None else None
+            for role, state in toggle_states(shown, visible).items():
+                box = view_toggles[role]
+                was_blocked = box.blockSignals(True)
+                try:
+                    box.setEnabled(state is not None)
+                    box.setChecked(bool(state))
+                finally:
+                    box.blockSignals(was_blocked)
+        except RuntimeError:
+            # The dock's Qt widgets outlive the panel on teardown.
+            logger.debug("view toggles are gone", exc_info=True)
+
+    def on_view_toggle(role: str, checked: bool) -> None:
+        if viewer is None:
+            return
+        name = toggle_layer_name(role, _layer_set_shown(viewer))
+        if name in viewer.layers:
+            viewer.layers[name].visible = bool(checked)
+        # The layer's own visible event ticks the box back; with no layer,
+        # this greys it out again.
+        refresh_view_toggles()
+
+    for role, box in view_toggles.items():
+        box.toggled.connect(lambda checked, role=role: on_view_toggle(role, checked))
+
+    def _watch_layer_visibility(layer) -> None:
+        """Follow a layer's eye icon, so the box agrees with the layer list."""
+        if _is_ours(layer):
+            layer.events.visible.connect(refresh_view_toggles)
+
+    if viewer is not None:
+        for layer in viewer.layers:
+            _watch_layer_visibility(layer)
+        viewer.layers.events.inserted.connect(
+            lambda event: _watch_layer_visibility(event.value)
+        )
+        viewer._haemolynx_refresh_view_toggles = refresh_view_toggles
+
+    arrow_length_label = QLabel("Arrow size")
+    arrow_length_slider = QDoubleSlider(Qt.Orientation.Horizontal)
+    arrow_length_slider.setObjectName("haemolynx_arrow_length_slider")
+    arrow_length_slider.setRange(_ARROW_LENGTH_MIN, _ARROW_LENGTH_MAX)
+    arrow_length_slider.setSingleStep(0.1)
+    arrow_length_label.setToolTip(ARROW_LENGTH_TOOLTIP)
+    arrow_length_slider.setToolTip(ARROW_LENGTH_TOOLTIP)
+    arrow_length_slider.setEnabled(False)
+    arrow_length_slider.setVisible(False)
+    arrow_length_host = QWidget()
+    arrow_length_host.setObjectName("haemolynx_arrow_length_host")
+    arrow_length_form = QFormLayout(arrow_length_host)
+    arrow_length_form.addRow(arrow_length_label, arrow_length_slider)
+    arrow_length_parking = QWidget()
+    arrow_length_parking.setVisible(False)
+    arrow_length_host.setParent(arrow_length_parking)
+    arrow_length_mount: dict[str, Any] = {"controls": None}
+
     view = SimpleNamespace(results=None)
+    _view_z_apply = {"busy": False, "key": None}
+
+    from haemolynx.gui.statistics_view import shown_statistics_report, statistics_report
+    from haemolynx.gui.tabs import assign_to_stages
+
+    #: The left panel's Statistics tab, docked beside the view panel below.
+    statistics_panel = _StatisticsPanel(assign_to_stages(schema).get("statistics", ""))
+
+    def refresh_statistics() -> None:
+        """Show the statistics of the network on screen, if it has any: the
+        perturbation's own when the view panel shows one."""
+        shown = _layer_set_shown(viewer) if viewer is not None else None
+        statistics_panel.show(shown_statistics_report(view.results, shown))
+
+    #: Under the Input tab's stain row: what the last run read an "auto"
+    #: stain as, from the graph it left (raw_image_stain and its reading),
+    #: since the row itself cannot say and the Diameters tab's method rows
+    #: follow the answer.
+    stain_reading_label = Label(value="")
+    stain_reading_label.visible = False
+    def _input_box_holding(name: str):
+        """The Input tab's box the row *name* is drawn in, if any."""
+        row = rows.get(name)
+        return next((box for box in input_boxes.values() if row is not None and row in list(box)), None)
+
+    _stain_box = _input_box_holding("raw_image_stain")
+    if _stain_box is not None:
+        _stain_box.insert(list(_stain_box).index(rows["raw_image_stain"]) + 1, stain_reading_label)
+
+    #: "Batch run": above the Input row, opens the Batch run window;
+    #: while a batch is set, Run pipeline runs it and the rows it fills say so.
+    from qtpy.QtWidgets import QLabel as _QLabel
+
+    from haemolynx.gui.batch_run import (
+        BATCH_BUTTON_TEXT,
+        BATCH_ROW_FOLDERS,
+        BATCH_ROW_TEXT,
+        BATCH_RUNNING_NO_LOAD,
+        LEFT_BATCH_FOR_RUN,
+        SINGLE_IMAGE_IN_BATCH,
+    )
+    from haemolynx.gui.chrome_tooltips import BATCH_RUN_TOOLTIPS
+
+    for _name in BATCH_ROW_FOLDERS:
+        _row = rows.get(_name)
+        _row_layout = getattr(getattr(_row, "native", None), "layout", lambda: None)()
+        if _row is None or _row_layout is None or not hasattr(_row, "line_edit"):
+            continue
+        _label = _QLabel(BATCH_ROW_TEXT)
+        _label.setVisible(False)
+        _row_layout.addWidget(_label)
+        batch_row_labels[_name] = _label
+    batch_button = PushButton(text=BATCH_BUTTON_TEXT)
+    batch_button.tooltip = BATCH_RUN_TOOLTIPS["button"]
+    _source_box = _input_box_holding("network_source")
+    if _source_box is not None:
+        _source_box.insert(list(_source_box).index(rows["network_source"]), batch_button)
+    elif input_boxes:
+        next(iter(input_boxes.values())).insert(0, batch_button)
+    #: The window, made the first time it is asked for.
+    batch_window: list[Any] = [None]
+
+    def refresh_batch_button(values: "Mapping[str, Any] | None" = None) -> None:
+        """Grey Batch run under a synthetic network and while a run of one
+        image goes, saying why; never while a batch is set or running."""
+        from haemolynx.gui.batch_run import batch_button_greyed
+
+        reason = batch_button_greyed(
+            current_values() if values is None else values,
+            batch_set=batch_mode.setup is not None,
+            running=run_state.running,
+            batch_running=batch_mode.running,
+        )
+        batch_button.enabled = not reason
+        batch_button.tooltip = reason or BATCH_RUN_TOOLTIPS["button"]
+
+    run_state.on_change(refresh_batch_button)
+
+    #: What acts on the one image the Input tab names, with its own hover
+    #: text: off while a batch is set. Save run stays on: it saves the run
+    #: shown, which is never the batch's. The optimisers are off too
+    #: while the run draws a synthetic network: there is no image to try
+    #: settings on.
+    from haemolynx.gui.chrome_tooltips import CHECK_SYNTHETIC_TOOLTIP, OPTIMISE_SYNTHETIC_TOOLTIP
+
+    single_image_buttons = [
+        (button, button.tooltip)
+        for button in (
+            check_image_button, optimise_button, optimise_fwhm_button,
+            optimise_endothelial_button,
+        )
+    ]
+    optimiser_buttons = (optimise_button, optimise_fwhm_button, optimise_endothelial_button)
+    #: The buttons greyed here, so only those are given back: a run greys its
+    #: own button and frees it as it ends, and a change of settings mid-run
+    #: must not free it first.
+    greyed_here: set[int] = set()
+
+    def refresh_single_image_buttons(values: "Mapping[str, Any] | None" = None) -> None:
+        """Grey what acts on one image while a batch is set, and the
+        optimisers while the run has no image, saying why."""
+        batched = batch_mode.setup is not None
+        synthetic = network_is_synthetic(current_values() if values is None else values)
+        for button, tooltip in single_image_buttons:
+            reason = None
+            if batched:
+                reason = SINGLE_IMAGE_IN_BATCH
+            elif synthetic and any(button is optimiser for optimiser in optimiser_buttons):
+                reason = OPTIMISE_SYNTHETIC_TOOLTIP
+            elif synthetic and button is check_image_button:
+                # No segmented image: with one left in the row it was read as
+                # the template, and failed on its format.
+                reason = CHECK_SYNTHETIC_TOOLTIP
+            if reason is not None:
+                button.enabled = False
+                button.tooltip = reason
+                greyed_here.add(id(button))
+            elif id(button) in greyed_here:
+                greyed_here.discard(id(button))
+                button.enabled = True
+                button.tooltip = tooltip
+        refresh_batch_button(values)
+
+    def refresh_batch_controls() -> None:
+        """Grey what acts on one image while a batch is set, saying why."""
+        refresh_single_image_buttons()
+        refresh_revert_buttons()
+
+    refresh_single_image_buttons()
+
+    def use_batch(setup) -> None:
+        batch_mode.setup = setup
+        batch_button.text = setup.button_text()
+        apply_prerequisites()
+        refresh_batch_controls()
+        report.value = (
+            f"{setup.button_text()} set up: Run pipeline runs each with these settings, "
+            f"into {setup.output_root}"
+        )
+
+    def leave_batch() -> None:
+        batch_mode.setup = None
+        batch_button.text = BATCH_BUTTON_TEXT
+        apply_prerequisites()
+        refresh_batch_controls()
+        report.value = "Left the batch run: Run pipeline runs the image the Input tab names."
+
+    def run_batch_now(setup) -> None:
+        """The window's Run batch: use *setup*, and run it."""
+        if run_state.running:
+            report.value = ALREADY_RUNNING
+            return
+        use_batch(setup)
+        on_run()
+
+    def run_again(setup, stem: str) -> None:
+        """The window's Run again: *setup* in use, its image *stem* run now."""
+        if run_state.running:
+            report.value = ALREADY_RUNNING
+            return
+        use_batch(setup)
+        _restore_skip_toggles()
+        on_run_batch(run_setup=setup.only(stem))
+
+    def request_stop() -> bool:
+        """Stop after this image: whether there is a batch running to stop."""
+        if not batch_mode.running:
+            return False
+        batch_mode.stop = True
+        report.value = "Stopping once this image is done: the images after it will not run."
+        return True
+
+    def set_settings_for_batch(changes: Mapping[str, Any]) -> None:
+        """Set the rows the window's folders of other files need on: a
+        folder of cell masks turns on the 3D cell distances, say."""
+        for setting, value in changes.items():
+            if setting in rows:
+                rows[setting].value = display_value_for(schema[setting], value)
+        apply_prerequisites()
+
+    def open_batch_window() -> None:
+        if batch_window[0] is None:
+            batch_window[0] = _BatchRunWindow(
+                schema=schema,
+                values=current_values,
+                on_use=use_batch,
+                on_leave=leave_batch,
+                on_open=lambda path: load_run_file(path),
+                on_run=run_batch_now,
+                on_run_again=run_again,
+                on_stop=request_stop,
+                on_load_settings=lambda path: load_config_file(path),
+                on_set_settings=set_settings_for_batch,
+                parent=panel,
+            )
+        batch_window[0].open(batch_mode.setup)
+        batch_window[0].set_running(batch_mode.running)
+
+    batch_button.changed.connect(lambda *_args: open_batch_window())
+
+    def refresh_stain_reading() -> None:
+        """Say what the last run read the raw image's stain as, and let the
+        Diameters tab's method rows follow it when that answer changed."""
+        graph = getattr(view.results, "_graph", None) if view.results is not None else None
+        values = current_values()
+        named = (str(values.get("raw_image_path") or ""), values.get("raw_image_channel"))
+        known = stain_read["graph"]() if stain_read["graph"] is not None else None
+        if graph is not None and known is not graph:
+            # A run's reading is of the raw image named as its graph arrives
+            # (a graph saved before it recorded its own image).
+            stain_read["graph"], stain_read["image"] = weakref.ref(graph), named
+        # Another image or channel named since has not been read yet.
+        if graph is None:
+            same_image = False
+        elif graph.graph.get(pipeline_stages.RAW_STAIN_IMAGE) is not None:
+            same_image = pipeline_stages._recorded_stain(values, graph) is not None
+        else:
+            same_image = stain_read["image"] == named
+        record = graph.graph if same_image else {}
+        read = record.get("raw_image_stain")
+        before = stain_read["stain"]
+        stain_read["stain"] = read if read in ("plasma_column", "endothelial") else None
+        stain_read["reading"] = record.get("raw_image_stain_reading")
+        stain_reading_label.value = raw_image_stain_note(
+            values.get("raw_image_stain"), stain_read["stain"], stain_read["reading"]
+        )
+        stain_reading_label.visible = bool(stain_reading_label.value)
+        if stain_read["stain"] != before:
+            apply_prerequisites()
+
+    for name in ("raw_image_stain", "raw_image_path", "raw_image_channel"):
+        # A stain named by hand needs no note; back on auto, the run's stands,
+        # for as long as the raw image it read is the one named.
+        if name in rows:
+            rows[name].changed.connect(lambda *_args: refresh_stain_reading())
+
+    def reparent_arrow_length_slider() -> None:
+        if viewer is None:
+            return
+        _reparent_arrow_length_slider(
+            viewer,
+            slider=arrow_length_slider,
+            host=arrow_length_host,
+            parking=arrow_length_parking,
+            controls_holder=arrow_length_mount,
+        )
+
+    if viewer is not None:
+        viewer._haemolynx_reparent_arrow_length_slider = reparent_arrow_length_slider
+        viewer.layers.selection.events.active.connect(
+            lambda *_args: reparent_arrow_length_slider()
+        )
+        viewer.layers.selection.events.active.connect(
+            lambda *_args: _focus_image_layer_rendering(viewer)
+        )
+
+    def apply_view_z(*, force: bool = False) -> None:
+        """Re-apply the left-panel Z-depth clip to every displayed layer.
+
+        Full-range is the identity. Does not write into settings or stage
+        inputs; ``data_for_pipeline`` still reads the unclipped
+        ``z_window_full`` cache.
+
+        Slider drags emit ``valueChanged`` on every tick; the expensive
+        volume/graph rebuild runs on release (or immediately for
+        programmatic ``setValue``). A matching window is a no-op unless
+        *force* (new layers).
+        """
+        if viewer is None or _view_z_apply["busy"]:
+            return
+        extent, _step = _z_extent_and_step(view.results, viewer)
+        if extent is None or extent <= 0.0:
+            return
+        try:
+            if z_depth_slider.isEnabled() or getattr(
+                z_depth_slider, "_haemolynx_extent_ready", False
+            ):
+                vol_lo, vol_hi = z_depth_slider.value()
+            else:
+                vol_lo, vol_hi = 0.0, extent
+        except RuntimeError:
+            # See _sync_z_depth_slider: the slider's Qt widget has, on real
+            # production-scale data, been found already deleted. Fall back
+            # to the full range rather than let this raise inside a Qt slot.
+            logger.debug("Z-depth slider is gone; using the full range", exc_info=True)
+            vol_lo, vol_hi = 0.0, extent
+        key = (float(vol_lo), float(vol_hi))
+        if not force and key == _view_z_apply["key"]:
+            return
+        _view_z_apply["busy"] = True
+        try:
+            viewer._haemolynx_z_depth_window = (float(vol_lo), float(vol_hi), float(extent))
+            _apply_volume_z_display(viewer, vol_lo, vol_hi, z_extent=extent)
+            _resync_thick_thin_skeleton_after_z_change(viewer)
+            _resync_segmentation_cleanup_after_z_change(viewer)
+            _apply_z_filter(viewer, vol_lo, vol_hi, z_extent=extent)
+            for layer in viewer.layers:
+                if _is_branch_hover_layer(layer):
+                    _apply_branch_hover_selection(
+                        layer, _branch_hover_selected_for(layer)
+                    )
+            if scale_bar_box.isChecked():
+                _apply_scale_bar(viewer, True)
+            _view_z_apply["key"] = key
+        finally:
+            _view_z_apply["busy"] = False
+
+    def _sync_view_z_sliders() -> None:
+        _sync_z_depth_slider(z_depth_slider, view.results, viewer)
+
+    def _after_layers_applied() -> None:
+        """Refresh Z sliders and re-apply the current view-only filters."""
+        if viewer is None:
+            return
+        _sync_view_z_sliders()
+        reparent_arrow_length_slider()
+        _focus_image_layer_rendering(viewer)
+        apply_view_z(force=True)
+        _reapply_layer_set(viewer)
+        refresh_layer_sets()
+        refresh_stain_reading()
+        refresh_statistics()
+
+    if viewer is not None:
+        viewer._haemolynx_after_layers_applied = _after_layers_applied
+        # Only the menu: a layer the Z filter replaces is removed and re-added,
+        # and switching networks in between would lose the choice.
+        viewer.layers.events.inserted.connect(refresh_layer_sets)
+        viewer.layers.events.removed.connect(refresh_layer_sets)
+
+    def _z_slider_should_apply(slider) -> bool:
+        return not bool(slider.isSliderDown())
+
+    def on_z_depth_changed(*_args) -> None:
+        _refresh_z_depth_labels(z_depth_slider, view.results, viewer)
+        if _z_slider_should_apply(z_depth_slider):
+            apply_view_z()
+
+    def on_z_slider_released() -> None:
+        apply_view_z()
+
+    def on_scale_bar_toggled(checked: bool) -> None:
+        if viewer is None:
+            return
+        _apply_scale_bar(viewer, bool(checked))
+
+    def on_vessel_draw_changed(checked: bool = True) -> None:
+        if not checked:
+            return
+        global _vessel_draw_mode
+        mode = (
+            VESSEL_DRAW_LINES if lines_radio.isChecked() else VESSEL_DRAW_TUBES
+        )
+        _vessel_draw_mode = mode
+        refresh_tube_diameter()
+        if viewer is not None:
+            _sync_vessel_tubes(viewer)
+
+    def on_arrow_length_changed(value: float) -> None:
+        if viewer is None:
+            return
+        active = viewer.layers.selection.active
+        if not _vectors_layer_uses_arrow_length(active):
+            return
+        length = max(_ARROW_LENGTH_MIN, min(_ARROW_LENGTH_MAX, float(value)))
+        active.length = length
+        _remember_arrow_length(active, length)
+
+    z_depth_slider.valueChanged.connect(on_z_depth_changed)
+    z_depth_slider.sliderReleased.connect(on_z_slider_released)
+    scale_bar_box.toggled.connect(on_scale_bar_toggled)
+    tubes_radio.toggled.connect(on_vessel_draw_changed)
+    lines_radio.toggled.connect(on_vessel_draw_changed)
+    arrow_length_slider.valueChanged.connect(on_arrow_length_changed)
 
     def _settings() -> dict[str, Any]:
         return resolve_settings(current_values(), schema=schema, config_path=None)
@@ -2058,27 +18522,47 @@ def settings_widget(napari_viewer=None):
         here, and `current_values` hands it back for any row still naming the
         same file.
         """
-        loaded = load_config(Path(path), schema)
+        try:
+            loaded = load_config(Path(path), schema)
+        except Exception as error:
+            # Surface the failure in the panel rather than through Qt's
+            # uncaught-signal traceback -- a bad file (wrong schema, corrupt
+            # YAML from an older save) is a user-facing message, not a crash.
+            report.value = f"Could not load {path}:\n{error}"
+            return
+        # A pending proposal listed its changes against the settings replaced here.
+        for review in (optimise_review, fwhm_review, endothelial_review):
+            review.clear()
         loaded_paths.clear()
-        for name, value in loaded.items():
-            if name in rows:
-                if schema[name].kind == "path" and value is not None:
-                    loaded_paths[name] = value
-                rows[name].value = display_value_for(schema[name], value)
-
-        # A config names the image it was written for, which is rarely the one
-        # on screen -- the shipped one names an image that is not even in the
-        # repository. With a layer open, that layer is the input and the file's
-        # `input_path` is not read; everything else in the file still applies.
-        kept = ""
-        if adopted.settings:
-            for name, value in adopted.settings.items():
+        loaded_config_dir[0] = Path(path).parent
+        last_config_path[0] = str(path)
+        restoring_settings[0] = True
+        try:
+            for name, value in loaded.items():
                 if name in rows:
-                    rows[name].value = value
-                    loaded_paths.pop(name, None)
-            kept = f", keeping {adopted.name or 'the open layer'} as the input"
+                    if schema[name].kind == "path" and value is not None:
+                        loaded_paths[name] = value
+                    rows[name].value = display_value_for(schema[name], value)
+
+            # A config names the image it was written for, which is rarely the one
+            # on screen -- the shipped one names an image that is not even in the
+            # repository. With a layer open, that layer is the input and the file's
+            # `input_path` is not read; everything else in the file still applies.
+            kept = ""
+            if adopted.settings:
+                for name, value in adopted.settings.items():
+                    if name in rows:
+                        rows[name].value = value
+                        loaded_paths.pop(name, None)
+                kept = f", keeping {adopted.name or 'the open layer'} as the input"
+        finally:
+            restoring_settings[0] = False
+        mask_rows_filled.clear()
 
         apply_prerequisites()
+        snapshot_skip_toggles()
+        # The config replaced whatever a preset set.
+        preset_dropdown.setCurrentIndex(0)
         report.value = f"Loaded {path}{kept}"
         if boundaries is not None and any(
             name in viewer.layers for name in boundaries.layer_names
@@ -2087,91 +18571,1753 @@ def settings_widget(napari_viewer=None):
             # add layers nobody asked for.
             boundaries.redraw()
 
+    def load_preset(name: str | None) -> None:
+        """Set the rows preset *name* names (`pipeline/presets.py`) and no
+        others; None, the menu's "None", loads nothing. A saved preset's key
+        (`pipeline/saved_presets.py`) sets every row a saved preset may hold:
+        those it names to its values, the rest to their defaults.
+
+        The preset is not kept: a row changed afterwards, or a config loaded,
+        simply replaces what it set. Unlike a config it may tick a vessel-mask
+        switch, and then the masks beside the image are searched for, as when
+        the user ticks it.
+        """
+        if name is None:
+            return
+        passed_over: list[str] = []
+        if is_saved_preset_key(name):
+            try:
+                preset = saved_preset_for_key(name)
+                settings, passed_over = saved_preset_settings(preset, schema)
+            except ValueError as error:
+                report.value = f"Could not load the preset:\n{error}"
+                fill_preset_menu()
+                return
+            settings = {
+                setting: value
+                for setting, value in settings.items()
+                if setting not in PANEL_HOLDS_ITSELF
+            }
+            label = preset.name
+        else:
+            settings = preset_settings(name, schema)
+            label = PRESETS[name]["label"]
+        preset_dropdown.setCurrentIndex(preset_dropdown.findData(name))
+        before = current_values()
+        found: list[str] = []
+        preset_search_lines[0] = found
+        try:
+            for setting, value in settings.items():
+                if setting in rows:
+                    rows[setting].value = display_value_for(schema[setting], value)
+            apply_prerequisites()
+        finally:
+            preset_search_lines[0] = None
+        after = current_values()
+        changed = [
+            fields[setting].label
+            for setting in settings
+            if setting in rows and before.get(setting) != after.get(setting)
+        ]
+        line = (
+            f"Loaded preset {label}: set {', '.join(changed)}"
+            if changed
+            else f"Loaded preset {label}: its settings were already set"
+        )
+        lines = [line, *found]
+        if passed_over:
+            lines.append(f"Not set, as no preset sets them here: {', '.join(passed_over)}")
+        report.value = "\n".join(lines)
+
+    def save_current_preset(name: str) -> bool:
+        """Save the panel's settings as preset *name*, over one saved under
+        the same file name, and show it in the menu. True once written."""
+        values = {
+            setting: value
+            for setting, value in current_values().items()
+            if setting not in PANEL_HOLDS_ITSELF
+        }
+        try:
+            preset = save_preset(name, values, schema)
+        except (OSError, ValueError) as error:
+            report.value = f"Could not save the preset {name!r}:\n{error}"
+            return False
+        fill_preset_menu(preset.key)
+        count = len(preset.settings)
+        changes = (
+            f"{count} setting{'s' if count != 1 else ''} away from their defaults"
+            if count
+            else "every setting at its default"
+        )
+        report.value = (
+            f"Saved the preset {preset.name} ({changes}) in {preset.path}\n"
+            "Not kept, as they belong to one image: its files and folders, "
+            "channels, labels, voxel size, axis order, crop on import, boundary nodes "
+            "and positions, and the switches reusing its cached outputs"
+        )
+        return True
+
+    def delete_preset(key: str) -> bool:
+        """Delete the saved preset keyed *key*. True once it is gone."""
+        try:
+            preset = saved_preset_for_key(key)
+            delete_saved_preset(preset)
+        except (OSError, ValueError) as error:
+            report.value = f"Could not delete the preset:\n{error}"
+            fill_preset_menu()
+            return False
+        shown = preset_shown[0]
+        fill_preset_menu(None if shown == key else shown)
+        report.value = f"Deleted the preset {preset.name} ({preset.path})"
+        return True
+
+    def on_save_preset() -> None:
+        from qtpy.QtWidgets import QInputDialog, QLineEdit, QMessageBox
+
+        shown = preset_shown[0]
+        suggested = (
+            preset_dropdown.itemText(preset_dropdown.findData(shown))
+            if is_saved_preset_key(shown)
+            else ""
+        )
+        name, ok = QInputDialog.getText(
+            _dialog_parent(viewer),
+            "Save a preset",
+            "Name of the preset (kept on this machine):",
+            QLineEdit.Normal,
+            suggested,
+        )
+        name = name.strip() if ok else ""
+        try:
+            path = saved_preset_path(name) if name else None
+        except ValueError as error:
+            report.value = f"Could not save the preset {name!r}:\n{error}"
+            path = None
+        if path is None:
+            fill_preset_menu(shown)
+            return
+        if path.exists():
+            answer = QMessageBox.question(
+                _dialog_parent(viewer),
+                "Replace the preset?",
+                f"A preset is already saved as {path.name}. Replace it with "
+                "these settings?",
+            )
+            if answer != QMessageBox.Yes:
+                fill_preset_menu(shown)
+                return
+        if not save_current_preset(name):
+            fill_preset_menu(shown)
+
+    def on_delete_preset() -> None:
+        from qtpy.QtWidgets import QInputDialog, QMessageBox
+
+        shown = preset_shown[0]
+        saved = saved_presets()
+        if not saved:
+            fill_preset_menu(shown)
+            return
+        names = [preset.name for preset in saved]
+        name, ok = QInputDialog.getItem(
+            _dialog_parent(viewer),
+            "Delete a saved preset",
+            "Preset to delete:",
+            names,
+            0,
+            False,
+        )
+        if not ok or name not in names:
+            fill_preset_menu(shown)
+            return
+        preset = saved[names.index(name)]
+        answer = QMessageBox.question(
+            _dialog_parent(viewer),
+            "Delete the preset?",
+            f"Delete the preset {preset.name}? Its file is removed and cannot "
+            "be brought back.",
+        )
+        if answer != QMessageBox.Yes:
+            fill_preset_menu(shown)
+            return
+        delete_preset(preset.key)
+
+    def on_preset_chosen(index: int) -> None:
+        key = preset_dropdown.itemData(index)
+        if key == SAVE_PRESET:
+            on_save_preset()
+        elif key == DELETE_PRESET:
+            on_delete_preset()
+        else:
+            load_preset(key)
+
+    # `activated`, not `currentIndexChanged`: choosing the preset already
+    # shown loads it again, over rows changed since.
+    preset_dropdown.activated.connect(on_preset_chosen)
+
     def on_load() -> None:
         from qtpy.QtWidgets import QFileDialog
 
         path, _filter = QFileDialog.getOpenFileName(
-            None, "Open a HaemoLynx config", "", "YAML (*.yaml *.yml)"
+            _dialog_parent(viewer),
+            "Open a HaemoLynx config",
+            last_config_path[0],
+            "YAML (*.yaml *.yml)",
         )
         if not path:
             return
+        last_config_path[0] = path
         load_config_file(path)
+
+    def _values_for_save(dest: Path) -> dict[str, Any]:
+        """Form values with relative loaded paths rebased if *dest* left cwd."""
+        values = current_values()
+        # A run from a later tab turns these off for itself (FWHM keeps its
+        # widths); the file says the user's own, which Run pipeline puts back.
+        for name in SKIP_FOR_RESUME:
+            if name in values and name in skip_toggle_snapshot:
+                values[name] = skip_toggle_snapshot[name]
+        try:
+            dest_dir = dest.parent.resolve()
+            keep_relative = dest_dir == Path.cwd().resolve()
+            if loaded_config_dir[0] is not None:
+                keep_relative = dest_dir == loaded_config_dir[0].resolve()
+        except OSError:
+            keep_relative = False
+        if keep_relative:
+            return values
+        for name, original in loaded_paths.items():
+            if original is None or name not in values:
+                continue
+            try:
+                if Path(original).is_absolute():
+                    continue
+                values[name] = Path(original).expanduser().resolve()
+            except (TypeError, ValueError, OSError):
+                continue
+        return values
+
+    def save_config_file(path: Path | str) -> bool:
+        """Write the panel's current settings to *path*.
+
+        Returns True when the file was written. Failures (schema validation,
+        I/O, still-broken YAML edge cases) are reported in the panel rather
+        than raised through the Qt/psygnal signal — same contract as load.
+        """
+        dest = ensure_yaml_suffix(path)
+        try:
+            dump_config(dest, schema, values=_values_for_save(dest))
+        except Exception as error:
+            report.value = f"Could not save {dest}:\n{error}"
+            return False
+        last_config_path[0] = str(dest)
+        loaded_config_dir[0] = dest.parent
+        report.value = f"Wrote {dest}"
+        return True
 
     def on_save() -> None:
         from qtpy.QtWidgets import QFileDialog
 
         path, _filter = QFileDialog.getSaveFileName(
-            None, "Save these settings", "config.yaml", "YAML (*.yaml *.yml)"
+            _dialog_parent(viewer),
+            "Save these settings",
+            last_config_path[0] or "config.yaml",
+            "YAML (*.yaml *.yml)",
         )
         if not path:
             return
-        dump_config(Path(path), schema, values=current_values())
-        report.value = f"Wrote {path}"
+        save_config_file(path)
 
-    def on_check() -> None:
-        result = preflight(_settings(), schema)
+    def on_optimise_settings() -> None:
+        if run_state.running:
+            report.value = ALREADY_RUNNING
+            return
+        if batch_mode.setup is not None:
+            report.value = SINGLE_IMAGE_IN_BATCH
+            return
+        values = current_values()
+        if network_is_synthetic(values):
+            report.value = OPTIMISE_SYNTHETIC_TOOLTIP
+            return
+        segmented_path, refusal = _segmented_image_to_optimise(values)
+        if segmented_path is None:
+            report.value = refusal
+            return
+        downsample_factor = _DOWNSAMPLE_CHOICES.get(downsample_dropdown.value)
+        groups = None
+        if choose_groups_checkbox.value:
+            groups = tuple(name for name, box in group_checkboxes.items() if box.value)
+        optimise_review.clear()
+        _run_optimisation_in_background(
+            _settings(),
+            schema,
+            rows,
+            report,
+            optimise_button,
+            optimise_bars,
+            apply_prerequisites=apply_prerequisites,
+            run_state=run_state,
+            downsample_factor=downsample_factor,
+            groups=groups,
+            max_passes=int(passes_spinbox.value),
+            propose=optimise_review.propose,
+            segmented_path=segmented_path,
+        )
+
+    def on_check_segmented_image() -> None:
+        if run_state.running:
+            report.value = ALREADY_RUNNING
+            return
+        if batch_mode.setup is not None:
+            report.value = SINGLE_IMAGE_IN_BATCH
+            return
+        from haemolynx.gui.chrome_tooltips import CHECK_SYNTHETIC_TOOLTIP
+
+        if network_is_synthetic(current_values()):
+            report.value = CHECK_SYNTHETIC_TOOLTIP
+            return
+        segmented_path, refusal = _segmented_image_to_optimise(
+            current_values(), action="Check segmented image"
+        )
+        if segmented_path is None:
+            report.value = refusal
+            return
+        _run_segmentation_quality_check_in_background(
+            _settings(),
+            report,
+            check_image_button,
+            run_state=run_state,
+            segmented_path=segmented_path,
+        )
+
+    def check_lines(result) -> str:
         lines = [f"FAILED: {message}" for message in result.errors]
         lines += [f"warning: {message}" for message in result.warnings]
-        report.value = "\n".join(lines) if lines else "All checks passed."
+        return "\n".join(lines) if lines else "All checks passed."
 
-    def on_run() -> None:
-        settings = _settings()
-        if not preflight(settings, schema).ok:
-            report.value = "Checks failed; nothing was run. Press 'Run checks' for detail."
+    def _checks_in_background(settings, *, then=None) -> None:
+        """Run preflight on a worker, the Run checks and Run buttons greyed
+        meanwhile: the report gets its result, or *then* runs if it passed."""
+        from napari.qt.threading import thread_worker
+
+        @thread_worker
+        def check():
+            return preflight(settings, schema)
+
+        def checked(result) -> None:
+            if then is None:
+                report.value = check_lines(result)
+            elif not result.ok:
+                report.value = CHECKS_FAILED_NOTHING_RUN
+            else:
+                then()
+
+        def failed(error) -> None:
+            report.value = f"Could not run the checks:\n{error}"
+
+        def finished() -> None:
+            checking[0] = None
+            check_button.enabled = True
+            if not run_state.running:
+                run_button.enabled = True
+
+        report.value = RUNNING_CHECKS
+        check_button.enabled = False
+        run_button.enabled = False
+        # Claimed at creation, or superqt also re-raises the error unasked.
+        worker = check(
+            _connect={"returned": checked, "errored": failed, "finished": finished},
+            _start_thread=False,
+        )
+        checking[0] = worker
+        worker.start()
+
+    def on_check() -> None:
+        if batch_mode.setup is not None:
+            on_check_batch()
             return
-        results = None
-        if show_results.value and viewer is not None:
-            results = ResultLayers(show_steps=bool(show_steps.value))
+        try:
+            settings = _settings()
+        except Exception as error:  # noqa: BLE001 - reported in the panel
+            report.value = f"Could not read settings:\n{error}"
+            return
+        _checks_in_background(settings)
+
+    def on_check_batch() -> None:
+        """Run checks with a batch set: every ticked image's, as the Batch run
+        window's Check does, rather than the Input tab's one image's."""
+        from haemolynx.gui.batch_run import check_setup
+
+        if not batch_mode.setup.selected():
+            report.value = "No image is ticked in the Batch run window."
+            return
+        try:
+            setup, lines = check_setup(current_values(), schema, batch_mode.setup)
+        except Exception as error:  # noqa: BLE001 - reported in the panel
+            report.value = f"Could not read settings:\n{error}"
+            return
+        batch_mode.setup = setup
+        if batch_window[0] is not None:
+            batch_window[0].show_finished(setup)
+        failing = sum(bool(error) for error in setup.checked.values())
+        lines.append(
+            f"Checks failed for {failing} image(s)."
+            if failing
+            else f"All {len(setup.checked)} ticked image(s) passed their checks."
+        )
+        report.value = "\n".join(lines)
+
+    def refresh_revert_buttons() -> None:
+        """Enable each tab's run-from button only when its previous stage is
+        saved, and never while a batch is set: it runs one image."""
+        batched = batch_mode.setup is not None
+        for title, button in revert_buttons.items():
+            button.enabled = (
+                not run_state.running and not batched and can_revert_from(title, checkpoints)
+            )
+            button.tooltip = SINGLE_IMAGE_IN_BATCH if batched else REVERT_STAGE_TOOLTIP
+
+    def _restore_skip_toggles() -> bool:
+        """Put skeletonize / graph-building / FWHM back to the user's values."""
+        restored = False
+        disconnected: list[str] = []
+        for name in SKIP_FOR_RESUME:
+            if name in rows:
+                try:
+                    rows[name].changed.disconnect(snapshot_skip_toggles)
+                    disconnected.append(name)
+                except (TypeError, RuntimeError):
+                    pass
+        try:
+            for name in SKIP_FOR_RESUME:
+                if name in rows and name in skip_toggle_snapshot:
+                    if rows[name].value != skip_toggle_snapshot[name]:
+                        rows[name].value = skip_toggle_snapshot[name]
+                        restored = True
+        finally:
+            for name in disconnected:
+                rows[name].changed.connect(snapshot_skip_toggles)
+        if restored:
+            apply_prerequisites()
+        return restored
+
+    def on_run_batch(run_setup=None) -> None:
+        """Run pipeline with a batch set, or *run_setup* (a part of it: Run
+        again's one image): every ticked image's checks first, then the batch
+        off the GUI thread. An image failing its checks stops the whole batch
+        before anything runs."""
+        import time as _time
+        from dataclasses import replace as _replace
+
+        from haemolynx.gui.batch_run import RUNNING as _RUNNING
+        from haemolynx.gui.batch_run import (
+            BatchResult,
+            batch_progress_text,
+            check_setup,
+            figure_cells,
+        )
+
+        setup = batch_mode.setup if run_setup is None else run_setup
+        if not setup.selected():
+            report.value = "No image is ticked in the Batch run window."
+            return
+        values = current_values()
+        try:
+            setup, _lines = check_setup(values, schema, setup)
+        except Exception as error:  # noqa: BLE001 - reported in the panel
+            report.value = f"Could not read settings:\n{error}"
+            return
+        # This batch's statuses replace those shown; a part of the batch (Run
+        # again) leaves the other images' as they were.
+        kept = dict(batch_mode.setup.checked) if run_setup is not None else {}
+        batch_mode.setup = _replace(batch_mode.setup, checked={**kept, **setup.checked})
+        if batch_window[0] is not None:
+            batch_window[0].show_finished(batch_mode.setup)
+        failing = [stem for stem, error in setup.checked.items() if error]
+        if failing:
+            report.value = (
+                f"Checks failed for {len(failing)} image(s) ({', '.join(failing)}); "
+                "nothing was run. Open Batch run and press Check for detail."
+            )
+            return
+        on_clear(ask=False)
+        log_view.set_level(VERBOSE_LEVEL if values.get("verbose_logging") else DEFAULT_LEVEL)
+        show_log()
+        # This batch's images, as each starts and ends: the window's table
+        # shows them as they come, and when it is opened mid-batch, and the
+        # report says how far the batch has got.
+        statuses: dict[str, str] = {}
+        ordered = {match.stem: BatchResult(match) for match in setup.selected()}
+        started = {"batch": _time.monotonic(), "image": _time.monotonic()}
+
+        def item_changed(result) -> None:
+            stem = result.match.stem
+            ordered[stem] = result
+            statuses[stem] = result.status_text()
+            now = _time.monotonic()
+            if result.status == _RUNNING:
+                started["image"] = now
+            text = batch_progress_text(
+                list(ordered.values()),
+                elapsed_s=now - started["batch"],
+                running_elapsed_s=now - started["image"],
+            )
+            report.value = text
+            if batch_mode.setup is None:
+                return
+            figures = dict(batch_mode.setup.figures)
+            if result.status != _RUNNING and result.seconds is not None:
+                figures[stem] = figure_cells(result.seconds, result.peak_rss_bytes, result.vessels)
+            details = dict(batch_mode.setup.error_details)
+            if result.error_detail:
+                details[stem] = result.error_detail
+            batch_mode.setup = _replace(
+                batch_mode.setup,
+                checked={**kept, **statuses},
+                figures=figures,
+                error_details=details,
+            )
+            if batch_window[0] is not None:
+                batch_window[0].show_progress(batch_mode.setup, stem, text)
+
+        def batch_finished(summary) -> None:
+            statuses.update({result.match.stem: result.status_text() for result in summary.results})
+            if batch_mode.setup is None:  # the batch run was left while it ran
+                return
+            batch_mode.setup = _replace(batch_mode.setup, checked={**kept, **statuses})
+            if batch_window[0] is not None:
+                batch_window[0].show_finished(batch_mode.setup, summary.message())
+
+        def batch_stopped() -> None:
+            batch_mode.running = False
+            batch_mode.stop = False
+            refresh_batch_button()
+            if batch_window[0] is not None:
+                batch_window[0].set_running(False)
+
+        batch_mode.running = True
+        batch_mode.stop = False
+        if batch_window[0] is not None:
+            batch_window[0].set_running(True)
+        _run_batch_in_background(
+            values,
+            schema,
+            setup,
+            report,
+            run_button,
+            bars,
+            state=run_state,
+            log=log_view,
+            on_done=batch_finished,
+            on_item=item_changed,
+            on_stopped=batch_stopped,
+            stop_requested=lambda: batch_mode.stop,
+        )
+        refresh_revert_buttons()
+
+    def on_run(
+        *_args,
+        start_from=None,
+        resume=None,
+        replace_checkpoints: bool = True,
+        restored_stages=(),
+        stop_after="auto",
+    ) -> None:
+        """Start a run. *stop_after* is where it stops: ``"auto"`` pauses it
+        before Post processing when Mid-run postprocessing is on (see
+        :func:`~haemolynx.gui.run_state.mid_run_stop_after`), else a stage
+        call, or None to run to the end."""
+        if run_state.running:
+            # The button is disabled while a run is going, so this is only
+            # reached from a script or a keyboard -- but it is also the one
+            # place that says how to get out of a run, so it says it.
+            report.value = ALREADY_RUNNING
+            return
+        if start_from is None:
+            # Run pipeline always uses the user's skip toggles, not leftover
+            # flags from "Run from this stage".
+            _restore_skip_toggles()
+            if batch_mode.setup is not None:
+                on_run_batch()
+                return
+        try:
+            settings = _settings()
+        except Exception as error:
+            report.value = f"Could not read settings:\n{error}"
+            return
+        started_with = current_values()
+
+        def proceed() -> None:
+            nonlocal stop_after
+            if start_from is None:
+                # A full run starts from a clean slate: old layers, checkpoints
+                # and cached resume pickles from a previous run must not leak
+                # into this one. "Run from this stage" resumes deliberately keep
+                # them, so this only fires for a genuine fresh run.
+                on_clear(ask=False)
+            results = None
+            if show_results.value and viewer is not None:
+                if replace_checkpoints or view.results is None:
+                    results = ResultLayers(
+                        show_steps=bool(show_steps.value),
+                        settings=settings,
+                    )
+                    view.results = results
+                    if boundaries is not None:
+                        boundaries.state.results = results
+                else:
+                    results = view.results
+                # A full run that will show layers replaces the previous run's
+                # checkpoints. "Run from this stage" has already dropped later
+                # ones and must keep the previous tab's snapshot.
+                if replace_checkpoints:
+                    checkpoints.clear()
+            # How much of the run to show follows the setting that already means
+            # "tell me everything"; the window itself is a panel control, like
+            # `show_results`, because a config file is read by CLI runs too.
+            log_view.set_level(
+                VERBOSE_LEVEL if settings.get("verbose_logging") else DEFAULT_LEVEL
+            )
+            show_log()
+            refresh_revert_buttons()
+            if stop_after == "auto":
+                # A pause needs the run on screen: the tab edits the viewer's graph.
+                stop_after = mid_run_stop_after(settings, start_from) if results is not None else None
+            run_state.paused_after = None
+            run_values[0] = started_with
+            worker = _run_in_background(
+                settings, schema, report, run_button, bars,
+                viewer=viewer if show_results.value else None,
+                results=results,
+                state=run_state,
+                log=log_view,
+                checkpoints=checkpoints if results is not None else None,
+                after_layers=_after_layers_applied if show_results.value else None,
+                start_from=start_from,
+                resume=resume,
+                restored_stages=restored_stages,
+                stop_after=stop_after,
+                on_paused=on_paused,
+            )
+            # After start(): running is True, so run-from buttons grey out for
+            # the length of the run. They come back when the worker stops.
+            refresh_revert_buttons()
+            post_processing.refresh()
+            if worker is not None:
+                for signal in (worker.returned, worker.errored, worker.finished):
+                    signal.connect(lambda *_: refresh_revert_buttons())
+                    signal.connect(lambda *_: post_processing.refresh())
+                run_flag = run_state.cancel_flag
+
+                def statistics_of_the_run(graph) -> None:
+                    # The graph the run returns, shown in the viewer or not -- unless
+                    # Clear, or a newer run, has taken this one's place.
+                    if run_state.cancel_flag is run_flag and not run_flag["cancelled"]:
+                        # A perturbation still shown keeps its own report.
+                        shown = _layer_set_shown(viewer) if viewer is not None else None
+                        graphs = getattr(view.results, "perturbation_graphs", None) or {}
+                        own = statistics_report(graphs.get(shown)) if shown is not None else None
+                        statistics_panel.show(own or statistics_report(graph))
+
+                worker.returned.connect(statistics_of_the_run)
+
+        if slow_checks(settings, start_from):
+            # The quality score reads the whole image, and a synthetic run
+            # loads its template: off the panel's thread, which froze for it.
+            _checks_in_background(settings, then=proceed)
+            return
+        if not preflight(settings, schema, resume=resume).ok:
+            report.value = CHECKS_FAILED_NOTHING_RUN
+            return
+        proceed()
+
+    def on_paused() -> None:
+        """A run stopped before Post processing (or after a Regenerate graph
+        there): bring up that tab with the network scanned, for Continue."""
+        titles = [tab_widget.tabText(i) for i in range(tab_widget.count())]
+        if POST_PROCESSING_TAB in titles:
+            tab_widget.setCurrentIndex(titles.index(POST_PROCESSING_TAB))
+        # Scanning reports its junction count; the pause message says more.
+        message = report.value
+        try:
+            post_processing.scan()
+        except Exception:  # noqa: BLE001 - the run is paused either way
+            logger.exception("could not scan the paused network")
+        report.value = message
+        post_processing.refresh()
+
+    def on_clear(*, ask: bool = False) -> None:
+        """Take our layers out of the viewer, stop the run, and forget state.
+
+        Cancel first so in-flight layer groups cannot put work back. Then
+        free the Run button immediately: the dying worker keeps its own
+        cancel flag and cannot grey the panel out again.
+        """
+        stopping = run_state.cancel()
+        if stopping:
+            checkpoints.freeze()
+            run_state.supersede()
+            run_button.enabled = True
+            # Whichever of them was the one running: cancel() does not
+            # say which, and re-enabling/resetting the others is a no-op.
+            optimise_button.enabled = True
+            optimise_bars.reset()
+            optimise_fwhm_button.enabled = True
+            optimise_fwhm_bars.reset()
+            optimise_endothelial_button.enabled = True
+            optimise_endothelial_bars.reset()
+            # Bar any a set batch or a synthetic network keeps greyed.
+            refresh_single_image_buttons()
+            log_view.cancelled()
+        optimise_review.clear()
+        fwhm_review.clear()
+        endothelial_review.clear()
+        removed = 0
+        if viewer is not None:
+            removed = _clear_our_layers(viewer)
+            viewer._haemolynx_layer_set = None
+            refresh_layer_sets()
+            reparent_arrow_length_slider()
+            z_depth_slider._haemolynx_extent_ready = False
+            z_depth_slider.setEnabled(False)
+            z_depth_slider.set_edge_labels("min", "max")
+            arrow_length_slider.setEnabled(False)
+            arrow_length_slider.setVisible(False)
+            apply_view_z(force=True)
+        view.results = None
+        run_values[0] = None
+        refresh_statistics()
+        if boundaries is not None:
+            boundaries.state.results = None
+        discarded_artefacts = False
+        extra = checkpoints.session_artefact_paths
+        try:
+            values = current_values()
+        except Exception:  # noqa: BLE001 - still reset the panel
+            values = None
+            logger.debug("could not read settings while clearing", exc_info=True)
+        pending = list(extra)
+        if values:
+            output_dir = output_dir_from_settings(values)
+            if output_dir is not None:
+                from haemolynx.gui.stage_checkpoints import stems_for_cached_artefacts
+
+                for stem in stems_for_cached_artefacts(values):
+                    pending.extend(output_dir.glob(f"{stem}_checkpoint_*.pkl"))
+        existing = tuple(path for path in dict.fromkeys(pending) if Path(path).is_file())
+        do_discard = True
+        if ask and existing:
+            from qtpy.QtWidgets import QMessageBox
+
+            listed = "\n".join(str(path) for path in existing[:8])
+            more = "" if len(existing) <= 8 else f"\n... and {len(existing) - 8} more"
+            answer = QMessageBox.question(
+                _dialog_parent(viewer),
+                "Discard cached pickles?",
+                "Clear will delete these resume and checkpoint files:\n"
+                + listed
+                + more,
+            )
+            do_discard = answer == QMessageBox.Yes
+        if do_discard:
+            try:
+                removed_paths = discard_cached_artefacts_for_settings(
+                    values, extra_paths=extra
+                )
+            except Exception:  # noqa: BLE001 - clearing the panel still matters
+                logger.exception("could not discard cached artefacts")
+                removed_paths = ()
+            discarded_artefacts = bool(removed_paths)
+        restored_skips = _restore_skip_toggles()
+        checkpoints.clear()
+        run_state.paused_after = None
+        refresh_revert_buttons()
+        post_processing.forget()
+        report.value = clear_message(
+            removed,
+            stopping,
+            discarded_artefacts=discarded_artefacts,
+            restored_skips=restored_skips,
+        )
+
+    def _apply_resume_skips(skip_settings) -> None:
+        """Turn *skip_settings* off for a resumed run, without them becoming
+        the user's own toggles (which Run pipeline puts back)."""
+        nonlocal revert_setting_skips
+        saved_skip_snapshot = dict(skip_toggle_snapshot)
+        disconnected: list[str] = []
+        for name in SKIP_FOR_RESUME:
+            if name in rows:
+                try:
+                    rows[name].changed.disconnect(snapshot_skip_toggles)
+                    disconnected.append(name)
+                except (TypeError, RuntimeError):
+                    pass
+        revert_setting_skips = True
+        try:
+            for name in skip_settings:
+                if name in rows:
+                    rows[name].value = False
+        finally:
+            revert_setting_skips = False
+            skip_toggle_snapshot.update(saved_skip_snapshot)
+            for name in disconnected:
+                rows[name].changed.connect(snapshot_skip_toggles)
+        apply_prerequisites()
+
+    def _resumed_run_passes_checks(settings, plan) -> bool:
+        """Preflight the run *plan* would start, before anything is dropped.
+
+        `on_run` checks too, but only after this tab's and later tabs'
+        checkpoints and layers are gone and the skip toggles are off: a
+        failing check there threw the finished work away for a run that then
+        never started.
+        """
+        planned = dict(settings)
+        planned.update({name: False for name in plan.skip_settings})
+        if preflight(planned, schema, resume=plan.resume).ok:
+            return True
+        report.value = CHECKS_FAILED_NOTHING_RUN
+        refresh_revert_buttons()
+        return False
+
+    def prepare_run_from(tab_title: str, *, check: bool = False):
+        """Drop this tab and later work; return the plan, or None.
+
+        With *check*, nothing is dropped unless the run the plan starts
+        passes preflight (see :func:`_resumed_run_passes_checks`).
+        """
+        if run_state.running:
+            report.value = ALREADY_RUNNING
+            return None
+        if viewer is None:
+            report.value = "No viewer to restore layers into."
+            return None
+        try:
+            settings = _settings()
+        except Exception as error:
+            report.value = f"Could not read settings:\n{error}"
+            return None
+        # Another run-from may have left its skip toggles off; each one starts
+        # from the user's own, or a run from Graph after one from Haemodynamics
+        # would load the old graph instead of building a new one.
+        if _restore_skip_toggles():
+            try:
+                settings = _settings()
+            except Exception as error:
+                report.value = f"Could not read settings:\n{error}"
+                return None
+        plan = checkpoints.plan_run_from(tab_title, settings=settings, drop=False)
+        if plan is None:
+            report.value = (
+                "Nothing ready to run from: run the pipeline with 'Show each "
+                "stage in the viewer' through the previous tab first."
+            )
+            refresh_revert_buttons()
+            return None
+        if check and not _resumed_run_passes_checks(settings, plan):
+            return None
+        checkpoints.drop_from(plan.start_from)
+        results = view.results
+        if results is None:
+            results = ResultLayers()
             view.results = results
             if boundaries is not None:
                 boundaries.state.results = results
-        _run_in_background(
-            settings, schema, report, run_button, bars,
-            viewer=viewer if show_results.value else None,
-            results=results,
+        checkpoints.apply_to_results(results, plan.checkpoint)
+        # Only what the replay will not put back: the replay updates the rest
+        # in place. Removing every layer -- the image, masks and FWHM volumes,
+        # the tube mesh -- only to re-add each one tore down and rebuilt all
+        # of their GL resources at once, the teardown that crashes the process
+        # (see _clear_our_layers), and did it most on the latest tabs, which
+        # replay the most stages.
+        _remove_our_layers(viewer, keep=_layer_names_redrawn_by(plan.groups))
+        _apply_layer_groups(viewer, plan.groups)
+        _after_layers_applied()
+        _apply_resume_skips(plan.skip_settings)
+        if plan.tab_title:
+            titles = [tab_widget.tabText(i) for i in range(tab_widget.count())]
+            if plan.tab_title in titles:
+                tab_widget.setCurrentIndex(titles.index(plan.tab_title))
+        refresh_revert_buttons()
+        report.value = restore_message(plan)
+        return plan
+
+    def on_revert(tab_title: str) -> None:
+        """Prepare the previous tab's work, then rerun from this stage."""
+        from haemolynx.gui.post_processing import edits_left_out_by_running_from, edits_lost_by_running_from
+        from haemolynx.gui.stage_checkpoints import tab_start_stage
+
+        if batch_mode.setup is not None:
+            report.value = SINGLE_IMAGE_IN_BATCH
+            return
+        post_processed = checkpoints.get(POST_PROCESS)
+        edits_lost = edits_lost_by_running_from(
+            tab_start_stage(tab_title),
+            post_processing.state.graph,
+            post_processed.graph if post_processed is not None else None,
+        )
+        if edits_lost and not _confirm_discard_hand_edits(_dialog_parent(viewer), tab_title):
+            report.value = f"Kept the hand edits on {POST_PROCESSING_TAB}: nothing was run."
+            return
+        if edits_left_out_by_running_from(
+            tab_start_stage(tab_title), post_processing.state.graph
+        ) and not _confirm_run_without_hand_edits(_dialog_parent(viewer), tab_title):
+            report.value = (
+                f"Nothing was run: the edits on {POST_PROCESSING_TAB} are not in the model yet. "
+                "Regenerate graph there takes them in."
+            )
+            return
+        plan = prepare_run_from(tab_title, check=True)
+        if plan is None:
+            return
+        if edits_lost:
+            post_processing.discard_edits()
+        on_run(
+            start_from=plan.start_from or None,
+            resume=plan.resume,
+            replace_checkpoints=False,
+            restored_stages=stages_before(plan.start_from),
         )
 
-    def on_clear() -> None:
-        if viewer is None:
-            return
-        removed = _clear_our_layers(viewer)
+    def regenerate_from_graph(graph, *, stop_after=None) -> bool:
+        """Run the Post processing stage on the hand-edited *graph*, and on to
+        *stop_after*, or to the end. Returns whether a run started (a failed
+        check says why in the report box).
+
+        The stage brings the edits in line -- boundary lists cut to the nodes
+        left (the tab's Prune drops inlets on purpose), bridges into thick
+        vessels, lengths, branch orders, and the edited vessels measured by
+        the run's own diameter methods -- then solves the haemodynamics again
+        on the edited network. Haemodynamics and everything before it keep
+        what they recorded: the tab comes after them.
+        """
+        if run_state.running:
+            report.value = ALREADY_RUNNING
+            return False
+        # Like a run from a tab: the user's own toggles first, then the skeleton
+        # and the edited graph written where the run loads them, so it neither
+        # re-skeletonises the image nor rebuilds a graph it would discard.
+        _restore_skip_toggles()
+        try:
+            settings = _settings()
+        except Exception as error:
+            report.value = f"Could not read settings:\n{error}"
+            return False
+        plan = checkpoints.plan_regenerate(
+            graph, settings=settings, start_from=POST_PROCESS, drop=False
+        )
+        if plan is None:
+            report.value = (
+                "Nothing to regenerate from: run the pipeline through at "
+                "least Boundaries first."
+            )
+            return False
+        if not _resumed_run_passes_checks(settings, plan):
+            return False
+        checkpoints.drop_from(plan.start_from)
+        _apply_resume_skips(plan.skip_settings)
+        on_run(
+            start_from=plan.start_from,
+            resume=plan.resume,
+            replace_checkpoints=False,
+            restored_stages=stages_before(POST_PROCESS),
+            stop_after=stop_after,
+        )
+        return bool(run_state.running)
+
+    def _run_saved(dest: Path) -> None:
+        last_run_path[0] = str(dest)
+        report.value = f"Wrote run {dest}"
+
+    def _run_save_finished() -> None:
+        saving_run[0] = None
+        save_run_button.enabled = True
+        load_run_button.enabled = True
+
+    def save_run_file(path: Path | str, *, background: bool = False) -> bool:
+        """Write the current viewer run to *path*. Returns whether it wrote.
+
+        With *background* the run is captured here and written off the GUI
+        thread -- a large run's volumes take a while to compress, and the
+        panel froze for all of it -- and the return says whether the write
+        started; the report says when it is done.
+        """
+        if run_state.running:
+            report.value = ALREADY_RUNNING
+            return False
+        if saving_run[0] is not None:
+            report.value = RUN_SAVE_IN_PROGRESS
+            return False
+        rows = current_values()
+        try:
+            snapshot = capture_run(
+                checkpoints=checkpoints,
+                results=view.results,
+                # What the run was made with; the rows changed since are kept
+                # apart, so the file does not name them as what made it.
+                settings=run_values[0] if run_values[0] is not None else rows,
+                panel_values=rows,
+                skip_toggle_snapshot=skip_toggle_snapshot,
+                show_results=bool(show_results.value),
+                show_steps=bool(show_steps.value),
+                report=str(report.value or ""),
+                paused_after=run_state.paused_after,
+                loop_reviews=tuple(post_processing.state.loop_reviews),
+                review_decisions=tuple(post_processing.state.review_decisions),
+            )
+        except RunSnapshotError as error:
+            report.value = str(error)
+            return False
+        dest = ensure_run_suffix(path)
+        if not background:
+            try:
+                write_run_snapshot(dest, snapshot)
+            except Exception as error:  # noqa: BLE001 - report in the panel
+                report.value = f"Could not save run {dest}:\n{error}"
+                return False
+            _run_saved(dest)
+            return True
+        from napari.qt.threading import thread_worker
+
+        @thread_worker
+        def write():
+            return write_run_snapshot(dest, snapshot)
+
+        def written(_path) -> None:
+            _run_save_finished()
+            _run_saved(dest)
+
+        def failed(error) -> None:
+            _run_save_finished()
+            logger.error("could not save run %s: %s", dest, error)
+            report.value = f"Could not save run {dest}:\n{error}"
+
+        # Claimed at creation, or superqt also re-raises the error unasked.
+        worker = write(
+            _connect={"returned": written, "errored": failed}, _start_thread=False
+        )
+        saving_run[0] = worker
+        save_run_button.enabled = False
+        load_run_button.enabled = False
+        report.value = f"Saving run to {dest}..."
+        worker.start()
+        return True
+
+    def _strip_session_for_load() -> None:
+        """Forget the live run so a loaded snapshot owns the panel."""
+        stopping = run_state.cancel()
+        if stopping:
+            checkpoints.freeze()
+            run_state.supersede()
+            run_button.enabled = True
+            # Whichever of them was the one running: cancel() does not
+            # say which, and re-enabling/resetting the others is a no-op.
+            optimise_button.enabled = True
+            optimise_bars.reset()
+            optimise_fwhm_button.enabled = True
+            optimise_fwhm_bars.reset()
+            optimise_endothelial_button.enabled = True
+            optimise_endothelial_bars.reset()
+            # Bar any a set batch or a synthetic network keeps greyed.
+            refresh_single_image_buttons()
+            log_view.cancelled()
+        optimise_review.clear()
+        fwhm_review.clear()
+        endothelial_review.clear()
+        if viewer is not None:
+            _clear_our_layers(viewer)
+            reparent_arrow_length_slider()
+            z_depth_slider._haemolynx_extent_ready = False
+            z_depth_slider.setEnabled(False)
+            z_depth_slider.set_edge_labels("min", "max")
+            arrow_length_slider.setEnabled(False)
+            arrow_length_slider.setVisible(False)
+            apply_view_z(force=True)
         view.results = None
         if boundaries is not None:
             boundaries.state.results = None
-        report.value = f"Removed {removed} HaemoLynx layer(s)."
+        try:
+            discard_cached_artefacts_for_settings(
+                current_values(), extra_paths=checkpoints.session_artefact_paths
+            )
+        except Exception:  # noqa: BLE001 - loading still proceeds
+            logger.exception("could not discard cached artefacts before loading a run")
+        checkpoints.clear()
+        run_state.paused_after = None
+        post_processing.forget()
+        bars.reset()
+
+    def load_run_file(path: Path | str) -> bool:
+        """Replace the current session with the run stored at *path*. Refused
+        while a batch runs (it would stop the batch); a batch set is left, since
+        the run shown is then one image's."""
+        if batch_mode.running:
+            report.value = BATCH_RUNNING_NO_LOAD
+            return False
+        try:
+            snapshot = read_run_snapshot(path)
+        except Exception as error:
+            report.value = f"Could not load run {path}:\n{error}"
+            return False
+        # A run made on another machine (the server's /home/...) is pointed
+        # at this one's copies of its files before anything reads them.
+        relocated = relocate_run_paths(snapshot, path)
+        for moved in relocated:
+            logger.info("Loaded run: %s moved from %s to %s", moved.name, moved.old, moved.new)
+        _strip_session_for_load()
+        left_batch = batch_mode.setup is not None
+        if left_batch:
+            leave_batch()
+        # The review decisions came with the run: its kept loops and items
+        # are not listed again.
+        post_processing.state.loop_reviews = list(snapshot.loop_reviews)
+        post_processing.state.review_decisions = list(snapshot.review_decisions)
+        loaded_paths.clear()
+        loaded_config_dir[0] = Path(path).parent
+        last_run_path[0] = str(path)
+        # A run saved by an older version may name a retired setting or spell
+        # a value the way it used to; the rows only take today's.
+        restoring_settings[0] = True
+        try:
+            # The panel as it was saved: the run's settings, and the rows
+            # changed after it.
+            for name, value in schema.upgrade(snapshot.panel_values).items():
+                if name not in rows:
+                    continue
+                if schema[name].kind == "path" and value is not None:
+                    loaded_paths[name] = value
+                rows[name].value = display_value_for(schema[name], value)
+        finally:
+            restoring_settings[0] = False
+        mask_rows_filled.clear()
+        preset_dropdown.setCurrentIndex(0)
+        show_results.value = snapshot.show_results
+        show_steps.value = snapshot.show_steps
+        skip_toggle_snapshot.clear()
+        skip_toggle_snapshot.update(snapshot.skip_toggle_snapshot)
+        if not skip_toggle_snapshot:
+            snapshot_skip_toggles()
+        apply_prerequisites()
+        run_values[0] = dict(schema.upgrade(snapshot.settings))
+        apply_snapshot_to_checkpoints(checkpoints, snapshot)
+        results = ResultLayers(
+            show_steps=snapshot.show_steps,
+            settings=snapshot.settings,
+        )
+        apply_snapshot_to_results(results, snapshot)
+        view.results = results
+        if boundaries is not None:
+            boundaries.state.results = results
+        if viewer is not None:
+            _apply_layer_groups(viewer, replay_groups(snapshot))
+            _after_layers_applied()
+        try:
+            resolved = _settings()
+        except Exception:  # noqa: BLE001 - resume pickles are optional
+            resolved = current_values()
+        resume_note = write_resume_artefacts(snapshot, resolved, checkpoints)
+        if snapshot.last_tab_title:
+            titles = [tab_widget.tabText(i) for i in range(tab_widget.count())]
+            if snapshot.last_tab_title in titles:
+                tab_widget.setCurrentIndex(titles.index(snapshot.last_tab_title))
+        bars.start()
+        bars.finish(f"Loaded run ({len(snapshot.stages)} stages)")
+        refresh_revert_buttons()
+        run_button.enabled = True
+        report.value = (
+            f"Loaded run from {path}: {len(snapshot.stages)} stages restored."
+        )
+        if relocated:
+            report.value += (
+                f" {len(relocated)} path(s) from the machine it was made on now point "
+                f"here: {', '.join(m.name for m in relocated)}."
+            )
+        if snapshot.edited_since_run:
+            report.value += (
+                f" {len(snapshot.edited_since_run)} setting(s) were changed after the run "
+                f"and are shown as changed, not as it ran: "
+                f"{', '.join(sorted(snapshot.edited_since_run))}."
+            )
+        if resume_note:
+            report.value += f" {resume_note}"
+        if left_batch:
+            report.value += f" {LEFT_BATCH_FOR_RUN}"
+        if snapshot.paused_after is not None:
+            # Saved while paused: pick it up where it stopped, Continue ready.
+            run_state.paused_after = snapshot.paused_after
+            report.value += f" It was paused; Continue on {POST_PROCESSING_TAB} runs the rest."
+            on_paused()
+        post_processing.refresh()
+        return True
+
+    def on_save_run() -> None:
+        from qtpy.QtWidgets import QFileDialog
+
+        if run_state.running:
+            report.value = ALREADY_RUNNING
+            return
+        suggested = last_run_path[0]
+        if suggested == RUN_SNAPSHOT_FILENAME:
+            suggested = default_run_path(current_values())
+        path, _filter = QFileDialog.getSaveFileName(
+            _dialog_parent(viewer),
+            "Save this pipeline run",
+            suggested,
+            RUN_SNAPSHOT_FILTER,
+        )
+        if not path:
+            return
+        save_run_file(path, background=True)
+
+    def on_load_run() -> None:
+        from qtpy.QtWidgets import QFileDialog
+
+        path, _filter = QFileDialog.getOpenFileName(
+            _dialog_parent(viewer),
+            "Open a HaemoLynx pipeline run",
+            last_run_path[0],
+            RUN_SNAPSHOT_FILTER,
+        )
+        if not path:
+            return
+        load_run_file(path)
+
+    for title, button in revert_buttons.items():
+        button.changed.connect(
+            lambda *_args, tab=title: on_revert(tab)
+        )
 
     load_button.changed.connect(on_load)
     save_button.changed.connect(on_save)
+    optimise_button.changed.connect(lambda *_args: on_optimise_settings())
+    check_image_button.changed.connect(lambda *_args: on_check_segmented_image())
     check_button.changed.connect(on_check)
     run_button.changed.connect(on_run)
-    clear_button.changed.connect(on_clear)
+    clear_button.changed.connect(lambda *_args: on_clear(ask=True))
+    save_run_button.changed.connect(on_save_run)
+    load_run_button.changed.connect(on_load_run)
     buttons = Container(
         widgets=[load_button, save_button, check_button, run_button, clear_button],
         layout="horizontal",
         labels=False,
     )
-    view_controls = Container(
+    run_file_row = QWidget()
+    run_file_row.setObjectName("haemolynx_run_file_row")
+    run_file_layout = QHBoxLayout(run_file_row)
+    run_file_layout.setContentsMargins(0, 0, 0, 0)
+    # The preset sits under Load config... and Save config..., the run-file
+    # buttons to its right.
+    run_file_layout.addWidget(preset_label)
+    run_file_layout.addWidget(preset_dropdown, 1)
+    run_file_layout.addWidget(view_button.native)
+    run_file_layout.addWidget(save_run_button.native)
+    run_file_layout.addWidget(load_run_button.native)
+    # The two checkboxes stay stacked. The ? sits at the panel's right edge on
+    # their row, under the tab scrollbar, and opens help on whichever tab is
+    # showing.
+    show_toggles = Container(
         widgets=[show_results, show_steps],
         labels=True,
     )
+    help_button = QPushButton("?")
+    help_button.setObjectName("haemolynx_help")
+    help_button.setToolTip(HELP_TOOLTIP)
+    help_button.setFixedWidth(help_button.sizeHint().width())
+    view_controls_row = QWidget()
+    view_controls_row.setObjectName("haemolynx_view_controls")
+    view_controls_layout = QHBoxLayout(view_controls_row)
+    view_controls_layout.setContentsMargins(0, 0, 0, 0)
+    view_controls_layout.addWidget(show_toggles.native)
+    view_controls_layout.addStretch(1)
+    view_controls_layout.addWidget(help_button, 0, Qt.AlignVCenter)
+    view_controls = SimpleNamespace(native=view_controls_row)
+
+    view_panel = QWidget()
+    view_panel.setObjectName("haemolynx_view_panel")
+    display_group = QGroupBox("Display")
+    display_group.setObjectName("haemolynx_display_group")
+    display_form = QFormLayout(display_group)
+    # The label above its sliders, not beside them: beside, it took a third
+    # of a narrow tab from the min and max bars.
+    z_depth_row = QWidget()
+    z_depth_row.setObjectName("haemolynx_z_depth_row")
+    z_depth_layout = QVBoxLayout(z_depth_row)
+    z_depth_layout.setContentsMargins(0, 0, 0, 0)
+    z_depth_layout.setSpacing(2)
+    z_depth_layout.addWidget(z_depth_label)
+    z_depth_layout.addWidget(z_depth_slider)
+    display_form.addRow(z_depth_row)
+    vessel_draw_row = QWidget()
+    vessel_draw_row.setObjectName("haemolynx_vessel_draw_row")
+    vessel_draw_form = QFormLayout(vessel_draw_row)
+    vessel_draw_form.setContentsMargins(0, 0, 0, 0)
+    vessel_draw_form.addRow(vessel_draw_label, vessel_draw)
+    display_form.addRow(vessel_draw_row)
+    tube_diameter_row = QWidget()
+    tube_diameter_row.setObjectName("haemolynx_tube_diameter_row")
+    tube_diameter_form = QFormLayout(tube_diameter_row)
+    tube_diameter_form.setContentsMargins(0, 0, 0, 0)
+    tube_diameter_form.addRow(tube_diameter_label, tube_diameter_field)
+    display_form.addRow(tube_diameter_row)
+    layer_set_row = QWidget()
+    layer_set_row.setObjectName("haemolynx_layer_set_row")
+    layer_set_form = QFormLayout(layer_set_row)
+    layer_set_form.setContentsMargins(0, 0, 0, 0)
+    layer_set_form.addRow(layer_set_label, layer_set_button)
+    display_form.addRow(layer_set_row)
+    # What the shown network's vessels are coloured by -- flow, log10 flow,
+    # ... -- whether drawn as tubes or lines, without selecting the layer.
+    colour_by = _VesselColourMenu(viewer, on_resize=lambda: fit_view_dock())
+    display_form.addRow(colour_by.row)
+    # The range those colours span, for the same network, tubes or lines.
+    colour_range = _ShownVesselsColourScale(viewer, on_resize=lambda: fit_view_dock())
+    display_form.addRow(colour_range.row)
+
+    def refresh_colouring(*_args) -> None:
+        colour_by.refresh()
+        colour_range.follow_the_layer()
+
+    if viewer is not None:
+        viewer._haemolynx_refresh_colour_by = refresh_colouring
+
+    # A sweep perturbation's grid sliders, one set per sweep, of which only
+    # the one chosen under "Showing" is shown -- a slider for a network not on
+    # screen moved flows nobody could see.
+    sweep_group = QGroupBox("Sweep")
+    sweep_group.setObjectName("haemolynx_sweep_group")
+    sweep_group.setToolTip(SWEEP_TOOLTIP)
+    sweep_layout = QVBoxLayout(sweep_group)
+    sweep_group.setVisible(False)
+    #: layer name -> (the perturbation it belongs to, its magicgui Container).
+    sweep_controls: dict[str, tuple[str | None, Any]] = {}
+    view_dock_holder: dict[str, Any] = {"dock": None}
+
+    def fit_view_dock() -> None:
+        """Grow or shrink the floating view panel to its contents."""
+        dock = view_dock_holder["dock"]
+        try:
+            if dock is None or not dock.isFloating():
+                return
+            view_panel.adjustSize()
+            hint = view_panel.sizeHint()
+            dock.resize(max(dock.width(), int(hint.width())),
+                        max(int(hint.height()) + 24, 220))
+        except RuntimeError:
+            logger.debug("view dock is gone", exc_info=True)
+
+    tube_diameter_resize["fit"] = fit_view_dock
+
+    def refresh_sweep_controls() -> None:
+        shown = _layer_set_shown(viewer) if viewer is not None else None
+        any_shown = False
+        for key, container in sweep_controls.values():
+            on = key == shown
+            container.native.setVisible(on)
+            any_shown = any_shown or on
+        was_shown = not sweep_group.isHidden()
+        sweep_group.setTitle(f"Sweep: {shown}" if any_shown and shown else "Sweep")
+        sweep_group.setVisible(any_shown)
+        if any_shown != was_shown:
+            fit_view_dock()
+
+    def add_sweep_controls(layer_name: str, key: str | None, container) -> None:
+        remove_sweep_controls(layer_name)
+        sweep_controls[layer_name] = (key, container)
+        sweep_layout.addWidget(container.native)
+        refresh_sweep_controls()
+
+    def remove_sweep_controls(layer_name: str) -> None:
+        entry = sweep_controls.pop(layer_name, None)
+        if entry is not None:
+            native = entry[1].native
+            sweep_layout.removeWidget(native)
+            native.setParent(None)
+            native.deleteLater()
+        refresh_sweep_controls()
+
+    if viewer is not None:
+        viewer._haemolynx_sweep_host = SimpleNamespace(
+            add=add_sweep_controls, remove=remove_sweep_controls
+        )
+
+    refresh_layer_sets()
+    display_form.addRow(view_toggle_row)
+
+    def on_save_snapshot() -> None:
+        folder = output_folder_from_settings(current_values())
+        if folder is None:
+            logger.warning(SNAPSHOT_NO_OUTPUT_FOLDER)
+            report.value = SNAPSHOT_NO_OUTPUT_FOLDER
+            return
+        if viewer is None:
+            report.value = SNAPSHOT_NO_VIEWER
+            return
+        try:
+            path = write_viewer_snapshot(viewer, folder)
+        except Exception as error:  # noqa: BLE001 - must not crash Qt
+            logger.exception("could not write snapshot")
+            report.value = f"Could not write snapshot:\n{error}"
+            return
+        report.value = f"Wrote snapshot {path}"
+
+    snapshot_group = QGroupBox("Snapshot")
+    snapshot_group.setObjectName("haemolynx_snapshot_group")
+    snapshot_layout = QVBoxLayout(snapshot_group)
+    snapshot_button = QPushButton("Save snapshot")
+    snapshot_button.setObjectName("haemolynx_snapshot_button")
+    snapshot_button.setToolTip(SNAPSHOT_TOOLTIP)
+    snapshot_button.clicked.connect(on_save_snapshot)
+    snapshot_layout.addWidget(snapshot_button)
+    from haemolynx.gui.canvas_illumination import illumination_box
+
+    illumination = illumination_box(viewer)
+    from haemolynx.gui.rotation_movie import rotation_box
+
+    def set_report(text: str) -> None:
+        report.value = text
+
+    rotation = rotation_box(
+        viewer,
+        output_folder=lambda: output_folder_from_settings(current_values()),
+        screenshot=lambda: _canvas_screenshot(viewer),
+        report=set_report,
+    )
+    view_layout = QVBoxLayout(view_panel)
+    view_layout.addWidget(display_group)
+    view_layout.addWidget(illumination.group)
+    view_layout.addWidget(sweep_group)
+    view_layout.addWidget(snapshot_group)
+    view_layout.addWidget(rotation.group)
+    # Docked, the panel is as tall as the strip; the boxes keep their height.
+    view_layout.addStretch(1)
+
+    def _open_view_dock():
+        """Dock *view_panel* as the left panel's first tab; remember the dock."""
+        nonlocal view_dock, view_scroll
+        from qtpy.QtWidgets import QSizePolicy
+
+        if view_scroll is None:
+            view_scroll = _in_a_scroll_area(view_panel)
+            view_scroll.setObjectName("haemolynx_view_scroll")
+        dock_kwargs = {
+            "name": VIEW_DOCK_NAME,
+            "area": "left",
+            "allowed_areas": ["left", "right"],
+        }
+        try:
+            dock = viewer.window.add_dock_widget(
+                view_scroll, add_vertical_stretch=False, **dock_kwargs
+            )
+        except TypeError:
+            dock = viewer.window.add_dock_widget(view_scroll, **dock_kwargs)
+        # napari caps a dock's contents at their size hint, which a scroll
+        # area bounds at 24 lines: the panel would scroll in a tall strip.
+        view_scroll.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
+        try:
+            dock.setObjectName("haemolynx_view_dock")
+        except Exception:  # noqa: BLE001
+            pass
+        view_dock = dock
+        view_dock_holder["dock"] = dock
+        _give_bottom_docks_the_corners(viewer)
+        try:
+            _tab_with_the_layer_docks(viewer, dock, statistics_dock)
+        except Exception:  # noqa: BLE001 - untabbed must not stop the panel
+            logger.debug("could not tab the view with the layer docks", exc_info=True)
+        return dock
+
+    def _open_statistics_dock():
+        """Dock the Statistics panel on the left; the view dock tabs it."""
+        nonlocal statistics_dock, statistics_scroll
+        from qtpy.QtWidgets import QSizePolicy
+
+        if statistics_scroll is None:
+            statistics_scroll = _in_a_scroll_area(statistics_panel.widget, horizontal=False)
+            statistics_scroll.setObjectName("haemolynx_statistics_scroll")
+        dock_kwargs = {
+            "name": STATISTICS_DOCK_NAME,
+            "area": "left",
+            "allowed_areas": ["left", "right"],
+        }
+        try:
+            dock = viewer.window.add_dock_widget(
+                statistics_scroll, add_vertical_stretch=False, **dock_kwargs
+            )
+        except TypeError:
+            dock = viewer.window.add_dock_widget(statistics_scroll, **dock_kwargs)
+        statistics_scroll.setSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding
+        )
+        try:
+            dock.setObjectName("haemolynx_statistics_dock")
+        except Exception:  # noqa: BLE001
+            pass
+        statistics_dock = dock
+        return dock
+
+    view_dock = None
+    view_scroll = None
+    statistics_dock = None
+    statistics_scroll = None
+    if viewer is not None:
+        _open_statistics_dock()
+        _open_view_dock()
+        try:
+            _install_view_snap_buttons(viewer)
+        except Exception:  # noqa: BLE001 - a missing overlay must not stop the panel
+            logger.debug("could not add the view-snap buttons", exc_info=True)
+    else:
+        view_panel.setVisible(False)
+
+    def _holds(dock, scroll) -> bool:
+        try:
+            return dock is not None and dock.widget() is scroll
+        except RuntimeError:
+            return False
+
+    def on_reopen_view() -> None:
+        """Bring the whole left panel back: the view, Statistics, the layer
+        list and the layer controls.
+
+        napari's layer docks only hide, and are shown again where they were.
+        The view and Statistics docks' close buttons delete the dock and
+        detach its panel. Asking a deleted dock whether it is visible raises,
+        so a closed dock is built again around the same panel, in its place
+        among the tabs again. A dock that was only hidden, or sits behind
+        another tab, is shown where it is, so the button never moves a dock
+        the user has deliberately moved.
+        """
+        nonlocal view_dock
+        if viewer is None:
+            return
+        _show_layer_docks(viewer)
+        rebuilt_statistics = not _holds(statistics_dock, statistics_scroll)
+        if rebuilt_statistics:
+            panel._haemolynx_statistics_dock = _open_statistics_dock()
+        else:
+            statistics_dock.show()
+        if _holds(view_dock, view_scroll):
+            view_dock.show()
+            if rebuilt_statistics:
+                _tab_statistics_second(viewer, view_dock, statistics_dock)
+            _bring_dock_to_front(view_dock)
+            return
+        panel._haemolynx_view_dock = _open_view_dock()
+
+    view_button.changed.connect(lambda *_args: on_reopen_view())
 
     panel = QWidget()
     # What the panel would send to a run, and what a run would report back,
     # for a test that cannot press buttons and wait.
     panel._haemolynx_values = current_values
     panel._haemolynx_progress = bars
+    panel._haemolynx_log = log_view
+    panel._haemolynx_log_dock = log_dock
+    panel._haemolynx_run = on_run
+    panel._haemolynx_clear = on_clear
+    panel._haemolynx_revert = prepare_run_from
+    panel._haemolynx_run_from = on_revert
+    panel._haemolynx_checkpoints = checkpoints
+    panel._haemolynx_revert_buttons = revert_buttons
+    panel._haemolynx_revert_stack = revert_stack
+    panel._haemolynx_refresh_revert = refresh_revert_buttons
+    panel._haemolynx_run_state = run_state
+    panel._haemolynx_run_button = run_button
+    panel._haemolynx_check_button = check_button
     panel._haemolynx_view = view
     panel._haemolynx_show_results = show_results
+    panel._haemolynx_show_steps = show_steps
+    panel._haemolynx_view_controls = view_controls
+    panel._haemolynx_help_button = help_button
+
+    def on_help() -> None:
+        """Open the help window on the tab that is showing."""
+        from haemolynx.gui.help_view import help_window
+        from haemolynx.gui.stage_help import topics_for_tabs
+
+        title = tab_widget.tabText(tab_widget.currentIndex())
+        window = getattr(panel, "_haemolynx_help_window", None)
+        try:
+            alive = window is not None and window.isVisible() is not None
+        except RuntimeError:
+            alive = False
+        if not alive:
+            titles = [tab_widget.tabText(i) for i in range(tab_widget.count())]
+            window = help_window(panel, topics_for_tabs(titles), title)
+            panel._haemolynx_help_window = window
+        else:
+            window.show_topic(title)
+        window.show()
+        window.raise_()
+        window.activateWindow()
+
+    help_button.clicked.connect(on_help)
+    panel._haemolynx_show_help = on_help
+    panel._haemolynx_z_depth_slider = z_depth_slider
+    panel._haemolynx_z_depth_row = z_depth_row
+    panel._haemolynx_vessel_draw = vessel_draw
+    panel._haemolynx_vessel_draw_row = vessel_draw_row
+    panel._haemolynx_tube_diameter = tube_diameter_button
+    panel._haemolynx_tube_diameter_menu = tube_diameter_menu
+    panel._haemolynx_tube_diameter_row = tube_diameter_row
+    panel._haemolynx_tube_uniform_width = tube_uniform_width
+    panel._haemolynx_choose_tube_diameter = choose_tube_diameter
+    panel._haemolynx_layer_set_row = layer_set_row
+    panel._haemolynx_layer_set_button = layer_set_button
+    panel._haemolynx_layer_set_menu = layer_set_menu
+    panel._haemolynx_choose_layer_set = choose_layer_set
+    panel._haemolynx_colour_by = colour_by
+    panel._haemolynx_colour_range = colour_range
+    panel._haemolynx_view_panel = view_panel
+    panel._haemolynx_illumination = illumination
+    panel._haemolynx_illumination_group = illumination.group
+    panel._haemolynx_view_dock = view_dock
+    panel._haemolynx_statistics_panel = statistics_panel
+    panel._haemolynx_statistics_dock = statistics_dock
+    panel._haemolynx_view_button = view_button
+    panel._haemolynx_reopen_view = on_reopen_view
+    panel._haemolynx_scale_bar = scale_bar_box
+    panel._haemolynx_view_toggles = view_toggles
+    panel._haemolynx_view_toggle_row = view_toggle_row
+    panel._haemolynx_refresh_view_toggles = refresh_view_toggles
+    panel._haemolynx_display_group = display_group
+    panel._haemolynx_snapshot_group = snapshot_group
+    panel._haemolynx_sweep_group = sweep_group
+    panel._haemolynx_sweep_controls = sweep_controls
+    panel._haemolynx_snapshot_button = snapshot_button
+    panel._haemolynx_rotation = rotation
+    panel._haemolynx_rotation_group = rotation.group
+    panel._haemolynx_apply_view_z = apply_view_z
+    panel._haemolynx_data_for_pipeline = data_for_pipeline
+    panel._haemolynx_arrow_length_slider = arrow_length_slider
+    panel._haemolynx_arrow_length_host = arrow_length_host
+    panel._haemolynx_reparent_arrow_length = reparent_arrow_length_slider
+    panel._haemolynx_apply_z_filter = _apply_z_filter
+    panel._haemolynx_after_layers_applied = _after_layers_applied
     panel._haemolynx_load_config = load_config_file
+    panel._haemolynx_save_config = save_config_file
+    panel._haemolynx_preset = preset_dropdown
+    panel._haemolynx_load_preset = load_preset
+    panel._haemolynx_save_preset = save_current_preset
+    panel._haemolynx_delete_preset = delete_preset
+    panel._haemolynx_save_run = save_run_file
+    panel._haemolynx_saving_run = lambda: saving_run[0] is not None
+    panel._haemolynx_load_run = load_run_file
+    panel._haemolynx_save_run_button = save_run_button
+    panel._haemolynx_load_run_button = load_run_button
+    panel._haemolynx_run_file_row = run_file_row
     panel._haemolynx_report = lambda: report.value
     panel._haemolynx_rows = lambda: rows
     panel._haemolynx_boundaries = boundaries
+    panel._haemolynx_perturbations = perturbations
+    panel._haemolynx_tabs = tab_widget
+    panel._haemolynx_optimise_button = optimise_button
+    panel._haemolynx_optimise_bars = optimise_bars
+    panel._haemolynx_optimise_settings = on_optimise_settings
+    panel._haemolynx_optimise_fwhm_button = optimise_fwhm_button
+    panel._haemolynx_optimise_fwhm_bars = optimise_fwhm_bars
+    panel._haemolynx_optimise_fwhm_settings = on_optimise_fwhm_settings
+    panel._haemolynx_diameters_settings = diameters_settings
+    panel._haemolynx_optimise_downsample = downsample_dropdown
+    panel._haemolynx_optimise_choose_groups = choose_groups_checkbox
+    panel._haemolynx_optimise_group_checkboxes = group_checkboxes
+    panel._haemolynx_optimise_group_checkboxes_container = group_checkboxes_container
+    panel._haemolynx_optimise_review = optimise_review
+    panel._haemolynx_optimise_passes = passes_spinbox
+    panel._haemolynx_optimise_fwhm_review = fwhm_review
+    panel._haemolynx_optimise_fwhm_box = fwhm_optimise_box
+    panel._haemolynx_optimise_fwhm_options = fwhm_options_toggle
+    panel._haemolynx_optimise_fwhm_options_container = fwhm_options_container
+    panel._haemolynx_optimise_fwhm_choose_groups = fwhm_choose_groups
+    panel._haemolynx_optimise_fwhm_group_checkboxes = fwhm_group_checkboxes
+    panel._haemolynx_optimise_fwhm_sample = fwhm_sample_dropdown
+    panel._haemolynx_optimise_fwhm_passes = fwhm_passes_spinbox
+    panel._haemolynx_optimise_endothelial_button = optimise_endothelial_button
+    panel._haemolynx_optimise_endothelial_bars = optimise_endothelial_bars
+    panel._haemolynx_optimise_endothelial_settings = on_optimise_endothelial_settings
+    panel._haemolynx_optimise_endothelial_review = endothelial_review
+    panel._haemolynx_optimise_endothelial_box = endothelial_optimise_box
+    panel._haemolynx_optimise_endothelial_options = endothelial_options_toggle
+    panel._haemolynx_optimise_endothelial_options_container = endothelial_options_container
+    panel._haemolynx_optimise_endothelial_choose_groups = endothelial_choose_groups
+    panel._haemolynx_optimise_endothelial_group_checkboxes = endothelial_group_checkboxes
+    panel._haemolynx_optimise_endothelial_sample = endothelial_sample_dropdown
+    panel._haemolynx_optimise_endothelial_passes = endothelial_passes_spinbox
+    panel._haemolynx_check_image_button = check_image_button
+    panel._haemolynx_run_checks = on_check
+    panel._haemolynx_batch = SimpleNamespace(
+        button=batch_button,
+        mode=batch_mode,
+        labels=batch_row_labels,
+        window=batch_window,
+        use=use_batch,
+        leave=leave_batch,
+        open=open_batch_window,
+        run_now=run_batch_now,
+        run_again=run_again,
+        stop=request_stop,
+    )
+    # The Input tab's raw image rows: the schema's own, which every reader shares.
+    panel._haemolynx_raw_data_row = rows["raw_image_path"]
+    panel._haemolynx_open_classifier_training = open_classifier_training
+    panel._haemolynx_classifier_windows = training_windows
+    panel._haemolynx_raw_channel_row = rows["raw_image_channel"]
+    panel._haemolynx_stain_reading_label = stain_reading_label
+    panel._haemolynx_refresh_stain_reading = refresh_stain_reading
+
+    def expand_advanced(expanded: bool = True) -> None:
+        """Open (or close) every Advanced button on the panel."""
+        for disclosure in advanced_disclosures.values():
+            disclosure.toggle(expanded)
+        if perturbations is not None:
+            for editor in perturbations.editors():
+                editor.advanced.toggle(expanded)
+
+    panel._haemolynx_advanced = advanced_disclosures
+    panel._haemolynx_expand_advanced = expand_advanced
+    panel._haemolynx_shared_ilastik_block = shared_ilastik_block
+    panel._haemolynx_hosted_placement = hosted_placement
+    panel._haemolynx_hosted_holders = hosted_holders
+    panel._haemolynx_input_boxes = input_boxes
+    panel._haemolynx_check_segmented_image = on_check_segmented_image
+    panel._haemolynx_post_processing = post_processing
     layout = QVBoxLayout(panel)
     if layer_row is not None:
         layout.addWidget(layer_row.native)
-    layout.addWidget(tab_widget)
+    layout.addWidget(tab_widget, 1)
+    # Hidden host for Perturbations-claimed rows that are not flat tab chrome
+    # (legacy flags + typed-entry Field shells). Keeps them off the screen and
+    # out of the top-level window list while config round-trip still reads them.
+    if orphaned_perturbation_rows:
+        orphan_holder.visible = False
+        layout.addWidget(orphan_holder.native)
+    # Show-results / show-topology-steps, then Revert centered under them, then
+    # the run chrome. Revert is intentionally outside the tab pages so it sits
+    # in one place for every stage that can restore a predecessor.
     layout.addWidget(view_controls.native)
+    layout.addWidget(revert_stack)
     layout.addWidget(buttons.native)
+    layout.addWidget(run_file_row)
     layout.addWidget(bars.native)
+    # Optimise settings' own bars, beside the pipeline run's: the button
+    # itself is on the Input tab, but its progress is chrome shared across
+    # every tab, same as the pipeline run's bars above.
+    layout.addWidget(optimise_bars.native)
+    # "Optimise FWHM settings" is a plain Qt widget too (see its own
+    # construction above), so its bars join the same shared chrome rather
+    # than the magicgui Diameters-tab Container, which the button itself
+    # (a real magicgui PushButton) was inserted into directly.
+    layout.addWidget(optimise_fwhm_bars.native)
+    layout.addWidget(optimise_endothelial_bars.native)
     layout.addWidget(report.native)
+    if viewer is None:
+        view_panel.setParent(panel)
+        view_panel.setVisible(False)
+    else:
+        _after_layers_applied()
+    refresh_revert_buttons()
+    post_processing.refresh()
+    # Applied once, panel-wide, after every row -- including the buttons and
+    # dropdowns appended onto the Input tab above -- is in place.
+    _wrap_row_labels(panel)
     return panel

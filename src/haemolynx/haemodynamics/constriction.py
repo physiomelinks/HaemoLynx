@@ -16,12 +16,19 @@ only place edge resistance is computed from a constriction.
 
 Units
 -----
-Lengths and diameters are in micrometres. Note that the resistance integrated
-here uses the *uncalibrated* viscosity ``1 / d^1.647``, not the SI-pinned law in
-:class:`~haemolynx.haemodynamics.poiseuille.PoiseuilleModel`, so these
-resistances are in model units and are not comparable in magnitude with that
-class's Pa.s/m^3. That predates this module and is preserved deliberately;
-reconciling the two laws is a separate change.
+Lengths and diameters are in micrometres, as everywhere else in the package.
+Resistance comes back in Pa.s/m^3 and conductance in m^3/(Pa.s), the same units
+:class:`~haemolynx.haemodynamics.poiseuille.PoiseuilleModel` produces, so a
+constricted edge and a uniform one are directly comparable: an edge with no
+sites on it gets exactly
+:meth:`~haemolynx.haemodynamics.poiseuille.PoiseuilleModel.resistance_of_uniform_segment`.
+
+Viscosity comes from :mod:`haemolynx.haemodynamics.viscosity` and is therefore
+whichever law the run selected — ``viscosity_law``, ``haematocrit`` and
+``diameter_basis`` are threaded down to here, because a constricted vessel is
+the narrowest one in the tree and so the one the law matters most for. This
+module used to integrate a dimensionless ``1 / d^1.647`` instead, which ignored
+those settings and left the result in arbitrary units.
 """
 from __future__ import annotations
 
@@ -30,23 +37,34 @@ from typing import Any, Iterable, Protocol
 import networkx as nx
 import numpy as np
 
-from .poiseuille import set_edge_resistance
+from .poiseuille import (
+    DIAMETER_SOURCE_MEASURED,
+    UNKNOWN_VESSEL_CLASS_LABELS,
+    baseline_edge_diameter,
+    edge_diameter_basis,
+    positive_diameter_um,
+    set_edge_resistance,
+    table_diameter_for_order,
+)
+from .viscosity import DEFAULT_HAEMATOCRIT, viscosity_for
 
-#: Exponent of the capillary viscosity power law, as used by the constriction
-#: integral. Kept separate from the calibrated constants in ``poiseuille`` to
-#: make the divergence between the two visible rather than accidental.
-VISCOSITY_DIAMETER_EXPONENT = 1.647
+UNKNOWN_CAPILLARY_LABEL = UNKNOWN_VESSEL_CLASS_LABELS[2]
+
+#: Micrometres per metre. Diameters and lengths arrive in um and the resistance
+#: is wanted in SI, so the integral converts once, here.
+UM_PER_M = 1.0e6
 
 
 # --- Which edges and which sites -------------------------------------------
 
 
 def is_capillary_branch_order(branch_order: str | None) -> bool:
-    """Return True for capillary labels (B01, B02, ...)."""
+    """Return True for capillary labels (B01, B02, ...), and for the unknown
+    capillary of a run with global vessel masks (``Unknown_Cap``)."""
     if branch_order is None:
         return False
     label = str(branch_order).strip()
-    return label.startswith("B")
+    return label.startswith("B") or label == UNKNOWN_CAPILLARY_LABEL
 
 
 def resolve_generator(
@@ -147,54 +165,58 @@ def resolve_edge_diameters(
     diameter_by_branch_order: dict,
     constriction_factor_by_branch_order: dict[str, float] | None,
     prefer_edge_fwhm_baseline: bool,
+    default_constriction_factor: float = 1.0,
 ) -> tuple[float, float, bool]:
     """Return ``(d1, d2, used_fwhm_baseline)`` for one edge.
 
     ``diameter_by_branch_order`` maps a branch order either to a passive
-    diameter, in which case ``d2`` comes from
-    ``constriction_factor_by_branch_order``, or to an explicit
-    ``{"d1": ..., "d2": ...}`` pair. With ``prefer_edge_fwhm_baseline`` the
-    edge's own measured ``fwhm_diameter_um`` supersedes the table as ``d1``, and
-    the table supplies only the fallback for edges that were never measured.
+    diameter, in which case ``d2`` comes from the effective constriction
+    factor, or to an explicit ``{"d1": ..., "d2": ...}`` pair. Either way the
+    edge's own diameter -- the one the baseline was solved with, see
+    :func:`~haemolynx.haemodynamics.poiseuille.baseline_edge_diameter` --
+    supersedes the table as ``d1`` (an explicit pair keeps its ``d2 / d1``),
+    and the table supplies only the fallback for edges that have none.
+    ``prefer_edge_fwhm_baseline`` also falls back to the edge's FWHM fit
+    before the table, as the baseline does with FWHM diameters on.
+
+    The effective factor for an order is the map entry when present; otherwise
+    ``default_constriction_factor``. Map values **replace** the default for that
+    order only (they are not multiplied by it).
     """
     used_fwhm_baseline = False
     if prefer_edge_fwhm_baseline:
-        spec = diameter_by_branch_order.get(branch_order)
-        if spec is None:
-            raise ValueError(
-                f"No fallback baseline diameter for branch_order '{branch_order}'."
-            )
-        if isinstance(spec, dict):
-            raise ValueError(
-                "With prefer_edge_fwhm_baseline=True, diameter_by_branch_order must "
-                f"map '{branch_order}' to a numeric fallback baseline diameter."
-            )
-        d1 = float(spec)
-        fwhm_diameter = edge_data.get("fwhm_diameter_um")
-        if fwhm_diameter is not None and float(fwhm_diameter) > 0:
-            d1 = float(fwhm_diameter)
-            used_fwhm_baseline = True
+        d1, used_fwhm_baseline = baseline_edge_diameter(
+            edge_data, branch_order, diameter_by_branch_order
+        )
     else:
-        spec = diameter_by_branch_order.get(branch_order)
-        if spec is None:
-            raise ValueError(f"No diameter mapping for branch_order '{branch_order}'.")
+        own = positive_diameter_um(edge_data.get("diameter_um"))
+        # Counted as baseline_edge_diameter counts it: the vessel's own
+        # diameter is a FWHM fit.
+        used_fwhm_baseline = own is not None and (
+            edge_data.get("diameter_source") == DIAMETER_SOURCE_MEASURED
+        )
+        spec = table_diameter_for_order(diameter_by_branch_order, branch_order)
         if isinstance(spec, dict):
             if "d1" not in spec or "d2" not in spec:
                 raise ValueError(
                     f"Invalid diameter mapping for '{branch_order}'. "
                     "Expected keys d1 and d2."
                 )
-            return float(spec["d1"]), float(spec["d2"]), used_fwhm_baseline
-        d1 = float(spec)
+            if own is None:
+                return float(spec["d1"]), float(spec["d2"]), used_fwhm_baseline
+            return own, own * float(spec["d2"]) / float(spec["d1"]), used_fwhm_baseline
+        if own is None and spec is None:
+            raise ValueError(f"No diameter mapping for branch_order '{branch_order}'.")
+        d1 = own if own is not None else float(spec)
 
-    factor = None
-    if constriction_factor_by_branch_order is not None:
-        factor = constriction_factor_by_branch_order.get(branch_order)
-    if factor is None:
-        raise ValueError(
-            f"No constriction factor for branch_order '{branch_order}'."
-        )
-    return d1, d1 * float(factor), used_fwhm_baseline
+    if (
+        constriction_factor_by_branch_order is not None
+        and branch_order in constriction_factor_by_branch_order
+    ):
+        factor = float(constriction_factor_by_branch_order[branch_order])
+    else:
+        factor = float(default_constriction_factor)
+    return d1, d1 * factor, used_fwhm_baseline
 
 
 def diameter_at_position(
@@ -208,7 +230,9 @@ def diameter_at_position(
 
     Each site holds ``d2`` over a plateau a quarter of ``constriction_length``
     either side of its center and ramps linearly back to ``d1`` over the next
-    quarter. Overlapping sites take the narrowest diameter.
+    quarter. ``d2 < d1`` narrows (constriction); ``d2 > d1`` widens (dilation).
+    Overlapping sites take the narrowest diameter when constricting, or the
+    widest when dilating — a ``min`` alone would silently ignore factor > 1.
     """
     if not constriction_centers or constriction_length <= 0:
         return float(d1)
@@ -216,6 +240,7 @@ def diameter_at_position(
     half_window = float(constriction_length) / 2.0
     ramp_width = float(constriction_length) / 4.0
     plateau_half = float(constriction_length) / 4.0
+    narrowing = float(d2) <= float(d1)
 
     diameter = float(d1)
     for center in constriction_centers:
@@ -230,8 +255,41 @@ def diameter_at_position(
             else:
                 alpha = (distance_from_center - plateau_half) / ramp_width
                 local_diameter = float(d2 + (d1 - d2) * alpha)
-        diameter = min(diameter, local_diameter)
+        diameter = (
+            min(diameter, local_diameter)
+            if narrowing
+            else max(diameter, local_diameter)
+        )
     return diameter
+
+
+def _viscosity_profile(
+    diameters: np.ndarray,
+    *,
+    viscosity_law: str,
+    haematocrit: float,
+    diameter_basis: str,
+) -> np.ndarray:
+    """Apparent viscosity (Pa.s) at each diameter, by the configured law.
+
+    The laws are scalar functions, so they are evaluated once per *distinct*
+    diameter rather than once per integration point: an edge with no
+    constriction on it is one call, not a thousand.
+    """
+    unique_diameters, inverse = np.unique(diameters, return_inverse=True)
+    viscosities = np.asarray(
+        [
+            viscosity_for(
+                float(diameter),
+                law=viscosity_law,
+                haematocrit=float(haematocrit),
+                diameter_basis=diameter_basis,
+            )
+            for diameter in unique_diameters
+        ],
+        dtype=float,
+    )
+    return viscosities[inverse]
 
 
 def integrated_resistance(
@@ -242,8 +300,21 @@ def integrated_resistance(
     constriction_centers: list[float],
     constriction_length: float,
     num_points: int,
+    viscosity_law: str = "pries",
+    haematocrit: float = DEFAULT_HAEMATOCRIT,
+    diameter_basis: str = "plasma_column",
 ) -> float:
-    """Trapezoidal integral of resistance per unit length along one edge."""
+    """Resistance (Pa.s/m^3) of one edge, integrated along its constrictions.
+
+    Trapezoidal integral of the Poiseuille resistance per unit length,
+    ``128 * mu(d) / (pi * d^4)``, with *mu* from the configured viscosity law
+    and the integration done in metres so the result is SI. ``length``, ``d1``,
+    ``d2`` and ``constriction_length`` are in micrometres.
+
+    With no sites this reduces exactly to the uniform Poiseuille resistance, so
+    it is comparable with
+    :meth:`~haemolynx.haemodynamics.poiseuille.PoiseuilleModel.resistance_of_uniform_segment`.
+    """
     if length <= 0:
         return float("inf")
     positions = np.linspace(0.0, float(length), int(num_points))
@@ -260,11 +331,39 @@ def integrated_resistance(
         ],
         dtype=float,
     )
-    diameters = np.clip(diameters, a_min=1e-9, a_max=None)
-    viscosity = 1.0 / (diameters ** VISCOSITY_DIAMETER_EXPONENT)
-    resistance_per_length = (128.0 * viscosity) / (np.pi * (diameters ** 4))
+    return profile_resistance(
+        positions,
+        diameters,
+        viscosity_law=viscosity_law,
+        haematocrit=haematocrit,
+        diameter_basis=diameter_basis,
+    )
+
+
+def profile_resistance(
+    positions_um: np.ndarray,
+    diameters_um: np.ndarray,
+    *,
+    viscosity_law: str = "pries",
+    haematocrit: float = DEFAULT_HAEMATOCRIT,
+    diameter_basis: str = "plasma_column",
+) -> float:
+    """Resistance (Pa.s/m^3) of a vessel whose diameter is *diameters_um* at
+    *positions_um* along it (increasing, um): the trapezoidal integral of
+    ``128 * mu(d) / (pi * d^4)`` between them, *mu* from the configured law.
+    What :func:`integrated_resistance` integrates its sites' profile with, and
+    a measured profile (``pericyte_measurements``) too."""
+    diameters = np.clip(np.asarray(diameters_um, dtype=float), a_min=1e-9, a_max=None)
+    viscosity = _viscosity_profile(
+        diameters,
+        viscosity_law=viscosity_law,
+        haematocrit=haematocrit,
+        diameter_basis=diameter_basis,
+    )
+    diameters_m = diameters / UM_PER_M
+    resistance_per_length = (128.0 * viscosity) / (np.pi * (diameters_m ** 4))
     integ = getattr(np, "trapezoid", None) or getattr(np, "trapz")
-    return float(integ(resistance_per_length, x=positions))
+    return float(integ(resistance_per_length, x=np.asarray(positions_um, dtype=float) / UM_PER_M))
 
 
 # --- Applying a set of sites to a graph -------------------------------------
@@ -302,17 +401,35 @@ def apply_constriction_sites(
     prefer_edge_fwhm_baseline: bool,
     constriction_length: float,
     num_integration_points: int,
+    viscosity_law: str = "pries",
+    haematocrit: float = DEFAULT_HAEMATOCRIT,
+    diameter_basis: str = "plasma_column",
 ) -> tuple[nx.MultiGraph, dict[str, Any]]:
     """Set ``resistance``/``conductance`` on every edge from its constrictions.
+
+    Resistances are in Pa.s/m^3, from the viscosity law named by
+    ``viscosity_law``/``haematocrit``/``diameter_basis``. They are not
+    comparable across laws, so the caller records which one ran.
 
     Each edge also records the sites it was given, as
     ``pericyte_count_assigned`` and ``pericyte_centers_um``, so a later
     visualization or diagnostic can show where the model put them.
     """
+    from haemolynx.graph.prune import flow_is_undefined
+    from haemolynx.graph.thick_vessel_junctions import IS_ZERO_RESISTANCE
+
     results: dict[str, Any] = {"edges_set": 0, "used_fwhm_baseline": 0}
 
     for u, v, key, edge_data in graph.edges(keys=True, data=True):
+        if edge_data.get(IS_ZERO_RESISTANCE):
+            # A thick-vessel bridge: no branch order, no pericytes, and its
+            # resistance comes from apply_final_resistance_overrides.
+            continue
         branch_order = edge_data.get("branch_order")
+        if branch_order is None and flow_is_undefined(edge_data):
+            # In a piece no inlet and outlet reach: no branch order was
+            # assigned, and no flow runs whatever its resistance.
+            continue
         if branch_order is None:
             raise ValueError(
                 f"Edge ({u}, {v}, {key}) missing required 'branch_order' attribute."
@@ -337,6 +454,12 @@ def apply_constriction_sites(
             )
 
         centers = sites.centers_for_edge(u, v, key, edge_data, length=float(length))
+        # A per-edge discharge haematocrit (see
+        # haemodynamics.haematocrit_distribution) takes over from the
+        # uniform value passed in, so a constricted (pericyte) edge stays
+        # consistent with a plain one instead of silently keeping the old
+        # global default.
+        edge_haematocrit = edge_data.get("discharge_haematocrit", haematocrit)
         total_resistance = integrated_resistance(
             length=float(length),
             d1=float(d1),
@@ -344,6 +467,9 @@ def apply_constriction_sites(
             constriction_centers=centers,
             constriction_length=float(constriction_length),
             num_points=int(num_integration_points),
+            viscosity_law=viscosity_law,
+            haematocrit=float(edge_haematocrit),
+            diameter_basis=edge_diameter_basis(edge_data, diameter_basis),
         )
         set_edge_resistance(graph[u][v][key], float(total_resistance))
         graph[u][v][key]["pericyte_count_assigned"] = int(len(centers))

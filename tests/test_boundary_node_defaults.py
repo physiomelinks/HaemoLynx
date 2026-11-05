@@ -181,6 +181,30 @@ def test_a_network_with_no_span_to_split_names_both_methods(tmp_path):
         stages.assign_boundaries(settings, network)
 
 
+@pytest.mark.parametrize(
+    "distance_um, outlets", [(0.0, [4, 5, 6]), (20.0, [4, 5])], ids=["every-terminal", "beyond-20-um"]
+)
+def test_the_stage_measures_degree_1_outlets_from_the_inlets_it_chose(tmp_path, distance_um, outlets):
+    """Regression: the stage wrote the inlets it chose into the settings only
+    after choosing the outlets, so ``degree_1_from_inlet`` found no inlet to
+    measure from and stopped the run. The outlets are the terminals further
+    than ``boundary_distance_from_inlet_node`` from inlet 0: terminal 6,
+    8.5 um from it, only while that distance is under 8.5 um."""
+    G = _branching_network()
+    G.add_node(6, pos=np.asarray((24.0, 14.0, 30.0)))  # off node 1, near the inlet
+    G.add_edge(1, 6, length=1.0)
+    settings = _defaults(
+        outlet_node_selection_method="degree_1_from_inlet",
+        boundary_distance_from_inlet_node=distance_um,
+        plot_dir=tmp_path,
+    )
+
+    stages.assign_boundaries(settings, _network_for_stages(G, tmp_path))
+
+    assert settings["inlet_nodes"] == [0]
+    assert settings["outlet_nodes"] == outlets
+
+
 def _network_for_stages(G: nx.MultiGraph, output_dir: Path) -> stages.VesselNetwork:
     """Wrap a hand-built graph in what ``assign_boundaries`` reads."""
     image = np.zeros(IMAGE_SHAPE, dtype=np.uint8)
@@ -213,7 +237,7 @@ def test_the_defaults_find_inlets_and_outlets_on_the_fixture_image(tmp_path):
     settings = _defaults(
         input_path=input_tiff,
         # Every artefact the stages write is placed beside the VTK prefix.
-        vtk_output_prefix=tmp_path / "outlets" / "network",
+        output_dir=tmp_path / "outlets",
         base_plot_dir=tmp_path / "plots",
         plot_dir=tmp_path / "plots",
         verbose_logging=False,
@@ -229,3 +253,144 @@ def test_the_defaults_find_inlets_and_outlets_on_the_fixture_image(tmp_path):
     assert set(boundaries.inlet_nodes).isdisjoint(boundaries.outlet_nodes)
     assert boundaries.resistance_node_pair is not None
     assert boundaries.resistance_node_pair[0] != boundaries.resistance_node_pair[1]
+
+
+# --- solve() must not crash when resistance_node_pair was never resolved --
+
+
+def test_solve_reports_rather_than_crashes_when_resistance_node_pair_is_unresolved(caplog):
+    """A resolved-but-empty inlet/outlet selection leaves resistance_node_pair
+
+    None (see BoundaryNodes' own default). solve() used to unpack it
+    unconditionally -- ``TypeError: cannot unpack non-iterable NoneType`` --
+    instead of the same clear, actionable warning it already gives for a
+    pair that names nodes absent from the graph.
+    """
+    from haemolynx.pipeline.stages import BoundaryNodes, HaemodynamicModel, solve
+
+    G = nx.MultiGraph()
+    G.add_node(0, pos=np.array([0.0, 0.0, 0.0]))
+    G.add_node(1, pos=np.array([0.0, 0.0, 10.0]))
+    G.add_edge(0, 1, length=10.0, resistance=1.0, conductance=1.0)
+
+    settings = _defaults(inlet_nodes=[0], outlet_nodes=[1])
+    model = HaemodynamicModel(graph=G)
+    boundaries = BoundaryNodes(inlet_nodes=[0], outlet_nodes=[1], resistance_node_pair=None)
+
+    with caplog.at_level("WARNING"):
+        solution = solve(settings, model, boundaries)
+
+    assert solution.equivalent_resistance is None
+    assert any(
+        "no resistance_node_pair was determined" in record.message
+        for record in caplog.records
+    )
+
+
+# --- a role's coordinates/volumes are hidden by its own *method* choice ----
+#
+# inlet_node_coordinates, inlet_node_volumes and their counterparts on the
+# other five roles carry no `requires` at all -- Setting.requires can only
+# express "some boolean flag is on/off", not "this choice setting equals
+# 'coordinates'", so the schema has no bookkeeping entry for this relevance
+# rule the way it does for every other gated setting (see
+# tests/test_pipeline_schema_api.py and
+# tests/test_hidden_settings_cannot_affect_a_run.py, which both skip these
+# names outright since they see no `requires` to check). The GUI still hides
+# them (gui/boundary_picking.py only shows the coordinates/volumes editor for
+# whichever method is selected), and the only thing standing between that and
+# a stale coordinate silently steering a run is select_boundary_nodes_by_
+# method's own if/elif dispatch on `method`. This pins that directly, for
+# every role BOUNDARY_ROLE_SETTINGS knows about (the four manual-pick roles,
+# plus the two large-vessel ones' "override" methods -- their third method,
+# "mask_stump", is a different mechanism entirely and is already covered by
+# tests/test_large_vessel_network_mode.py).
+
+
+def _all_role_settings() -> dict[str, dict[str, str]]:
+    from haemolynx.graph.boundaries import BOUNDARY_ROLE_SETTINGS
+
+    return BOUNDARY_ROLE_SETTINGS
+
+
+@pytest.mark.parametrize("role", sorted(_all_role_settings()))
+def test_a_roles_coordinates_are_ignored_unless_its_method_is_coordinates(role):
+    names = _all_role_settings()[role]
+    G = _branching_network()
+    base = {
+        names["method"]: "all_degree_1",
+        names["coordinates"]: [],
+        names["volume_boxes"]: [],
+        "inlet_nodes": [],
+    }
+    probe = {
+        **base,
+        # Wildly different from anything in _branching_network's positions,
+        # and -- if it were read -- would snap to whichever terminal happens
+        # to be nearest it, changing the selection.
+        names["coordinates"]: [(1000.0, 1000.0, 1000.0)],
+    }
+
+    default_selection = graph.select_boundary_nodes_for_role(G, IMAGE_SHAPE, base, role)
+    probe_selection = graph.select_boundary_nodes_for_role(G, IMAGE_SHAPE, probe, role)
+
+    assert default_selection == probe_selection, (
+        f"{names['coordinates']!r} changed {role!r}'s selected nodes even "
+        f"though {names['method']!r} is 'all_degree_1', not 'coordinates'."
+    )
+
+
+@pytest.mark.parametrize("role", sorted(_all_role_settings()))
+def test_a_roles_volumes_are_ignored_unless_its_method_is_volume(role):
+    names = _all_role_settings()[role]
+    G = _branching_network()
+    base = {
+        names["method"]: "all_degree_1",
+        names["coordinates"]: [],
+        names["volume_boxes"]: [],
+        "inlet_nodes": [],
+    }
+    probe = {
+        **base,
+        # Any box, if it were read, selects only the terminals inside it --
+        # a strict subset of "every degree-1 node" here.
+        names["volume_boxes"]: [((0.0, 0.0, 0.0), (25.0, 25.0, 25.0))],
+    }
+
+    default_selection = graph.select_boundary_nodes_for_role(G, IMAGE_SHAPE, base, role)
+    probe_selection = graph.select_boundary_nodes_for_role(G, IMAGE_SHAPE, probe, role)
+
+    assert default_selection == probe_selection, (
+        f"{names['volume_boxes']!r} changed {role!r}'s selected nodes even "
+        f"though {names['method']!r} is 'all_degree_1', not 'volume'."
+    )
+
+
+def test_a_lone_node_id_in_a_run_filled_list_does_not_stop_the_stage(tmp_path):
+    """The ``*_nodes`` lists are the run's to fill, and the stage empties them
+    in place first. A config with a bare ID typed into one
+    (``large_vessel_outlet_nodes: 3316``) stopped Boundaries at
+    ``'int' object does not support item assignment``."""
+    settings = _defaults(
+        plot_dir=tmp_path,
+        large_vessel_outlet_nodes=3316,
+        venule_boundary_nodes=7,
+        outlet_nodes=None,
+    )
+    network = _network_for_stages(_branching_network(), tmp_path)
+
+    stages.assign_boundaries(settings, network)
+
+    assert settings["large_vessel_outlet_nodes"] == []
+    assert settings["venule_boundary_nodes"] == []
+    assert settings["outlet_nodes"] and isinstance(settings["outlet_nodes"], list)
+
+
+def test_a_run_filled_list_is_emptied_in_place():
+    """The panel holds these lists across runs, so a list stays the same list."""
+    held = [1, 2]
+    settings = {"inlet_nodes": held, "outlet_nodes": 5}
+    stages._reset_run_node_list(settings, "inlet_nodes")
+    stages._reset_run_node_list(settings, "outlet_nodes")
+    assert settings["inlet_nodes"] is held and held == []
+    assert settings["outlet_nodes"] == []

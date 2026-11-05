@@ -1,0 +1,629 @@
+"""Branch-hover tooltip text, metric availability, and polyline hit-testing.
+
+Napari Vectors ``_get_value`` always returns ``None``, so hover cannot use the
+native query. The vessels (and flow-direction) Vectors layers carry a
+``tooltip`` feature column from these helpers, and :func:`nearest_vector_index`
+picks the segment under the cursor. Which optional metrics appear in the
+layer-controls checkboxes is decided here from what the graph actually carries
+-- the same rule ``available_edge_columns`` uses for colouring.
+"""
+from __future__ import annotations
+
+from typing import Any, Iterable, Mapping, Sequence
+
+import numpy as np
+
+from haemolynx.graph.post_processing import (
+    DRAWN_BACKGROUND_RUN_UM,
+    DRAWN_BESIDE_VESSEL,
+    DRAWN_MASK_FRACTION,
+    describe_drawn_support,
+)
+from haemolynx.graph.prune import FLOW_SOLVED
+from haemolynx.graph.thick_vessel_junctions import IS_ZERO_RESISTANCE
+from haemolynx.graph.vessel_size_classes import (
+    VESSEL_SIZE_CLASS,
+    size_class_range,
+    size_convention_of,
+)
+
+#: Optional metrics the panel can offer, in display order.
+BRANCH_HOVER_METRICS: tuple[str, ...] = (
+    "flow_solution",
+    "flow",
+    "order",
+    "size_class",
+    "diameter",
+    "diameter_source",
+    "fwhm_status",
+    "resistance",
+    "tortuosity",
+    "length",
+    "drawn_support",
+)
+
+#: Checkbox / tooltip label for each optional metric key.
+BRANCH_HOVER_LABELS: dict[str, str] = {
+    "flow_solution": "flow solution",
+    "flow": "branch flow",
+    "order": "branch order",
+    "size_class": "size class",
+    "diameter": "branch diameter",
+    "diameter_source": "diameter source",
+    "fwhm_status": "FWHM status",
+    "resistance": "branch resistance",
+    "tortuosity": "branch tortuosity",
+    "length": "branch length",
+    "drawn_support": "drawn vessel",
+}
+
+#: Graph edge attribute that supplies each metric (``None`` = computed).
+_METRIC_ATTR: dict[str, str | None] = {
+    "flow_solution": FLOW_SOLVED,
+    "flow": "flow_abs",
+    "order": "branch_order",
+    "size_class": None,
+    "diameter": "diameter_um",
+    "diameter_source": "diameter_source",
+    "fwhm_status": "fwhm_status",
+    "resistance": "resistance",
+    "tortuosity": None,
+    "length": "length",
+    "drawn_support": None,
+}
+
+_TEXT_HOVER_METRICS = frozenset(
+    {"flow_solution", "order", "size_class", "diameter_source", "fwhm_status", "drawn_support"}
+)
+
+#: What ``flow_solution`` reads for each value of the edge's FLOW_SOLVED.
+FLOW_SOLUTION_TEXT = {True: "Solved", False: "Unsolved"}
+#: What it reads instead, for an unsolved vessel whose FLOW_STATE says why.
+FLOW_STATE_TEXT = {
+    "blind_end": "Unsolved: behind a dead end",
+    "closed_end": "Unsolved: behind a closed image-face end",
+    "no_boundary": "Unsolved: no inlet and outlet",
+}
+
+_BRANCH_ID_LINE = "branchID: {branch_id}"
+#: Under the branch ID of a zero-resistance bridge, whatever metrics are
+#: chosen: what its dashes are.
+BRIDGE_LINE = "zero-resistance bridge: artificial, inside a thick vessel's lumen"
+
+#: What ``flow_solution`` reads on a solved vessel between an open end the
+#: solve gave a boundary condition and its junction, by whether blood enters
+#: the network there (*fed*) or leaves it (*drained*); ``{model}`` is the
+#: run's ``open_end_model``. Its flow is set by that condition, not by an inlet
+#: or outlet (Harvey, 2026-10-21: arrows on dead ends read as a fault).
+OPEN_END_FLOW_TEXT = {
+    "fed": "Solved: fed through an open end ({model})",
+    "drained": "Solved: drains through an open end ({model})",
+    None: "Solved: through an open end ({model})",
+}
+
+#: Pickup radius in data coordinates (µm). Matches the old midpoint-circle
+#: diameter of 2 so a branch is still easy to hit, but the target is the
+#: polyline rather than a marker beside it.
+BRANCH_HOVER_MAX_DISTANCE = 2.0
+
+
+def edge_tortuosity(
+    graph: Any, u: Any, v: Any, data: Mapping[str, Any]
+) -> float | None:
+    """Path length / Euclidean end-to-end, or ``None`` when not computable."""
+    length = data.get("length")
+    if length is None:
+        return None
+    try:
+        path_length = float(length)
+    except (TypeError, ValueError):
+        return None
+    if not np.isfinite(path_length) or path_length < 0:
+        return None
+
+    pos_u = graph.nodes[u].get("pos") if u in graph.nodes else None
+    pos_v = graph.nodes[v].get("pos") if v in graph.nodes else None
+    if pos_u is None or pos_v is None:
+        return None
+    straight = float(np.linalg.norm(np.asarray(pos_u, dtype=float)[:3]
+                                    - np.asarray(pos_v, dtype=float)[:3]))
+    if not np.isfinite(straight) or straight <= 0:
+        return None
+    return path_length / straight
+
+
+def drawn_support_text(data: Mapping[str, Any]) -> str | None:
+    """How a vessel drawn by hand sits in the segmentation, as the
+    ``post_process`` stage wrote it on the edge (``drawn_mask_fraction``,
+    ``drawn_background_run_um``, ``drawn_beside_vessel``); ``None`` on a
+    vessel nobody drew."""
+    try:
+        fraction = float(data[DRAWN_MASK_FRACTION])
+        run = float(data[DRAWN_BACKGROUND_RUN_UM])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if not (np.isfinite(fraction) and np.isfinite(run)):
+        return None
+    try:
+        length = float(data.get("length"))
+    except (TypeError, ValueError):
+        length = None
+    return describe_drawn_support(
+        fraction, run, bool(data.get(DRAWN_BESIDE_VESSEL, False)), length
+    )
+
+
+def size_class_text(graph: Any, data: Mapping[str, Any]) -> str | None:
+    """A vessel's size class with the widths it holds, "mid, 6-15 µm", under
+    the size convention its graph records; ``None`` otherwise."""
+    size_class = data.get(VESSEL_SIZE_CLASS)
+    convention = size_convention_of(graph) if size_class else None
+    if convention is None:
+        return None
+    widths = size_class_range(size_class, convention["mid_min_um"], convention["wide_min_um"])
+    return f"{size_class}, {widths}"
+
+
+def _metric_value(
+    graph: Any, u: Any, v: Any, data: Mapping[str, Any], metric: str
+) -> Any | None:
+    """Raw value for *metric* on one edge, or ``None`` when missing."""
+    if metric == "tortuosity":
+        return edge_tortuosity(graph, u, v, data)
+    if metric == "drawn_support":
+        return drawn_support_text(data)
+    if metric == "size_class":
+        return size_class_text(graph, data)
+    attr = _METRIC_ATTR[metric]
+    assert attr is not None
+    value = data.get(attr)
+    if value is None:
+        return None
+    if metric == "flow_solution":
+        if not value and data.get("flow_state") in FLOW_STATE_TEXT:
+            return FLOW_STATE_TEXT[data["flow_state"]]
+        return FLOW_SOLUTION_TEXT[bool(value)]
+    if metric == "flow" and data.get(FLOW_SOLVED) is False:
+        # An unsolved vessel's flow is no solved result: zero behind a dead
+        # end, or no answer at all.
+        return None
+    if metric in _TEXT_HOVER_METRICS:
+        text = str(value).strip()
+        return text if text else None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not np.isfinite(number):
+        return None
+    return number
+
+
+def open_end_chain_text(graph: Any) -> dict[tuple[Any, Any, Any], str]:
+    """``flow_solution`` text for the vessels from each open end the solve
+    gave a condition (``G.graph["open_end_conditions"]``) to its junction,
+    keyed ``(u, v, key)`` both ways round; empty for a graph with none."""
+    from haemolynx.graph.dead_ends import chain_to_junction
+    from haemolynx.haemodynamics.open_ends import GRAPH_RECORD, OpenEndConditions
+
+    graph_record = getattr(graph, "graph", {}).get(GRAPH_RECORD)
+    conditions = OpenEndConditions.from_record(graph_record)
+    if not conditions or not getattr(graph, "is_multigraph", lambda: False)():
+        return {}
+    texts: dict[tuple[Any, Any, Any], str] = {}
+    for tip in conditions.nodes:
+        if tip not in graph or graph.degree(tip) != 1:
+            continue
+        nodes, edges = chain_to_junction(graph, tip)
+        side = None
+        try:
+            drop = float(graph.nodes[tip]["pressure"]) - float(graph.nodes[nodes[-1]]["pressure"])
+            if np.isfinite(drop) and drop != 0.0:
+                side = "fed" if drop > 0.0 else "drained"
+        except (KeyError, TypeError, ValueError, IndexError):
+            pass
+        text = OPEN_END_FLOW_TEXT[side].format(model=conditions.model)
+        for a, b, key in edges:
+            texts[(a, b, key)] = texts[(b, a, key)] = text
+    return texts
+
+
+def node_end_text(graph: Any, node: Any) -> str:
+    """What a dead end is, for its node's hover: ``open end`` where it leaves
+    the image (:func:`~haemolynx.graph.dead_ends.node_leaves_image`), else
+    ``dead end`` with its kind; empty for a node that is no dead end."""
+    from haemolynx.graph.dead_ends import DEAD_END_KIND, node_leaves_image
+
+    if node not in graph or graph.degree(node) != 1:
+        return ""
+    if node_leaves_image(graph, node):
+        return "open end: leaves the image"
+    kind = graph.nodes[node].get(DEAD_END_KIND)
+    return f"dead end: {str(kind).replace('_', ' ')}" if kind else "dead end"
+
+
+def available_branch_hover_metrics(graph: Any) -> tuple[str, ...]:
+    """Optional metrics this graph can offer, in declared order.
+
+    A metric is available when at least one drawable edge carries a usable
+    value for it. Tortuosity is derived from length and node positions, so it
+    appears once those exist rather than as a stored edge attribute.
+    """
+    present: list[str] = []
+    for metric in BRANCH_HOVER_METRICS:
+        for u, v, _key, data in _iter_edges(graph):
+            if _metric_value(graph, u, v, data, metric) is not None:
+                present.append(metric)
+                break
+    return tuple(present)
+
+
+def format_metric_value(metric: str, value: Any) -> str:
+    """Canonical string for one metric value in a tooltip line."""
+    if metric in _TEXT_HOVER_METRICS:
+        return str(value)
+    number = float(value)
+    return f"{number:.6g}"
+
+
+def format_branch_tooltip(
+    branch_id: str,
+    values: Mapping[str, Any],
+    selected: Sequence[str],
+    *,
+    bridge: bool = False,
+) -> str:
+    """Deterministic multi-line tooltip text.
+
+    Always starts with ``branchID`` (the graph-edge enumeration index), and
+    for a *bridge* :data:`BRIDGE_LINE`. Then one line per *selected* metric
+    that both is offered by :data:`BRANCH_HOVER_METRICS` and has a
+    non-``None`` value in *values*. Unselected and unavailable metrics are
+    omitted.
+    """
+    lines = [_BRANCH_ID_LINE.format(branch_id=branch_id)]
+    if bridge:
+        lines.append(BRIDGE_LINE)
+    for metric in BRANCH_HOVER_METRICS:
+        if metric not in selected:
+            continue
+        if metric not in values or values[metric] is None:
+            continue
+        label = BRANCH_HOVER_LABELS[metric]
+        lines.append(f"{label}: {format_metric_value(metric, values[metric])}")
+    return "\n".join(lines)
+
+
+def format_node_tooltip(
+    node_id: Any,
+    position: Sequence[float],
+    degree: Any = None,
+    pressure: Any = None,
+    end: Any = None,
+) -> str:
+    """Hover text for one graph node: its ID first, as the node ID lists take it.
+
+    Then how many vessels meet there, and at a dead end what it is (*end*,
+    :func:`node_end_text`: an open end leaves the image, any other is a dead
+    end -- every one used to read "open end"), its (z, y, x) position in
+    microns, and its pressure once the network is solved.
+    """
+    lines = [f"Node ID: {node_id}"]
+    try:
+        count = int(float(degree))
+    except (TypeError, ValueError):
+        count = None
+    if count is not None:
+        if count == 1:
+            text = str(end).strip() if isinstance(end, str) else ""
+            lines.append(f"Vessels: 1 ({text or 'dead end'})")
+        else:
+            lines.append(f"Vessels: {count}")
+    z, y, x = (float(v) for v in list(position)[-3:])
+    lines.append(f"z, y, x: {z:.1f}, {y:.1f}, {x:.1f} um")
+    try:
+        value = float(pressure)
+    except (TypeError, ValueError):
+        value = float("nan")
+    if np.isfinite(value):
+        lines.append(f"Pressure: {format_metric_value('pressure', value)}")
+    return "\n".join(lines)
+
+
+def panel_metric_options(
+    available: Sequence[str],
+) -> tuple[tuple[str, str], ...]:
+    """``(metric_key, checkbox_label)`` pairs the panel should show."""
+    return tuple(
+        (metric, BRANCH_HOVER_LABELS[metric])
+        for metric in BRANCH_HOVER_METRICS
+        if metric in available
+    )
+
+
+def filter_selected_metrics(
+    selected: Iterable[str],
+    available: Sequence[str],
+) -> tuple[str, ...]:
+    """Keep only metrics that are both selected and currently available."""
+    available_set = set(available)
+    return tuple(
+        metric for metric in BRANCH_HOVER_METRICS
+        if metric in selected and metric in available_set
+    )
+
+
+def branch_hover_rows(
+    graph: Any,
+    selected: Sequence[str],
+) -> tuple[list[str], dict[str, np.ndarray]]:
+    """Per-drawable-edge branch ids, tooltips, and raw metric columns.
+
+    Edges that cannot be placed (no polyline) are skipped, matching
+    :func:`haemolynx.gui.results.edge_polylines`. ``branch_id`` is that same
+    graph-edge enumeration index (the layer ``edge_index`` column), not
+    ``segment_id`` or the MultiGraph key.
+    """
+    from haemolynx.visualization.geometry import edge_polyline
+
+    available = available_branch_hover_metrics(graph)
+    chosen = filter_selected_metrics(selected, available)
+
+    branch_ids: list[str] = []
+    tooltips: list[str] = []
+    bridges: list[bool] = []
+    columns: dict[str, list[Any]] = {metric: [] for metric in BRANCH_HOVER_METRICS}
+    open_end_text = open_end_chain_text(graph)
+
+    for index, (u, v, _key, data) in enumerate(_iter_edges(graph)):
+        try:
+            edge_polyline(graph, u, v, data)
+        except ValueError:
+            continue
+        branch_id = str(index)
+        values = {
+            metric: _metric_value(graph, u, v, data, metric)
+            for metric in BRANCH_HOVER_METRICS
+        }
+        if values["flow_solution"] == FLOW_SOLUTION_TEXT[True] and (u, v, _key) in open_end_text:
+            values["flow_solution"] = open_end_text[(u, v, _key)]
+        branch_ids.append(branch_id)
+        bridges.append(bool(data.get(IS_ZERO_RESISTANCE)))
+        tooltips.append(format_branch_tooltip(branch_id, values, chosen, bridge=bridges[-1]))
+        for metric in BRANCH_HOVER_METRICS:
+            columns[metric].append(values[metric])
+
+    features: dict[str, np.ndarray] = {
+        "branch_id": np.asarray(branch_ids, dtype=object),
+        "tooltip": np.asarray(tooltips, dtype=object),
+        IS_ZERO_RESISTANCE: np.asarray(bridges, dtype=bool),
+    }
+    for metric in BRANCH_HOVER_METRICS:
+        if metric in _TEXT_HOVER_METRICS:
+            features[metric] = np.asarray(
+                ["" if v is None else str(v) for v in columns[metric]],
+                dtype=object,
+            )
+        else:
+            features[metric] = np.asarray(
+                [np.nan if v is None else float(v) for v in columns[metric]],
+                dtype=float,
+            )
+    return branch_ids, features
+
+
+def default_selected_metrics(available: Sequence[str]) -> tuple[str, ...]:
+    """Initial checkbox state: every metric the graph can currently offer."""
+    return tuple(metric for metric in BRANCH_HOVER_METRICS if metric in available)
+
+
+def tooltips_from_feature_table(
+    features: Mapping[str, Any],
+    selected: Sequence[str],
+) -> np.ndarray:
+    """Rebuild the ``tooltip`` column from an existing features table.
+
+    Used when the user toggles checkboxes: the raw metric columns stay put and
+    only the composed strings change.
+
+    Each column is converted to a list once, not indexed per row: *features*
+    is usually a layer's pandas table, and turning a whole column into an
+    array for every row and metric made this quadratic -- tens of seconds
+    per call on a network of a few thousand vessels. A Vectors layer repeats
+    each vessel's row for every centreline segment, so each distinct row is
+    composed once.
+    """
+    branch_ids = [str(v) for v in np.asarray(features["branch_id"]).tolist()]
+    n = len(branch_ids)
+    chosen = tuple(
+        metric for metric in BRANCH_HOVER_METRICS if metric in selected
+    )
+    columns = {
+        metric: np.asarray(features[metric]).tolist()
+        for metric in BRANCH_HOVER_METRICS
+        if metric in features
+    }
+    bridges = (
+        (np.asarray(features[IS_ZERO_RESISTANCE]) == True).tolist()  # noqa: E712
+        if IS_ZERO_RESISTANCE in features
+        else [False] * n
+    )
+    composed: dict[tuple, str] = {}
+    tooltips: list[str] = []
+    for index in range(n):
+        values: dict[str, Any] = {}
+        for metric in BRANCH_HOVER_METRICS:
+            column = columns.get(metric)
+            if column is None:
+                values[metric] = None
+                continue
+            raw = column[index]
+            if metric in _TEXT_HOVER_METRICS:
+                text = "" if raw is None else str(raw).strip()
+                values[metric] = text or None
+            else:
+                try:
+                    number = float(raw)
+                except (TypeError, ValueError):
+                    values[metric] = None
+                else:
+                    values[metric] = None if not np.isfinite(number) else number
+        key = (
+            branch_ids[index], bridges[index],
+            *(values[metric] for metric in BRANCH_HOVER_METRICS),
+        )
+        text = composed.get(key)
+        if text is None:
+            text = format_branch_tooltip(
+                branch_ids[index], values, chosen, bridge=bridges[index]
+            )
+            composed[key] = text
+        tooltips.append(text)
+    return np.asarray(tooltips, dtype=object)
+
+
+def available_metrics_from_features(features: Mapping[str, Any]) -> tuple[str, ...]:
+    """Which optional metrics a hover layer's features actually carry values for."""
+    present: list[str] = []
+    for metric in BRANCH_HOVER_METRICS:
+        if metric not in features:
+            continue
+        column = np.asarray(features[metric])
+        if metric in _TEXT_HOVER_METRICS:
+            if any(str(v).strip() for v in column.tolist()):
+                present.append(metric)
+        else:
+            numbers = np.asarray(column, dtype=float)
+            if np.isfinite(numbers).any():
+                present.append(metric)
+    return tuple(present)
+
+
+def _iter_edges(graph: Any):
+    if getattr(graph, "is_multigraph", lambda: False)():
+        return graph.edges(keys=True, data=True)
+    return ((u, v, 0, data) for u, v, data in graph.edges(data=True))
+
+
+def hover_features_for_segments(
+    graph: Any,
+    owner: np.ndarray,
+    selected: Sequence[str] | None = None,
+) -> tuple[dict[str, np.ndarray], tuple[str, ...], tuple[str, ...]]:
+    """Repeat per-edge hover columns across Vectors segments via *owner*.
+
+    *owner* is the drawable-edge index of each vector segment, the same array
+    :func:`haemolynx.gui.results.polylines_to_vectors` returns. Empty when
+    there are no segments or no drawable edges.
+    """
+    available = available_branch_hover_metrics(graph)
+    chosen = (
+        default_selected_metrics(available)
+        if selected is None
+        else filter_selected_metrics(selected, available)
+    )
+    index = np.asarray(owner, dtype=int)
+    if index.size == 0:
+        return {}, available, chosen
+    _ids, features = branch_hover_rows(graph, chosen)
+    n_edges = len(features.get("tooltip", ()))
+    if n_edges == 0 or int(index.min()) < 0 or int(index.max()) >= n_edges:
+        return {}, available, chosen
+    return (
+        {name: np.asarray(values)[index] for name, values in features.items()},
+        available,
+        chosen,
+    )
+
+
+def nearest_vector_index(
+    position: Any,
+    vectors: Any,
+    *,
+    max_distance: float = BRANCH_HOVER_MAX_DISTANCE,
+    view_direction: Any | None = None,
+    dims: Sequence[int] | None = None,
+) -> int | None:
+    """Index of the nearest Vectors segment within *max_distance*, else ``None``.
+
+    *vectors* is napari Vectors data ``(M, 2, D)``: origin and displacement,
+    in the same frame as *position*. When *dims* is given, distance uses only
+    those axes. When *view_direction* is a non-zero vector (3D camera ray),
+    segments are projected onto the view plane through *position* so the
+    pickup matches what is under the cursor on screen.
+    """
+    data = np.asarray(vectors, dtype=float)
+    point = _as_float_vec(position)
+    if (
+        point is None
+        or data.ndim != 3
+        or data.shape[0] == 0
+        or data.shape[1] != 2
+    ):
+        return None
+    origins = np.asarray(data[:, 0, :], dtype=float)
+    directions = np.asarray(data[:, 1, :], dtype=float)
+    ndim = int(origins.shape[1])
+    if dims is not None:
+        axes = np.asarray(list(dims), dtype=int)
+        axes = axes[(axes >= 0) & (axes < ndim) & (axes < point.size)]
+        if axes.size == 0:
+            return None
+        point = point[axes]
+        origins = origins[:, axes]
+        directions = directions[:, axes]
+    else:
+        n = min(int(point.size), ndim)
+        point = point[:n]
+        origins = origins[:, :n]
+        directions = directions[:, :n]
+
+    view = _as_float_vec(view_direction)
+    width = int(origins.shape[1])
+    if view is not None and view.size >= width:
+        view = view[:width]
+        norm = float(np.linalg.norm(view))
+        if np.isfinite(norm) and norm > 1e-12:
+            view = view / norm
+            ends = origins + directions
+            origins = _project_onto_plane(origins, point, view)
+            ends = _project_onto_plane(ends, point, view)
+            directions = ends - origins
+
+    length_sq = np.einsum("ij,ij->i", directions, directions)
+    delta = point - origins
+    t = np.zeros(len(origins), dtype=float)
+    nonzero = length_sq > 0.0
+    t[nonzero] = (
+        np.einsum("ij,ij->i", delta[nonzero], directions[nonzero])
+        / length_sq[nonzero]
+    )
+    t = np.clip(t, 0.0, 1.0)
+    closest = origins + t[:, None] * directions
+    offset = closest - point
+    dist_sq = np.einsum("ij,ij->i", offset, offset)
+    dist_sq = np.where(np.isfinite(dist_sq), dist_sq, np.inf)
+    if not np.isfinite(dist_sq).any():
+        return None
+    index = int(np.argmin(dist_sq))
+    max_sq = float(max_distance) * float(max_distance)
+    if not np.isfinite(max_sq) or dist_sq[index] > max_sq:
+        return None
+    return index
+
+
+def _as_float_vec(value: Any) -> np.ndarray | None:
+    if value is None:
+        return None
+    arr = np.asarray(value, dtype=float).reshape(-1)
+    if arr.size == 0 or not np.all(np.isfinite(arr)):
+        return None
+    return arr
+
+
+def _project_onto_plane(
+    points: np.ndarray, plane_point: np.ndarray, normal: np.ndarray
+) -> np.ndarray:
+    """Project *points* onto the plane through *plane_point* with *normal*."""
+    rel = points - plane_point
+    return points - np.outer(rel @ normal, normal)

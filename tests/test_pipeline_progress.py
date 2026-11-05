@@ -29,21 +29,23 @@ from haemolynx.pipeline.progress import (
     STEP,
     ProgressEvent,
     RunProgress,
+    format_seconds,
     log_progress,
+    segmentation_progress_text,
+    time_left,
 )
 from haemolynx.pipeline.stages import HaemodynamicModel, run_pipeline_stages
 
 #: The stages a run reports, in order. Anything else is a mistake in STAGES.
 STAGE_NAMES = [stage.call for stage in STAGES if stage.call]
 
-#: Every module `haemolynx.pipeline.progress` may import. All standard library:
-#: `sys.stdlib_module_names` would say so directly, but it needs Python 3.10 and
-#: this library supports 3.9.
+#: Every module `haemolynx.pipeline.progress` may import, all standard library.
 STDLIB_IMPORTS_ALLOWED_IN_PROGRESS = {
     "__future__",
     "contextlib",
     "dataclasses",
     "logging",
+    "time",
     "typing",
 }
 
@@ -69,7 +71,7 @@ def stubbed(monkeypatch):
                     reporter = kwargs["progress"]
                     for label in steps:
                         reporter.step(label, total=len(steps))
-                if name == "build_haemodynamic_model":
+                if name in ("build_haemodynamic_model", "post_process"):
                     return model
                 return f"{name}-result"
 
@@ -99,6 +101,8 @@ def test_the_stages_are_the_pipeline_functions_in_order():
         "assign_diameters",
         "build_haemodynamic_model",
         "solve",
+        "post_process",
+        "run_perturbations",
         "export_results",
     ]
     for name in STAGE_NAMES:
@@ -308,10 +312,63 @@ def test_a_step_total_given_once_holds_for_the_steps_after_it():
     assert [event.step_total for event in events if event.kind == STEP] == [2, 2]
 
 
+def test_a_step_carries_the_step_starting_after_it():
+    events: list[ProgressEvent] = []
+    run = RunProgress(events.append)
+    with run.stage("build_network") as reporter:
+        reporter.step("first", total=2, next_step="second")
+        reporter.step("second")
+
+    assert [event.next_step for event in events if event.kind == STEP] == ["second", None]
+
+
+def test_each_graph_step_names_the_one_that_starts_after_it():
+    from haemolynx.graph.assemble import step_after
+
+    assert [step_after(label) for label in STEP_LABELS] == [*STEP_LABELS[1:], None]
+    assert step_after("not_a_step") is None
+
+
+def test_every_count_of_the_topology_steps_in_words_is_the_real_one():
+    """The docs said fifteen topology steps long after there were thirteen."""
+    import re
+
+    words = {
+        "ten": 10, "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14,
+        "fifteen": 15, "sixteen": 16, "seventeen": 17,
+    }
+    root = Path(__file__).resolve().parents[1]
+    files = [*sorted((root / "src" / "haemolynx").rglob("*.py")), root / "CLAUDE.md"]
+    counts = {}
+    for path in files:
+        text = path.read_text(encoding="utf-8")
+        for match in re.finditer(r"\b(\w+)\s+(?:extra rebuilds|topology\s+steps)\b", text):
+            if match.group(1).lower() in words:
+                counts[f"{path.relative_to(root)}: {match.group(0)}"] = words[match.group(1).lower()]
+    assert counts, "no count of the topology steps found: the pattern no longer matches"
+    assert {place: n for place, n in counts.items() if n != len(STEP_LABELS)} == {}
+
+
+def test_log_progress_names_the_step_now_running(caplog):
+    import logging
+
+    event = ProgressEvent(
+        STEP, "build_network", "3. Graph", index=2, total=8,
+        step="reconnect_orphan_and_dangling_nodes", step_index=9, step_total=13,
+        next_step="recover_uncovered_mask_vessels",
+    )
+    with caplog.at_level(logging.DEBUG, logger="haemolynx.pipeline.progress"):
+        log_progress(event)
+
+    (line,) = [record.getMessage() for record in caplog.records]
+    assert "reconnect_orphan_and_dangling_nodes done" in line
+    assert line.endswith("now recover_uncovered_mask_vessels")
+
+
 def test_completed_counts_the_stage_that_just_finished():
-    event = ProgressEvent(STAGE_FINISHED, "solve", "7. Solve", index=6, total=8)
+    event = ProgressEvent(STAGE_FINISHED, "solve", "Solve", index=6, total=8)
     assert event.completed == 7
-    assert ProgressEvent(STAGE_STARTED, "solve", "7. Solve", index=6, total=8).completed == 6
+    assert ProgressEvent(STAGE_STARTED, "solve", "Solve", index=6, total=8).completed == 6
 
 
 # --- the ready-made console consumer ----------------------------------------
@@ -329,9 +386,85 @@ def test_log_progress_writes_one_line_per_stage_boundary(caplog):
         for event in events:
             log_progress(event)
 
+    total = len(STAGE_NAMES)
+    started, done = [record.message for record in caplog.records]
+    assert started == f"Stage 1/{total}: 1. Input"
+    assert done.startswith(f"Stage 1/{total} done: 1. Input (")
+    assert done.endswith(" s)")
+
+
+def test_a_finished_or_failed_stage_carries_its_wall_time():
+    import time
+
+    events: list[ProgressEvent] = []
+    run = RunProgress(events.append)
+    with run.stage("segment"):
+        time.sleep(0.05)
+    with pytest.raises(ValueError):
+        with run.stage("solve"):
+            time.sleep(0.02)
+            raise ValueError("singular matrix")
+
+    by_kind = {(event.stage, event.kind): event.seconds for event in events}
+    assert by_kind[("segment", STAGE_STARTED)] is None
+    assert 0.04 <= by_kind[("segment", STAGE_FINISHED)] < 5
+    assert 0.01 <= by_kind[("solve", STAGE_FAILED)] < 5
+
+
+def test_log_progress_gives_each_stage_its_wall_time(caplog):
+    import logging
+
+    finished = ProgressEvent(STAGE_FINISHED, "build_network", "3. Graph", 2, 10, seconds=125.4)
+    failed = ProgressEvent(
+        STAGE_FAILED, "solve", "Solve", 6, 10, error=ValueError("singular"), seconds=0.42
+    )
+    with caplog.at_level(logging.INFO, logger="haemolynx.pipeline.progress"):
+        log_progress(finished)
+        log_progress(failed)
+
     assert [record.message for record in caplog.records] == [
-        "Stage 1/8: 1. Input",
-        "Stage 1/8 done: 1. Input",
+        "Stage 3/10 done: 3. Graph (2 min 05 s)",
+        "Stage 7/10 failed after 0.4 s: Solve: singular",
+    ]
+
+
+def test_format_seconds_reads_as_a_person_would_say_it():
+    assert format_seconds(0.04) == "0.0 s"
+    assert format_seconds(12.34) == "12.3 s"
+    assert format_seconds(61) == "1 min 01 s"
+    assert format_seconds(3725) == "1 h 02 min"
+
+
+def test_time_left_reads_as_a_person_would_say_it():
+    assert time_left(None) == "working out the time left"
+    assert time_left(40) == "under a minute left"
+    assert time_left(7 * 60 + 10) == "about 7 min left"
+    assert time_left(2 * 3600 + 5 * 60) == "about 2 h 05 min left"
+
+
+def test_a_segmentation_says_what_it_is_doing_and_the_time_left():
+    from haemolynx.classifier import SegmentProgress
+
+    def state(**kw):
+        return SegmentProgress(**{"done": 3, "total": 10, "seconds": 5.0, "remaining": 600.0, **kw})
+
+    assert segmentation_progress_text(state()) == "Classifying the raw image, about 10 min left"
+    assert segmentation_progress_text(state(passes=(2, 2), start_plane=40)) == (
+        "Classifying the raw image (pass 2 of 2), taken up at plane 40, about 10 min left"
+    )
+    assert segmentation_progress_text(state(writing=True)) == "Writing the masks"
+
+
+def test_a_long_step_reports_how_far_it_is_without_counting_steps():
+    events = []
+    run = RunProgress(events.append)
+    with run.stage("segment") as stage:
+        stage.fraction("Classifying", 30, 120)
+        stage.fraction("Classifying", 120, 120)
+        assert stage.steps_done == 0
+    steps = [e for e in events if e.kind == STEP]
+    assert [(e.step, e.step_index, e.step_total) for e in steps] == [
+        ("Classifying", 29, 120), ("Classifying", 119, 120),
     ]
 
 
@@ -350,7 +483,7 @@ def test_log_progress_reports_a_failure_as_an_error(caplog):
 
     failure = [record for record in caplog.records if record.levelno == logging.ERROR]
     assert len(failure) == 1
-    assert "7. Solve" in failure[0].message
+    assert "Solve" in failure[0].message
     assert "singular matrix" in failure[0].message
 
 
@@ -504,7 +637,12 @@ def test_a_run_nobody_is_watching_still_returns_its_graph(stubbed):
 
 
 def test_the_sixth_stage_is_named_haemodynamics():
-    """#125. One place defines it; the napari tab and the bars both read it."""
+    """#125. One place defines it; the napari tab and the bars both read it.
+
+    Post processing sits between Haemodynamics and Perturbations: the network
+    is edited by hand once its flow is solved, with the flow to go by, and
+    solved again before anything is perturbed or exported.
+    """
     titles = [stage.title for stage in STAGES]
 
     assert titles == [
@@ -514,8 +652,491 @@ def test_the_sixth_stage_is_named_haemodynamics():
         "4. Boundaries",
         "5. Diameters",
         "6. Haemodynamics",
-        "7. Solve",
-        "8. Export",
+        "Solve",
+        "7. Post processing",
+        "8. Perturbations",
+        "9. Additional measurements",
+        "10. Export",
     ]
     haemodynamics = next(s for s in STAGES if s.title == "6. Haemodynamics")
     assert haemodynamics.call == "build_haemodynamic_model"
+    post_processing = next(s for s in STAGES if s.title == "7. Post processing")
+    assert post_processing.call == "post_process"
+    assert post_processing.tab is None, "it opens its own tab"
+
+
+def test_the_perturbations_tab_is_the_stage_that_runs_them():
+    """One entry owns the tab and does the work.
+
+    It was panel-only while the re-solve was not written, which meant the tab
+    a user configured and the stage a run performed could have disagreed. They
+    cannot now: the same entry is both.
+    """
+    perturbations = next(s for s in STAGES if s.title == "8. Perturbations")
+
+    assert perturbations.call == "run_perturbations"
+    assert perturbations.sections == ("Perturbation runs",)
+    assert perturbations.tab is None, "it opens its own tab"
+    assert callable(getattr(stages, "run_perturbations"))
+    assert RunProgress(None).total == 10
+    assert "8. Perturbations" in [stage.title for stage in RunProgress(None).stages]
+
+
+def test_a_panel_only_stage_would_not_enter_the_count():
+    """The mechanism survives its first user: a `call`-less stage is not a stage.
+
+    Nothing in `STAGES` needs this today, but the panel can still show a tab
+    for something the pipeline does not run, and such an entry must stay out
+    of the count a progress bar reads or every run would stop short of full.
+    """
+    from haemolynx.pipeline.progress import Stage
+
+    shown_only = Stage(call=None, title="Notes", summary="Not a stage.")
+    progress = RunProgress(None, stages=(*STAGES, shown_only))
+
+    assert progress.total == 10
+    assert "Notes" not in [stage.title for stage in progress.stages]
+
+
+def test_the_solve_stage_shows_its_settings_on_the_haemodynamics_tab():
+    """It is still a stage a run reports; only its form rows have moved.
+
+    The boundary pressures configure the solve, but a user reads them as part
+    of the haemodynamics, so the two stages share one tab. `Stage.call` and
+    the progress events are untouched by that -- which is what this pins.
+    """
+    solve = next(stage for stage in STAGES if stage.call == "solve")
+
+    assert solve.tab == "6. Haemodynamics"
+    assert solve.settings == (
+        "inlet_p_bc",
+        "outlet_p_bc",
+        "haemodynamics_solver",
+        "do_equiv_resistance_calculation",
+        "equivalent_resistance_solver",
+        "haematocrit_model",
+        "haematocrit_junction_rule",
+        "haematocrit_split_connector_length_um",
+        "haematocrit_distribution_max_iterations",
+        "haematocrit_distribution_tolerance",
+    )
+    others = [stage.tab for stage in STAGES if stage.call != "solve"]
+    assert others == [None] * len(others)
+
+
+def test_start_from_skips_earlier_stage_bodies_but_still_reports_them(stubbed, monkeypatch):
+    """A mid-pipeline rerun still counts every stage on the progress bar."""
+    from types import SimpleNamespace
+
+    from haemolynx.pipeline.stages import PipelineResume
+
+    called, model = stubbed()
+    graph = nx.MultiGraph()
+    graph.add_node(0)
+
+    def build_network(*_args, **kwargs):
+        called.append("build_network")
+        reporter = kwargs.get("progress")
+        if reporter is not None:
+            pass
+        return SimpleNamespace(
+            graph=graph, large_arteriole_mask=None, large_venule_mask=None
+        )
+
+    monkeypatch.setattr(stages, "build_network", build_network)
+    events: list[ProgressEvent] = []
+    resume = PipelineResume(
+        start_from="assign_diameters",
+        graph=graph,
+        inlet_nodes=(0,),
+        outlet_nodes=(0,),
+    )
+
+    result = run_pipeline_stages(
+        {},
+        schema=None,
+        progress=events.append,
+        start_from="assign_diameters",
+        resume=resume,
+    )
+
+    assert "assign_boundaries" not in called
+    assert "assign_diameters" in called
+    assert "build_haemodynamic_model" in called
+    assert [event.stage for event in events if event.kind == STAGE_STARTED] == STAGE_NAMES
+    assert result is model.graph
+
+
+def _recording_stages(monkeypatch):
+    """The three early stages replaced by stubs that record their arguments."""
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    calls: dict[str, dict] = {}
+
+    def segment(settings, **kwargs):
+        # The stage's own reporter (for ilastik's heartbeat) is always passed;
+        # what these tests check is which segmented image a resume hands on.
+        assert kwargs.pop("progress") is not None
+        calls["segment"] = kwargs
+        # The run's output folder, as SegmentedInputs carries it: a resumed
+        # volume is written to it (stages._volume_writing_to).
+        return SimpleNamespace(image_path=kwargs.get("segmented_path"), output_dir=Path("out"))
+
+    def skeletonise(*_args, **_kwargs):
+        calls["skeletonise"] = {}
+        return SimpleNamespace(name="freshly loaded volume")
+
+    def build_network(*_args, **kwargs):
+        calls["build_network"] = kwargs
+        return SimpleNamespace(graph=kwargs.get("resumed_graph"), volume=None,
+                               large_arteriole_mask=None, large_venule_mask=None)
+
+    for name, stub in (("segment", segment), ("skeletonise", skeletonise),
+                       ("build_network", build_network)):
+        monkeypatch.setattr(stages, name, stub)
+    return calls
+
+
+def test_a_resumed_run_is_handed_the_early_stages_instead_of_redoing_them(stubbed, monkeypatch):
+    """A run from Perturbations took minutes on a real network re-segmenting
+    (ilastik, when on), reloading and re-checking the image, skeleton, masks
+    and graph, and loading {stem}_graph.pkl only to replace it."""
+    from pathlib import Path
+
+    from haemolynx.pipeline.stages import (
+        PipelineResume, SegmentedInputs, SkeletonisedVolume, VesselNetwork,
+    )
+
+    _called, _model = stubbed()
+    calls = _recording_stages(monkeypatch)
+    outputs: dict[str, object] = {}
+    volume = SkeletonisedVolume(
+        image=None, skeleton=None, voxel_size_xyz=(1, 1, 1), voxel_size_zyx=(1, 1, 1),
+        output_dir=Path("out"),
+    )
+    built = nx.MultiGraph()
+    resumed = nx.MultiGraph()
+    resumed.add_edge(0, 1)
+    mask = object()
+    resume = PipelineResume(
+        start_from="run_perturbations",
+        graph=resumed,
+        inputs=SegmentedInputs(image_path=Path("segmented.tif"), output_dir=Path("out")),
+        volume=volume,
+        network=VesselNetwork(graph=built, volume=volume, large_arteriole_mask=mask),
+    )
+
+    run_pipeline_stages(
+        {"run_haemodynamics": True}, schema=None, resume=resume,
+        on_stage_output=lambda stage, output: outputs.setdefault(stage, output),
+    )
+
+    assert calls["segment"] == {"segmented_path": Path("segmented.tif")}
+    assert "skeletonise" not in calls and "build_network" not in calls
+    assert outputs["skeletonise"] is volume
+    network = outputs["build_network"]
+    assert network.graph is resumed and network.large_arteriole_mask is mask
+    assert resume.network.graph is built  # the stored network is left as it was
+
+
+def test_a_resume_without_stored_outputs_hands_build_network_the_graph(stubbed, monkeypatch):
+    """A run loaded from a file keeps no stage outputs: the skeleton is
+    loaded, but the graph still goes to build_network directly rather than
+    through {stem}_graph.pkl."""
+    from haemolynx.pipeline.stages import PipelineResume
+
+    stubbed()
+    calls = _recording_stages(monkeypatch)
+    resumed = nx.MultiGraph()
+
+    run_pipeline_stages(
+        {"use_ilastik_segmentation": False}, schema=None,
+        resume=PipelineResume(start_from="build_haemodynamic_model", graph=resumed),
+    )
+
+    assert calls["segment"] == {"segmented_path": None}
+    assert "skeletonise" in calls
+    assert calls["build_network"]["resumed_graph"] is resumed
+
+
+def test_a_resume_reuses_ilastiks_existing_output_instead_of_segmenting_again(
+    stubbed, monkeypatch, tmp_path
+):
+    import haemolynx.pipeline.stages as stages_module
+    from haemolynx.pipeline.stages import PipelineResume
+
+    stubbed()
+    calls = _recording_stages(monkeypatch)
+    produced = tmp_path / "raw_segmented.h5"
+    produced.write_bytes(b"")
+    # Reused only as its record vouches for it (current_ilastik_output).
+    monkeypatch.setattr(
+        stages_module, "current_ilastik_output",
+        lambda settings: (produced, "") if produced.is_file() else (None, "there is no output yet"),
+    )
+    settings = {
+        "use_ilastik_segmentation": True,
+        "raw_image_path": tmp_path / "raw.tif",
+        "ilastik_output_dir": tmp_path,
+        "ilastik_output_suffix": ".h5",
+        "input_path": None,
+    }
+
+    run_pipeline_stages(
+        settings, schema=None,
+        resume=PipelineResume(start_from="assign_diameters", graph=nx.MultiGraph()),
+    )
+    assert calls["segment"] == {"segmented_path": produced}
+
+    produced.unlink()
+    run_pipeline_stages(
+        settings, schema=None,
+        resume=PipelineResume(start_from="assign_diameters", graph=nx.MultiGraph()),
+    )
+    assert calls["segment"] == {"segmented_path": None}  # nothing to reuse: segment
+
+
+def _saved_network() -> nx.MultiGraph:
+    """A network as graph building leaves it, the image's extent and voxel
+    size on it: 10 x 20 x 10 voxels (z, y, x) of 2 x 0.5 x 0.5 um."""
+    G = nx.MultiGraph()
+    G.add_edge(0, 1)
+    G.graph["image_voxel_size_zyx"] = (2.0, 0.5, 0.5)
+    G.graph["image_voxel_size_xyz"] = (0.5, 0.5, 2.0)
+    G.graph["image_extent_um"] = (18.0, 9.5, 4.5)
+    return G
+
+
+def test_a_late_resume_loads_neither_the_image_nor_the_skeleton_when_nothing_reads_them(
+    stubbed, monkeypatch, tmp_path
+):
+    """Regression: Run from a late tab on a run loaded from a file read the
+    segmented image and its skeleton again whatever the tab, and on a machine
+    without the image could not run at all. Nothing from Haemodynamics on
+    reads them here: the volume stands in with the image's shape, and says
+    what it lacks when a stage reads it."""
+    import numpy as np
+
+    from haemolynx.pipeline.stages import ImageNotRead, ImageNotReadError, PipelineResume
+
+    stubbed()
+    calls = _recording_stages(monkeypatch)
+    outputs: dict[str, object] = {}
+    resumed = _saved_network()
+    gone = tmp_path / "gone.tif"
+    settings = {"input_path": str(gone), "output_dir": str(tmp_path), "image_axis_order": "ZYX"}
+
+    run_pipeline_stages(
+        settings, schema=None,
+        resume=PipelineResume(start_from="build_haemodynamic_model", graph=resumed),
+        on_stage_output=lambda stage, output: outputs.setdefault(stage, output),
+    )
+
+    assert calls == {}, "nothing segmented, loaded or built"
+    assert outputs["segment"].image_path == gone and settings["image_axis_order"] == "zyx"
+    volume = outputs["skeletonise"]
+    assert isinstance(volume.image, ImageNotRead) and isinstance(volume.skeleton, ImageNotRead)
+    assert volume.image.shape == (10, 20, 10) and np.shape(volume.skeleton) == (10, 20, 10)
+    assert volume.voxel_size_zyx == (2.0, 0.5, 0.5) and volume.voxel_size_xyz == (0.5, 0.5, 2.0)
+    assert outputs["build_network"].graph is resumed
+    with pytest.raises(ImageNotReadError, match="gone.tif"):
+        np.count_nonzero(volume.image)
+
+
+@pytest.mark.parametrize(
+    "start_from, overrides",
+    [
+        ("export_results", {"measure_tissue_volume": True}),
+        ("export_results", {"visualize_results": True}),
+        ("assign_diameters", {}),
+    ],
+)
+def test_a_resume_loads_the_image_when_a_stage_it_runs_reads_it(
+    stubbed, monkeypatch, start_from, overrides
+):
+    from haemolynx.pipeline.stages import PipelineResume
+
+    stubbed()
+    calls = _recording_stages(monkeypatch)
+
+    run_pipeline_stages(
+        {"use_ilastik_segmentation": False, **overrides}, schema=None,
+        resume=PipelineResume(start_from=start_from, graph=_saved_network()),
+    )
+
+    assert {"segment", "skeletonise", "build_network"} <= set(calls)
+
+
+def test_a_volume_resumed_without_its_image_is_not_handed_to_a_run_that_reads_it(
+    stubbed, monkeypatch, tmp_path
+):
+    """The panel keeps what a resumed run passed through for the next one: a
+    stand-in kept so would be read by the next run that needs the image."""
+    from haemolynx.pipeline.stages import (
+        ImageNotRead, PipelineResume, SkeletonisedVolume, VesselNetwork,
+    )
+
+    stubbed()
+    calls = _recording_stages(monkeypatch)
+    G = _saved_network()
+    stand_in = SkeletonisedVolume(
+        image=ImageNotRead("segmented image", tmp_path / "gone.tif", (10, 20, 10)),
+        skeleton=ImageNotRead("skeleton", tmp_path / "gone_skeleton.npy", (10, 20, 10)),
+        voxel_size_xyz=(0.5, 0.5, 2.0), voxel_size_zyx=(2.0, 0.5, 0.5), output_dir=tmp_path,
+    )
+
+    run_pipeline_stages(
+        {"use_ilastik_segmentation": False, "measure_tissue_volume": True}, schema=None,
+        resume=PipelineResume(
+            start_from="export_results", graph=G, volume=stand_in,
+            network=VesselNetwork(graph=G, volume=stand_in),
+        ),
+    )
+
+    assert "skeletonise" in calls and calls["build_network"]["resumed_graph"] is G
+
+
+def test_what_reads_the_segmented_image_in_a_resumed_run():
+    from haemolynx.graph.post_processing import PENDING
+    from haemolynx.pipeline.stages import resumed_image_readers as readers
+
+    G = _saved_network()
+    late = "build_haemodynamic_model"
+    assert readers({}, late, G) == () and readers({}, "export_results", G) == ()
+    # Every stage up to Diameters builds on it; so does a resume with no
+    # network, or one that does not say how big the image was.
+    assert readers({}, "assign_diameters", G) and readers({}, "segment", G)
+    assert readers({}, late, None) and readers({}, late, nx.MultiGraph())
+    # The network handling's joins, when they measure the joined vessels
+    # from the image, and only while the run does the network handling.
+    joins = {"boundary_handling": "remove_disconnected", "run_haemodynamics": True}
+    assert readers(joins, late, G) == ()
+    measured = {**joins, "use_edt_diameter_crosscheck": True}
+    (why,) = readers(measured, late, G)
+    assert "remove_disconnected" in why
+    assert readers(measured, "post_process", G) == ()
+    # Hand edits, while Post processing is still to bring them in line.
+    edited = G.copy()
+    edited.graph[PENDING] = True
+    assert readers({}, "post_process", edited) and readers({}, "run_perturbations", edited) == ()
+    # A perturbation draws its plots over the image, but for a sweep.
+    perturbing = {
+        "run_perturbations": True, "run_haemodynamics": True,
+        "perturbations": [
+            {"name": "block", "type": "capillary_block"},
+            {"name": "dilate", "type": "pericyte_dilation_sweep"},
+        ],
+    }
+    (why,) = readers(perturbing, "run_perturbations", G)
+    assert "'block'" in why
+    assert readers(perturbing, "export_results", G) == ()
+    for name in ("measure_tissue_volume", "measurement_3d_to_cell_mask", "measure_pericytes", "visualize_results"):
+        (why,) = readers({name: True}, "export_results", G)
+        assert name in why
+    # A synthetic network has no image to read.
+    assert readers({"network_source": "synthetic", "visualize_results": True}, late, G) == ()
+
+
+# --- heartbeats ----------------------------------------------------------------
+
+
+def test_a_heartbeat_names_its_stage_and_is_a_known_kind():
+    from haemolynx.pipeline.progress import HEARTBEAT
+
+    events = []
+    run = RunProgress(events.append)
+    with run.stage("segment") as segmenting:
+        segmenting.alive()
+
+    (beat,) = [event for event in events if event.kind == HEARTBEAT]
+    assert HEARTBEAT in KINDS
+    assert beat.stage == "segment"
+    assert beat.step is None and beat.step_index is None
+    assert segmenting.steps_done == 0
+
+
+def test_log_progress_says_nothing_for_a_heartbeat(caplog):
+    import logging
+
+    from haemolynx.pipeline.progress import HEARTBEAT
+
+    event = ProgressEvent(kind=HEARTBEAT, stage="segment", title="1. Input", index=0, total=9)
+    with caplog.at_level(logging.DEBUG):
+        log_progress(event)
+    assert caplog.records == []
+
+
+def test_the_bars_do_not_move_for_a_heartbeat():
+    from haemolynx.gui.progress import ProgressDisplay
+    from haemolynx.pipeline.progress import HEARTBEAT, STAGE_STARTED
+
+    display = ProgressDisplay()
+    display.start()
+    display.update(ProgressEvent(kind=STAGE_STARTED, stage="segment", title="1. Input", index=0, total=9))
+    before = (display.stages, display.steps)
+    display.update(ProgressEvent(kind=HEARTBEAT, stage="segment", title="1. Input", index=0, total=9))
+    assert (display.stages, display.steps) == before
+
+
+# --- stopping part-way on purpose (the panel's mid-run post-processing) ------------
+
+
+def test_stop_after_ends_the_run_after_that_stage(stubbed):
+    """The panel's pause for Post processing: after the solve."""
+    called, model = stubbed()
+    events: list[ProgressEvent] = []
+    outputs: list[str] = []
+
+    graph = _run(
+        events.append,
+        on_stage_output=lambda stage, _output: outputs.append(stage),
+        stop_after="solve",
+    )
+
+    through_solve = STAGE_NAMES[: STAGE_NAMES.index("solve") + 1]
+    assert "post_process" not in through_solve
+    assert called == through_solve
+    assert outputs == through_solve
+    assert [e.stage for e in events if e.kind == STAGE_FINISHED] == through_solve
+    # Still out of the whole run's stages: a paused bar is not a finished one.
+    assert {event.total for event in events} == {len(STAGE_NAMES)}
+    assert graph is model.graph
+
+
+def test_stop_after_the_last_stage_is_a_whole_run(stubbed):
+    called, model = stubbed()
+    assert _run(stop_after="export_results") is model.graph
+    assert called == STAGE_NAMES
+
+
+def test_stop_after_must_name_a_stage():
+    with pytest.raises(ValueError, match="not a stage"):
+        _run(stop_after="haemodynamics")
+
+
+def test_stop_after_cannot_come_before_the_start():
+    with pytest.raises(ValueError, match="comes before"):
+        _run(start_from="post_process", stop_after="solve")
+
+
+def test_a_resumed_graph_never_replaces_a_network_the_run_built(stubbed, monkeypatch):
+    """Regression: a resume carrying a graph replaced build_network's output
+    whatever stage the run started at, so a script resuming at graph
+    building had the network it had just built swapped for the old one."""
+    from types import SimpleNamespace
+
+    from haemolynx.pipeline.stages import PipelineResume
+
+    stubbed()
+    _recording_stages(monkeypatch)
+    built, old = nx.MultiGraph(), nx.MultiGraph()
+    built.add_edge("built", "here")
+    monkeypatch.setattr(stages, "build_network", lambda *_a, **_k: SimpleNamespace(graph=built))
+
+    result = run_pipeline_stages(
+        {"use_ilastik_segmentation": False}, schema=None, start_from="build_network",
+        resume=PipelineResume(start_from="build_network", graph=old), stop_after="build_network",
+    )
+
+    assert result is built
