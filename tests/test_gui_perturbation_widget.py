@@ -779,3 +779,42 @@ def test_the_saved_perturbation_controls_sit_on_the_tab_with_their_hover_text(pa
     menu = perturbations.saved_menu
     assert menu.toolTip() == SAVED_MENU_TOOLTIP
     assert menu.itemData(menu.findData(OPEN_SAVED_FOLDER), Qt.ToolTipRole) == OPEN_SAVED_FOLDER_TOOLTIP
+
+
+def test_the_pericyte_and_block_classifiers_join_what_reads_their_masks(make_napari_viewer):
+    """The classifier rows of the pericyte and block masks sit beside what
+    reads the mask: the perturbations reading it, else the pericyte
+    measurements; nowhere while nothing does."""
+    viewer = make_napari_viewer()
+    widget = settings_widget(napari_viewer=viewer)
+    rows = widget._haemolynx_rows()
+    perturbations = widget._haemolynx_perturbations
+    placement = widget._haemolynx_hosted_placement
+    holders = widget._haemolynx_hosted_holders
+
+    def inside(holder, name):
+        return holder.native.isAncestorOf(rows[name].native)
+
+    assert placement == {"pericytes": None, "blocks": None}
+    rows["run_perturbations"].value = True
+    perturbations.add()
+    perturbations.choose_type(0, "capillary_block_mask")
+    assert placement == {"pericytes": None, "blocks": "perturbations"}
+    assert inside(holders["perturbations"], "use_pixel_classifier_block_segmentation")
+    assert inside(holders["perturbations"], "pixel_classifier_block_path")
+    perturbations.add()
+    perturbations.choose_type(1, "pericyte_measured_constriction")
+    assert placement["pericytes"] == "perturbations"
+    assert inside(holders["perturbations"], "use_pixel_classifier_pericyte_segmentation")
+    # With no perturbation reading it, the pericyte measurements take it.
+    perturbations.remove(1)
+    assert placement["pericytes"] is None
+    rows["measure_pericytes"].value = True
+    assert placement["pericytes"] == "measurements"
+    assert inside(holders["measurements"], "use_pixel_classifier_pericyte_segmentation")
+    # Perturbations off: the block mask is read by nothing.
+    rows["run_perturbations"].value = False
+    assert placement["blocks"] is None
+    assert not inside(holders["perturbations"], "use_pixel_classifier_block_segmentation")
+    # Hosted rows keep their Train... buttons wherever they go.
+    assert rows["pixel_classifier_pericyte_path"]._haemolynx_train_button is not None

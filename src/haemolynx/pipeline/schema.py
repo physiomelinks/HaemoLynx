@@ -711,10 +711,11 @@ SCHEMA = Schema(
                 "them -- and write every mask the HaemoLynx classifier makes back at the "
                 "image's own size, a block of voxels per voxel classified. 2x classifies "
                 "about 8 times fewer voxels, at the coarser grid's resolution; none "
-                "classifies every voxel"
+                "classifies every voxel. Read while use_pixel_classifier_segmentation is on, "
+                "for every classifier the run then uses; off, every one classifies every voxel"
             ),
             section=_INPUT_AND_SEGMENTATION,
-            requires=("raw_image_path",),
+            requires=("use_pixel_classifier_segmentation",),
             advanced=True,
         ),
         Setting(

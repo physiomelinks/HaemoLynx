@@ -436,7 +436,7 @@ def test_the_segmentation_source_sits_with_the_segmented_image_on_input():
     assert on_input.index("input_path") < on_input.index("segmentation_source") < on_input.index("raw_image_path")
     for title in ("5. Diameters", "6. Haemodynamics"):
         assert "segmentation_source" not in {field.name for field in tabs[title].fields}, title
-    (input_box, *_rest) = TAB_BOXES["segment"]
+    input_box = next(box for box in TAB_BOXES["segment"] if box.key == "segmented_input")
     assert input_box.names.index("segmentation_source") == input_box.names.index("input_path") + 1
 
 

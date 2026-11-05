@@ -1663,3 +1663,45 @@ def test_the_image_measurements_are_gone_for_a_synthetic_network():
         assert not unmet_chain(SCHEMA, name, {"network_source": "segmented_image"}), name
         for source in ("synthetic", "synthetic_surround"):
             assert unmet_chain(SCHEMA, name, {"network_source": source}), (name, source)
+
+
+# --- the pericyte and block masks' classifier rows, hosted where read ---------
+
+
+def _entry(kind, **overrides):
+    return {"name": kind, "type": kind, "overrides": overrides}
+
+
+def test_the_pericyte_classifier_sits_with_the_perturbations_that_read_its_mask():
+    from haemolynx.gui.form import hosted_classifier_host
+
+    base = {"run_perturbations": True}
+    reads = {**base, "perturbations": [_entry("pericyte_dilation_sweep", use_pericyte_mask_constriction=True)]}
+    assert hosted_classifier_host("pericytes", reads) == "perturbations"
+    measured = {**base, "perturbations": [_entry("pericyte_measured_constriction")]}
+    assert hosted_classifier_host("pericytes", measured) == "perturbations"
+    # Sites placed another way read no mask; the measurements then host it, or nothing.
+    other = {**base, "perturbations": [_entry("pericyte_dilation_sweep", use_pericyte_mask_constriction=False)]}
+    assert hosted_classifier_host("pericytes", other) is None
+    assert hosted_classifier_host("pericytes", {**other, "measure_pericytes": True}) == "measurements"
+    # Perturbations not run make no mask.
+    assert hosted_classifier_host("pericytes", {**reads, "run_perturbations": False}) is None
+
+
+def test_the_block_classifier_sits_with_a_capillary_block_from_a_mask():
+    from haemolynx.gui.form import hosted_classifier_host
+
+    base = {"run_perturbations": True, "measure_pericytes": True}
+    assert hosted_classifier_host("blocks", {**base, "perturbations": [_entry("capillary_block_mask")]}) == (
+        "perturbations"
+    )
+    assert hosted_classifier_host("blocks", {**base, "perturbations": [_entry("capillary_block")]}) is None
+    assert hosted_classifier_host(
+        "blocks", {**base, "network_source": "synthetic", "perturbations": [_entry("capillary_block_mask")]}
+    ) is None
+
+
+def test_the_low_ram_hover_text_says_it_covers_the_classifier_in_napari():
+    from haemolynx.gui.setting_tooltips import SETTING_TOOLTIPS
+
+    assert "classifier training and segmentation in napari" in SETTING_TOOLTIPS["use_memmap_loading"]

@@ -1035,6 +1035,15 @@ def _all_outputs_current(raw_image_path: Path, loaded, **reading) -> bool:
         return False
 
 
+def classifier_downsample(settings: Mapping[str, object]) -> str:
+    """The grid every classifier pass of a run works on: its
+    ``pixel_classifier_downsample`` while the main image's classifier switch,
+    which that setting hangs under, is on; ``"none"`` otherwise."""
+    if not settings.get("use_pixel_classifier_segmentation"):
+        return "none"
+    return str(settings.get("pixel_classifier_downsample") or "none")
+
+
 def grid_factors(downsample, voxel_size_zyx) -> tuple[int, int, int]:
     """The coarser grid *downsample* asks the classifier to work on, per
     axis, as the run's own downsampling chooses them; (1, 1, 1) for none."""

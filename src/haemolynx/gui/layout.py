@@ -147,6 +147,9 @@ class TabLayout:
 #: schema section, the way the panel has always drawn them.
 TAB_BOXES: Mapping[str, tuple[BoxSpec, ...]] = {
     "segment": (
+        # The low-RAM option first: it decides how everything below is read,
+        # the classifier's training and segmentation in napari included.
+        BoxSpec("memory", "Memory", subtree_of="use_memmap_loading"),
         # The synthetic template's rows (and its Advanced button) are listed
         # here too: they replace the segmented image when the Input choice
         # asks for a synthetic network.
@@ -182,26 +185,27 @@ TAB_BOXES: Mapping[str, tuple[BoxSpec, ...]] = {
         ),
         # Where every output goes -- stage caches and snapshots included.
         BoxSpec("output", "Output", names=("output_dir",)),
+        # The two ways to segment the raw image in the run: an ilastik project,
+        # or the panel's own classifier (its Advanced button under its switch).
         BoxSpec(
-            "input",
-            None,
+            "run_segmentation",
+            "Run segmentation",
             names=(
                 "use_ilastik_segmentation",
                 "ilastik_classifier_path",
-                # The panel's own classifier, the other way to segment the raw image.
+                "ilastik_vessel_label",
                 "use_pixel_classifier_segmentation",
                 "pixel_classifier_path",
-                "mid_run_postprocessing",
+                "pixel_classifier_downsample",
             ),
-            rest=True,
         ),
+        BoxSpec("input", None, names=("mid_run_postprocessing",), rest=True),
         # The policy first: it decides whether the override is read at all.
         BoxSpec(
             "voxel_size",
             "Voxel size and axes",
             names=("image_axis_order", "voxel_size_policy", "voxel_size_override_xyz"),
         ),
-        BoxSpec("memory", "Memory", subtree_of="use_memmap_loading"),
         BoxSpec("segmentation_cleanup", "Segmentation cleanup", subtree_of="segmentation_cleanup"),
         BoxSpec("crop_on_import", "Crop on import", subtree_of="crop_on_import"),
         # What tunes "Check segmented image"'s score; the panel adds the check

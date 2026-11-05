@@ -191,8 +191,9 @@ SETTING_TOOLTIPS: dict[str, str] = {
         "the Post processing tab; its Continue button finishes the run"
     ),
     "use_memmap_loading": (
-        "Keep large volumes on disk instead of in memory. Same result with much less RAM, but "
-        "slower and needs free disk space the size of the image. Turn on for very large images"
+        "Keep large volumes on disk, not in memory: the same result with far less RAM, using free "
+        "disk space the size of the image. Applies to classifier training and segmentation in "
+        "napari too"
     ),
     "memmap_directory": (
         "Folder for the low-RAM option's files, on a drive with room for an image-sized file. "

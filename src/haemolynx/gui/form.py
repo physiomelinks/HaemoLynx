@@ -188,6 +188,45 @@ def shared_ilastik_host(values: Mapping[str, Any]) -> str | None:
     return "input" if main else None
 
 
+#: The classifier rows of a mask of objects, hosted where the mask is read
+#: (as the shared ilastik rows are): the pericyte classifier beside the
+#: perturbations that place pericytes from a mask, else the pericyte
+#: measurements; the block classifier beside a capillary block perturbation
+#: from a mask. Nowhere while nothing reads the mask. One set of rows each,
+#: which the panel moves (:func:`hosted_classifier_host`).
+HOSTED_CLASSIFIER_ROWS: dict[str, tuple[str, ...]] = {
+    "pericytes": ("use_pixel_classifier_pericyte_segmentation", "pixel_classifier_pericyte_path"),
+    "blocks": ("use_pixel_classifier_block_segmentation", "pixel_classifier_block_path"),
+}
+HOSTED_CLASSIFIER_SETTING_SET: frozenset[str] = frozenset(
+    name for names in HOSTED_CLASSIFIER_ROWS.values() for name in names
+)
+
+#: The mask each hosted classifier makes, as the setting a perturbation reads it by.
+_HOSTED_MASK_SETTINGS = {"pericytes": "pericyte_mask_path", "blocks": "capillary_block_mask_path"}
+
+
+def hosted_classifier_host(kind: str, values: Mapping[str, Any]) -> str | None:
+    """Where the classifier rows of *kind* (:data:`HOSTED_CLASSIFIER_ROWS`)
+    appear: ``"perturbations"`` while a perturbation the run makes reads its
+    mask (a pericyte type placing pericytes from a mask, the measured
+    constriction; a capillary block from a mask), else ``"measurements"`` for
+    the pericytes while Pericyte measurements is ticked, else None."""
+    from haemolynx.graph.boundaries import network_is_synthetic
+    from haemolynx.haemodynamics.perturbations import perturbation_mask_setting, perturbations_from_settings
+
+    if network_is_synthetic(values):
+        return None
+    wanted = _HOSTED_MASK_SETTINGS[kind]
+    if values.get("run_perturbations"):
+        for spec in perturbations_from_settings(values):
+            if perturbation_mask_setting(spec.type, {**values, **dict(spec.overrides)}) == wanted:
+                return "perturbations"
+    if kind == "pericytes" and values.get("measure_pericytes"):
+        return "measurements"
+    return None
+
+
 @dataclass(frozen=True)
 class Field:
     """One row of the form, and everything needed to draw and gate it."""

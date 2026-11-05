@@ -548,5 +548,14 @@ def test_the_run_hands_the_classifier_its_grid(tmp_path):
     from haemolynx.pipeline.stages import classifier_run_arguments
 
     settings = resolve_settings({"output_dir": tmp_path, "raw_image_path": tmp_path / "r.tif",
+                                 "use_pixel_classifier_segmentation": True,
                                  "pixel_classifier_downsample": "4x"}, schema=default_schema(), config_path=None)
     assert classifier_run_arguments(settings)["downsample"] == "4x"
+    # It hangs under the main classifier's switch: off, every classifier
+    # (a vessel-mask role's, say) classifies every voxel.
+    off = {**settings, "use_pixel_classifier_segmentation": False}
+    assert classifier_run_arguments(off)["downsample"] == "none"
+    from haemolynx.io.vessel_masks import vessel_mask_arguments
+
+    assert vessel_mask_arguments(settings, "large")["pixel_classifier_downsample"] == "4x"
+    assert vessel_mask_arguments(off, "large")["pixel_classifier_downsample"] == "none"

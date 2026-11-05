@@ -30,12 +30,15 @@ import numpy as np
 from haemolynx.gui.form import (
     CHANNEL_SETTINGS,
     Field,
+    HOSTED_CLASSIFIER_ROWS,
+    HOSTED_CLASSIFIER_SETTING_SET,
     SHARED_ILASTIK_SETTINGS,
     SHARED_ILASTIK_SETTING_SET,
     display_value_for,
     channel_choices,
     exclusive_partner_in_effect,
     exclusive_reason,
+    hosted_classifier_host,
     raw_image_stain_note,
     unmet_chain,
     shared_ilastik_host,
@@ -10589,6 +10592,11 @@ def _perturbation_controls(viewer, rows, fields, schema, report):
     state.entries = read_row()
     rebuild()
 
+    #: Under the perturbations: the classifier rows of the masks they read
+    #: (the pericyte and block masks'), placed by the panel while one does.
+    classifier_holder = Container(widgets=[], labels=False)
+    _flush(classifier_holder)
+
     def page(stage_summary, names: Sequence[str]):
         """The tab: the run's own settings, then the list of perturbations."""
         from qtpy.QtWidgets import QSizePolicy
@@ -10608,7 +10616,7 @@ def _perturbation_controls(viewer, rows, fields, schema, report):
             )
         )
         body = Container(
-            widgets=[stage_summary, settings, explanation, holder, add_button],
+            widgets=[stage_summary, settings, explanation, holder, classifier_holder, add_button],
             labels=False,
         )
         body.native.layout().addWidget(saved_dropdown)
@@ -10642,6 +10650,7 @@ def _perturbation_controls(viewer, rows, fields, schema, report):
         choose_type=choose_type,
         rebuild=rebuild,
         holder=holder,
+        classifier_holder=classifier_holder,
         add_button=add_button,
         list_setting=LIST_SETTING,
         refresh_entries=refresh_entries,
@@ -16249,6 +16258,19 @@ def settings_widget(napari_viewer=None):
     _flush(shared_ilastik_block)
     shared_ilastik_block.visible = False
 
+    # The pericyte and block masks' classifier rows: one block each, moved by
+    # place_hosted_classifiers to where the mask is read (the Perturbations
+    # tab, or the pericyte measurements), hidden while nothing reads it.
+    hosted_blocks: dict[str, Any] = {}
+    for kind, hosted_names in HOSTED_CLASSIFIER_ROWS.items():
+        block = Container(widgets=[rows[n] for n in hosted_names if n in rows], labels=True)
+        _flush(block)
+        block.visible = False
+        hosted_blocks[kind] = block
+    #: Where each block can go, filled as the tabs are built, and where it is.
+    hosted_holders: dict[str, Any] = {}
+    hosted_placement: dict[str, str | None] = {kind: None for kind in HOSTED_CLASSIFIER_ROWS}
+
     # Perturbations claims legacy flags and typed-entry options so Field
     # objects exist, but only ALWAYS_VISIBLE_TAB_SETTINGS are parented as flat
     # rows. Editors clone their own widgets. Hide the rest and tuck them under
@@ -16293,6 +16315,7 @@ def settings_widget(napari_viewer=None):
     perturbations = _perturbation_controls(viewer, rows, fields, schema, report)
     if perturbations is not None:
         pages["run_perturbations"] = perturbations.page
+        hosted_holders["perturbations"] = perturbations.classifier_holder
     # Hand edits between Haemodynamics and Perturbations: the post_process stage's
     # page, which has no setting rows of its own. Its callables read `view`,
     # `checkpoints` and `run_state` when clicked, all of which exist by then.
@@ -16373,11 +16396,13 @@ def settings_widget(napari_viewer=None):
         summary = Label(value=tab.stage.summary)
         build = pages.get(tab.stage.call or "")
         # Shared ilastik knobs start unparented; place_shared_ilastik hosts
-        # them. FORCED_HIDDEN_SETTINGS are parked in orphan_holder.
+        # them, and place_hosted_classifiers the classifier rows of the
+        # pericyte and block masks. FORCED_HIDDEN_SETTINGS are parked in orphan_holder.
         names = [
             field.name
             for field in tab.fields
             if field.name not in SHARED_ILASTIK_SETTING_SET
+            and field.name not in HOSTED_CLASSIFIER_SETTING_SET
             and field.name not in FORCED_HIDDEN_SETTINGS
         ]
         if build is not None:
@@ -16399,12 +16424,18 @@ def settings_widget(napari_viewer=None):
                 input_boxes = containers
                 input_shared_ilastik_holder = Container(widgets=[], labels=False)
                 _flush(input_shared_ilastik_holder)
-                leading_input = containers.get("input")
+                leading_input = containers.get("run_segmentation")
                 if leading_input is not None:
                     leading_input.append(input_shared_ilastik_holder)
                     _hide_row_label(input_shared_ilastik_holder)
             elif tab.stage.call == "assign_diameters":
                 diameters_settings = containers.get("diameters")
+            if "pericyte_measurements" in containers:
+                # The pericyte classifier's rows, while only the measurements read its mask.
+                hosted_holders["measurements"] = Container(widgets=[], labels=False)
+                _flush(hosted_holders["measurements"])
+                containers["pericyte_measurements"].append(hosted_holders["measurements"])
+                _hide_row_label(hosted_holders["measurements"])
         # A bounded QScrollArea rather than `Container(scrollable=True)`: the
         # magicgui one reports the full height of its contents, so a tab with
         # 39 rows stretches the whole napari window instead of scrolling.
@@ -16692,6 +16723,33 @@ def settings_widget(napari_viewer=None):
         # Moving rows into a container re-unifies its label widths.
         _wrap_row_labels(tab_widget)
 
+    def place_hosted_classifiers() -> None:
+        """Host the pericyte and block masks' classifier rows where their
+        mask is read (`form.hosted_classifier_host`): the Perturbations tab
+        while a perturbation reads it, else the pericyte measurements, else
+        nowhere. As place_shared_ilastik: hidden before it is detached, shown
+        only once attached, a host recorded only when it took the rows."""
+        values = current_values()
+        moved = False
+        for kind, block in hosted_blocks.items():
+            host = hosted_classifier_host(kind, values)
+            target = hosted_holders.get(host) if host is not None else None
+            if target is None:
+                host = None
+            if host == hosted_placement[kind]:
+                continue
+            block.visible = False
+            for holder in hosted_holders.values():
+                if holder is not None and any(w is block for w in holder):
+                    holder.remove(block)
+            if target is not None:
+                target.append(block)
+                block.visible = True
+            hosted_placement[kind] = host
+            moved = True
+        if moved:
+            _wrap_row_labels(tab_widget)
+
     def chain_met(name: str, values: Mapping[str, Any]) -> bool:
         """Whether every gate above *name* holds (haemolynx.gui.form.unmet_chain)."""
         return not unmet_chain(schema, name, values)
@@ -16740,6 +16798,7 @@ def settings_widget(napari_viewer=None):
         if batch_mode.setup is not None:
             gates = batch_mode.setup.gates(gates)
         place_shared_ilastik()
+        place_hosted_classifiers()
         # The "Use open layer" row is an image run's: a synthetic network
         # reads no layer.
         try:
@@ -20087,6 +20146,8 @@ def settings_widget(napari_viewer=None):
     panel._haemolynx_advanced = advanced_disclosures
     panel._haemolynx_expand_advanced = expand_advanced
     panel._haemolynx_shared_ilastik_block = shared_ilastik_block
+    panel._haemolynx_hosted_placement = hosted_placement
+    panel._haemolynx_hosted_holders = hosted_holders
     panel._haemolynx_input_boxes = input_boxes
     panel._haemolynx_check_segmented_image = on_check_segmented_image
     panel._haemolynx_post_processing = post_processing

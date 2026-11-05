@@ -407,6 +407,11 @@ def vessel_mask_arguments(
     for setting_name in _SHARED_VESSEL_MASK_SETTINGS:
         if setting_name in settings:
             arguments[setting_name] = settings[setting_name]
+    if "pixel_classifier_downsample" in arguments:
+        # Read only while the main classifier, which it hangs under, is on.
+        from haemolynx.classifier.apply import classifier_downsample
+
+        arguments["pixel_classifier_downsample"] = classifier_downsample(settings)
     if "image_axis_order" in settings:
         arguments["axis_order"] = axis_order_for_run(settings)
     return arguments

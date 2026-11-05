@@ -362,7 +362,9 @@ alternative to ilastik, trained in the panel: each classifier row's "Train..." o
 train a random forest and only the plane in view is classified (`classifier.preview.LiveClassifier`).
 Its switches (`use_pixel_classifier_segmentation`, `use_pixel_classifier_{large,small}_vessel_segmentation`,
 `use_pixel_classifier_{pericyte,block,cell,3d_vessel}_segmentation`; the first three and ilastik's
-grey each other, saying why: `gui/form.EXCLUSIVE_SWITCHES`) segment the run's raw image into
+grey each other, saying why: `gui/form.EXCLUSIVE_SWITCHES`; the pericyte and block masks' rows are
+hosted where their mask is read, the Perturbations tab or the pericyte measurements, as the shared
+ilastik rows are: `form.HOSTED_CLASSIFIER_ROWS`, `hosted_classifier_host`) segment the run's raw image into
 `output_dir` (`{raw stem}_segmented.tif`,
 `..._{role}_{class}_segmented.tif`, `..._{pericytes,blocks,cells,vessels_3d}_segmented.tif`), reused by
 their `.haemolynx.json` record; "segmented from raw" is asked through `naming.segments_raw_image` /
@@ -389,7 +391,9 @@ interpolated back), computed once per 1024-voxel tile of a slab and shared by it
 before records none and reads every scale on the image's grid, as it was trained. A large image
 read lazily is classified on worker processes (`apply.classify_slabs(processes=)`, from
 `PROCESS_MIN_VOXELS`): threads stop at about 4x. `pixel_classifier_downsample` (off) classifies on a
-coarser grid (`lazy.BlockMeanVolume`) and writes the masks back at full size, recording the grid.
+coarser grid (`lazy.BlockMeanVolume`) and writes the masks back at full size, recording the grid;
+it hangs under the main classifier's switch and is read only while that is on, for every classifier
+pass (`apply.classifier_downsample`, the one reader).
 Each mask is kept a slab at a time in `{output}.slabs/` beside it, keyed by the output's own record
 (`classifier/slabs.py`): a segmentation stopped part-way (Stop, a crash) is taken up at the first
 plane every mask of its pass lacks, bit for bit the same, and the folder goes once the mask is

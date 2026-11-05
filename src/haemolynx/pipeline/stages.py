@@ -480,8 +480,16 @@ def classifier_run_arguments(settings: Mapping[str, Any]) -> dict:
         voxel_size_override_xyz=settings.get("voxel_size_override_xyz"),
         use_memmap=bool(settings.get("use_memmap_loading")),
         memmap_directory=settings.get("memmap_directory"),
-        downsample=settings.get("pixel_classifier_downsample") or "none",
+        downsample=classifier_downsample(settings),
     )
+
+
+def classifier_downsample(settings: Mapping[str, Any]) -> str:
+    """``classifier.apply.classifier_downsample``: the grid the run's
+    classifier passes work on (the setting, while the main classifier is on)."""
+    from haemolynx.classifier.apply import classifier_downsample as downsample
+
+    return downsample(settings)
 
 
 @dataclass(frozen=True)

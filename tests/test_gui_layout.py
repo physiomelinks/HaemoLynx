@@ -12,7 +12,7 @@ import pytest
 
 from haemolynx.gui._widget import FORCED_HIDDEN_SETTINGS
 from haemolynx.gui.boundary_picking import ROLES, role_settings, shared_settings
-from haemolynx.gui.form import SHARED_ILASTIK_SETTING_SET
+from haemolynx.gui.form import HOSTED_CLASSIFIER_SETTING_SET, SHARED_ILASTIK_SETTING_SET
 from haemolynx.gui.layout import (
     ADVANCED_GROUPS,
     ADVANCED_TITLES,
@@ -40,7 +40,9 @@ def _tab_names(tab) -> list[str]:
     names = [
         field.name
         for field in tab.fields
-        if field.name not in SHARED_ILASTIK_SETTING_SET and field.name not in FORCED_HIDDEN
+        if field.name not in SHARED_ILASTIK_SETTING_SET
+        and field.name not in HOSTED_CLASSIFIER_SETTING_SET
+        and field.name not in FORCED_HIDDEN
     ]
     if tab.stage.call == "assign_boundaries":
         placed = {n for role in ROLES for n in role_settings(role)} | set(shared_settings())
@@ -407,18 +409,39 @@ def test_where_the_outputs_go_is_its_own_box_on_the_input_tab():
     assert "output_dir" not in LAYOUTS["export_results"][1].names
 
 
-def test_the_panels_classifier_sits_under_ilastik_on_the_input_tab():
-    """The two ways to segment the raw image, one under the other, above the
-    pause before post processing."""
+def test_the_two_ways_to_segment_share_a_run_segmentation_box_above_the_pause():
+    """ilastik's project, then the panel's own classifier, in a box of their
+    own; the pause before post processing below it, apart."""
     _tab, layout = LAYOUTS["segment"]
-    rows = next(box for box in layout.boxes if box.key == "input").rows
-    assert rows[:5] == (
+    keys = [box.key for box in layout.boxes]
+    segmentation = layout.box("run_segmentation")
+    assert segmentation.title == "Run segmentation"
+    assert segmentation.rows == (
         "use_ilastik_segmentation",
         "ilastik_classifier_path",
+        "ilastik_vessel_label",
         "use_pixel_classifier_segmentation",
         "pixel_classifier_path",
-        "mid_run_postprocessing",
     )
+    assert layout.box("input").rows[0] == "mid_run_postprocessing"
+    assert keys.index("input") == keys.index("run_segmentation") + 1
+
+
+def test_the_low_ram_option_leads_the_input_tab():
+    _tab, layout = LAYOUTS["segment"]
+    assert layout.boxes[0].key == "memory" and layout.boxes[0].rows == ("use_memmap_loading",)
+
+
+def test_the_classifiers_advanced_rows_hang_under_its_switch():
+    """Shown only while the panel's classifier is chosen; the pericyte and
+    block classifiers are not on the Input tab at all (hosted where read)."""
+    _tab, layout = LAYOUTS["segment"]
+    downsample = layout.disclosure_of("pixel_classifier_downsample")
+    assert downsample.anchor == "use_pixel_classifier_segmentation"
+    assert downsample.names == ("pixel_classifier_downsample",)
+    assert downsample in layout.box("run_segmentation").disclosures
+    for name in HOSTED_CLASSIFIER_SETTING_SET:
+        assert name not in layout.names, name
 
 
 def test_the_export_tab_leads_with_the_vtk_export():
@@ -507,10 +530,12 @@ def test_an_unplaced_boundaries_setting_gets_its_own_button_not_the_node_ids():
 
 def test_the_input_tab_boxes_the_segmented_file_and_the_raw_file_apart():
     _tab, layout = LAYOUTS["segment"]
-    assert [(b.key, b.title) for b in layout.boxes[:5]] == [
+    assert [(b.key, b.title) for b in layout.boxes[:7]] == [
+        ("memory", "Memory"),
         ("segmented_input", "Segmented file input"),
         ("raw_input", "Raw file input"),
         ("output", "Output"),
+        ("run_segmentation", "Run segmentation"),
         ("input", None),
         ("voxel_size", "Voxel size and axes"),
     ]
