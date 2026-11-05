@@ -5,6 +5,9 @@ This is everything after that.
 
 - [The notebook](#the-notebook) — the fastest way to see what the pipeline does
 - [The napari panel](#the-napari-panel)
+- [Editing the network by hand](#editing-the-network-by-hand)
+- [Perturbations](#perturbations)
+- [Batch runs](#batch-runs)
 - [Running from the command line](#running-from-the-command-line)
 - [Changing settings](#changing-settings)
 - [Without a repository checkout](#without-a-repository-checkout)
@@ -30,10 +33,13 @@ with `pytest tests/integration/test_pipeline_tutorial.py`.
 
 ## The napari panel
 
-One tab per pipeline stage, in the order they execute — Input, Skeletonise,
-Graph, Boundaries, Diameters, Haemodynamics, Solve, Export. Every row comes
-from the settings schema, so it arrives with its help text, unit, range and
-choices, and greys out with a reason when the setting it depends on is off.
+One tab per pipeline stage, in the order they run — 1. Input, 2. Skeletonise,
+3. Graph, 4. Boundaries, 5. Diameters, 6. Haemodynamics (which also solves the
+flow), 7. Post processing, 8. Perturbations, 9. Additional measurements
+(statistics and the measures beside them) and 10. Export. Every row comes from
+the settings schema, so it arrives with its help text, unit, range and choices,
+and greys out with a reason when the setting it depends on is off. Settings most
+runs leave alone sit behind an **Advanced** button under the row they depend on.
 
 **Load config** and **Save config** read and write the same YAML the command
 line uses, so a run set up here repeats there and back.
@@ -43,6 +49,40 @@ this machine still loads, because the image a run works on is the layer open in
 napari. With a layer already open, loading a config keeps that layer as the
 input and ignores the file's `input_path`. Paths are checked when a run starts,
 by **Run checks** and by the run itself.
+
+### Starting from a raw image
+
+A run can segment the raw image itself, before it skeletonises. Set the Input
+tab's *Raw image path* (and *Raw data channel* for a composite), then either:
+
+- tick *Classify and segment raw image in Napari* and press **Train...** on the
+  classifier row. The training window paints on the raw image: a few strokes of
+  each label, and the plane in view is classified as you paint (**Live update**).
+  **Segment whole image** segments the whole raw image as a run would and adds
+  it to the viewer. **Save classifier** writes a `.haemoclf` file, puts it in
+  the row and turns the row's switch on. **Import ilastik labels...** paints in
+  the labels drawn in an ilastik project. The same window trains the
+  classifiers for the vessel masks, pericytes, blocks and cells, each from its
+  own row.
+- or tick *Segment raw image with a pretrained Ilastik classifier* and point it
+  at an ilastik project trained elsewhere, naming its vessel label. ilastik
+  must be installed on the machine.
+
+The classifier's segmentation is written beside the run's outputs, and a later
+run reuses it while its record says the same classifier made it from the same
+image. With no raw image set, every setting that reads one is out of effect,
+whatever its switch says.
+
+The Input tab's **Check and optimise** box holds **Check segmented image**,
+which scores the segmentation out of 10 (fragmentation, connectivity, vessels
+leaving the image, surface noise, resolution), and **Optimise settings**, which
+tries the segmentation clean-up, Skeletonise and Graph settings on the image and
+proposes the best, to apply or discard. The Diameters tab has its own:
+**Optimise FWHM settings**, or **Optimise endothelial settings** where the raw
+image stains the vessel wall.
+
+For an image larger than memory, tick *Low RAM option for large networks*: the
+volumes are kept on disk rather than in memory, and the results are the same.
 
 ### Setting boundary conditions by pointing at them
 
@@ -83,11 +123,16 @@ terminal anyway.
 The tab has a sub-tab per role — **Inlet**, **Outlet**, **Arteriole**,
 **Venule** — holding that role's method, whatever the method reads, the node
 IDs a run fills in, and that role's own **Pick coordinates**, **Draw a
-region**, **Region depth**, **Assign selected** and **Clear regions**. The open
-sub-tab *is* the role: a coordinate you pick or a region you draw belongs to
-whichever one you are looking at. Within a sub-tab only the rows and controls
-that role's method can use are shown, so `coordinates` gives you a coordinate
-list and a Pick button, `volume` a region list, a Draw button and a depth. The
+region**, **Region depth**, **Assign selected** and **Clear this role's
+regions**. The open sub-tab *is* the role: a coordinate you pick or a region you
+draw belongs to whichever one you are looking at. Within a sub-tab only the rows
+and controls that role's method can use are shown, so `coordinates` gives you a
+coordinate list and a Pick button, `volume` a region list, a Draw button and a
+depth, and `node_ids` a node list and **Pick nodes in the viewer**: click nodes
+of the built graph, junctions included, to add or remove them. Node IDs belong
+to one build of the graph, so rebuilding it renumbers them. With large arteriole
+and venule masks, the large vessels' inlets and outlets default to `mask_stump`:
+one wherever a large mask is cut by an image face. The
 boundary axis and the two band percentages sit below the sub-tabs, since one
 axis and one pair of bands describe the whole network rather than any one role.
 **Show** and **Snap** sit above the sub-tabs, since they are about the picture
@@ -151,9 +196,10 @@ Each stage puts its work in the viewer as it finishes — the volume and
 skeleton, then the vessel network, the boundary nodes, the pericytes — with two
 progress bars showing which stage is running and how far through it is.
 
-Vessels are drawn as a Vectors layer, roughly ten times faster to draw than
-paths at the size of a real run; the per-vessel numbers ride on a hidden Points
-layer at each vessel's midpoint, so hovering still identifies one.
+Vessels are drawn as tubes, each as wide as its measured diameter, over a
+Vectors layer that holds the per-vessel numbers; hovering over a vessel
+identifies it. The view panel switches the tubes to plain lines, or to one width
+for every vessel (see below).
 
 **Show each topology step** additionally redraws the network after each of graph
 building's thirteen repair steps — worth switching on when skeletonisation is
@@ -176,28 +222,133 @@ or a new one.
 checkpoint. It drops this tab and later layers and checkpoints, then reruns
 the pipeline from this stage.
 
-### Choosing what the colours mean
+### The view panel and what the colours mean
 
-In napari's **layer controls on the left**, with the layer selected — the panel
-on the right is for the pipeline only.
+The panel on the right runs the pipeline. The one on the left shows its results,
+in four tabs: **HaemoLynx view**, **Statistics**, and napari's own **Layer
+list** and **Layer controls**.
 
-- **edge feature:** (vessels) and **node feature:** (nodes) choose the quantity:
-  flow, pressure, branch order, resistance, length, diameter, and everything
-  else the run produced. A quantity is listed from the start and fills in when
-  the stage that computes it runs.
-- **colour range:** shows the scale and lets you set its ends. **Fit all** spans
+**HaemoLynx view** acts on whichever network **Showing** names: the baseline,
+or one perturbation's re-solved copy, so switching between them compares like
+with like.
+
+- **Colour by** chooses the quantity: flow, pressure, branch order,
+  resistance, length, diameter, and everything else the run produced. A
+  quantity is listed from the start and fills in when the stage that computes
+  it runs.
+- **Colour range** shows the scale and lets you set its ends. **Fit all** spans
   the smallest and largest value; **Fit 1-99%** ignores the extreme 1% at each
   end, which is the useful one for flow — a handful of vessels carry orders of
   magnitude more than the rest, and against the full range everything else is
-  one colour.
-- **Show colour bar in the viewer** draws that scale in the canvas.
+  one colour. **Show colour bar in the viewer** draws that scale in the canvas.
+- **Vessels** draws them as **Tubes** or **Lines**; **Tube diameter** makes
+  each tube its vessel's width or one width for all.
+- **Show** turns on and off the flow arrows, nodes, terminal nodes, skeleton,
+  segmented image and a scale bar. **Z-depth filter** shows only a range of z
+  in every layer; the run still uses the whole image.
+- **Illumination** sets how the tubes are lit, **Sweep** holds a sweep's
+  sliders (see [Perturbations](#perturbations)), **Save snapshot** saves the
+  view as a TIFF in the output folder, and **Rotation movie** turns the view
+  about z and saves it as an MP4 or GIF.
 
-Picking a new quantity fits the range to it automatically. Vessels start
-coloured by flow once a run has solved, nodes by pressure.
+**Statistics** has a button per measure of the last run's statistics, each
+showing its results while pressed.
+
+The vessel layer's own **Layer controls** carry the same **Colour by**, with a
+**Colour map** and colour range; a node layer's is **node feature:**.
+
+Picking a new quantity fits the range to it automatically. Each stage colours
+the vessels by what it found: segment after *3. Graph*, diameter after *5.
+Diameters*, resistance and then flow (both on a log scale) after *6.
+Haemodynamics*. Nodes are coloured by pressure.
 
 Running the panel does not open plots outside napari: the settings that make
 plotly open a browser start switched off, and are ordinary rows you can tick
 back on.
+
+## Editing the network by hand
+
+The **7. Post processing** tab edits the solved network with its flows on
+screen. **Scan network** brings the last run's network into the tab and makes
+the list chosen under **Review**: junctions where four or more vessels meet,
+short loops, dead ends, broken vessels, two vessels in one lumen, segmented
+vessels without a centreline, unsolved pieces, flow against branch order,
+terminal and boundary nodes, unmeasured diameters, diameter jumps, bridging
+vessels and more — or *None*, to edit by clicking alone.
+
+Each list steps through its items. The chosen item's vessels are listed in a
+table and drawn yellow, and the buttons beside it act on it: keep it, delete
+it, join a dead end on, mark it a real blind end, make a terminal node an inlet
+or outlet, set a diameter. Every decision is saved with the run and in a
+`{stem}_{kind}_review.csv` beside its outputs. **Show the raw image at the
+chosen item** draws it in its own plane, the segmentation beside the raw image.
+
+**Edit by clicking in the viewer** holds **Add vessel** (click along the vessel;
+each step is traced through the segmentation or the raw image), **Delete
+vessel**, **Add bridge** and **Remove bridge**. **Undo last edit** takes edits
+back one at a time. **Regenerate graph** brings the edited vessels in line with
+the rest — lengths, branch orders, diameters, joins into thick vessels — and
+solves the haemodynamics again; after a finished run, Perturbations and Export
+run again too.
+
+Tick *Mid-run postprocessing* on the Input tab and a run pauses here, after the
+first solve, for you to edit; **Continue** finishes it. **Export connectivity
+CSV** writes one row per vessel, oriented away from the inlets, and **Open 2D
+connectivity map** draws it in the browser.
+
+## Perturbations
+
+The **8. Perturbations** tab lists what to re-solve the finished network for.
+**+ Add a perturbation** adds an entry, a name and a type: pressure sweeps,
+pericyte dilation or constriction (placed by probability, from a pericyte mask,
+or as the segmentation shows them narrowed), arteriole and capillary diameter
+changes and sweeps, and capillary blocks (a share of the vessels of chosen
+branch orders, listed vessels, or those a mask of blocks lies in). Each type
+shows only the settings it reads.
+
+Each entry re-solves a copy of the solved network and writes its outputs to a
+folder of its own, `{name}_{type}`. What would make its flows incomparable with
+the baseline's — the viscosity law, the raw image's stain, the haematocrit and
+its model, the open-end model — cannot be changed by a perturbation.
+
+After a run, **Showing** in the view panel swaps the viewer between the baseline
+and each perturbation's network, with the same layers on. A sweep keeps its
+flows at every grid point, and the sliders in the view panel's **Sweep** box move
+through them. **Save for later runs** keeps an entry on this machine; the menu
+under **+ Add a perturbation** adds a saved one to a later run.
+
+## Batch runs
+
+**Batch run**, above the Input row, runs the panel's settings over a folder of
+images. Its window's **Images** tab takes the folders: the segmented images (or
+the raw images, while ilastik or the classifier segments them), their raw
+images, the large and small vessel masks, and a folder for each other file a run
+reads, such as pericyte or cell masks. Each image is matched to its files by
+name; a tie is named, never guessed. **Check** runs every image's checks — every
+image passes, or nothing runs — and **Use this batch** makes **Run pipeline**
+run the batch (**Run batch** starts it from the window).
+
+A batch cannot hold what names places in one image, so each image's inlets and
+outlets must come from its own large vessel masks; the checks say what to turn
+on. Each image runs with fresh state into `{output}/{image stem}/`, and its
+`.haemorun` opens with **Load run** as if it had been run in the panel. An image
+that fails is recorded and the batch goes on; `batch_summary.csv` is rewritten
+after every image, and **Stop after this image** ends the batch cleanly.
+
+Name two conditions — phrases in the file names, such as `WT` and `KO` — and
+the **Comparison** tab tests one against the other on every statistic, as
+independent images (Mann-Whitney U, Welch t) or paired by subject (Wilcoxon
+signed-rank, paired t), with Benjamini-Hochberg q-values. Each condition also
+gets a `.haemobatch` file, which a synthetic run can take as its template.
+
+From a terminal, the same batch:
+
+```bash
+python -m haemolynx.gui.batch_run --config my_run.yaml --segmented images/ --condition-a WT --condition-b KO
+```
+
+`--dry-run` matches and checks every image and runs nothing; `--help` lists the
+rest.
 
 ## Running from the command line
 
@@ -209,6 +360,7 @@ arguments:
 | `simple_network_haemodynamics.py` | `simple_network_config.yaml` | Builds an 8-vessel network in code, solves flow, writes VTK. No image needed — the quickest look at the haemodynamics API. |
 | `resistance_network_pipeline.py` | `resistance_pipeline_config.yaml` | The full pipeline: segmentation → skeletonisation → graph → boundaries → diameters → solve → export. |
 | `brain_network_pipeline.py` | `brain_pipeline_config.yaml` | The same pipeline, then a pericyte dilation sweep against inlet pressure. |
+| `carotid_image_to_model.py` | `carotid_config.yaml` | The same pipeline with one carotid dataset's settings, through `run_pipeline_stages`. |
 
 ```bash
 python examples/resistance_network_pipeline.py
@@ -219,15 +371,24 @@ python examples/resistance_network_pipeline.py
 readable without opening the library:
 
 ```python
-inputs     = segment(settings)                                       # ilastik, or pass a mask through
+inputs     = segment(settings)                                       # a classifier or ilastik, or pass a mask through
 volume     = skeletonise(settings, inputs)                           # load, resolve voxel size, skeletonise
 network    = build_network(settings, volume, SCHEMA)                 # skeleton + masks -> graph
 boundaries = assign_boundaries(settings, network)                    # inlets, outlets, vessel boundaries
 diameters  = assign_diameters(settings, network, boundaries, SCHEMA) # branch orders, diameter per edge
+diameters  = apply_network_handling(settings, diameters, boundaries, network, schema=SCHEMA)
 model      = build_haemodynamic_model(settings, diameters)           # resistance and conductance per edge
 solution   = solve(settings, model, boundaries)                      # pressures, flows, equivalent resistance
+run_perturbations(settings, model, boundaries, SCHEMA)               # each perturbation re-solved, in its own folder
 export_results(settings, network, model, solution)                   # VTK, statistics, plots
 ```
+
+`apply_network_handling` is the Haemodynamics tab's *Network handling*: what
+to do with vessels no inlet-to-outlet path runs along. The example wraps the
+stages in `record_run`, which writes the run's manifest beside its outputs.
+`post_process`, the hand edits of *7. Post processing*, is the panel's: on a
+network nobody edited it changes nothing. `run_pipeline_stages` runs all of them
+in one call.
 
 Call them individually to intervene mid-run — which is what
 `brain_network_pipeline.py` does before its sweep.
@@ -240,11 +401,11 @@ prerequisite as a comment.
 
 ```yaml
 boundary_assignment:
-  # Choose the method for selecting input boundary nodes  [one of: coordinates, all_degree_1, volume, edge_percent, degree_1_from_inlet]
+  # Choose how manual inlet nodes are picked from the graph  [one of: coordinates, all_degree_1, volume, edge_percent, degree_1_from_inlet, node_ids]
   inlet_node_selection_method: edge_percent
 
 solver_and_output:
-  # Apply this pressure boundary condition at the inlet nodes  [Pa; range 0.0..]
+  # Apply this pressure boundary condition at the inlet nodes  [Pa; range 0.0..; needs run_haemodynamics]
   inlet_p_bc: 4500.0
 ```
 
