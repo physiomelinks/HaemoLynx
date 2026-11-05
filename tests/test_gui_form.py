@@ -16,6 +16,7 @@ from pathlib import Path
 
 from haemolynx.gui.form import (
     CHANNEL_SETTINGS,
+    CLASSIFIER_FILLED_ROWS,
     DEFAULT_FLOAT_RANGE,
     DEFAULT_INT_RANGE,
     EXCLUSIVE_SWITCHES,
@@ -28,10 +29,12 @@ from haemolynx.gui.form import (
     WIDGET_TYPES,
     Field,
     chain_met,
+    classifier_filled_reason,
     exclusive_partner_in_effect,
     exclusive_reason,
     field_for,
     fields_for,
+    hidden_by,
     label_for,
     prerequisite_chain,
     sections_for,
@@ -378,6 +381,78 @@ def test_both_on_greys_only_the_classifier_so_ilastik_can_be_unticked(ilastik, c
     assert exclusive_partner_in_effect(SCHEMA, ilastik, values) is None  # ilastik stays usable
     assert unmet_chain(SCHEMA, ilastik, values) == ()
     assert unmet_chain(SCHEMA, classifier, values) == (f"!{ilastik}",)  # the classifier greys
+
+
+#: Each row a classifier fills, and the gates its role's rows need besides.
+_FILLED_ROW_GATES = {
+    "input_path": {},
+    "large_arteriole_mask_path": {"automated_vessel_assignment": True, "use_large_vessel_masks": True},
+    "large_venule_mask_path": {"automated_vessel_assignment": True, "use_large_vessel_masks": True},
+    "small_arteriole_mask_path": {
+        "automated_vessel_assignment": True, "use_small_vessel_masks_for_boundary_assignment": True,
+    },
+    "small_venule_mask_path": {
+        "automated_vessel_assignment": True, "use_small_vessel_masks_for_boundary_assignment": True,
+    },
+}
+
+
+def test_every_row_a_classifier_fills_is_named_with_its_switch():
+    assert set(CLASSIFIER_FILLED_ROWS) == set(_FILLED_ROW_GATES)
+    for row, switch in CLASSIFIER_FILLED_ROWS.items():
+        # The row stands aside for that switch in the schema: the run reads the classifier's mask.
+        assert f"!{switch}" in SCHEMA[row].requires, row
+
+
+@pytest.mark.parametrize("row", sorted(_FILLED_ROW_GATES))
+def test_a_row_the_classifier_fills_stays_in_view_greyed_saying_why(row):
+    fields = {f.name: f for f in fields_for(SCHEMA)}
+    switch = CLASSIFIER_FILLED_ROWS[row]
+    values = {**_FILLED_ROW_GATES[row], "raw_image_path": "raw.tif", switch: True}
+    unmet = unmet_chain(SCHEMA, row, values)
+    assert unmet == (f"!{switch}",)
+    assert hidden_by(fields[row], unmet) == ()
+    assert fields[row].is_visible(values, unmet)  # it hid until now
+    reason = replace(fields[row], enabled_by=unmet).why_disabled(values)
+    assert reason == classifier_filled_reason(switch)
+    assert f'"{label_for(switch)}" is on' in reason and "Untick" in reason
+    # Off, the row is the user's to fill, in view and not greyed.
+    off = {**values, switch: False}
+    assert unmet_chain(SCHEMA, row, off) == () and fields[row].is_visible(off, ())
+    # Ticked with no raw image the classifier makes nothing: the row is the user's.
+    no_raw = {**values, "raw_image_path": None}
+    assert unmet_chain(SCHEMA, row, no_raw) == ()
+
+
+@pytest.mark.parametrize("row", sorted(_FILLED_ROW_GATES))
+def test_a_row_the_classifier_fills_still_hides_for_its_other_gates(row):
+    fields = {f.name: f for f in fields_for(SCHEMA)}
+    switch = CLASSIFIER_FILLED_ROWS[row]
+    values = {**_FILLED_ROW_GATES[row], "raw_image_path": "raw.tif", switch: True}
+    # ilastik segmenting the image instead hides the row as before.
+    ilastik = EXCLUSIVE_SWITCHES[switch]
+    with_ilastik = {**values, ilastik: True}
+    assert not fields[row].is_visible(with_ilastik, unmet_chain(SCHEMA, row, with_ilastik))
+    # So does a synthetic network, or the role's masks unticked.
+    synthetic = {**values, "network_source": "synthetic"}
+    assert not fields[row].is_visible(synthetic, unmet_chain(SCHEMA, row, synthetic))
+    for gate in _FILLED_ROW_GATES[row]:
+        unticked = {**values, gate: False}
+        assert not fields[row].is_visible(unticked, unmet_chain(SCHEMA, row, unticked)), gate
+
+
+def test_the_input_tab_keeps_the_segmented_image_row_while_the_classifier_segments():
+    on = {"use_pixel_classifier_segmentation": True, "raw_image_path": "raw.tif"}
+    assert "input_path" in visible_input_segmentation_settings(SCHEMA, on)
+    assert "input_path" not in visible_input_segmentation_settings(
+        SCHEMA, {**on, "use_ilastik_segmentation": True}
+    )
+    large = {
+        "automated_vessel_assignment": True, "use_large_vessel_masks": True, "raw_image_path": "raw.tif",
+        "use_pixel_classifier_large_vessel_segmentation": True,
+    }
+    shown = visible_vessel_mask_settings(SCHEMA, large)
+    assert {"large_arteriole_mask_path", "large_venule_mask_path"} <= shown
 
 
 def test_memmap_directory_row_hides_when_use_memmap_loading_is_off():

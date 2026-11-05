@@ -12,6 +12,7 @@ from haemolynx.classifier.model import FILE_KIND, PURPOSES
 from haemolynx.gui.classifier_training import (
     LABEL_COLOURS,
     PURPOSE_TITLES,
+    classifier_filled_rows,
     classifier_vessel_mask_roles,
     remap_strokes,
     result_colours,
@@ -133,3 +134,135 @@ def test_each_role_gets_the_file_its_switch_and_its_masks_ilastik_off():
 def test_the_note_names_the_sizes_filled():
     assert "large and small vessel masks" in vessel_mask_note(("large", "small"))
     assert "large vessel masks" in vessel_mask_note(("large",))
+
+
+def _record_with_counts(path, purpose, counts):
+    """A classifier file holding only its record, shown *counts* voxels of each label."""
+    record = {
+        "kind": FILE_KIND, "version": 1, "purpose": purpose, "labels": list(PURPOSES[purpose]),
+        "voxels_per_label": counts,
+    }
+    with open(path, "wb") as handle:
+        np.savez(handle, record=np.array(json.dumps(record)))
+    return path
+
+
+def _run_settings(tmp_path, **overrides):
+    from haemolynx.pipeline import default_schema
+
+    return {**default_schema().defaults(), "output_dir": tmp_path / "out",
+            "raw_image_path": tmp_path / "raw.tif", **overrides}
+
+
+def _made_by_the_run(settings):
+    """Every mask path the run's classifiers write (``stages.classifier_requests``)."""
+    from haemolynx.pipeline.stages import classifier_requests
+
+    return {path for _classifier, outputs in classifier_requests(settings) for path in outputs.values()}
+
+
+def test_the_segmented_image_row_names_the_mask_the_main_classifier_writes(tmp_path):
+    settings = _run_settings(tmp_path, use_pixel_classifier_segmentation=True,
+                             pixel_classifier_path=_record_only(tmp_path / "v.haemoclf", "vessels"))
+    filled = classifier_filled_rows(settings)
+    assert filled == {"input_path": tmp_path / "out" / "raw_segmented.tif"}
+    assert set(filled.values()) == _made_by_the_run(settings)
+    # Named by the raw image alone: before a classifier is chosen too.
+    assert classifier_filled_rows({**settings, "pixel_classifier_path": None}) == filled
+
+
+@pytest.mark.parametrize("change", [
+    {"use_pixel_classifier_segmentation": False},
+    {"raw_image_path": None},  # the classifier has nothing to segment
+    {"use_ilastik_segmentation": True},  # ilastik segments it instead
+    {"network_source": "synthetic"},
+])
+def test_no_classifier_making_the_mask_fills_nothing(tmp_path, change):
+    settings = _run_settings(tmp_path, use_pixel_classifier_segmentation=True)
+    assert classifier_filled_rows({**settings, **change}) == {}
+
+
+def test_a_combined_classifier_fills_the_large_arteriole_and_venule_rows(tmp_path):
+    path = _record_with_counts(tmp_path / "c.haemoclf", "vessels_and_classes",
+                               {"Background": 9, "Capillary": 9, "Arteriole": 9, "Venule": 9})
+    settings = _run_settings(tmp_path, use_pixel_classifier_segmentation=True, pixel_classifier_path=path,
+                             **vessel_mask_settings_for(path, classifier_vessel_mask_roles(path)))
+    filled = classifier_filled_rows(settings)
+    out = tmp_path / "out"
+    # Every vessel to the segmented image, the arterioles and venules to the large masks.
+    assert filled == {
+        "input_path": out / "raw_segmented.tif",
+        "large_arteriole_mask_path": out / "raw_large_arteriole_segmented.tif",
+        "large_venule_mask_path": out / "raw_large_venule_segmented.tif",
+    }
+    assert set(filled.values()) == _made_by_the_run(settings)
+
+
+def test_a_classifier_telling_large_from_small_fills_each_roles_rows(tmp_path):
+    path = _record_with_counts(tmp_path / "s.haemoclf", "vessels_and_sized_classes", {
+        "Background": 9, "Capillary": 9, "Large arteriole": 9, "Small arteriole": 9,
+        "Large venule": 9, "Small venule": 9,
+    })
+    settings = _run_settings(tmp_path, use_pixel_classifier_segmentation=True, pixel_classifier_path=path,
+                             **vessel_mask_settings_for(path, ("large", "small")))
+    filled = classifier_filled_rows(settings)
+    out = tmp_path / "out"
+    assert filled == {
+        "input_path": out / "raw_segmented.tif",
+        "large_arteriole_mask_path": out / "raw_large_arteriole_segmented.tif",
+        "large_venule_mask_path": out / "raw_large_venule_segmented.tif",
+        "small_arteriole_mask_path": out / "raw_small_arteriole_segmented.tif",
+        "small_venule_mask_path": out / "raw_small_venule_segmented.tif",
+    }
+    assert set(filled.values()) == _made_by_the_run(settings)
+
+
+def test_a_classifier_never_shown_a_venule_fills_the_global_mask_and_empties_the_venule_row(tmp_path):
+    from haemolynx.io.vessel_masks import vessel_masks_are_global
+
+    path = _record_with_counts(tmp_path / "s.haemoclf", "vessels_and_sized_classes", {
+        "Background": 9, "Capillary": 9, "Large arteriole": 9, "Small venule": 9,
+    })
+    settings = _run_settings(tmp_path, **vessel_mask_settings_for(path, ("large", "small")))
+    filled = classifier_filled_rows(settings)
+    out = tmp_path / "out"
+    assert filled == {
+        "large_arteriole_mask_path": out / "raw_large_global_segmented.tif",
+        "large_venule_mask_path": None,
+        "small_arteriole_mask_path": out / "raw_small_arteriole_segmented.tif",
+        "small_venule_mask_path": out / "raw_small_venule_segmented.tif",
+    }
+    assert {p for p in filled.values() if p is not None} == _made_by_the_run(settings)
+    # The rows read as the run reads the classifier: the large role global either way.
+    off = {**settings, **filled, "use_pixel_classifier_large_vessel_segmentation": False,
+           "use_pixel_classifier_small_vessel_segmentation": False}
+    assert vessel_masks_are_global(settings) and vessel_masks_are_global(off)
+
+
+@pytest.mark.parametrize("change", [
+    {"pixel_classifier_large_vessel_path": None},
+    {"pixel_classifier_large_vessel_path": "missing.haemoclf"},  # how it names its masks is unknown
+    {"use_large_vessel_masks": False},
+    {"use_ilastik_large_vessel_segmentation": True},
+    {"raw_image_path": None},
+])
+def test_a_vessel_mask_role_its_classifier_does_not_make_fills_nothing(tmp_path, change):
+    path = _record_with_counts(tmp_path / "c.haemoclf", "vessel_classes", {"Arteriole": 9, "Venule": 9})
+    settings = _run_settings(tmp_path, **vessel_mask_settings_for(path, ("large",)))
+    assert set(classifier_filled_rows(settings)) == {"large_arteriole_mask_path", "large_venule_mask_path"}
+    assert classifier_filled_rows({**settings, **change}) == {}
+
+
+def test_a_filled_row_that_does_not_exist_yet_is_not_asked_for_before_the_run(tmp_path):
+    from haemolynx.parsers.checks import check_settings
+    from haemolynx.pipeline import default_schema
+
+    path = _record_with_counts(tmp_path / "c.haemoclf", "vessels_and_classes",
+                               {"Capillary": 9, "Arteriole": 9, "Venule": 9})
+    (tmp_path / "raw.tif").write_bytes(b"")
+    settings = _run_settings(tmp_path, use_pixel_classifier_segmentation=True, pixel_classifier_path=path,
+                             **vessel_mask_settings_for(path, ("large",)))
+    settings.update(classifier_filled_rows(settings))
+    errors = " ".join(check_settings(default_schema(), settings).errors)
+    for name in ("input_path", "large_arteriole_mask_path", "large_venule_mask_path"):
+        assert name not in errors, name

@@ -119,6 +119,21 @@ EXCLUSIVE_SWITCHES: dict[str, str] = {
     one: other for pair in _EXCLUSIVE_PAIRS for one, other in (pair, pair[::-1])
 }
 
+#: The rows a classifier fills with the masks it makes from the raw image, each
+#: mapped to that classifier's switch: the segmented image (the main
+#: classifier's mask of every vessel) and each vessel-mask role's arteriole (or
+#: global) and venule masks. While the switch is on and in effect the row stays
+#: in view, greyed (:func:`classifier_filled_reason`) and filled with the path
+#: of the mask the run makes (``gui.classifier_training.classifier_filled_rows``),
+#: rather than hiding; unticked, it keeps naming that file.
+CLASSIFIER_FILLED_ROWS: dict[str, str] = {
+    "input_path": "use_pixel_classifier_segmentation",
+    "large_arteriole_mask_path": "use_pixel_classifier_large_vessel_segmentation",
+    "large_venule_mask_path": "use_pixel_classifier_large_vessel_segmentation",
+    "small_arteriole_mask_path": "use_pixel_classifier_small_vessel_segmentation",
+    "small_venule_mask_path": "use_pixel_classifier_small_vessel_segmentation",
+}
+
 HIDE_WHEN_UNMET_PARENTS = frozenset(
     {
         "smooth_centrelines",
@@ -378,6 +393,9 @@ class Field:
             if test == PREREQUISITE_OFF and name == EXCLUSIVE_SWITCHES.get(self.name):
                 exclusive = exclusive_reason(name)
                 continue
+            if test == PREREQUISITE_OFF and name == CLASSIFIER_FILLED_ROWS.get(self.name):
+                exclusive = classifier_filled_reason(name)
+                continue
             row = f'"{label_for(name)}"'
             shown = CHOICE_VALUE_LABELS.get(name, {}).get(expected, expected)
             if test == PREREQUISITE_EQUALS:
@@ -405,6 +423,15 @@ def exclusive_reason(partner: str) -> str:
     )
 
 
+def classifier_filled_reason(switch: str) -> str:
+    """The tooltip of a row greyed because the classifier *switch* makes its
+    mask from the raw image (:data:`CLASSIFIER_FILLED_ROWS`)."""
+    return (
+        f'Filled with the mask the classifier makes from the raw image while "{label_for(switch)}" '
+        "is on. Untick that to choose a file."
+    )
+
+
 def exclusive_partner_in_effect(schema: Schema, name: str, values: Mapping[str, Any]) -> str | None:
     """*name*'s other way of segmenting the same image (:data:`EXCLUSIVE_SWITCHES`)
     when it is on and in effect, so *name*'s row greys; None otherwise. A
@@ -425,13 +452,21 @@ def hidden_by(field: Field, unmet: Sequence[str]) -> tuple[str, ...]:
     those switches hide as they do under any switch that is not in effect.
     Nor the row's other way of segmenting the same image being on
     (:data:`EXCLUSIVE_SWITCHES`): greyed, the row says to untick that one.
+    Nor the classifier that makes the row's mask (:data:`CLASSIFIER_FILLED_ROWS`):
+    greyed, the row shows the file it writes.
     """
-    partner = EXCLUSIVE_SWITCHES.get(field.name)
+    standing_aside = {
+        switch
+        for switch in (EXCLUSIVE_SWITCHES.get(field.name), CLASSIFIER_FILLED_ROWS.get(field.name))
+        if switch is not None
+    }
     return tuple(
         rule
         for rule in unmet
         if not (rule in field.enabled_by and prerequisite_name(rule) in field.path_gates)
-        and not (partner is not None and parse_prerequisite(rule)[:2] == (partner, PREREQUISITE_OFF))
+        and not (
+            parse_prerequisite(rule)[1] == PREREQUISITE_OFF and prerequisite_name(rule) in standing_aside
+        )
     )
 
 

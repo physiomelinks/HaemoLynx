@@ -294,6 +294,36 @@ def vessel_mask_note(roles: Sequence[str]) -> str:
     )
 
 
+def classifier_filled_rows(values: Mapping[str, Any]) -> dict[str, Path | None]:
+    """The rows the run's classifiers fill (``form.CLASSIFIER_FILLED_ROWS``),
+    each with the mask its classifier writes from the raw image, named as the
+    run names it (:func:`row_outputs`): the segmented image while the main
+    classifier segments; each vessel-mask role's arteriole (or global) and
+    venule rows while its classifier makes that role's masks, the venule row
+    emptied for a global mask, as an empty venule row means one. A role's
+    masks are named by what its classifier was shown, so a role whose
+    classifier file is not there yet fills nothing."""
+    from haemolynx.graph.boundaries import network_is_synthetic, vessel_mask_classifier_in_use
+    from haemolynx.io.vessel_masks import VESSEL_MASK_SETTINGS
+    from haemolynx.pipeline.naming import classifier_segmented_path, classifier_segments
+
+    if network_is_synthetic(values) or values.get("raw_image_path") in (None, ""):
+        return {}
+    filled: dict[str, Path | None] = {}
+    if classifier_segments(values):
+        filled["input_path"] = classifier_segmented_path(values)
+    for role, names in VESSEL_MASK_SETTINGS.items():
+        classifier = values.get(names["classifier_path"])
+        if not vessel_mask_classifier_in_use(values, role) or classifier in (None, ""):
+            continue
+        if not Path(classifier).is_file():
+            continue
+        masks = list(row_outputs(values, names["classifier_path"], classifier).values())
+        filled[names["arteriole_mask_path"]] = masks[0]
+        filled[names["venule_mask_path"]] = masks[1] if len(masks) > 1 else None
+    return filled
+
+
 def row_outputs(values: Mapping[str, Any], row: str, classifier_path: str | Path) -> dict[str, Path]:
     """The masks a row's classifier writes, ``{mask: path}``, named as the
     run names them (``stages.classifier_requests``), so the run finds them

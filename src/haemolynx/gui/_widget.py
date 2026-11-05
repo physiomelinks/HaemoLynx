@@ -16827,6 +16827,26 @@ def settings_widget(napari_viewer=None):
         stain = values.get("raw_image_stain")
         return stain if stain in ("plasma_column", "endothelial") else stain_read["stain"]
 
+    def fill_classifier_rows(values: Mapping[str, Any]) -> None:
+        """Point each row a classifier makes the mask of at the file it writes
+        (`classifier_training.classifier_filled_rows`): the row stays in view,
+        greyed, naming it. Not while a batch is set, which fills those rows
+        image by image and leaves the panel's own as they were."""
+        from haemolynx.gui.classifier_training import classifier_filled_rows
+
+        if batch_mode.setup is not None:
+            return
+        for name, path in classifier_filled_rows(values).items():
+            if name not in rows:
+                continue
+            shown = fields[name].to_setting_value(_safe_widget_value(rows[name]))
+            if shown in (None, "") and path is None:
+                continue
+            if shown not in (None, "") and path is not None and _resolved_path(str(shown)) == _resolved_path(str(path)):
+                continue
+            rows[name].value = display_value_for(schema[name], path)
+            loaded_paths.pop(name, None)
+
     def apply_prerequisites(*_args) -> None:
         """Apply schema prerequisites: hide nested rows, grey others."""
         # Pinned before the values snapshot below, not inside the rows loop:
@@ -16837,6 +16857,8 @@ def settings_widget(napari_viewer=None):
             forced = forced_hidden_value(name, values)
             if name in rows and rows[name].value != forced:
                 rows[name].value = forced
+        values = current_values()
+        fill_classifier_rows(values)
         values = current_values()
         # The gates are judged with raw_image_stain as the run resolved it: a
         # row needing a plasma label or a wall (the FWHM and endothelial

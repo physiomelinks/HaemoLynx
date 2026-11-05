@@ -190,7 +190,7 @@ def test_saving_a_classifier_telling_large_from_small_makes_the_boundaries_masks
     for word in ("large_arteriole", "large_venule", "small_arteriole", "small_venule"):
         tifffile.imwrite(tmp_path / f"raw_{word}.tif", np.zeros((2, 4, 4), np.uint8))
     assert all(found.is_pair for found in find_vessel_masks([_raw]).values())
-    before = {name: widget._haemolynx_values()[name] for name in mask_rows}
+    rows["output_dir"].value = tmp_path / "out"
     window = widget._haemolynx_open_classifier_training("pixel_classifier_path", synchronous=True)
     window.job_box.setCurrentIndex(window.purposes.index("vessels_and_sized_classes"))
     assert window.job_box.currentText() == "Capillaries, large and small arterioles and venules"
@@ -209,9 +209,16 @@ def test_saving_a_classifier_telling_large_from_small_makes_the_boundaries_masks
                    "use_pixel_classifier_large_vessel_segmentation",
                    "use_pixel_classifier_small_vessel_segmentation"):
         assert values[switch] is True, switch
-    # The roles are made from the raw image: the search for mask files beside
-    # it left their rows as they were.
-    assert {name: values[name] for name in mask_rows} == before
+    # The roles are made from the raw image: their rows name the masks the
+    # classifier writes -- one global mask a role, as it was shown no venule --
+    # never the files the search for masks beside the image would have found.
+    out = tmp_path / "out"
+    assert _same_file(values["large_arteriole_mask_path"], out / "raw_large_global_segmented.tif")
+    assert _same_file(values["small_arteriole_mask_path"], out / "raw_small_global_segmented.tif")
+    assert values["large_venule_mask_path"] in (None, "")
+    assert values["small_venule_mask_path"] in (None, "")
+    for name in mask_rows:
+        assert not rows[name].native.isHidden() and not rows[name].enabled, name
     assert "large and small vessel masks" in widget._haemolynx_report()
     # The rows it filled are shown: their switches' chains are all on.
     for name in BOTH_ROLES:
@@ -498,3 +505,61 @@ def test_no_raw_image_says_what_to_do(make_napari_viewer):
     widget = settings_widget(napari_viewer=viewer)
     assert widget._haemolynx_open_classifier_training("pixel_classifier_path") is None
     assert "raw image" in widget._haemolynx_report()
+
+
+def _same_file(value, path) -> bool:
+    from pathlib import Path
+
+    return value not in (None, "") and Path(value).resolve() == Path(path).resolve()
+
+
+def test_the_classifier_keeps_the_segmented_image_row_in_view_naming_its_mask(panel, tmp_path):
+    from haemolynx.gui.form import classifier_filled_reason
+
+    _viewer, widget, rows, *_ = panel
+    rows["output_dir"].value = tmp_path / "out"
+    mask = tmp_path / "out" / "raw_segmented.tif"
+    rows["use_pixel_classifier_segmentation"].value = True
+    row = rows["input_path"]
+    assert not row.native.isHidden() and not row.enabled
+    assert row.tooltip == classifier_filled_reason("use_pixel_classifier_segmentation")
+    assert _same_file(widget._haemolynx_values()["input_path"], mask)
+    # The row names what the run reads while the classifier makes it.
+    rows["input_path"].value = tmp_path / "other.tif"
+    assert _same_file(widget._haemolynx_values()["input_path"], mask)
+    rows["output_dir"].value = tmp_path / "elsewhere"
+    assert _same_file(widget._haemolynx_values()["input_path"], tmp_path / "elsewhere" / "raw_segmented.tif")
+    # Unticked, the row is the user's again, still naming the classifier's mask.
+    rows["use_pixel_classifier_segmentation"].value = False
+    assert not row.native.isHidden() and row.enabled
+    assert _same_file(widget._haemolynx_values()["input_path"], tmp_path / "elsewhere" / "raw_segmented.tif")
+    # ilastik segmenting the image hides it, as before.
+    rows["use_ilastik_segmentation"].value = True
+    assert row.native.isHidden()
+
+
+def test_a_combined_classifier_fills_the_vessel_mask_rows_with_its_masks(panel, tmp_path):
+    from test_gui_classifier_training import _record_with_counts
+
+    _viewer, widget, rows, *_ = panel
+    rows["output_dir"].value = tmp_path / "out"
+    path = _record_with_counts(tmp_path / "c.haemoclf", "vessels_and_classes",
+                               {"Background": 9, "Capillary": 9, "Arteriole": 9, "Venule": 9})
+    rows["use_pixel_classifier_segmentation"].value = True
+    rows["pixel_classifier_path"].value = path
+    values = widget._haemolynx_values()
+    out = tmp_path / "out"
+    expected = {
+        "input_path": out / "raw_segmented.tif",
+        "large_arteriole_mask_path": out / "raw_large_arteriole_segmented.tif",
+        "large_venule_mask_path": out / "raw_large_venule_segmented.tif",
+    }
+    for name, mask in expected.items():
+        assert _same_file(values[name], mask), name
+        assert not rows[name].native.isHidden() and not rows[name].enabled, name
+    # A classifier never shown a venule makes one global mask: the venule row is emptied.
+    _record_with_counts(path, "vessels_and_classes", {"Background": 9, "Capillary": 9, "Arteriole": 9})
+    rows["output_dir"].value = tmp_path / "out2"
+    values = widget._haemolynx_values()
+    assert _same_file(values["large_arteriole_mask_path"], tmp_path / "out2" / "raw_large_global_segmented.tif")
+    assert values["large_venule_mask_path"] in (None, "")
