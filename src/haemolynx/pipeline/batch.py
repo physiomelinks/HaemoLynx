@@ -593,7 +593,11 @@ def classifier_output_paths(settings: Mapping[str, Any]) -> list[Path]:
     its record beside it (``stages.classifier_requests``): the main image's,
     each vessel-mask role's (arteriole and venule, or one global mask for a
     classifier never shown a venule), and each pericyte, block, cell or
-    3D-distance vessel mask something reads."""
+    3D-distance vessel mask something reads -- and what is written on the
+    way: the mask's ``.part`` file and its slabs (``classifier.slabs``),
+    whose paths are the longest."""
+    from haemolynx.classifier.apply import _partial
+    from haemolynx.classifier.slabs import slab_paths
     from haemolynx.io.ilastik import sidecar_path
     from haemolynx.pipeline.stages import classifier_requests
 
@@ -601,7 +605,7 @@ def classifier_output_paths(settings: Mapping[str, Any]) -> list[Path]:
     for _classifier, outputs in classifier_requests(settings):
         for output in outputs.values():
             mask = Path(os.path.abspath(output))
-            files.extend((mask, sidecar_path(mask)))
+            files.extend((mask, sidecar_path(mask), _partial(mask), *slab_paths(mask)))
     return files
 
 

@@ -11546,9 +11546,7 @@ class _ClassifierTrainingWindow:
                 self._say(str(error) or type(error).__name__)
 
         def done(outputs) -> None:
-            import tifffile
-
-            from haemolynx.classifier.lazy import LazyTiffChannel
+            from haemolynx.classifier.apply import read_written_mask
 
             self._segmenting_ended()
             self.loaded = self.live.classifier
@@ -11559,9 +11557,13 @@ class _ClassifierTrainingWindow:
             if self.sparse and self.viewer.dims.ndisplay == 3:
                 self.viewer.dims.ndisplay = 2  # a lazily read mask added in 3D is read whole
             for mask, output in outputs.items():
-                data = LazyTiffChannel(output) if self.sparse else tifffile.imread(output)
-                if getattr(data, "ndim", 3) == 2:
-                    data = data[np.newaxis]
+                # Stored in the raw file's own axis order: read back in it, so
+                # it lies over the image layer (canonical z, y, x).
+                data = read_written_mask(
+                    output, self.axis_order, self.live.shape, lazy=self.sparse,
+                    use_memmap=bool(values.get("use_memmap_loading")),
+                    memmap_directory=values.get("memmap_directory"),
+                )
                 layer = self._labels_layer(
                     data, SEGMENTATION_LAYER, mask_colours(mask), scale,
                     name=f"{layer_name(SEGMENTATION_LAYER, self.row)} {mask}",

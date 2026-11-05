@@ -281,6 +281,47 @@ def test_a_bridge_ending_at_a_boundary_node_stays():
     assert len(_bridges(G)) == 1
 
 
+def _bifurcation() -> nx.MultiGraph:
+    """Parent 0-1 along x, 10 um wide; daughters 1-2 (6 um) and 1-3 (7 um)."""
+    G = nx.MultiGraph()
+    for node, pos in {0: (0.0, 0.0, -20.0), 1: (0.0, 0.0, 0.0), 2: (0.0, 20.0, 20.0),
+                      3: (0.0, -20.0, 20.0)}.items():
+        G.add_node(node, pos=pos)
+    _vessel(G, 0, 1, PARENT_UM)
+    _vessel(G, 1, 2, 6.0)
+    _vessel(G, 1, 3, 7.0)
+    return G
+
+
+def test_a_bridge_kept_at_a_boundary_node_leaves_the_vessels_beside_it_bridged_again():
+    G = _bifurcation()
+    insert_junction_bridges(G)
+    first = sorted((round(d["length"], 9), tuple(map(tuple, d["voxels"]))) for *_e, d in _bridges(G))
+    # The end of the bridge into daughter 1-3 has since become a boundary node.
+    (kept,) = [n for n, data in G.nodes(data=True)
+               if data.get(JUNCTION_BRIDGE_END) and any(b == 3 for _a, b in G.edges(n))]
+
+    rebridge_junctions(G, [1], keep={kept})
+
+    # Daughter 1-2 is bridged again beside the kept bridge, as on the first run.
+    assert len(_bridges(G)) == 2
+    assert sorted((round(d["length"], 9), tuple(map(tuple, d["voxels"]))) for *_e, d in _bridges(G)) == first
+
+
+def test_new_node_ids_are_found_once_however_many_bridges_are_drawn(monkeypatch):
+    from haemolynx.graph import junction_bridges as module
+
+    calls = []
+    original = module.next_node_id
+    monkeypatch.setattr(module, "next_node_id", lambda G, reserved: calls.append(1) or original(G, reserved))
+    G = _loop()
+
+    insert_junction_bridges(G)
+
+    assert len(calls) == 1
+    assert sorted(n for n, data in G.nodes(data=True) if data.get(JUNCTION_BRIDGE_END)) == [4, 5]
+
+
 def test_a_bridge_whose_vessel_an_edit_took_goes_with_it():
     G = _tee()
     insert_junction_bridges(G)

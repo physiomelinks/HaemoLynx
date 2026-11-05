@@ -233,3 +233,30 @@ def test_a_templated_name_matches_only_what_it_lists():
         ["mean_transit_time_s_baseline", "capillary_red_cell_flux_cv_blocked",
          "total_inflow_percent_change_draws_high", "mean_transit_time_s_after"],
     ) == ["mean_transit_time_s_after"]
+
+
+def test_the_classifiers_masks_and_their_records_are_documented(tmp_path):
+    """Every file the pixel classifier writes is on the page, and every key of
+    the record beside a mask is documented (a coarser grid's too)."""
+    import json
+
+    pytest.importorskip("sklearn")
+    from haemolynx.classifier import save_classifier, segment_with_classifier
+    from haemolynx.io.ilastik import sidecar_path
+
+    from test_pixel_classifier import trained_classifier, tube_volume, write_raw
+
+    names = {item.name for item in FILES}
+    assert {
+        "{raw}_segmented.tif",
+        "{raw}_{large|small}_{arteriole|venule|global}_segmented.tif",
+        "{raw}_{pericytes|blocks|cells|vessels_3d}_segmented.tif",
+        "<classifier mask>.slabs",
+    } <= names
+    volume, truth = tube_volume()
+    raw = write_raw(tmp_path / "raw.tif", volume)
+    path = save_classifier(trained_classifier(volume, truth), tmp_path / "v.haemoclf")
+    mask = segment_with_classifier(raw, path, {"Vessel": tmp_path / "raw_segmented.tif"}, downsample="2x")["Vessel"]
+    record = json.loads(sidecar_path(mask).read_text(encoding="utf-8"))
+    assert "grid" in record
+    assert undocumented("<classifier mask>.haemolynx.json", sorted(record)) == []

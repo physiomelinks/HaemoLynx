@@ -27,7 +27,7 @@ from typing import Iterator, Sequence
 
 import numpy as np
 
-__all__ = ["SLAB_FOLDER_SUFFIX", "SlabStore", "full_size_planes", "slab_folder"]
+__all__ = ["SLAB_FOLDER_SUFFIX", "SlabStore", "full_size_planes", "slab_folder", "slab_paths"]
 
 #: The folder beside an output its slabs are kept in.
 SLAB_FOLDER_SUFFIX = ".slabs"
@@ -58,6 +58,13 @@ def full_size_planes(
 
 def _slab_name(z0: int, z1: int) -> str:
     return f"{z0:07d}-{z1:07d}{_SLAB_SUFFIX}"
+
+
+def slab_paths(output: str | Path) -> list[Path]:
+    """The files a store for *output* writes, as long as any it writes (a
+    slab's ``.part`` file, its record): what an output path check must see."""
+    folder = slab_folder(output)
+    return [folder / (_slab_name(0, 0) + ".part"), folder / RECORD_NAME]
 
 
 def _slab_planes(name: str) -> tuple[int, int] | None:

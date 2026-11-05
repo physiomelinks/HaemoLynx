@@ -62,14 +62,14 @@ def _axis_keys(axistags) -> str:
 
 
 def ilastik_label_names(project: str | Path) -> tuple[str, ...]:
-    """The project's label names, in ilastik's order (label 1 first)."""
-    import h5py
+    """The project's label names, in ilastik's order (label 1 first), as the
+    run reads them (``io.ilastik.ilastik_label_names``)."""
+    from haemolynx.io.ilastik import ilastik_label_names as read_label_names
 
-    with h5py.File(str(project), "r") as f:
-        names = f.get("PixelClassification/LabelNames")
-        if names is None:
-            raise ValueError(f"{Path(project).name} is not an ilastik Pixel Classification project with labels.")
-        return tuple(_text(name) for name in names[()])
+    names = read_label_names(project)
+    if names is None:
+        raise ValueError(f"{Path(project).name} is not an ilastik Pixel Classification project with labels.")
+    return tuple(names)
 
 
 def ilastik_images(project: str | Path) -> list[IlastikImage]:
@@ -199,19 +199,19 @@ def default_label_mapping(
     same name, else -- for a classifier of the background and one other
     label, given the ilastik label that is vessel (*vessel_label*, a name or
     number, as ``ilastik_vessel_label`` holds it) -- that one for it and the
-    background for the rest; None for one left to choose."""
+    background for the rest; None for one left to choose. The vessel label
+    is read as the run reads it (``io.ilastik.resolve_vessel_label``)."""
+    from haemolynx.io.ilastik import resolve_vessel_label
+
     by_name = {_normalised(label): label for label in labels}
     mapping: dict[int, str | None] = {
         number: by_name.get(_normalised(name)) for number, name in enumerate(names, start=1)
     }
     if vessel_label not in (None, "") and len(labels) == 2 and None in mapping.values():
-        number = None
-        text = str(vessel_label).strip()
-        for index, name in enumerate(names, start=1):
-            if name == text:
-                number = index
-        if number is None and text.isdigit():
-            number = int(text)
+        try:
+            number = resolve_vessel_label(vessel_label, list(names))
+        except ValueError:
+            number = None
         if number in mapping:
             for index in mapping:
                 if mapping[index] is None:

@@ -29,7 +29,7 @@ import threading
 import time
 from collections import deque
 from pathlib import Path
-from typing import Callable, Optional, Sequence
+from typing import Callable, Mapping, Optional, Sequence
 
 import numpy as np
 
@@ -347,11 +347,39 @@ def ilastik_provenance(
     return record
 
 
+#: Why an ilastik output is not current, per provenance field that differs,
+#: in the order they are compared.
+_PROVENANCE_REASONS = {
+    "version": "it was recorded by another version of HaemoLynx",
+    "export_source": "it is another kind of ilastik export",
+    "project_sha256": "the ilastik project is not the one it was made with",
+    "input": "the input image, or the channels read of it, has changed",
+    "vessel_label": "it was binarised at another vessel label",
+}
+
+
 def ilastik_output_is_current(output_path: str | Path, provenance: dict) -> tuple[bool, str]:
     """Whether the output at *output_path* was made as *provenance* says this
     run would make it, and why not: its sidecar must record the same project,
     input, export and vessel label, and the output must be the file the
     sidecar was written for (unchanged in size and time since)."""
+    return recorded_output_is_current(
+        output_path,
+        provenance,
+        {key: _PROVENANCE_REASONS[key] for key in _PROVENANCE_KEYS},
+        no_record="it was made before HaemoLynx recorded that, or by hand",
+    )
+
+
+def recorded_output_is_current(
+    output_path: str | Path, provenance: dict, reasons: Mapping[str, str], *, no_record: str | None = None
+) -> tuple[bool, str]:
+    """Whether the output at *output_path* was made as *provenance* says, by
+    the record beside it (:func:`sidecar_path`), and why not: each field of
+    *reasons* the same in both (its reason when not, compared in order), and
+    the output the file the record was written for (unchanged in size and
+    time since). *no_record* says why an output may have none. The one rule
+    ilastik's outputs and the HaemoLynx classifier's are reused by."""
     output_path = Path(output_path)
     if not output_path.is_file():
         return False, "there is no output yet"
@@ -359,24 +387,14 @@ def ilastik_output_is_current(output_path: str | Path, provenance: dict) -> tupl
     try:
         recorded = json.loads(sidecar.read_text(encoding="utf-8"))
     except FileNotFoundError:
-        return False, (
-            f"it has no {sidecar.name} saying how it was made (it was made before "
-            "HaemoLynx recorded that, or by hand)"
-        )
+        return False, f"it has no {sidecar.name} saying how it was made" + (f" ({no_record})" if no_record else "")
     except (OSError, ValueError):
         return False, f"its record {sidecar.name} cannot be read"
     if not isinstance(recorded, dict):
         return False, f"its record {sidecar.name} cannot be read"
-    reasons = {
-        "version": "it was recorded by another version of HaemoLynx",
-        "export_source": "it is another kind of ilastik export",
-        "project_sha256": "the ilastik project is not the one it was made with",
-        "input": "the input image, or the channels read of it, has changed",
-        "vessel_label": "it was binarised at another vessel label",
-    }
-    for key in _PROVENANCE_KEYS:
+    for key, reason in reasons.items():
         if recorded.get(key) != provenance.get(key):
-            return False, reasons[key]
+            return False, reason
     output = recorded.get("output")
     stat = output_path.stat()
     if not isinstance(output, dict) or (output.get("size"), output.get("mtime_ns")) != (

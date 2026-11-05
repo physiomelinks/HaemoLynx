@@ -398,3 +398,19 @@ def test_a_full_runs_slow_checks_are_the_quality_score_and_a_template():
     # A run from a tab checks where it is called: its caller expects it started.
     assert not slow_checks({"network_source": "synthetic"}, "assign_diameters")
     assert not slow_checks({})
+
+
+def test_a_full_run_with_a_pixel_classifier_checks_off_the_panels_thread():
+    """Whether the raw image is like the classifier's training images is read
+    from planes of it: slow on a large image, so not on the panel's thread."""
+    from haemolynx.gui.run_state import slow_checks
+
+    classifier = {
+        "network_source": "segmented_image", "raw_image_path": "raw.tif",
+        "use_pixel_classifier_segmentation": True, "pixel_classifier_path": "v.haemoclf",
+    }
+    assert slow_checks(classifier)
+    # Not without a raw image for it to segment, nor with ilastik segmenting.
+    assert not slow_checks({**classifier, "raw_image_path": None})
+    assert not slow_checks({**classifier, "use_ilastik_segmentation": True})
+    assert not slow_checks(classifier, "assign_diameters")

@@ -187,6 +187,27 @@ def test_roles_the_classifier_makes_are_not_matched_as_files(tmp_path, image):
     assert {"raw_segmented.tif", "raw_large_arteriole_segmented.tif", "raw_large_venule_segmented.tif"} <= names
 
 
+def test_the_output_path_check_sees_the_slabs_and_part_files_the_classifier_writes(tmp_path, image):
+    """The slab files beside a mask are its longest paths: the Windows limit
+    must be checked on them, not on the mask alone."""
+    import os
+
+    from haemolynx.classifier.slabs import slab_folder
+    from haemolynx.pipeline.batch import classifier_output_paths
+
+    volume, truth, raw = image
+    classifier = classifier_file(tmp_path / "v.haemoclf", volume, truth)
+    settings = settings_for(
+        tmp_path, raw_image_path=raw, use_pixel_classifier_segmentation=True, pixel_classifier_path=classifier,
+    )
+    listed = classifier_output_paths(settings)
+    mask = Path(os.path.abspath(classifier_segmented_path(settings)))
+    assert mask.with_name("raw_segmented.part.tif") in listed
+    # As long as any slab a store writes: seven digits a plane, and .part.
+    written = slab_folder(mask) / "0000000-0000016.tif.part"
+    assert max(len(str(path)) for path in listed if path.parent == slab_folder(mask)) == len(str(written))
+
+
 # ------------------------------------------------ pericyte and block masks
 
 

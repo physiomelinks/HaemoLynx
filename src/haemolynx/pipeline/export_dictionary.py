@@ -347,6 +347,62 @@ FILES: tuple[OutputFile, ...] = (
             ),
         ),
     ),
+    # -- masks the HaemoLynx classifier makes ---------------------------------
+    OutputFile(
+        "{raw}_segmented.tif", _RUN,
+        "The vessel mask the HaemoLynx pixel classifier made from the raw image (with "
+        "use_pixel_classifier_segmentation), `{raw}` the raw image's file name without its "
+        "suffix: the run's segmented image, so its stem is the run's. A compressed 0/1 TIFF, 1 "
+        "on vessel, stored in the raw file's own axis order with its voxel size.",
+    ),
+    OutputFile(
+        "{raw}_{large|small}_{arteriole|venule|global}_segmented.tif", _RUN,
+        "A vessel-mask role's masks the classifier made from the raw image (with "
+        "use_pixel_classifier_large_vessel_segmentation or "
+        "use_pixel_classifier_small_vessel_segmentation): arteriole and venule, or one global "
+        "mask of every vessel of that size from a classifier never shown a venule. 0/1, as the "
+        "vessel mask.",
+    ),
+    OutputFile(
+        "{raw}_{pericytes|blocks|cells|vessels_3d}_segmented.tif", _RUN,
+        "A mask the classifier made from the raw image for what reads it, while something does: "
+        "the pericytes (the pericyte measurements, mask-placed pericytes), the capillary blocks "
+        "(a capillary_block_mask perturbation), the cells and the vessels of the 3D distances. "
+        "0/1, as the vessel mask; each blob of a pericyte, block or cell mask is one object.",
+    ),
+    OutputFile(
+        "<classifier mask>.haemolynx.json", _RUN,
+        "Beside each mask the classifier made: how it was made. A later run uses the mask again "
+        "only while every key down to grid is what that run would record, and the mask is the "
+        "file the record was written for.",
+        (
+            _c("version", "-", "The record's layout."),
+            _c("source", "-", "What made the mask: the HaemoLynx pixel classifier."),
+            _c("classifier_sha256", "-", "The SHA-256 of the classifier file (.haemoclf) that made it."),
+            _c(
+                "input", "-",
+                "The raw image it was made from: its path, size, modification time and a sample of "
+                "its bytes, and the channels read of it (null: a one-channel file).",
+            ),
+            _c("label", "-", "The mask it is (Vessel, Arteriole, Large venule, Pericyte, ...)."),
+            _c("voxel_size_zyx", "um", "The raw image's voxel size as the run read it, (z, y, x)."),
+            _c("axis_order", "-", "The order the raw file was read in, and the mask is stored in."),
+            _c("grid", "-", "The coarser grid it was classified on, per (z, y, x) axis; absent for none."),
+            _c("classifier", "-", "Where the classifier file was, for the reader (not compared)."),
+            _c(
+                "output", "-",
+                "The mask as written: its size (bytes) and modification time, its vessel voxels and "
+                "all its voxels.",
+            ),
+        ),
+    ),
+    OutputFile(
+        "<classifier mask>.slabs", _RUN,
+        "A folder beside each mask while the classifier makes it: its finished slabs of planes, "
+        "one compressed 0/1 TIFF each, named by the planes it holds (`0000000-0000064.tif`), "
+        "and `record.json`, the mask's record. A segmentation stopped part-way is taken up from "
+        "them; the folder goes once the mask is whole.",
+    ),
     # -- statistics ---------------------------------------------------------
     OutputFile(
         "{stem}_statistics.csv", _RUN,

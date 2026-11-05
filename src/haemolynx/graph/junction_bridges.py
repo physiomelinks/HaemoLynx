@@ -23,6 +23,7 @@ vessel back whole.
 from __future__ import annotations
 
 from collections import Counter
+from itertools import count
 from typing import Any, Iterable, Mapping
 
 import networkx as nx
@@ -152,7 +153,9 @@ def insert_junction_bridges(G: nx.MultiGraph, *, nodes: Iterable[Any] | None = N
     """Bridge, in place, each vessel narrower than :data:`NARROWER_THAN` of
     the widest vessel at a junction, as far along it from the junction as
     that vessel's radius, at each junction of *nodes* (default every node)
-    that no bridge meets and no thick vessel's lumen holds.
+    that no other bridge meets (into a thick vessel, or made by hand) and no
+    thick vessel's lumen holds. A junction bridge already there (one
+    :func:`remove_junction_bridges` kept) stays, and is not judged again.
 
     Widths are each vessel's ``diameter_um``; a junction where a vessel has
     none is left as it is. A vessel the bridges at its ends would leave
@@ -171,8 +174,13 @@ def insert_junction_bridges(G: nx.MultiGraph, *, nodes: Iterable[Any] | None = N
         if G.degree(junction) < 3:
             continue
         incident = list(G.edges(junction, keys=True, data=True))
-        if any(data.get(IS_ZERO_RESISTANCE) for *_edge, data in incident):
+        if any(data.get(IS_ZERO_RESISTANCE) and not data.get(JUNCTION_BRIDGE) for *_edge, data in incident):
             counts["junctions_at_bridges"] += 1
+            continue
+        # A junction bridge kept here (its end a boundary node) stays as it
+        # is; the vessels beside it are judged as ever.
+        incident = [edge for edge in incident if not edge[3].get(JUNCTION_BRIDGE)]
+        if len(incident) < 2:
             continue
         if thick.holds(G.nodes[junction].get("pos")):
             counts["junctions_in_thick_vessels"] += 1
@@ -188,7 +196,9 @@ def insert_junction_bridges(G: nx.MultiGraph, *, nodes: Iterable[Any] | None = N
             elif other != junction and width < NARROWER_THAN * widest:
                 wanted.setdefault(edge_id(junction, other, key), {})[junction] = widest
 
-    reserved: set[Any] = set()
+    # New ids counted on from the largest, found once: each bridge end
+    # searching every node for it made drawing them quadratic.
+    new_ids = count(next_node_id(G, set()))
     bridged_at: set[Any] = set()
     for (u, v, key), widest_at in wanted.items():
         data = G.edges[u, v, key]
@@ -201,8 +211,7 @@ def insert_junction_bridges(G: nx.MultiGraph, *, nodes: Iterable[Any] | None = N
             continue
 
         def end_node(s: float) -> Any:
-            node = next_node_id(G, reserved)
-            reserved.add(node)
+            node = next(new_ids)
             G.add_node(node, pos=tuple(float(c) for c in _point_at(path, along, s)), **{JUNCTION_BRIDGE_END: True})
             return node
 

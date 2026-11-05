@@ -337,6 +337,29 @@ def test_the_raw_image_is_segmented_into_a_mask_with_its_record(tmp_path, caplog
     assert output.stat().st_mtime_ns == stamp and "Reusing the segmentation of raw.tif" in caplog.text
 
 
+def test_a_segmentation_found_current_reads_none_of_the_raw_images_voxels(tmp_path, monkeypatch):
+    """Every run, and every Regenerate, asks again for masks the pass already
+    made: their records and the raw file's header say so, not its voxels."""
+    from haemolynx.classifier import apply as apply_module
+
+    volume, truth = tube_volume()
+    classifier_path = save_classifier(trained_classifier(volume, truth), tmp_path / "v.haemoclf")
+    raw = write_raw(tmp_path / "raw.tif", volume)
+    output = tmp_path / "raw_segmented.tif"
+    segment_with_classifier(raw, classifier_path, {"Vessel": output})
+
+    def read(*_args, **_kwargs):
+        raise AssertionError("the raw image was read")
+
+    monkeypatch.setattr(apply_module, "read_raw_channels", read)
+    assert segment_with_classifier(raw, classifier_path, {"Vessel": output}) == {"Vessel": output}
+    # A mask not made yet, or reuse off, still reads it.
+    with pytest.raises(AssertionError, match="was read"):
+        segment_with_classifier(raw, classifier_path, {"Vessel": tmp_path / "other.tif"})
+    with pytest.raises(AssertionError, match="was read"):
+        segment_with_classifier(raw, classifier_path, {"Vessel": output}, reuse_existing=False)
+
+
 def test_another_classifier_segments_again(tmp_path):
     volume, truth = tube_volume()
     first = save_classifier(trained_classifier(volume, truth), tmp_path / "a.haemoclf")
@@ -375,6 +398,27 @@ def test_a_raw_image_stored_x_first_gets_its_mask_stored_x_first(tmp_path):
     a = segment_with_classifier(raw, classifier_path, {"Vessel": tmp_path / "a.tif"}, axis_order="xyz")
     b = segment_with_classifier(zyx, classifier_path, {"Vessel": tmp_path / "b.tif"})
     assert np.array_equal(np.transpose(tifffile.imread(a["Vessel"]), (2, 1, 0)), tifffile.imread(b["Vessel"]))
+
+
+def test_a_mask_stored_x_first_is_read_back_over_the_canonical_image(tmp_path):
+    """What the training window draws over the image: the mask read back in
+    canonical (z, y, x), whichever order it was stored in, lazily or not."""
+    from haemolynx.classifier.apply import read_written_mask
+
+    volume, truth = tube_volume()
+    classifier_path = save_classifier(trained_classifier(volume, truth), tmp_path / "v.haemoclf")
+    stored = np.ascontiguousarray(np.transpose(volume, (2, 1, 0)))
+    raw = write_raw(tmp_path / "raw.tif", stored, voxel_zyx=(VOXEL[2], VOXEL[1], VOXEL[0]))
+    zyx = write_raw(tmp_path / "zyx.tif", volume)
+    a = segment_with_classifier(raw, classifier_path, {"Vessel": tmp_path / "a.tif"}, axis_order="xyz")["Vessel"]
+    b = segment_with_classifier(zyx, classifier_path, {"Vessel": tmp_path / "b.tif"})["Vessel"]
+    expected = tifffile.imread(b)
+    for lazy in (False, True):
+        read = read_written_mask(a, "xyz", volume.shape, lazy=lazy)
+        assert tuple(read.shape) == volume.shape
+        assert np.array_equal(np.asarray(read[:]), expected)
+        read = read_written_mask(b, "zyx", volume.shape, lazy=lazy)
+        assert np.array_equal(np.asarray(read[:]), expected)
 
 
 def test_a_composites_channels_are_read_by_number(tmp_path):

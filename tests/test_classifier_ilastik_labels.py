@@ -117,8 +117,10 @@ def test_labels_named_alike_map_by_name():
     assert default_label_mapping(["Label 1", "Label 2"], labels) == {1: None, 2: None}
 
 
-@pytest.mark.parametrize("vessel_label", [2, "2", "Label 2"])
+@pytest.mark.parametrize("vessel_label", [2, "2", "Label 2", "label 2"])
 def test_unnamed_labels_follow_the_runs_ilastik_vessel_label(vessel_label):
+    """Read as the run reads it (``io.ilastik.resolve_vessel_label``): a name
+    in another case names the label a run binarises at."""
     assert default_label_mapping(["Label 1", "Label 2"], ("Background", "Vessel"), vessel_label=vessel_label) == {
         1: "Background", 2: "Vessel",
     }

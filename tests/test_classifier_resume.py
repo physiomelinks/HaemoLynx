@@ -228,3 +228,99 @@ def test_the_segment_stage_fills_its_step_bar_and_says_the_time_left(image, tmp_
     display = ProgressDisplay()
     display.update(steps[-2])
     assert display.steps.total == steps[-2].step_total and display.steps.value == steps[-2].step_total
+
+
+# ------------------------------------------------------ writing the masks
+
+
+def _within(seconds: float, call):
+    """What *call* returned or raised, failing the test if it is still
+    running after *seconds* (a hang, not an answer)."""
+    import threading
+
+    result: dict = {}
+
+    def run():
+        try:
+            result["value"] = call()
+        except BaseException as error:  # noqa: BLE001 - handed to the test
+            result["error"] = error
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    thread.join(seconds)
+    assert not thread.is_alive(), f"still running after {seconds} s"
+    return result
+
+
+def test_a_mask_writer_stopped_part_way_returns_and_leaves_no_part_file(tmp_path):
+    from haemolynx.classifier.apply import RawChannels, _MaskWriter
+
+    raw = RawChannels(path=tmp_path / "raw.tif", volumes=(np.zeros((3, 4, 4), np.uint8),),
+                      voxel_size_zyx=(1.0, 1.0, 1.0), axis_order="zyx", file_spacing=(1.0, 1.0, 1.0))
+    writer = _MaskWriter(tmp_path / "m.tif", raw)
+    writer.put(np.ones((1, 4, 4), np.uint8))
+
+    assert "error" not in _within(20, writer.abort)
+    assert not writer.partial.exists() and not (tmp_path / "m.tif").exists()
+
+
+def test_a_slab_unreadable_while_its_mask_is_put_together_raises_rather_than_hangs(image, tmp_path, monkeypatch):
+    _volume, _truth, raw, path = image
+    original = SlabStore.planes
+
+    def planes(store):
+        for index, plane in enumerate(original(store)):
+            if index == 1:
+                raise OSError("a slab cannot be read")
+            yield plane
+
+    monkeypatch.setattr(SlabStore, "planes", planes)
+    out = tmp_path / "out.tif"
+
+    result = _within(120, lambda: _segment(raw, path, {"Vessel": out}))
+
+    assert isinstance(result.get("error"), OSError)
+    assert not out.exists() and not out.with_name("out.part.tif").exists()
+
+
+def test_a_mask_found_nowhere_goes_and_the_masks_of_its_pass_are_kept(image, tmp_path, monkeypatch):
+    from haemolynx.classifier import classifier_output_current, segment_with_classifiers
+
+    _volume, _truth, raw, path = image
+    found, empty = tmp_path / "found.tif", tmp_path / "empty.tif"
+    original = apply_module._assemble
+
+    def assemble(store, raw_channels, depth):
+        made = original(store, raw_channels, depth)
+        return 0 if store.output == empty else made  # this one found nothing
+
+    monkeypatch.setattr(apply_module, "_assemble", assemble)
+    with pytest.raises(ValueError, match="found nothing for empty.tif"):
+        segment_with_classifiers(raw, [(path, {"Vessel": found}), (path, {"Vessel": empty})], workers=1)
+
+    assert not empty.exists() and not slab_folder(empty).exists()
+    # The other mask of the pass is whole, recorded, and used again.
+    assert found.exists() and not slab_folder(found).exists()
+    assert classifier_output_current(raw, path, {"Vessel": found}) == (True, "")
+
+
+def test_a_coarser_grid_keeps_its_decoded_pages_within_the_low_ram_budget(image, tmp_path, monkeypatch):
+    from haemolynx.classifier.lazy import PAGE_CACHE_BYTES, BlockMeanVolume, LazyTiffChannel
+
+    _volume, _truth, raw, path = image
+    seen: list = []
+
+    def capture(volumes, *_args, **_kwargs):
+        seen.extend(volumes)
+        raise Stop()
+
+    monkeypatch.setattr(apply_module, "classify_slabs", capture)
+    with pytest.raises(Stop):
+        _segment(raw, path, {"Vessel": tmp_path / "m.tif"}, downsample="2x", use_memmap=True,
+                 memmap_directory=tmp_path / "scratch")
+
+    (grid,) = seen
+    assert isinstance(grid, BlockMeanVolume) and isinstance(grid.volume, LazyTiffChannel)
+    # Budgeted as the slab's pages with their margin, not left at the default.
+    assert 2 * grid.volume._plane_bytes <= grid.volume.cache_bytes < PAGE_CACHE_BYTES

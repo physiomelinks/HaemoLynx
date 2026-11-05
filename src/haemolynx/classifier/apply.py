@@ -64,6 +64,18 @@ _PROVENANCE_KEYS = (
     "version", "source", "classifier_sha256", "input", "label", "voxel_size_zyx", "axis_order", "grid",
 )
 
+#: Why an output is not current, per field of its record that differs.
+_PROVENANCE_REASONS = {
+    "version": "it was recorded by another version of HaemoLynx",
+    "source": "it was not made by a HaemoLynx classifier",
+    "classifier_sha256": "the classifier is not the one it was made with",
+    "input": "the raw image, or the channels read of it, has changed",
+    "label": "it is another label's mask",
+    "voxel_size_zyx": "the raw image's voxel size has changed",
+    "axis_order": "the raw image is read in another axis order",
+    "grid": "it was classified on another grid",
+}
+
 #: About how much memory one box being worked on takes, per padded voxel and
 #: per feature of a core voxel (bytes): the scaled channels and a scale's
 #: smoothed image and derivatives, then the features and the forest's walk.
@@ -437,11 +449,18 @@ def _run_tile(state: _Pass, region: tuple, cores: list) -> dict[str, np.ndarray]
 _WORKER_PASS: list = []
 
 
+def _page_reader(volume):
+    """The reader keeping *volume*'s decoded pages (a lazily read channel,
+    or the one a block-mean view reads through); None for an array."""
+    reader = volume
+    while reader is not None and not hasattr(reader, "cache_bytes"):
+        reader = getattr(reader, "volume", None)
+    return reader
+
+
 def _start_worker(state: _Pass) -> None:
     for volume in state.volumes:
-        reader = volume
-        while reader is not None and not hasattr(reader, "cache_bytes"):
-            reader = getattr(reader, "volume", None)
+        reader = _page_reader(volume)
         if reader is not None:
             reader.cache_bytes = max(reader.cache_bytes // max(state.share, 1), 2 * getattr(reader, "_plane_bytes", 0))
     _WORKER_PASS[:] = [state]
@@ -734,42 +753,11 @@ def classifier_provenance(
 
 def classifier_output_is_current(output_path: str | Path, provenance: dict) -> tuple[bool, str]:
     """Whether the output at *output_path* was made as *provenance* says
-    this run would make it, and why not."""
-    from haemolynx.io.ilastik import sidecar_path
+    this run would make it, and why not: the rule ilastik's outputs are
+    reused by (``io.ilastik.recorded_output_is_current``), on this record."""
+    from haemolynx.io.ilastik import recorded_output_is_current
 
-    output_path = Path(output_path)
-    if not output_path.is_file():
-        return False, "there is no output yet"
-    sidecar = sidecar_path(output_path)
-    try:
-        recorded = json.loads(sidecar.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        return False, f"it has no {sidecar.name} saying how it was made"
-    except (OSError, ValueError):
-        return False, f"its record {sidecar.name} cannot be read"
-    if not isinstance(recorded, dict):
-        return False, f"its record {sidecar.name} cannot be read"
-    reasons = {
-        "version": "it was recorded by another version of HaemoLynx",
-        "source": "it was not made by a HaemoLynx classifier",
-        "classifier_sha256": "the classifier is not the one it was made with",
-        "input": "the raw image, or the channels read of it, has changed",
-        "label": "it is another label's mask",
-        "voxel_size_zyx": "the raw image's voxel size has changed",
-        "axis_order": "the raw image is read in another axis order",
-        "grid": "it was classified on another grid",
-    }
-    for key in _PROVENANCE_KEYS:
-        if recorded.get(key) != provenance.get(key):
-            return False, reasons[key]
-    output = recorded.get("output")
-    stat = output_path.stat()
-    if not isinstance(output, dict) or (output.get("size"), output.get("mtime_ns")) != (
-        stat.st_size,
-        stat.st_mtime_ns,
-    ):
-        return False, "the output file has changed since it was made"
-    return True, ""
+    return recorded_output_is_current(output_path, provenance, {key: _PROVENANCE_REASONS[key] for key in _PROVENANCE_KEYS})
 
 
 # --------------------------------------------------------------- writing
@@ -815,6 +803,8 @@ class _MaskWriter:
         self.vessel = 0
         self._planes: "queue.Queue[np.ndarray | None]" = queue.Queue(maxsize=8)
         self._error: list[BaseException] = []
+        #: Whether the writer has taken the end (None) off the queue.
+        self._ended = False
         path.parent.mkdir(parents=True, exist_ok=True)
         shape = raw.shape_zyx
 
@@ -822,6 +812,7 @@ class _MaskWriter:
             while True:
                 plane = self._planes.get()
                 if plane is None:
+                    self._ended = True
                     return
                 yield plane
 
@@ -830,7 +821,9 @@ class _MaskWriter:
                 tifffile.imwrite(self.partial, planes(), shape=shape, dtype=np.uint8, **_mask_metadata(raw))
             except BaseException as error:  # noqa: BLE001 - raised on close
                 self._error.append(error)
-                while self._planes.get() is not None:
+                # Drained up to the end, so put() never blocks -- unless the
+                # planes already took it (abort() before the last plane).
+                while not self._ended and self._planes.get() is not None:
                     pass
 
         self._thread = threading.Thread(target=write, daemon=True)
@@ -873,6 +866,31 @@ def _write_mask(path: Path, labels: np.ndarray, raw: RawChannels) -> int:
                      **_mask_metadata(raw))
     os.replace(partial, path)
     return count_label(labels, 1)
+
+
+def read_written_mask(
+    path: str | Path,
+    axis_order: str,
+    shape_zyx: Sequence[int],
+    *,
+    lazy: bool = False,
+    use_memmap: bool = False,
+    memmap_directory: str | Path | None = None,
+):
+    """A mask a segmentation wrote, back in canonical ``(z, y, x)`` order: it
+    was stored in the raw file's own *axis_order* (the order the raw image
+    of *shape_zyx*, canonical, was read in), so it is read in that order, as
+    the run reads it -- z first, as a pass streams it, when the order is
+    canonical or the image one plane deep (:func:`_streams`). *lazy* reads it
+    where it is looked at, as :func:`load_channel` can."""
+    from haemolynx.io.axis_order import CANONICAL_AXIS_ORDER
+
+    streamed = axis_order == CANONICAL_AXIS_ORDER or int(shape_zyx[0]) == 1
+    volume = load_channel(
+        path, None, CANONICAL_AXIS_ORDER if streamed else axis_order,
+        use_memmap=use_memmap, memmap_directory=memmap_directory, lazy=lazy,
+    )
+    return volume[np.newaxis] if getattr(volume, "ndim", 3) == 2 else volume
 
 
 # ----------------------------------------------------------- segmentation
@@ -931,8 +949,9 @@ def segment_with_classifiers(
     written or found current. A classifier whose every output is current is
     not run.
 
-    A mask the classifier cannot make, or one it finds nowhere, raises
-    ``ValueError``; nothing is written then.
+    A mask the classifier cannot make raises ``ValueError`` before anything
+    is read. One it finds nowhere raises once the pass is done: that mask is
+    removed, and every mask it did find is kept, recorded and used again.
 
     Each mask is kept a slab at a time beside its output while it is made
     (:mod:`~haemolynx.classifier.slabs`): stopped part-way (*poll* raising,
@@ -966,6 +985,14 @@ def segment_with_classifiers(
     if not loaded:
         return results
     shared = shared_spec([classifier.spec for _p, classifier, _o, _m in loaded])
+    if reuse_existing and _all_outputs_current(
+        raw_image_path, loaded, axis_order=axis_order, voxel_size_policy=voxel_size_policy,
+        voxel_size_override_xyz=voxel_size_override_xyz, downsample=downsample,
+    ):
+        # Decided from the records and the raw file's header: its voxels
+        # are not read just to find nothing to do.
+        logger.info("Reusing the segmentation of %s: every mask asked for is current.", raw_image_path.name)
+        return results
     raw = read_raw_channels(
         raw_image_path, shared.channels, axis_order=axis_order, voxel_size_policy=voxel_size_policy,
         voxel_size_override_xyz=voxel_size_override_xyz, use_memmap=use_memmap,
@@ -990,6 +1017,22 @@ def segment_with_classifiers(
         )
     finally:
         _release(*raw.volumes)
+
+
+def _all_outputs_current(raw_image_path: Path, loaded, **reading) -> bool:
+    """Whether every output of every loaded request is current
+    (:func:`classifier_output_current`: the records and the raw file's
+    header, never its voxels). False when that cannot be told here; the
+    pass then reads the image and decides, as it always did."""
+    if raw_image_path.suffix.lower() not in (".tif", ".tiff"):
+        return False
+    try:
+        return all(
+            classifier_output_current(raw_image_path, classifier_path, paths, **reading)[0]
+            for classifier_path, _classifier, paths, _marks in loaded
+        )
+    except (OSError, ValueError, KeyError):
+        return False
 
 
 def grid_factors(downsample, voxel_size_zyx) -> tuple[int, int, int]:
@@ -1152,13 +1195,15 @@ def _segment(
                 outputs=sum(len(job.outputs) for job in group), budget_bytes=budget,
             )
             for volume in group_volumes:
-                if hasattr(volume, "cache_bytes"):
+                reader = _page_reader(volume)
+                if reader is not None:
                     # The slab's pages with their margin, within the budget:
-                    # past it pages are decoded again rather than memory run out.
+                    # past it pages are decoded again rather than memory run
+                    # out. A grid plane spans factors[0] of the image's.
                     reach = coarse_reach(used, grid.voxel_size_zyx)[0]
-                    wanted = (per_slab + 2 * reach + 1) * volume._plane_bytes
+                    wanted = (per_slab + 2 * reach + 1) * factors[0] * reader._plane_bytes
                     share = budget // (2 * max(len(group_volumes), 1))
-                    volume.cache_bytes = int(min(wanted, max(share, 2 * volume._plane_bytes)))
+                    reader.cache_bytes = int(min(wanted, max(share, 2 * reader._plane_bytes)))
             start = 0
             if streaming:
                 start = _resume_point([stores[key] for job in group for key, _marks in job.outputs])
@@ -1199,17 +1244,12 @@ def _segment(
             counts[key] = _write_mask(Path(key), mask, raw)
         _release(*whole.values())
     empty = [key for key, count in counts.items() if count == 0]
-    if empty:
-        for key in keys:
-            Path(key).unlink(missing_ok=True)
-        for store in stores.values():
-            store.remove()
-        raise ValueError(
-            f"The classifier found nothing for {', '.join(Path(k).name for k in empty)} in {raw.path.name}: "
-            "train it on more of this image, or check the channels it reads."
-        )
     voxels = int(np.prod(raw.shape_zyx, dtype=np.int64))
     for key in keys:
+        if key in empty:
+            # Only the empty mask goes: the others are whole, and used again.
+            Path(key).unlink(missing_ok=True)
+            continue
         path = Path(key)
         stat = path.stat()
         record = dict(provenances[path])
@@ -1220,6 +1260,12 @@ def _segment(
         logger.info("Classifier output %s: %.2f%% of its voxels.", path, 100.0 * counts[key] / voxels)
     for store in stores.values():
         store.remove()
+    if empty:
+        raise ValueError(
+            f"The classifier found nothing for {', '.join(Path(k).name for k in empty)} in {raw.path.name}: "
+            "train it on more of this image, or check the channels it reads. The masks it did find are "
+            "kept, and used again."
+        )
     logger.info("Classifier segmentation took %.1f s.", time.perf_counter() - started)
     return results
 

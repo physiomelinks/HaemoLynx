@@ -58,15 +58,20 @@ def slow_checks(settings, start_from: str | None = None) -> bool:
     """Whether a full run's checks read more than files' headers, so the
     panel runs them off its own thread, which froze for them: the quality
     score (``min_acceptable_segmentation_quality``) reads the whole image,
-    and a synthetic run loads its template. A run from a tab checks on the
+    a synthetic run loads its template, and a pixel classifier's check of
+    whether the raw image is like its training images decodes planes of it
+    (``checks.check_pixel_classifiers``). A run from a tab checks on the
     panel's thread, as its caller expects it started on return; by then a
     template is loaded already."""
     if start_from is not None or not settings:
         return False
     from haemolynx.graph import network_is_synthetic
+    from haemolynx.pipeline.checks import pixel_classifiers_in_effect
 
-    return settings.get("min_acceptable_segmentation_quality") is not None or network_is_synthetic(
-        settings
+    return (
+        settings.get("min_acceptable_segmentation_quality") is not None
+        or network_is_synthetic(settings)
+        or bool(pixel_classifiers_in_effect(settings))
     )
 
 
