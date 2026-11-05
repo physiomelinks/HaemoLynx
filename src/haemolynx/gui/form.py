@@ -212,11 +212,11 @@ def shared_ilastik_host(values: Mapping[str, Any]) -> str | None:
 
 
 #: The classifier rows of a mask of objects, hosted where the mask is read
-#: (as the shared ilastik rows are): the pericyte classifier beside the
-#: perturbations that place pericytes from a mask, else the pericyte
-#: measurements; the block classifier beside a capillary block perturbation
-#: from a mask. Nowhere while nothing reads the mask. One set of rows each,
-#: which the panel moves (:func:`hosted_classifier_host`).
+#: (as the shared ilastik rows are): the pericyte classifier under the mask
+#: row of the first perturbation placing pericytes from a mask, else in the
+#: pericyte measurements; the block classifier under the mask row of the first
+#: capillary block perturbation from a mask. Nowhere while nothing reads the
+#: mask. One set of rows each, which the panel moves (:func:`hosted_classifier_host`).
 HOSTED_CLASSIFIER_ROWS: dict[str, tuple[str, ...]] = {
     "pericytes": ("use_pixel_classifier_pericyte_segmentation", "pixel_classifier_pericyte_path"),
     "blocks": ("use_pixel_classifier_block_segmentation", "pixel_classifier_block_path"),
