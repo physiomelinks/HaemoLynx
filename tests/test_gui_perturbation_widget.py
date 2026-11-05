@@ -792,29 +792,49 @@ def test_the_pericyte_and_block_classifiers_join_what_reads_their_masks(make_nap
     placement = widget._haemolynx_hosted_placement
     holders = widget._haemolynx_hosted_holders
 
-    def inside(holder, name):
-        return holder.native.isAncestorOf(rows[name].native)
+    def inside(container, name):
+        return container is not None and container.native.isAncestorOf(rows[name].native)
+
+    def under_mask_row(index, kind, mask):
+        """The entry's slot of *kind* sits right under its *mask* row."""
+        editor = perturbations.editors()[index]
+        widgets = list(editor.container)
+        position = next(i for i, w in enumerate(widgets) if w is editor.classifier_slots[kind])
+        return widgets[position - 1] is editor.editors[mask]
 
     assert placement == {"pericytes": None, "blocks": None}
     rows["run_perturbations"].value = True
     perturbations.add()
     perturbations.choose_type(0, "capillary_block_mask")
-    assert placement == {"pericytes": None, "blocks": "perturbations"}
-    assert inside(holders["perturbations"], "use_pixel_classifier_block_segmentation")
-    assert inside(holders["perturbations"], "pixel_classifier_block_path")
+    assert placement == {"pericytes": None, "blocks": ("perturbations", 0)}
+    slot = perturbations.classifier_slot(0, "blocks")
+    assert inside(slot, "use_pixel_classifier_block_segmentation")
+    assert inside(slot, "pixel_classifier_block_path")
+    assert under_mask_row(0, "blocks", "capillary_block_mask_path")
     perturbations.add()
     perturbations.choose_type(1, "pericyte_measured_constriction")
-    assert placement["pericytes"] == "perturbations"
-    assert inside(holders["perturbations"], "use_pixel_classifier_pericyte_segmentation")
+    assert placement["pericytes"] == ("perturbations", 1)
+    assert inside(perturbations.classifier_slot(1, "pericytes"), "use_pixel_classifier_pericyte_segmentation")
+    assert under_mask_row(1, "pericytes", "pericyte_mask_path")
+    # Removing an entry builds the editors again: the rows move to the
+    # entry now reading the mask, alive.
+    perturbations.remove(0)
+    assert placement == {"pericytes": ("perturbations", 0), "blocks": None}
+    assert inside(perturbations.classifier_slot(0, "pericytes"), "pixel_classifier_pericyte_path")
+    rows["use_pixel_classifier_block_segmentation"].value = True  # still a live widget
+    assert rows["use_pixel_classifier_block_segmentation"].value is True
     # With no perturbation reading it, the pericyte measurements take it.
-    perturbations.remove(1)
+    perturbations.remove(0)
     assert placement["pericytes"] is None
     rows["measure_pericytes"].value = True
     assert placement["pericytes"] == "measurements"
     assert inside(holders["measurements"], "use_pixel_classifier_pericyte_segmentation")
-    # Perturbations off: the block mask is read by nothing.
+    # Perturbations off: nothing reads the block mask.
+    perturbations.add()
+    perturbations.choose_type(0, "capillary_block_mask")
+    assert placement["blocks"] == ("perturbations", 0)
     rows["run_perturbations"].value = False
     assert placement["blocks"] is None
-    assert not inside(holders["perturbations"], "use_pixel_classifier_block_segmentation")
+    assert not inside(perturbations.classifier_slot(0, "blocks"), "use_pixel_classifier_block_segmentation")
     # Hosted rows keep their Train... buttons wherever they go.
     assert rows["pixel_classifier_pericyte_path"]._haemolynx_train_button is not None

@@ -32,12 +32,14 @@ from haemolynx.gui.form import (
     Field,
     HOSTED_CLASSIFIER_ROWS,
     HOSTED_CLASSIFIER_SETTING_SET,
+    HOSTED_MASK_SETTINGS,
     SHARED_ILASTIK_SETTINGS,
     SHARED_ILASTIK_SETTING_SET,
     display_value_for,
     channel_choices,
     exclusive_partner_in_effect,
     exclusive_reason,
+    hosted_classifier_entry,
     hosted_classifier_host,
     raw_image_stain_note,
     unmet_chain,
@@ -10066,6 +10068,8 @@ def _perturbation_controls(viewer, rows, fields, schema, report):
     #: editor was built again (an entry added or removed, a config loaded),
     #: so an entry's index may name another entry than before.
     listeners: list[Callable[[bool], None]] = []
+    #: Called just before the editors are built again.
+    before_rebuild: list[Callable[[], None]] = []
 
     def notify(rebuilt: bool = False) -> None:
         for listener in list(listeners):
@@ -10189,9 +10193,21 @@ def _perturbation_controls(viewer, rows, fields, schema, report):
         editor.advanced.set_rows(behind, editor.editors)
         editor.container.append(editor.name)
         editor.container.append(editor.type)
+        # Each mask row has a slot under it for the classifier that can make
+        # that mask, which the panel fills while this entry reads the mask.
+        slot_under = {mask: kind for kind, mask in HOSTED_MASK_SETTINGS.items()}
+        placed: set[str] = set()
         for name in order:
             if name not in behind:
                 editor.container.append(editor.editors[name])
+                if name in slot_under:
+                    editor.container.append(editor.classifier_slots[slot_under[name]])
+                    _hide_row_label(editor.classifier_slots[slot_under[name]])
+                    placed.add(slot_under[name])
+        for kind, slot in editor.classifier_slots.items():
+            if kind not in placed:  # its mask row behind the Advanced button
+                editor.container.append(slot)
+                _hide_row_label(slot)
         editor.container.append(editor.advanced.container)
         _hide_row_label(editor.advanced.container)
         editor.container.append(editor.buttons)
@@ -10278,6 +10294,9 @@ def _perturbation_controls(viewer, rows, fields, schema, report):
             ),
             # Empty shell; lay_out_editors fills it in SETTINGS_FOR_TYPE order.
             container=Container(widgets=[], labels=True),
+            # Under each mask row: where the panel puts the classifier rows of
+            # that mask while this is the entry reading it (form.HOSTED_CLASSIFIER_ROWS).
+            classifier_slots={kind: Container(widgets=[], labels=False) for kind in HOSTED_MASK_SETTINGS},
             # The chosen type's advanced options; lay_out_editors fills it.
             advanced=_AdvancedDisclosure(entry_disclosure(index, ()), editors),
         )
@@ -10341,6 +10360,11 @@ def _perturbation_controls(viewer, rows, fields, schema, report):
         All of them, because removing one moves every later entry's index and
         an editor knows which entry it edits.
         """
+        # Anything the panel placed in the editors (the classifier rows under
+        # a mask row) is taken out first: the old editors are deleted, and
+        # what they hold with them.
+        for hook in list(before_rebuild):
+            hook()
         state.applying = True
         try:
             holder.clear()
@@ -10592,10 +10616,11 @@ def _perturbation_controls(viewer, rows, fields, schema, report):
     state.entries = read_row()
     rebuild()
 
-    #: Under the perturbations: the classifier rows of the masks they read
-    #: (the pericyte and block masks'), placed by the panel while one does.
-    classifier_holder = Container(widgets=[], labels=False)
-    _flush(classifier_holder)
+    def classifier_slot(index: int | None, kind: str):
+        """The slot under entry *index*'s mask row of *kind*, or None."""
+        if index is None or not 0 <= index < len(state.editors):
+            return None
+        return state.editors[index].classifier_slots.get(kind)
 
     def page(stage_summary, names: Sequence[str]):
         """The tab: the run's own settings, then the list of perturbations."""
@@ -10616,7 +10641,7 @@ def _perturbation_controls(viewer, rows, fields, schema, report):
             )
         )
         body = Container(
-            widgets=[stage_summary, settings, explanation, holder, classifier_holder, add_button],
+            widgets=[stage_summary, settings, explanation, holder, add_button],
             labels=False,
         )
         body.native.layout().addWidget(saved_dropdown)
@@ -10650,7 +10675,8 @@ def _perturbation_controls(viewer, rows, fields, schema, report):
         choose_type=choose_type,
         rebuild=rebuild,
         holder=holder,
-        classifier_holder=classifier_holder,
+        classifier_slot=classifier_slot,
+        before_rebuild=before_rebuild.append,
         add_button=add_button,
         list_setting=LIST_SETTING,
         refresh_entries=refresh_entries,
@@ -16267,9 +16293,12 @@ def settings_widget(napari_viewer=None):
         _flush(block)
         block.visible = False
         hosted_blocks[kind] = block
-    #: Where each block can go, filled as the tabs are built, and where it is.
+    #: The Pericyte measurements box's holder, filled as the tabs are built;
+    #: where each block is ("measurements", or ("perturbations", entry index))
+    #: and the container holding it.
     hosted_holders: dict[str, Any] = {}
-    hosted_placement: dict[str, str | None] = {kind: None for kind in HOSTED_CLASSIFIER_ROWS}
+    hosted_placement: dict[str, Any] = {kind: None for kind in HOSTED_CLASSIFIER_ROWS}
+    hosted_in: dict[str, Any] = {kind: None for kind in HOSTED_CLASSIFIER_ROWS}
 
     # Perturbations claims legacy flags and typed-entry options so Field
     # objects exist, but only ALWAYS_VISIBLE_TAB_SETTINGS are parented as flat
@@ -16315,7 +16344,21 @@ def settings_widget(napari_viewer=None):
     perturbations = _perturbation_controls(viewer, rows, fields, schema, report)
     if perturbations is not None:
         pages["run_perturbations"] = perturbations.page
-        hosted_holders["perturbations"] = perturbations.classifier_holder
+
+        def release_hosted_from_entries() -> None:
+            """Take the classifier rows out of an entry's slot before the
+            entries are built again: deleted with the old editors otherwise."""
+            for kind, block in hosted_blocks.items():
+                if not isinstance(hosted_placement[kind], tuple):
+                    continue
+                block.visible = False
+                slot = hosted_in[kind]
+                if slot is not None and any(w is block for w in slot):
+                    slot.remove(block)
+                hosted_in[kind] = None
+                hosted_placement[kind] = None
+
+        perturbations.before_rebuild(release_hosted_from_entries)
     # Hand edits between Haemodynamics and Perturbations: the post_process stage's
     # page, which has no setting rows of its own. Its callables read `view`,
     # `checkpoints` and `run_state` when clicked, all of which exist by then.
@@ -16725,27 +16768,37 @@ def settings_widget(napari_viewer=None):
 
     def place_hosted_classifiers() -> None:
         """Host the pericyte and block masks' classifier rows where their
-        mask is read (`form.hosted_classifier_host`): the Perturbations tab
-        while a perturbation reads it, else the pericyte measurements, else
-        nowhere. As place_shared_ilastik: hidden before it is detached, shown
-        only once attached, a host recorded only when it took the rows."""
+        mask is read (`form.hosted_classifier_host`): under the mask row of
+        the first perturbation reading it, else in the pericyte measurements,
+        else nowhere. As place_shared_ilastik: hidden before it is detached,
+        shown only once attached, a place recorded only when it took the rows."""
         values = current_values()
         moved = False
         for kind, block in hosted_blocks.items():
             host = hosted_classifier_host(kind, values)
-            target = hosted_holders.get(host) if host is not None else None
+            where: Any = None
+            target = None
+            if host == "perturbations" and perturbations is not None:
+                index = hosted_classifier_entry(kind, values)
+                target = perturbations.classifier_slot(index, kind)
+                where = ("perturbations", index)
+            elif host == "measurements":
+                target = hosted_holders.get("measurements")
+                where = "measurements"
             if target is None:
-                host = None
-            if host == hosted_placement[kind]:
+                where = None
+            if where == hosted_placement[kind] and hosted_in[kind] is target:
                 continue
             block.visible = False
-            for holder in hosted_holders.values():
-                if holder is not None and any(w is block for w in holder):
-                    holder.remove(block)
+            current = hosted_in[kind]
+            if current is not None and any(w is block for w in current):
+                current.remove(block)
+            hosted_in[kind] = None
             if target is not None:
                 target.append(block)
                 block.visible = True
-            hosted_placement[kind] = host
+                hosted_in[kind] = target
+            hosted_placement[kind] = where
             moved = True
         if moved:
             _wrap_row_labels(tab_widget)

@@ -202,26 +202,39 @@ HOSTED_CLASSIFIER_SETTING_SET: frozenset[str] = frozenset(
     name for names in HOSTED_CLASSIFIER_ROWS.values() for name in names
 )
 
-#: The mask each hosted classifier makes, as the setting a perturbation reads it by.
-_HOSTED_MASK_SETTINGS = {"pericytes": "pericyte_mask_path", "blocks": "capillary_block_mask_path"}
+#: The mask each hosted classifier makes, as the setting a perturbation reads
+#: it by: the row in an entry the classifier's rows go under.
+HOSTED_MASK_SETTINGS: dict[str, str] = {"pericytes": "pericyte_mask_path", "blocks": "capillary_block_mask_path"}
+
+
+def hosted_classifier_entry(kind: str, values: Mapping[str, Any]) -> int | None:
+    """The first perturbation the run makes that reads the mask of *kind*
+    (a pericyte type placing pericytes from a mask, the measured constriction;
+    a capillary block from a mask), by its place in the list; None for none."""
+    from haemolynx.graph.boundaries import network_is_synthetic
+    from haemolynx.haemodynamics.perturbations import perturbation_mask_setting, perturbations_from_settings
+
+    if network_is_synthetic(values) or not values.get("run_perturbations"):
+        return None
+    wanted = HOSTED_MASK_SETTINGS[kind]
+    for index, spec in enumerate(perturbations_from_settings(values)):
+        if perturbation_mask_setting(spec.type, {**values, **dict(spec.overrides)}) == wanted:
+            return index
+    return None
 
 
 def hosted_classifier_host(kind: str, values: Mapping[str, Any]) -> str | None:
     """Where the classifier rows of *kind* (:data:`HOSTED_CLASSIFIER_ROWS`)
     appear: ``"perturbations"`` while a perturbation the run makes reads its
-    mask (a pericyte type placing pericytes from a mask, the measured
-    constriction; a capillary block from a mask), else ``"measurements"`` for
-    the pericytes while Pericyte measurements is ticked, else None."""
+    mask (in that entry, :func:`hosted_classifier_entry`), else
+    ``"measurements"`` for the pericytes while Pericyte measurements is
+    ticked, else None."""
     from haemolynx.graph.boundaries import network_is_synthetic
-    from haemolynx.haemodynamics.perturbations import perturbation_mask_setting, perturbations_from_settings
 
     if network_is_synthetic(values):
         return None
-    wanted = _HOSTED_MASK_SETTINGS[kind]
-    if values.get("run_perturbations"):
-        for spec in perturbations_from_settings(values):
-            if perturbation_mask_setting(spec.type, {**values, **dict(spec.overrides)}) == wanted:
-                return "perturbations"
+    if hosted_classifier_entry(kind, values) is not None:
+        return "perturbations"
     if kind == "pericytes" and values.get("measure_pericytes"):
         return "measurements"
     return None

@@ -658,7 +658,7 @@ SCHEMA = Schema(
             ),
             section=_INPUT_AND_SEGMENTATION,
             requires=("raw_image_path",),
-            advanced=True,
+            advanced=False,  # shown where the mask is read (gui.form.HOSTED_CLASSIFIER_ROWS)
         ),
         Setting(
             name="pixel_classifier_pericyte_path",
@@ -671,7 +671,7 @@ SCHEMA = Schema(
             section=_INPUT_AND_SEGMENTATION,
             requires=("use_pixel_classifier_pericyte_segmentation",),
             must_exist=True,
-            advanced=True,
+            advanced=False,  # shown where the mask is read (gui.form.HOSTED_CLASSIFIER_ROWS)
         ),
         Setting(
             name="use_pixel_classifier_block_segmentation",
@@ -685,7 +685,7 @@ SCHEMA = Schema(
             ),
             section=_INPUT_AND_SEGMENTATION,
             requires=("raw_image_path",),
-            advanced=True,
+            advanced=False,  # shown where the mask is read (gui.form.HOSTED_CLASSIFIER_ROWS)
         ),
         Setting(
             name="pixel_classifier_block_path",
@@ -698,7 +698,7 @@ SCHEMA = Schema(
             section=_INPUT_AND_SEGMENTATION,
             requires=("use_pixel_classifier_block_segmentation",),
             must_exist=True,
-            advanced=True,
+            advanced=False,  # shown where the mask is read (gui.form.HOSTED_CLASSIFIER_ROWS)
         ),
         Setting(
             name="pixel_classifier_downsample",
