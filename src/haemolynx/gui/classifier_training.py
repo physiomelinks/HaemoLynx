@@ -183,6 +183,29 @@ def default_scales(purpose: str) -> tuple[float, ...]:
     return DEFAULT_SCALES_UM
 
 
+#: What the window says when it keeps napari out of 3D view.
+THREE_D_NOTE = (
+    "The view stays in 2D while this large image's classifier layers are open: 3D would read the "
+    "whole image into memory. Remove those layers from the layer list to use 3D."
+)
+
+
+def memory_refusal(needed: int, available: int | None, *, low_ram: bool) -> str | None:
+    """Why the raw image will not be read whole, *needed* bytes of it, with
+    *available* bytes free: more than ``classifier.memory.OPEN_SHARE`` of them, and the
+    low-RAM option off. None to go ahead (or when the memory free is unknown)."""
+    from haemolynx.classifier.memory import OPEN_SHARE, gigabytes
+    from haemolynx.gui.form import label_for
+
+    if low_ram or available is None or needed <= OPEN_SHARE * available:
+        return None
+    return (
+        f"This raw image takes about {gigabytes(needed)} of memory to read whole, and {gigabytes(available)} "
+        f'is free, so it was not read. Tick "{label_for("use_memmap_loading")}" on the Input tab and open '
+        "this window again: the image is then read only where you look."
+    )
+
+
 def is_large(shape: Sequence[int], values: Mapping[str, Any]) -> bool:
     """Whether the window keeps its strokes and preview sparse."""
     voxels = 1

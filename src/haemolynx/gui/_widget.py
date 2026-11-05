@@ -10976,8 +10976,14 @@ class _ClassifierTrainingWindow:
         self.progress_timer = QTimer(self.window)
         self.progress_timer.setInterval(500)
         self.progress_timer.timeout.connect(self._show_progress)
+        #: The raw image could not be read (too large for memory, say): the
+        #: panel opens a new window rather than showing this one again.
+        self.load_failed = False
+        #: Whether this window holds napari's layer update on a 3D switch
+        #: (its lazily read layers are open): see `_update_3d_guard`.
+        self._blocking = False
         self._set_enabled(False)
-        self._run(self._load, self._loaded)
+        self._run(self._load, self._loaded, self._load_failed)
 
     # ----------------------------------------------------------- plumbing
 
@@ -11078,6 +11084,16 @@ class _ClassifierTrainingWindow:
         from haemolynx.io.axis_order import axis_order_for_run
 
         missing = [c for c in channels if c not in self._volumes]
+        if missing and not self.values.get("use_memmap_loading"):
+            # Read whole, an image too large for memory exhausts it (and
+            # takes napari with it): refused, and the low-RAM option asked for.
+            from haemolynx.classifier.memory import memory_bytes, raw_image_memory_bytes
+            from haemolynx.gui.classifier_training import memory_refusal
+
+            needed = raw_image_memory_bytes(self.raw_path, missing, axis_order_for_run(self.values))
+            refusal = memory_refusal(needed, memory_bytes()[0], low_ram=False)
+            if refusal:
+                raise MemoryError(refusal)
         if missing:
             raw = read_raw_channels(
                 self.raw_path,
@@ -11118,6 +11134,53 @@ class _ClassifierTrainingWindow:
     def _load(self):
         return self._make_live(*self._spec_choice())
 
+    def _load_failed(self, error: BaseException) -> None:
+        self.load_failed = True
+        self._say(str(error) or type(error).__name__)
+
+    # ------------------------------------------------------- 3D, kept out
+
+    def _lazy_layers_open(self) -> list:
+        """This window's layers read lazily (a large image's, or any under
+        the low-RAM option) still in the viewer."""
+        if not getattr(self, "sparse", False):
+            return []
+        layers = [self.image, self.strokes, self.preview, *self.segmentations.values()]
+        return [layer for layer in layers if layer is not None and layer in self.viewer.layers]
+
+    def _update_3d_guard(self, *_args) -> None:
+        """While a lazily read layer is open, napari's layer update on a
+        switch to 3D is held (it would read the whole image, before any
+        handler of ours could stop it) and the view is put back in 2D
+        (`_keep_2d`); released once they are all removed."""
+        update = getattr(self.viewer, "_update_layers", None)
+        if update is None:
+            return  # napari changed: the lazy readers refuse a whole read instead
+        emitter = self.viewer.dims.events.ndisplay
+        hold = bool(self._lazy_layers_open())
+        if hold and not self._blocking:
+            emitter.block(update)
+            self._blocking = True
+        elif not hold and self._blocking:
+            emitter.unblock(update)
+            self._blocking = False
+
+    def _keep_2d(self, *_args) -> None:
+        from haemolynx.gui.classifier_training import THREE_D_NOTE
+
+        if self._blocking and self.viewer.dims.ndisplay == 3:
+            # Said now, and kept for the next training's line, which the
+            # switch back to 2D starts.
+            self._note = THREE_D_NOTE
+            self.viewer.dims.ndisplay = 2
+            self._say(THREE_D_NOTE)
+            try:
+                from napari.utils.notifications import show_info
+
+                show_info(THREE_D_NOTE)
+            except Exception:  # noqa: BLE001 - the status line says it anyway
+                pass
+
     def _loaded(self, live) -> None:
         from haemolynx.classifier.sparse import SparseLabels
         from haemolynx.gui.classifier_training import (
@@ -11134,10 +11197,16 @@ class _ClassifierTrainingWindow:
         scale = tuple(float(v) for v in live.voxel_size_zyx)
         shape = live.shape
         self.sparse = is_large(shape, self.values)
+        if self.sparse and self.viewer.dims.ndisplay == 3:
+            # A layer added in 3D is read whole at once.
+            self.viewer.dims.ndisplay = 2
         if self.image is None:
+            # Tagged as the panel's own: an untagged image layer is taken for
+            # one the user dropped in and made the run's input (written out
+            # whole, the raw image read in full).
             self.image = self.viewer.add_image(
                 live.volumes[0], name=layer_name(IMAGE_LAYER, self.row), scale=scale, colormap="gray",
-                contrast_limits=list(live.ranges[0]),
+                contrast_limits=list(live.ranges[0]), metadata={OURS: {"classifier_training": self.row}},
             )
         if self.preview is None:
             blank = SparseLabels(shape) if self.sparse else np.zeros(shape, np.uint8)
@@ -11155,6 +11224,12 @@ class _ClassifierTrainingWindow:
             camera = viewer_camera(self.viewer)
             camera.events.center.connect(lambda *_a: self._changed(retrain=False))
             camera.events.zoom.connect(lambda *_a: self._changed(retrain=False))
+            # Kept in 2D while the lazily read layers are open (they would be
+            # read whole in 3D); the hold goes with the last of them.
+            self.viewer.dims.events.ndisplay.connect(self._keep_2d)
+            self.viewer.layers.events.removed.connect(self._update_3d_guard)
+            self.viewer.layers.events.inserted.connect(self._update_3d_guard)
+        self._update_3d_guard()
         self.strokes.selected_label = self.label_group.checkedId()
         self.viewer.layers.selection.active = self.strokes
         self._set_enabled(True)
@@ -11189,7 +11264,9 @@ class _ClassifierTrainingWindow:
         name = name or layer_name(kind, self.row)
         if name in self.viewer.layers:
             self.viewer.layers.remove(name)
-        layer = self.viewer.add_labels(data, name=name, scale=scale)
+        layer = self.viewer.add_labels(
+            data, name=name, scale=scale, metadata={OURS: {"classifier_training": self.row}}
+        )
         layer.colormap = DirectLabelColormap(color_dict={None: (0, 0, 0, 0), **colours})
         return layer
 
@@ -11416,6 +11493,19 @@ class _ClassifierTrainingWindow:
         path = Path(self.path_edit.text().strip() or "classifier")
         labels = self.strokes.data
         live = self.live
+        values = {**self.values, **(self.current_values() if self.current_values else {})}
+        values["raw_image_path"] = self.raw_path  # the image the strokes were painted on
+        if not values.get("use_memmap_loading"):
+            # The pass reads the image whole again, beside the window's copy.
+            from haemolynx.classifier.memory import memory_bytes, raw_image_memory_bytes
+            from haemolynx.gui.classifier_training import memory_refusal
+            from haemolynx.io.axis_order import axis_order_for_run
+
+            needed = raw_image_memory_bytes(self.raw_path, live.classifier.spec.channels, axis_order_for_run(values))
+            refusal = memory_refusal(needed, memory_bytes()[0], low_ram=False)
+            if refusal:
+                self._say(refusal)
+                return
         self._segmenting, self._stop_segmenting, self._progress_text = True, False, None
         self.segment_button.setText("Stop")
         self.segment_button.setToolTip(TIPS["stop"])
@@ -11441,8 +11531,6 @@ class _ClassifierTrainingWindow:
             # with the classifier that began it.
             if not unchanged:
                 save_classifier(live.train(labels), path)
-            values = {**self.values, **(self.current_values() if self.current_values else {})}
-            values["raw_image_path"] = self.raw_path  # the image the strokes were painted on
             outputs = row_outputs(values, self.row, path)
             segment_with_classifiers(
                 self.raw_path, [(path, outputs)], poll=poll, progress=progress, **classifier_run_arguments(values)
@@ -11468,6 +11556,8 @@ class _ClassifierTrainingWindow:
             if self.on_saved is not None:
                 self.on_saved(path)
             scale = tuple(float(v) for v in self.live.voxel_size_zyx)
+            if self.sparse and self.viewer.dims.ndisplay == 3:
+                self.viewer.dims.ndisplay = 2  # a lazily read mask added in 3D is read whole
             for mask, output in outputs.items():
                 data = LazyTiffChannel(output) if self.sparse else tifffile.imread(output)
                 if getattr(data, "ndim", 3) == 2:
@@ -11479,6 +11569,7 @@ class _ClassifierTrainingWindow:
                 layer.opacity = 0.6
                 self.segmentations[mask] = layer
             self.segmentation = next(iter(self.segmentations.values()), None)
+            self._update_3d_guard()
             self._say("Segmented the whole image: " + ", ".join(str(p) for p in outputs.values()) + ".")
 
         self._run(work, done, failed)
@@ -16451,9 +16542,13 @@ def settings_widget(napari_viewer=None):
         from haemolynx.gui.classifier_training import CLASSIFIER_SWITCHES
 
         open_window = training_windows.get(row_name)
-        if open_window is not None and open_window.is_open():
+        if open_window is not None and open_window.is_open() and not open_window.load_failed:
             open_window.show()
             return open_window
+        if open_window is not None and open_window.load_failed:
+            # Its image could not be read (too large for memory): opened
+            # again, with the settings as they are now (the low-RAM option ticked).
+            open_window.window.close()
         if not scikit_learn_available():
             report.value = SCIKIT_LEARN_MISSING
             return None

@@ -104,7 +104,11 @@ class LazyTiffChannel:
         if len(key) != 3:
             raise IndexError(f"too many indices for a 3D volume: {key!r}")
         if self._mapped is not None:
-            return np.array(self._mapped[key])
+            from .memory import refuse_if_too_large
+
+            region = self._mapped[key]
+            refuse_if_too_large(int(np.size(region)) * self.dtype.itemsize, f"part of {self.path.name}")
+            return np.array(region)
         z, rest = key[0], key[1:]
         for part in rest:
             if not isinstance(part, (slice, int, np.integer)):
@@ -119,6 +123,11 @@ class LazyTiffChannel:
         else:
             planes = [int(p) + (self.shape[0] if p < 0 else 0) for p in np.asarray(z).ravel()]
         probe = np.empty(self.shape[1:], dtype=bool)[rest]
+        from .memory import refuse_if_too_large
+
+        refuse_if_too_large(
+            len(planes) * probe.size * self.dtype.itemsize, f"{len(planes)} planes of {self.path.name}"
+        )
         out = np.empty((len(planes),) + probe.shape, dtype=self.dtype)
         for row, plane in enumerate(planes):
             out[row] = self.plane(plane)[rest]

@@ -415,6 +415,81 @@ def test_the_window_says_when_the_image_is_unlike_the_classifiers(make_napari_vi
     assert "inverted.tif is unlike every image c.haemoclf was trained on" in window.status.text()
 
 
+def _memory(monkeypatch, free, total=None):
+    """The machine as having *free* bytes free, every read weighed against them."""
+    from haemolynx.classifier import memory
+
+    monkeypatch.setattr(memory, "CHECKED_READ_BYTES", 0)
+    monkeypatch.setattr(memory, "memory_bytes", lambda: (free, total or free))
+
+
+def test_an_image_too_large_to_read_whole_is_refused_until_low_ram_is_on(panel, monkeypatch):
+    viewer, widget, rows, volume, _truth, _raw = panel
+    _memory(monkeypatch, volume.nbytes)  # 70% of it is less than the image
+    window = widget._haemolynx_open_classifier_training("pixel_classifier_path", synchronous=True)
+    assert window.load_failed and window.live is None
+    assert "takes about" in window.status.text() and "Low RAM option" in window.status.text()
+    assert not any(layer.name.startswith("Classifier") for layer in viewer.layers)
+    rows["use_memmap_loading"].value = True
+    again = widget._haemolynx_open_classifier_training("pixel_classifier_path", synchronous=True)
+    assert again is not window and not again.load_failed and again.live is not None
+    assert again.status.text().startswith("Paint a few strokes")
+
+
+def test_a_lazily_read_image_keeps_napari_in_2d(panel, monkeypatch):
+    viewer, widget, rows, volume, _truth, _raw = panel
+    rows["use_memmap_loading"].value = True
+    viewer.dims.ndisplay = 3  # already in 3D: the window puts it back before adding its layers
+    _memory(monkeypatch, volume.nbytes - 1)  # a read of the whole image raises
+    window = widget._haemolynx_open_classifier_training("pixel_classifier_path", synchronous=True)
+    assert window.sparse and viewer.dims.ndisplay == 2
+    monkeypatch.setattr(window, "update", lambda **_kw: None)  # the preview is not what is tested
+    viewer.dims.ndisplay = 3  # raised MemoryError before the guard: the whole image read
+    assert viewer.dims.ndisplay == 2
+    assert window.status.text().startswith("The view stays in 2D")
+    # Painting and moving through planes in 2D still work.
+    viewer.dims.set_point(0, 5 * VOXEL[0])
+    window.strokes.data[5, 10, 10] = 2
+    assert window.strokes.data[5, 10, 10] == 2
+    # With the window's layers removed, 3D is the viewer's again.
+    for layer in window._lazy_layers_open():
+        viewer.layers.remove(layer)
+    assert not window._blocking
+    viewer.add_image(np.zeros((4, 8, 8)), name="small")
+    viewer.dims.ndisplay = 3
+    assert viewer.dims.ndisplay == 3
+
+
+def test_segment_whole_image_is_refused_when_reading_it_again_would_not_fit(panel, monkeypatch, tmp_path):
+    from haemolynx.classifier import memory
+
+    _viewer, widget, rows, volume, truth, _raw = panel
+    rows["output_dir"].value = tmp_path / "out"
+    window = widget._haemolynx_open_classifier_training("pixel_classifier_path", synchronous=True)
+    window.live_box.setChecked(False)
+    points, classes = strokes(truth, per_class=40)
+    window.strokes.data[tuple(points.T)] = classes + 1
+    window.path_edit.setText(str(tmp_path / "c.haemoclf"))
+    monkeypatch.setattr(memory, "memory_bytes", lambda: (volume.nbytes, volume.nbytes))
+    window.segment_whole_image()
+    assert "takes about" in window.status.text()
+    assert not window._segmenting and not (tmp_path / "out" / "raw_segmented.tif").exists()
+    assert not (tmp_path / "c.haemoclf").exists()  # refused before anything was saved
+
+
+def test_opening_the_window_leaves_the_runs_input_alone(panel, tmp_path):
+    """The window's image layer is the panel's own: it was once taken for an
+    image dropped in, made the run's input and written out whole."""
+    viewer, widget, rows, volume, _truth, _raw = panel
+    segmented = tmp_path / "segmented.tif"
+    tifffile.imwrite(segmented, (volume > 1000).astype(np.uint8))
+    rows["input_path"].value = segmented
+    window = widget._haemolynx_open_classifier_training("pixel_classifier_large_vessel_path", synchronous=True)
+    assert window.live is not None
+    assert str(widget._haemolynx_values()["input_path"]) == str(segmented)
+    assert all(layer.metadata.get("haemolynx") for layer in viewer.layers if layer.name.startswith("Classifier"))
+
+
 def test_no_raw_image_says_what_to_do(make_napari_viewer):
     viewer = make_napari_viewer()
     widget = settings_widget(napari_viewer=viewer)

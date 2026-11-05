@@ -72,6 +72,11 @@ class SparseLabels:
             values = self._read_points(np.stack([a.ravel() for a in arrays], axis=1))
             return values.reshape(arrays[0].shape)
         axes = [np.atleast_1d(np.asarray(p, dtype=np.int64)) for p in parts]
+        from .memory import refuse_if_too_large
+
+        refuse_if_too_large(
+            int(np.prod([len(a) for a in axes], dtype=np.int64)) * self.dtype.itemsize, "the painted labels"
+        )
         out = np.zeros(tuple(len(a) for a in axes), dtype=self.dtype)
         keep = [len(a) for a, p in zip(axes, parts) if not isinstance(p, int)]
         with self._lock:

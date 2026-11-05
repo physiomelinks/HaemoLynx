@@ -1779,6 +1779,8 @@ def check_pixel_classifiers(settings: Mapping[str, Any]) -> CheckReport:
     from haemolynx.io.vessel_masks import VESSEL_MASK_SETTINGS
 
     roles = {names["classifier_path"]: role for role, names in VESSEL_MASK_SETTINGS.items()}
+    #: Every channel the passing classifiers read: what the pass reads of the raw image.
+    read_channels: set = set()
 
     raw = settings.get("raw_image_path")
     try:
@@ -1832,7 +1834,40 @@ def check_pixel_classifiers(settings: Mapping[str, Any]) -> CheckReport:
                 continue
         report.add_pass(name, f"{Path(path).name}: " + ", ".join(f"{k} {v}" for k, v in counts.items()) + " voxels")
         _warn_if_raw_image_unfamiliar(report, name, path, record, raw)
+        read_channels.update((record.get("spec") or {}).get("channels", [None]))
+    _check_classifier_read_fits_memory(report, settings, raw, read_channels)
     return report
+
+
+def _check_classifier_read_fits_memory(report: CheckReport, settings: Mapping[str, Any], raw, channels) -> None:
+    """Without the low-RAM option the classifier pass reads the raw image's
+    channels whole: an error when that is more than this machine's memory, a
+    warning when it is most of the memory free (``classifier.memory``)."""
+    from haemolynx.classifier.memory import OPEN_SHARE, gigabytes, memory_bytes, raw_image_memory_bytes
+    from haemolynx.io import axis_order_for_run
+
+    if settings.get("use_memmap_loading") or not channels or raw in (None, "") or not Path(raw).is_file():
+        return
+    try:
+        needed = raw_image_memory_bytes(raw, sorted(channels, key=lambda c: -1 if c is None else c),
+                                        axis_order_for_run(settings))
+    except Exception:  # noqa: BLE001 - an unreadable raw image is reported elsewhere
+        return
+    available, total = memory_bytes()
+    fix = (
+        "Fix: set use_memmap_loading (the panel's low-RAM option): the classifier then reads the image "
+        "a slab at a time."
+    )
+    if total is not None and needed > total:
+        report.add_error(
+            f"pixel classifier: reading {Path(raw).name} whole takes about {gigabytes(needed)}, more than "
+            f"this machine's {gigabytes(total)} of memory. {fix}"
+        )
+    elif available is not None and needed > OPEN_SHARE * available:
+        report.add_warning(
+            f"pixel classifier: reading {Path(raw).name} whole takes about {gigabytes(needed)}, most of the "
+            f"{gigabytes(available)} of memory free. {fix}"
+        )
 
 
 def _warn_if_raw_image_unfamiliar(report: CheckReport, name: str, path, record: Mapping, raw) -> None:
