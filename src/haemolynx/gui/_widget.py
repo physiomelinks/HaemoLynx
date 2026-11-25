@@ -10935,6 +10935,7 @@ class _ClassifierTrainingWindow:
         self._volumes: dict[Any, Any] = {}
         self._busy = False
         self._queued: Callable[[], None] | None = None
+        self._kept: Callable[[], None] | None = None
         self._retrain = True
         self._shown: tuple[int, int, Any] | None = None
         self.strokes = self.preview = self.segmentation = self.image = None
@@ -11179,12 +11180,21 @@ class _ClassifierTrainingWindow:
         work: Callable[[], Any],
         done: Callable[[Any], None],
         failed: Callable[[BaseException], None] | None = None,
+        *,
+        keep: bool = False,
     ) -> None:
         """Do *work* off the GUI thread, then *done* with its result on it
         (or *failed* with what it raised; else that is shown). One job at a
-        time: a job asked for meanwhile waits, the latest only."""
+        time: a job asked for meanwhile waits, the latest only. A job to
+        *keep* (a new classifier for another job, scales or channels) is never
+        dropped for a later one, and runs before it: dropped, the window kept
+        the old classifier, deaf to the new labels' strokes."""
         if self._busy:
-            self._queued = lambda: self._run(work, done, failed)
+            job = lambda: self._run(work, done, failed, keep=keep)  # noqa: E731
+            if keep:
+                self._kept = job
+            else:
+                self._queued = job
             return
         self._busy = True
 
@@ -11200,9 +11210,15 @@ class _ClassifierTrainingWindow:
                     done(result)
                 except Exception as problem:  # noqa: BLE001 - shown, not raised into Qt
                     self._say(str(problem))
-            queued, self._queued = self._queued, None
-            if queued is not None:
-                queued()
+            if self._busy:
+                return  # *done* started another job: the waiting ones follow it
+            kept, self._kept = self._kept, None
+            queued = None if kept is not None else self._queued
+            if kept is None:
+                self._queued = None
+            job = kept or queued
+            if job is not None:
+                job()
 
         if self.synchronous:
             try:
@@ -11214,10 +11230,9 @@ class _ClassifierTrainingWindow:
             return
         from napari.qt.threading import create_worker
 
-        worker = create_worker(work)
-        worker.returned.connect(lambda result: finish(result))
-        worker.errored.connect(lambda error: finish(error=error))
-        worker.start()
+        # Claimed at creation, or superqt also raises the error unasked (a
+        # napari error for "Paint at least two labels", say, already shown here).
+        create_worker(work, _connect={"returned": lambda result: finish(result), "errored": lambda error: finish(error=error)})
 
     # -------------------------------------------------------------- setup
 
@@ -11638,7 +11653,7 @@ class _ClassifierTrainingWindow:
             self._set_enabled(True)
             self.update(retrain=True)
 
-        self._run(lambda: self._make_live(*self._spec_choice()), remade)
+        self._run(lambda: self._make_live(*self._spec_choice()), remade, keep=True)
 
     def _browse(self) -> None:
         from qtpy.QtWidgets import QFileDialog
@@ -11687,13 +11702,15 @@ class _ClassifierTrainingWindow:
             return
         plane = self.plane_in_view()
         window = self.window_in_view(plane[0]) if plane is not None else None
-        retrain = retrain or self._retrain or self.live.classifier.forest is None
+        retrain = retrain or self._retrain
         self._retrain = False
         labels = self.strokes.data
-        live = self.live
 
         def work():
-            if retrain:
+            # The classifier as it is when this runs, not when it was asked
+            # for: a new one (another job) may have been made meanwhile.
+            live = self.live
+            if retrain or live.classifier.forest is None:
                 live.train(labels)
             if plane is None:
                 return None

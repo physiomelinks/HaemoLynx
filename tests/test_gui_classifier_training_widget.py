@@ -860,3 +860,70 @@ def test_the_brush_size_box_sizes_what_the_brush_paints_and_follows_napari(panel
     assert box.value() == 12
     strokes_layer.brush_size = window.BRUSH_MAX + 20
     assert box.maximum() == box.value() == window.BRUSH_MAX + 20
+
+
+# ------------------------------------------------------- jobs on worker threads
+
+
+def _threaded_window(widget, qtbot, row="pixel_classifier_path"):
+    """The window as the panel runs it: its jobs on worker threads. With the
+    idle test to wait on: loaded, no job running or waiting, no preview due."""
+    window = widget._haemolynx_open_classifier_training(row)
+
+    def idle():
+        return (
+            window.live is not None and not window._busy and window._queued is None
+            and getattr(window, "_kept", None) is None and not window.timer.isActive()
+        )
+
+    qtbot.waitUntil(idle, timeout=30000)
+    return window, idle
+
+
+def _sized_strokes(truth):
+    """Strokes of every label of the job telling large from small: the
+    background, and the vessels shared out among the five vessel labels."""
+    points, classes = strokes(truth, per_class=200)
+    vessel = classes == 1
+    x = points[:, 2]
+    shares = np.digitize(x, np.quantile(x[vessel], [0.2, 0.4, 0.6, 0.8]))
+    return points, np.where(vessel, 2 + shares, 1).astype(np.uint8)
+
+
+def test_a_job_chosen_while_a_preview_runs_is_not_lost(panel, qtbot):
+    """One job at a time, the latest request waiting: the new job's classifier,
+    asked for while a preview ran, was dropped for the next preview asked for.
+    The window kept the old classifier, deaf to the new labels' strokes, with
+    Update now greyed: arterioles and venules never showed."""
+    _viewer, widget, _rows, _volume, truth, _raw = panel
+    window, idle = _threaded_window(widget, qtbot)
+    window.live_box.setChecked(False)
+    points, classes = strokes(truth, per_class=100)
+    window.strokes.data[tuple(points.T)] = classes + 1
+    window.update(retrain=True)  # a preview runs...
+    assert window._busy
+    window.job_box.setCurrentIndex(window.purposes.index("vessels_and_sized_classes"))  # ...the job changes
+    window.update(retrain=False)  # ...and a move asks for another preview
+    qtbot.waitUntil(idle, timeout=30000)
+    assert window.live.classifier.purpose == window.purpose == "vessels_and_sized_classes"
+    assert window.update_button.isEnabled()
+    points, values = _sized_strokes(truth)
+    window.strokes.data[tuple(points.T)] = values
+    window.update_button.click()
+    qtbot.waitUntil(idle, timeout=30000)
+    assert "Large arteriole" in window.status.text() and "Small venule" in window.status.text()
+    shown = np.asarray(window.preview.data)[window._shown[1]]
+    assert set(np.unique(shown).tolist()) & {2, 3, 4, 5}  # arterioles and venules classified, and shown
+
+
+def test_a_training_message_is_said_in_the_window_not_raised_into_napari(panel, qtbot):
+    """A new job with too few labels painted fails to train: said on the
+    status line. superqt also raised it into napari, as an error, until the
+    worker's handlers were given at its creation (pytest-qt fails a test on
+    an error raised in Qt's event loop)."""
+    _viewer, widget, *_ = panel
+    window, idle = _threaded_window(widget, qtbot)
+    window.job_box.setCurrentIndex(window.purposes.index("vessels_and_sized_classes"))
+    qtbot.waitUntil(idle, timeout=30000)
+    assert window.status.text().startswith("Paint at least two labels")
+    assert window.update_button.isEnabled()
