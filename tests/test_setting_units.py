@@ -21,7 +21,7 @@ SCHEMA = default_schema()
 
 #: The spellings a unit may use. One per quantity -- `um` and `microns` for the
 #: same thing reads as two different units to anyone scanning a config file.
-ALLOWED_UNITS = {"um", "voxels", "percent", "fraction", "Pa"}
+ALLOWED_UNITS = {"um", "um3", "voxels", "percent", "fraction", "Pa", "fL"}
 
 #: Settings whose unit is settled by what the consuming code compares them
 #: against. `um` wherever the value meets node `pos` or edge `length`, which
@@ -50,9 +50,30 @@ EXPECTED_UNITS = {
     "skeleton_bridge_gap_size": "voxels",
     "skeleton_min_branch_length": "voxels",
     "skeleton_max_bridge_distance": "voxels",
+    # Compared against the EDT of the mask in physical microns.
+    "skeleton_thick_vessel_min_radius_um": "um",
     # Pressures.
     "inlet_p_bc": "Pa",
     "outlet_p_bc": "Pa",
+    # A red cell's volume, femtolitres: a flow (m^3/s) times a haematocrit
+    # over it is cells per second.
+    "red_cell_volume_fl": "fL",
+    # Walked along an edge's centreline in `get_diameter_at_position`, whose
+    # position runs over edge `length`: microns.
+    "constriction_length_um": "um",
+    "constriction_spacing_um": "um",
+    "constriction_spacing_min_um": "um",
+    "constriction_spacing_max_um": "um",
+    "constriction_spacing_step_um": "um",
+    "constriction_length_min_um": "um",
+    "constriction_length_max_um": "um",
+    "constriction_length_step_um": "um",
+    # Physical mask-component volumes (voxel count x voxel volume).
+    "large_vessel_min_component_volume_um3": "um3",
+    "small_vessel_min_component_volume_um3": "um3",
+    "large_vessel_opposite_attached_max_component_volume_um3": "um3",
+    # EDT distance to the opposite-type mask surface: microns.
+    "large_vessel_opposite_attached_max_distance_microns": "um",
 }
 
 #: Names that look like a measurement but hold a dimensionless number. Listed
@@ -65,6 +86,7 @@ DIMENSIONLESS = {
     "skeleton_component_connectivity",
     # Counts and identifiers.
     "centreline_smoothing_iterations",
+    "fwhm_decoy_check_sample_size",
     "max_branch_order",
     "pericyte_constriction_seed",
     "inlet_nodes",
@@ -78,6 +100,14 @@ DIMENSIONLESS = {
     "constriction_by_branch_order",
     "fwhm_min_total_extent_multiplier",
     "fwhm_same_edge_arc_window_multiplier",
+    # A multiple of the fat-region radius, not a distance itself -- the
+    # radius it scales is already in microns.
+    "skeleton_thick_vessel_max_bridge_radius_multiple",
+    # A multiple of the parent vessel's radius at the junction, in microns
+    # already; a stub shorter than it is pruned.
+    "min_stub_length_radius_multiple",
+    # A count of measured edges a branch-order label needs, not a diameter.
+    "diameter_class_median_min_edges",
     # Label sentinels written into the int32 branch-label volume.
     "fwhm_background_label",
     "fwhm_junction_label",
@@ -86,6 +116,37 @@ DIMENSIONLESS = {
     # Names a file, an axis order, a mode -- not a quantity.
     "image_axis_order",
     "voxel_size_policy",
+    # Names a graph edge attribute to read a diameter guess from -- not a
+    # diameter itself.
+    "fwhm_diameter_guess_edge_attribute",
+    # Graph hop count (edge steps), not a physical distance.
+    "small_vessel_boundary_fallback_hop_distance",
+    # A raw image intensity, in whatever units the microscope wrote.
+    "tissue_manual_threshold",
+    # Edge-count threshold for orphan cleanup after large-vessel volume cuts.
+    "orphaned_branch_max_edge_count",
+    # Voxel index stride for Plotly volume downsampling (not a physical length).
+    "large_vessel_3d_volume_downsample_stride",
+    # Ratio of cylinder radii (dimensionless).
+    "small_vessel_mask_continuity_max_radius_ratio",
+    "segmentation_cleanup_reconnect_max_radius_ratio",
+    # Angle in degrees; no degrees unit is registered in the schema vocabulary.
+    "small_vessel_mask_continuity_max_axis_angle_degrees",
+    "small_vessel_sandwiched_max_axis_angle_degrees",
+    "segmentation_cleanup_reconnect_max_axis_angle_degrees",
+    # A dot-product/cosine similarity in [0, 1], not a distance.
+    "segmentation_cleanup_reconnect_min_facing_cosine",
+    # A PCA linearity score in [0, 1] (near 1 = tube-like), not a distance.
+    "segmentation_cleanup_reconnect_min_cylindricality",
+    # A neck-radius-to-body-radius ratio in [0, 1] (dimensionless), not a distance.
+    "segmentation_cleanup_split_min_pinch_radius_ratio",
+    # A fraction of a window's own voxels, in [0, 1] -- not a physical size.
+    "skeleton_bundle_density_fraction",
+    # A count of voxels per radius (a ratio), not a distance itself -- the
+    # radius it's measured against is already in microns.
+    "min_voxels_across_vessel_radius",
+    # A multiplier on a gap distance's z-component, not a distance itself.
+    "skeleton_bridge_z_distance_weight",
 }
 
 #: Substrings that mark a name as describing a measurement.

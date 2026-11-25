@@ -42,7 +42,7 @@ _BOUNDARIES_FROM_NETWORK_ENDS = {
 CAROTID_DEFAULTS: dict[str, Any] = {
     # Input: an already-segmented mask, or the raw stack when ilastik runs.
     "input_path": "examples/images/carotid_mask.tif",
-    "ilastik_unsegmented_image_path": "examples/images/carotid.tif",
+    "raw_image_path": "examples/images/carotid.tif",
     "ilastik_classifier_path": "examples/classifiers/carotid_classifier.ilp",
     **_BOUNDARIES_FROM_NETWORK_ENDS,
     # Perfusion pressures measured for this preparation.
@@ -52,7 +52,7 @@ CAROTID_DEFAULTS: dict[str, Any] = {
     # and the small components are dropped rather than reconnected.
     "skeleton_max_bridge_distance": 0,
     "skeleton_min_component_percent": 5.0,
-    "vtk_output_prefix": "examples/outputs/carotid/carotid_network",
+    "output_dir": "examples/outputs/carotid",
 }
 
 PIPELINE_SCHEMA = default_schema()

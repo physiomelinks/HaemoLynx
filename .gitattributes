@@ -1,0 +1,2 @@
+# Git hooks run under sh, which reads a CR as part of the command.
+scripts/git_hooks/* text eol=lf

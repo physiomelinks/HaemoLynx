@@ -1,0 +1,2153 @@
+"""The view dock: Z-depth, scale bar, and snapshot, display-only.
+
+The pipeline still reads the full volume / full graph. These controls only
+change what napari shows. The snapshot is a cosmetic canvas TIFF. The dock
+is the first of the left panel's four tabs, before Statistics and napari's
+layer list and layer controls, and scrolls so it does not steal height from the bottom run
+log.
+"""
+from __future__ import annotations
+
+import numpy as np
+import pytest
+
+napari = pytest.importorskip("napari")
+pytest.importorskip("magicgui")
+
+from haemolynx.gui._widget import (  # noqa: E402
+    EVEN_TAB_WIDTH_PROPERTY,
+    LAYER_CONTROLS_TITLE,
+    LAYER_LIST_TITLE,
+    SCALE_BAR_POSITION,
+    SNAPSHOT_NO_OUTPUT_FOLDER,
+    SNAPSHOT_STEM,
+    STATISTICS_DOCK_NAME,
+    VIEW_DOCK_NAME,
+    _apply_layers,
+    _even_out_tabs,
+    _scale_bar_overlay,
+    _store_z_window_cache,
+    data_for_pipeline,
+    output_folder_from_settings,
+    settings_widget,
+    unique_snapshot_path,
+)
+from haemolynx.gui.chrome_tooltips import REOPEN_VIEW_TOOLTIP  # noqa: E402
+from haemolynx.gui.results import IMAGE, NODES, VESSEL_TUBES, VESSELS  # noqa: E402
+from test_gui_results_widget import a_run  # noqa: E402
+
+pytestmark = pytest.mark.gui
+
+
+def _tubes_of_the_shown_vessels(viewer) -> int:
+    """How many tube vertices the vessels layer as it now stands should give."""
+    from haemolynx.gui import _widget as widget_mod
+    from haemolynx.gui.vessel_tubes import vessel_tube_mesh
+
+    vessels = viewer.layers[VESSELS]
+    vertices, _faces, _index = vessel_tube_mesh(
+        vessels.data,
+        vessels.features,
+        quality=widget_mod._tube_quality,
+        edge_width=vessels.edge_width,
+    )
+    return len(vertices)
+
+
+def _stack_results():
+    from types import SimpleNamespace
+
+    from haemolynx.gui.results import ResultLayers
+
+    results = ResultLayers()
+    results.stage_finished(
+        "skeletonise",
+        SimpleNamespace(
+            image=np.zeros((4, 4, 4), dtype=np.uint8),
+            skeleton=np.zeros((4, 4, 4), dtype=bool),
+            voxel_size_xyz=(0.5, 1.0, 2.0),
+            voxel_size_zyx=(2.0, 1.0, 0.5),
+        ),
+    )
+    return results
+
+
+def _load_patterned_image(viewer):
+    image = np.zeros((4, 4, 4), dtype=np.uint8)
+    image[0] = 1
+    image[1] = 3
+    image[2] = 2
+    image[3] = 9
+    layer = viewer.layers[IMAGE]
+    layer.data = image
+    _store_z_window_cache(layer, image)
+    return layer, image
+
+
+def test_selecting_the_image_layer_gives_it_a_clearer_3d_render(make_napari_viewer):
+    """Plain MIP -- napari's own default -- has no depth cue; the layer being
+    inspected should switch to attenuated MIP while it is the active
+    selection, and fall back once something else is selected."""
+    from haemolynx.gui._widget import (
+        IMAGE_DEFAULT_RENDER_OPTIONS,
+        IMAGE_FOCUS_RENDER_OPTIONS,
+    )
+
+    viewer = make_napari_viewer()
+    settings_widget(napari_viewer=viewer)
+    for group in a_run():
+        _apply_layers(viewer, group)
+
+    image_layer = viewer.layers[IMAGE]
+    for key, value in IMAGE_DEFAULT_RENDER_OPTIONS.items():
+        assert getattr(image_layer, key) == value
+
+    viewer.layers.selection.active = image_layer
+    for key, value in IMAGE_FOCUS_RENDER_OPTIONS.items():
+        assert getattr(image_layer, key) == value
+
+    other = next(l for l in viewer.layers if l is not image_layer)
+    viewer.layers.selection.active = other
+    for key, value in IMAGE_DEFAULT_RENDER_OPTIONS.items():
+        assert getattr(image_layer, key) == value
+
+
+#: The left panel's tabs, in order.
+LEFT_TABS = [VIEW_DOCK_NAME, STATISTICS_DOCK_NAME, LAYER_LIST_TITLE, LAYER_CONTROLS_TITLE]
+
+
+def _settle() -> None:
+    from qtpy.QtWidgets import QApplication
+
+    for _ in range(5):
+        QApplication.processEvents()
+
+
+def _left_tab_bar(viewer):
+    """The tab bar of the docks the view dock is tabbed with, or None."""
+    from qtpy.QtCore import Qt
+    from qtpy.QtWidgets import QTabBar
+
+    bars = viewer.window._qt_window.findChildren(
+        QTabBar, options=Qt.FindChildOption.FindDirectChildrenOnly
+    )
+    for bar in bars:
+        # Qt keeps the tab bars it no longer uses, hidden, for reuse.
+        texts = [bar.tabText(i) for i in range(bar.count())]
+        if not bar.isHidden() and VIEW_DOCK_NAME in texts:
+            return bar
+    return None
+
+
+def _left_tabs(viewer):
+    """(the left panel's tab labels in order, the open one's label)."""
+    bar = _left_tab_bar(viewer)
+    if bar is None:
+        return [], None
+    texts = [bar.tabText(i) for i in range(bar.count())]
+    return texts, texts[bar.currentIndex()]
+
+
+def test_the_view_panel_is_the_first_of_four_tabs_on_the_left(make_napari_viewer):
+    """One left panel, its tabs the view, Statistics, the layer list and the
+    layer controls, with the view's open. Regression: raised as soon as it was
+    tabbed, the view lost its tab again to the last dock tabbed."""
+    from qtpy.QtCore import Qt
+
+    viewer = make_napari_viewer(show=True)
+    panel = settings_widget(napari_viewer=viewer)
+    _settle()
+
+    dock = panel._haemolynx_view_dock
+    assert dock is not None
+    assert VIEW_DOCK_NAME in dock.windowTitle()
+    assert not dock.isFloating()
+    main_window = viewer.window._qt_window
+    assert main_window.dockWidgetArea(dock) == Qt.DockWidgetArea.LeftDockWidgetArea
+    assert _left_tabs(viewer) == (LEFT_TABS, VIEW_DOCK_NAME)
+    assert panel._haemolynx_view_panel.objectName() == "haemolynx_view_panel"
+    assert panel._haemolynx_z_depth_slider.objectName() == "haemolynx_z_depth_slider"
+    assert panel._haemolynx_z_depth_row.parentWidget() is panel._haemolynx_display_group
+    assert panel._haemolynx_vessel_draw.objectName() == "haemolynx_vessel_draw"
+    assert panel._haemolynx_vessel_draw_row.objectName() == "haemolynx_vessel_draw_row"
+    assert panel._haemolynx_vessel_draw_row.parentWidget() is panel._haemolynx_display_group
+    assert panel._haemolynx_vessel_draw.currentText() == "Tubes"
+    assert panel._haemolynx_scale_bar.objectName() == "haemolynx_scale_bar"
+    assert panel._haemolynx_display_group.objectName() == "haemolynx_display_group"
+    snapshot = panel._haemolynx_snapshot_group
+    assert snapshot.objectName() == "haemolynx_snapshot_group"
+    assert snapshot.parentWidget() is panel._haemolynx_view_panel
+    layout = panel._haemolynx_view_panel.layout()
+    assert layout.indexOf(panel._haemolynx_display_group) >= 0
+    # Display, then the canvas lamp, then a sweep perturbation's sliders
+    # (hidden until one is shown), then Snapshot.
+    illumination = panel._haemolynx_illumination_group
+    assert illumination.objectName() == "haemolynx_illumination_group"
+    assert layout.indexOf(illumination) == layout.indexOf(panel._haemolynx_display_group) + 1
+    sweep = panel._haemolynx_sweep_group
+    assert sweep.objectName() == "haemolynx_sweep_group"
+    assert sweep.isHidden()
+    assert layout.indexOf(sweep) == layout.indexOf(illumination) + 1
+    assert layout.indexOf(snapshot) == layout.indexOf(sweep) + 1
+    button = panel._haemolynx_snapshot_button
+    assert button.objectName() == "haemolynx_snapshot_button"
+    assert button.parentWidget() is snapshot
+    assert snapshot.layout().indexOf(button) >= 0
+
+
+def test_the_view_tab_scrolls_rather_than_holding_the_strip_as_tall_as_itself(
+    make_napari_viewer,
+):
+    """Tabbed, the four docks share one height, so the view panel's own
+    height would be the floor of the whole left strip, squeezing the run log
+    below it. With room, nothing is clipped and the boxes keep their size."""
+    from qtpy.QtWidgets import QScrollArea
+
+    viewer = make_napari_viewer(show=True)
+    panel = settings_widget(napari_viewer=viewer)
+    viewer.window._qt_window.resize(1200, 900)
+    _settle()
+
+    dock = panel._haemolynx_view_dock
+    view_panel = panel._haemolynx_view_panel
+    scroll = dock.widget()
+    assert isinstance(scroll, QScrollArea)
+    assert scroll.widget() is view_panel
+    assert dock.minimumSizeHint().height() < view_panel.sizeHint().height() / 2
+    # Not held to a scroll area's own size hint (24 lines) in a taller strip.
+    assert scroll.height() >= dock.height() - 40
+
+    button = panel._haemolynx_snapshot_button
+    bottom_in_dock = button.mapTo(dock, button.rect().bottomLeft()).y()
+    assert bottom_in_dock <= dock.height(), (
+        "Save snapshot's own bottom edge falls outside the dock "
+        f"(button bottom={bottom_in_dock}, dock height={dock.height()})"
+    )
+    snapshot = panel._haemolynx_snapshot_group
+    assert snapshot.height() <= snapshot.sizeHint().height() + 2
+
+
+def test_a_short_strip_scrolls_the_view_tab_rather_than_squashing_its_boxes(
+    make_napari_viewer,
+):
+    """Regression: the Snapshot box's own minimum was 48 px, below its title
+    and button, so a strip shorter than the view panel squashed Save snapshot
+    until its label was cut through instead of scrolling."""
+    viewer = make_napari_viewer(show=True)
+    panel = settings_widget(napari_viewer=viewer)
+    viewer.window._qt_window.resize(1200, 420)
+    _settle()
+
+    view_panel = panel._haemolynx_view_panel
+    assert view_panel.height() < view_panel.sizeHint().height()
+    button = panel._haemolynx_snapshot_button
+    assert button.height() >= button.sizeHint().height(), (
+        f"Save snapshot squashed to {button.height()} px "
+        f"(needs {button.sizeHint().height()} px)"
+    )
+    for group in (
+        panel._haemolynx_display_group,
+        panel._haemolynx_illumination_group,
+        panel._haemolynx_snapshot_group,
+    ):
+        assert group.height() >= group.minimumSizeHint().height(), group.objectName()
+
+
+def test_the_four_tabs_are_equal_and_fill_the_panel(make_napari_viewer):
+    """Qt sizes a dock tab to its label and leaves the rest of the bar empty."""
+    from qtpy.QtCore import Qt
+
+    viewer = make_napari_viewer(show=True)
+    panel = settings_widget(napari_viewer=viewer)
+    main_window = viewer.window._qt_window
+    main_window.resize(1400, 900)
+    _settle()
+
+    dock = panel._haemolynx_view_dock
+    for strip in (300, 420):
+        main_window.resizeDocks([dock], [strip], Qt.Orientation.Horizontal)
+        _settle()
+        bar = _left_tab_bar(viewer)
+        widths = [bar.tabRect(i).width() for i in range(bar.count())]
+        assert len(widths) == 4
+        assert max(widths) - min(widths) <= 1, widths
+        assert sum(widths) == bar.width(), (widths, bar.width())
+        assert abs(bar.width() - dock.width()) <= 2, (bar.width(), dock.width())
+
+
+class _TabBarQtMade:
+    """A dock tab bar as PyQt hands over one Qt made itself, on Linux: its
+    protected tabSizeHint refuses to be called. Each tab is the rule's width
+    plus *border*."""
+
+    def __init__(self, count: int, width: int, border: int) -> None:
+        self._count, self._width, self._border = count, width, border
+        self._properties: dict = {}
+        self.sheet = ""
+        self.expanding = False
+
+    def count(self):
+        return self._count
+
+    def width(self):
+        return self._width
+
+    def property(self, name):
+        return self._properties.get(name)
+
+    def setProperty(self, name, value):  # noqa: N802 - Qt's name
+        self._properties[name] = value
+
+    def setStyleSheet(self, sheet):  # noqa: N802 - Qt's name
+        self.sheet = sheet
+
+    def setExpanding(self, on):  # noqa: N802 - Qt's name
+        self.expanding = on
+
+    def tabSizeHint(self, index):  # noqa: N802 - Qt's name
+        raise RuntimeError("no access to protected functions or signals for objects not created from Python")
+
+    def sizeHint(self):  # noqa: N802 - Qt's name
+        from qtpy.QtCore import QSize
+
+        return QSize((self._properties[EVEN_TAB_WIDTH_PROPERTY] + self._border) * self._count, 20)
+
+
+def test_the_tabs_are_evened_without_the_protected_tab_size_hint():
+    """Regression: a tab's width came from QTabBar.tabSizeHint, protected, which
+    PyQt on Linux refuses on a tab bar Qt made itself. Raised there, it
+    stopped the view's tab opening and the four tabs evening out, on Linux
+    alone (the napari-gui CI job, 2026-11-04)."""
+    bar = _TabBarQtMade(count=4, width=300, border=6)
+
+    _even_out_tabs(bar)
+
+    assert bar.property(EVEN_TAB_WIDTH_PROPERTY) == 300 // 4 - 6
+    assert "width: 69px" in bar.sheet and bar.expanding
+
+
+def test_tabs_of_other_docks_keep_their_own_widths(make_napari_viewer):
+    from qtpy.QtCore import Qt
+    from qtpy.QtWidgets import QDockWidget, QLabel, QTabBar
+
+    viewer = make_napari_viewer(show=True)
+    settings_widget(napari_viewer=viewer)
+    main_window = viewer.window._qt_window
+    docks = []
+    for title in ("First", "Second"):
+        dock = QDockWidget(title, main_window)
+        dock.setObjectName(title)
+        dock.setWidget(QLabel(title))
+        main_window.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
+        docks.append(dock)
+    main_window.tabifyDockWidget(*docks)
+    _settle()
+
+    bars = [
+        bar
+        for bar in main_window.findChildren(
+            QTabBar, options=Qt.FindChildOption.FindDirectChildrenOnly
+        )
+        if not bar.isHidden() and "First" in [bar.tabText(i) for i in range(bar.count())]
+    ]
+    assert len(bars) == 1
+    assert bars[0].property(EVEN_TAB_WIDTH_PROPERTY) is None
+    assert bars[0].styleSheet() == ""
+
+
+def test_naparis_layer_docks_are_titled_with_a_capital(make_napari_viewer):
+    """On their tabs and their title bars, including the title bar napari
+    builds again from the dock's name when it floats."""
+    viewer = make_napari_viewer()
+    settings_widget(napari_viewer=viewer)
+    qt_viewer = viewer.window._qt_viewer
+
+    for dock, title in (
+        (qt_viewer.dockLayerList, LAYER_LIST_TITLE),
+        (qt_viewer.dockLayerControls, LAYER_CONTROLS_TITLE),
+    ):
+        assert title[0].isupper()
+        assert dock.windowTitle() == title
+        assert dock.title.title.text() == title
+        dock.setFloating(True)
+        _settle()
+        assert dock.title.title.text() == title
+
+
+def test_the_view_button_sits_left_of_the_run_file_buttons_and_has_a_tooltip(make_napari_viewer):
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    view_button = panel._haemolynx_view_button
+
+    assert view_button.text == "View controls"
+    assert view_button.tooltip == REOPEN_VIEW_TOOLTIP
+    assert view_button.enabled
+
+    row = panel._haemolynx_run_file_row
+    layout = row.layout()
+    assert layout.indexOf(view_button.native) < layout.indexOf(panel._haemolynx_save_run_button.native)
+
+
+def test_the_view_button_is_disabled_with_no_viewer(qapp):
+    panel = settings_widget(napari_viewer=None)
+    assert panel._haemolynx_view_dock is None
+    assert not panel._haemolynx_view_button.enabled
+
+
+def test_view_controls_with_everything_open_moves_nothing(make_napari_viewer):
+    viewer = make_napari_viewer(show=True)
+    panel = settings_widget(napari_viewer=viewer)
+    _settle()
+    dock = panel._haemolynx_view_dock
+
+    panel._haemolynx_reopen_view()
+    _settle()
+
+    assert panel._haemolynx_view_dock is dock
+    assert dock.isVisible()
+    assert not dock.isFloating()
+    assert _left_tabs(viewer) == (LEFT_TABS, VIEW_DOCK_NAME)
+
+
+def test_view_controls_brings_the_view_tab_to_the_front(make_napari_viewer):
+    viewer = make_napari_viewer(show=True)
+    panel = settings_widget(napari_viewer=viewer)
+    _settle()
+    _left_tab_bar(viewer).setCurrentIndex(LEFT_TABS.index(LAYER_LIST_TITLE))
+    _settle()
+    assert _left_tabs(viewer)[1] == LAYER_LIST_TITLE
+
+    panel._haemolynx_view_button.native.click()
+    _settle()
+
+    assert _left_tabs(viewer) == (LEFT_TABS, VIEW_DOCK_NAME)
+
+
+def test_the_view_button_reopens_a_closed_view_panel(make_napari_viewer):
+    viewer = make_napari_viewer(show=True)
+    panel = settings_widget(napari_viewer=viewer)
+    _settle()
+    dock = panel._haemolynx_view_dock
+    dock.hide()
+    _settle()
+    assert dock.isHidden()
+
+    panel._haemolynx_view_button.native.click()
+    _settle()
+
+    assert not dock.isHidden()
+    assert panel._haemolynx_view_dock is dock
+    assert _left_tabs(viewer) == (LEFT_TABS, VIEW_DOCK_NAME)
+
+
+def test_view_controls_reopens_the_whole_left_panel(make_napari_viewer):
+    """The view, Statistics, the layer list and the layer controls, each closed."""
+    viewer = make_napari_viewer(show=True)
+    panel = settings_widget(napari_viewer=viewer)
+    _settle()
+    qt_viewer = viewer.window._qt_viewer
+    docks = (
+        panel._haemolynx_view_dock,
+        panel._haemolynx_statistics_dock,
+        qt_viewer.dockLayerList,
+        qt_viewer.dockLayerControls,
+    )
+    for dock in docks:
+        dock.hide()
+    _settle()
+    assert _left_tabs(viewer) == ([], None)
+
+    panel._haemolynx_view_button.native.click()
+    _settle()
+
+    for dock in docks:
+        assert not dock.isHidden(), dock.windowTitle()
+    assert _left_tabs(viewer) == (LEFT_TABS, VIEW_DOCK_NAME)
+
+
+def test_the_view_button_rebuilds_a_dock_the_close_button_deleted(make_napari_viewer):
+    """The dock's close button deletes the dock. View used to ask that
+    deleted object if it was visible, which raises. Rebuilt, it is the first
+    tab again, and a layer dock that was closed too comes back with it."""
+    viewer = make_napari_viewer(show=True)
+    panel = settings_widget(napari_viewer=viewer)
+    _settle()
+    dock = panel._haemolynx_view_dock
+    dock.destroyOnClose()
+    viewer.window._qt_viewer.dockLayerControls.hide()
+    _settle()
+
+    panel._haemolynx_view_button.native.click()
+    _settle()
+
+    rebuilt = panel._haemolynx_view_dock
+    assert rebuilt is not dock
+    assert rebuilt.isVisible()
+    assert rebuilt.widget().widget() is panel._haemolynx_view_panel
+    assert panel._haemolynx_illumination_group.parentWidget() is panel._haemolynx_view_panel
+    assert _left_tabs(viewer) == (LEFT_TABS, VIEW_DOCK_NAME)
+
+    panel._haemolynx_view_button.native.click()
+    assert panel._haemolynx_view_dock is rebuilt
+
+
+def test_the_view_panel_is_not_on_the_right_settings_column(make_napari_viewer):
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    for widget in (
+        panel._haemolynx_z_depth_slider,
+        panel._haemolynx_z_depth_row,
+        panel._haemolynx_vessel_draw,
+        panel._haemolynx_vessel_draw_row,
+    ):
+        ancestor = widget.parentWidget()
+        while ancestor is not None:
+            assert ancestor is not panel
+            ancestor = ancestor.parentWidget()
+
+
+def test_the_panel_still_builds_the_view_chrome_with_no_viewer(qapp):
+    panel = settings_widget(napari_viewer=None)
+    assert panel._haemolynx_view_dock is None
+    assert panel._haemolynx_view_panel is not None
+    assert panel._haemolynx_z_depth_slider is not None
+    assert panel._haemolynx_scale_bar.isChecked() is False
+    assert panel._haemolynx_scale_bar.isEnabled()
+    assert panel._haemolynx_snapshot_button is not None
+    assert panel._haemolynx_vessel_draw.currentText() == "Tubes"
+    panel._haemolynx_snapshot_button.click()
+    assert "viewer" in panel._haemolynx_report().lower()
+
+
+def test_z_depth_filter_is_on_the_left_panel_not_the_right(make_napari_viewer):
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    row = panel._haemolynx_z_depth_row
+    assert row.parentWidget() is panel._haemolynx_display_group
+    ancestor = row
+    found_view = False
+    while ancestor is not None:
+        assert ancestor is not panel
+        if ancestor is panel._haemolynx_view_panel:
+            found_view = True
+        ancestor = ancestor.parentWidget()
+    assert found_view
+    assert panel.layout().indexOf(row) == -1
+
+
+def test_z_depth_labels_show_the_selected_microns(make_napari_viewer):
+    """Before a stack the handles are labelled min and max. Afterwards they
+    show the window in microns, and follow the handles."""
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    slider = panel._haemolynx_z_depth_slider
+    assert slider.edge_labels() == ("min", "max")
+
+    panel._haemolynx_view.results = _stack_results()
+    panel._haemolynx_after_layers_applied()
+    assert slider.edge_labels() == ("0 µm", "8 µm")
+
+    slider.setValue((2.5, 5.0))
+    assert slider.edge_labels() == ("2.5 µm", "5 µm")
+
+
+def test_the_view_tab_fits_its_width_with_a_run_shown(make_napari_viewer):
+    """Regression: once a run coloured the vessels, the colour range's 150 px
+    bar beside its label held the view panel at 439 px in a 286 px tab, so
+    the Z-depth min and max bars ran past the tab's edge. The Z-depth and
+    colour range labels sit above their controls. Later, "Segmented image"
+    under "Skeleton" beside "Flow direction arrows" held it at 327 px: the
+    Show boxes' labels are short."""
+    from qtpy.QtCore import Qt
+
+    viewer = make_napari_viewer(show=True)
+    panel = settings_widget(napari_viewer=viewer)
+    for group in a_run():
+        _apply_layers(viewer, group)
+    main_window = viewer.window._qt_window
+    main_window.resize(1400, 900)
+    dock = panel._haemolynx_view_dock
+    main_window.resizeDocks([dock], [300], Qt.Orientation.Horizontal)
+    _settle()
+
+    colour_range = panel._haemolynx_view_panel.findChild(
+        type(panel._haemolynx_view_panel), "haemolynx_colour_range_row"
+    )
+    assert colour_range is not None and not colour_range.isHidden()
+    viewport = dock.widget().viewport()
+    # 10% over the tab is allowed: Linux's fonts widen the Show grid (287 px
+    # in 285), and the regressions above were 14% and 53% over.
+    room = viewport.width() * 1.1
+    assert panel._haemolynx_view_panel.width() <= room, (
+        panel._haemolynx_view_panel.width(), viewport.width())
+    slider = panel._haemolynx_z_depth_slider
+    for bar in (slider._lo, slider._hi):
+        right = bar.mapTo(viewport, bar.rect().topRight()).x()
+        assert right <= room, (right, viewport.width())
+
+    row = panel._haemolynx_z_depth_row
+    label = row.layout().itemAt(0).widget()
+    assert label.text().startswith("Z-depth filter")
+    assert row.layout().itemAt(1).widget() is slider
+    assert label.geometry().bottom() <= slider.geometry().top()
+
+
+def test_z_depth_clips_every_layer_and_full_range_restores(make_napari_viewer):
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    for group in a_run():
+        _apply_layers(viewer, group)
+    layer, original = _load_patterned_image(viewer)
+    panel._haemolynx_view.results = _stack_results()
+    panel._haemolynx_after_layers_applied()
+
+    vessel_count = len(viewer.layers[VESSELS].data)
+    node_count = len(viewer.layers[NODES].data)
+
+    panel._haemolynx_z_depth_slider.setValue((0.0, 5.0))
+    displayed = np.asarray(layer.data)
+    np.testing.assert_array_equal(displayed[0], 1)
+    np.testing.assert_array_equal(displayed[1], 3)
+    np.testing.assert_array_equal(displayed[2], 2)
+    np.testing.assert_array_equal(displayed[3], 0)
+    assert len(viewer.layers[VESSELS].data) < vessel_count
+    assert len(viewer.layers[NODES].data) <= node_count
+    np.testing.assert_array_equal(data_for_pipeline(layer), original)
+
+    panel._haemolynx_z_depth_slider.setValue((0.0, 8.0))
+    np.testing.assert_array_equal(np.asarray(layer.data), original)
+    assert len(viewer.layers[VESSELS].data) == vessel_count
+    assert len(viewer.layers[NODES].data) == node_count
+
+
+def test_z_depth_slider_does_not_rebuild_while_dragging(
+    make_napari_viewer, monkeypatch
+):
+    """valueChanged while a handle is down must not clip volumes or graph layers.
+
+    The expensive work is a full-volume zeros+copy plus napari Vectors/Points
+    rebuilds. Apply once on sliderReleased (and immediately on programmatic
+    setValue when not dragging).
+    """
+    import haemolynx.gui._widget as widget_mod
+
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    for group in a_run():
+        _apply_layers(viewer, group)
+    layer, original = _load_patterned_image(viewer)
+    panel._haemolynx_view.results = _stack_results()
+
+    counts = {"volume": 0, "graph": 0}
+    real_volume = widget_mod._apply_volume_z_display
+    real_graph = widget_mod._apply_z_filter
+
+    def counting_volume(*args, **kwargs):
+        counts["volume"] += 1
+        return real_volume(*args, **kwargs)
+
+    def counting_graph(*args, **kwargs):
+        counts["graph"] += 1
+        return real_graph(*args, **kwargs)
+
+    monkeypatch.setattr(widget_mod, "_apply_volume_z_display", counting_volume)
+    monkeypatch.setattr(widget_mod, "_apply_z_filter", counting_graph)
+
+    panel._haemolynx_after_layers_applied()
+    baseline_volume = counts["volume"]
+    baseline_graph = counts["graph"]
+    assert baseline_volume >= 1
+    assert baseline_graph >= 1
+
+    slider = panel._haemolynx_z_depth_slider
+    slider._hi.sliderPressed.emit()
+    assert slider.isSliderDown()
+    for hi in (7.5, 7.0, 6.5, 6.0, 5.5, 5.0):
+        slider.setValue((0.0, hi))
+    assert counts["volume"] == baseline_volume
+    assert counts["graph"] == baseline_graph
+    np.testing.assert_array_equal(np.asarray(layer.data), original)
+
+    slider._hi.sliderReleased.emit()
+    assert counts["volume"] == baseline_volume + 1
+    assert counts["graph"] == baseline_graph + 1
+    displayed = np.asarray(layer.data)
+    np.testing.assert_array_equal(displayed[0], 1)
+    np.testing.assert_array_equal(displayed[1], 3)
+    np.testing.assert_array_equal(displayed[2], 2)
+    np.testing.assert_array_equal(displayed[3], 0)
+    np.testing.assert_array_equal(data_for_pipeline(layer), original)
+
+    slider.setValue((0.0, 8.0))
+    assert counts["volume"] == baseline_volume + 2
+    assert counts["graph"] == baseline_graph + 2
+    np.testing.assert_array_equal(np.asarray(layer.data), original)
+
+
+def test_z_depth_leaves_the_pipeline_cache_full(make_napari_viewer):
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    for group in a_run():
+        _apply_layers(viewer, group)
+    layer, original = _load_patterned_image(viewer)
+    panel._haemolynx_view.results = _stack_results()
+    panel._haemolynx_after_layers_applied()
+    settings_before = dict(panel._haemolynx_values())
+
+    panel._haemolynx_z_depth_slider.setValue((0.0, 5.0))
+    np.testing.assert_array_equal(data_for_pipeline(layer), original)
+    assert dict(panel._haemolynx_values()) == settings_before
+
+
+def _vispy_scale_bar_visuals(viewer):
+    """Vispy overlays napari attaches to the scale-bar model, if the window exists."""
+    overlay = _scale_bar_overlay(viewer)
+    if overlay is None:
+        return []
+    window = getattr(viewer, "window", None)
+    qt_viewer = getattr(window, "_qt_viewer", None) if window is not None else None
+    mapping = getattr(
+        getattr(qt_viewer, "canvas", None), "_viewer_overlay_to_visual", None
+    )
+    if mapping is None:
+        return []
+    return list(mapping.get(overlay, []))
+
+
+def test_scale_bar_checkbox_toggles_viewer_scale_bar(make_napari_viewer):
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    box = panel._haemolynx_scale_bar
+    overlay = _scale_bar_overlay(viewer)
+    assert box.isChecked() is False
+    assert overlay is not None
+    assert overlay.visible is False
+    assert str(overlay.position) == SCALE_BAR_POSITION
+
+    box.setChecked(True)
+    assert overlay.visible is True
+    assert str(overlay.position) == SCALE_BAR_POSITION
+    visuals = _vispy_scale_bar_visuals(viewer)
+    assert visuals, "napari should add a canvas scale-bar overlay when the box is ticked"
+    assert visuals[0].node.visible is True
+
+    box.setChecked(False)
+    assert overlay.visible is False
+    visuals = _vispy_scale_bar_visuals(viewer)
+    if visuals:
+        assert visuals[0].node.visible is False
+
+
+def test_scale_bar_is_bottom_right_and_in_microns_once_layers_exist(
+    make_napari_viewer,
+):
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    for group in a_run():
+        _apply_layers(viewer, group)
+
+    overlay = _scale_bar_overlay(viewer)
+    assert overlay.visible is False
+    panel._haemolynx_scale_bar.setChecked(True)
+    assert overlay.visible is True
+    assert str(overlay.position) == SCALE_BAR_POSITION
+    visuals = _vispy_scale_bar_visuals(viewer)
+    assert visuals
+    assert visuals[0].node.visible is True
+
+    image = viewer.layers[IMAGE]
+    assert all("micrometer" in str(unit) for unit in image.units)
+
+    panel._haemolynx_scale_bar.setChecked(False)
+    assert overlay.visible is False
+    visuals = _vispy_scale_bar_visuals(viewer)
+    if visuals:
+        assert visuals[0].node.visible is False
+
+
+def test_output_folder_is_the_output_dir_setting(tmp_path):
+    from pathlib import Path
+
+    assert output_folder_from_settings({"output_dir": Path("out")}) == Path("out")
+    assert output_folder_from_settings({"output_dir": "out"}) == Path("out")
+    assert output_folder_from_settings({"output_dir": None}) is None
+    assert output_folder_from_settings({"output_dir": ""}) is None
+    assert output_folder_from_settings({"output_dir": "."}) is None
+    assert output_folder_from_settings({}) is None
+    # A FileEdit left blank resolves to the working directory.
+    assert output_folder_from_settings({"output_dir": Path.cwd()}) is None
+    chosen = tmp_path / "artifacts"
+    assert output_folder_from_settings({"output_dir": chosen}) == tmp_path / "artifacts"
+
+
+def test_snapshot_filename_is_timestamped_and_unique(tmp_path):
+    from datetime import datetime
+
+    when = datetime(2026, 9, 4, 11, 32, 0)
+    first = unique_snapshot_path(tmp_path, when=when)
+    assert first.name == f"{SNAPSHOT_STEM}_20260904_113200.tif"
+    first.write_bytes(b"x")
+    second = unique_snapshot_path(tmp_path, when=when)
+    assert second.name == f"{SNAPSHOT_STEM}_20260904_113200_2.tif"
+
+
+def _point_snapshot_at(panel, tmp_path):
+    rows = panel._haemolynx_rows()
+    rows["output_dir"].value = tmp_path / "artifacts"
+    return tmp_path / "artifacts"
+
+
+def _fake_view_rgb(*, mark=(3, 4, (7, 8, 9)), shape=(12, 16, 3)):
+    rgb = np.zeros(shape, dtype=np.uint8)
+    row, col, colour = mark
+    rgb[row, col] = colour
+    return rgb
+
+
+def test_snapshot_button_writes_a_single_view_tiff(
+    make_napari_viewer, tmp_path, monkeypatch
+):
+    import tifffile
+    from qtpy.QtWidgets import QPushButton
+
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    for group in a_run():
+        _apply_layers(viewer, group)
+
+    out_dir = _point_snapshot_at(panel, tmp_path)
+    rgb = _fake_view_rgb()
+    monkeypatch.setattr(viewer.window, "screenshot", lambda **_k: rgb)
+
+    settings_before = dict(panel._haemolynx_values())
+    image_layer = viewer.layers[IMAGE]
+    original = np.asarray(data_for_pipeline(image_layer)).copy()
+
+    button = panel._haemolynx_snapshot_button
+    assert isinstance(button, QPushButton)
+    button.click()
+
+    written = sorted(out_dir.glob(f"{SNAPSHOT_STEM}_*.tif"))
+    assert len(written) == 1
+    path = written[0]
+    assert str(path) in panel._haemolynx_report()
+
+    with tifffile.TiffFile(path) as tif:
+        assert len(tif.pages) == 1
+        saved = tif.pages[0].asarray()
+    np.testing.assert_array_equal(saved, rgb)
+    assert saved.ndim == 3 and saved.shape[-1] == 3
+    assert saved.shape != original.shape
+    np.testing.assert_array_equal(data_for_pipeline(image_layer), original)
+    assert dict(panel._haemolynx_values()) == settings_before
+
+
+def test_snapshot_is_the_displayed_view_not_the_volume_cache(
+    make_napari_viewer, tmp_path, monkeypatch
+):
+    """The Z-depth filter changes the canvas; the TIFF is that view, not z_window_full."""
+    from types import SimpleNamespace
+
+    import tifffile
+
+    from haemolynx.gui.results import ResultLayers
+
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    for group in a_run():
+        _apply_layers(viewer, group)
+
+    image = np.zeros((4, 4, 4), dtype=np.uint8)
+    image[0] = 1
+    image[1] = 3
+    image[2] = 2
+    image[3] = 9
+    layer = viewer.layers[IMAGE]
+    layer.data = image
+    _store_z_window_cache(layer, image)
+
+    results = ResultLayers()
+    results.stage_finished(
+        "skeletonise",
+        SimpleNamespace(
+            image=np.zeros((4, 4, 4), dtype=np.uint8),
+            skeleton=np.zeros((4, 4, 4), dtype=bool),
+            voxel_size_xyz=(0.5, 1.0, 2.0),
+            voxel_size_zyx=(2.0, 1.0, 0.5),
+        ),
+    )
+    panel._haemolynx_view.results = results
+    panel._haemolynx_after_layers_applied()
+
+    original = image.copy()
+    panel._haemolynx_z_depth_slider.setValue((0.0, 5.0))
+    displayed = np.asarray(layer.data)
+    np.testing.assert_array_equal(displayed[0], 1)
+    np.testing.assert_array_equal(displayed[3], 0)
+
+    out_dir = _point_snapshot_at(panel, tmp_path)
+    rgb = _fake_view_rgb(mark=(1, 2, (11, 22, 33)), shape=(8, 10, 3))
+    seen = {}
+
+    def fake_screenshot(**_kwargs):
+        seen["displayed"] = np.asarray(layer.data).copy()
+        return rgb
+
+    monkeypatch.setattr(viewer.window, "screenshot", fake_screenshot)
+    panel._haemolynx_snapshot_button.click()
+
+    np.testing.assert_array_equal(seen["displayed"], displayed)
+    np.testing.assert_array_equal(seen["displayed"][0], 1)
+    np.testing.assert_array_equal(seen["displayed"][3], 0)
+
+    written = sorted(out_dir.glob(f"{SNAPSHOT_STEM}_*.tif"))
+    assert len(written) == 1
+    with tifffile.TiffFile(written[0]) as tif:
+        assert len(tif.pages) == 1
+        saved = tif.pages[0].asarray()
+    np.testing.assert_array_equal(saved, rgb)
+    assert saved.shape != original.shape
+    np.testing.assert_array_equal(data_for_pipeline(layer), original)
+    np.testing.assert_array_equal(np.asarray(layer.data), displayed)
+
+
+def test_snapshot_without_output_folder_does_not_crash(make_napari_viewer):
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    panel._haemolynx_rows()["output_dir"].value = ""
+    assert output_folder_from_settings(panel._haemolynx_values()) is None
+
+    panel._haemolynx_snapshot_button.click()
+    assert panel._haemolynx_report() == SNAPSHOT_NO_OUTPUT_FOLDER
+
+
+def test_two_snapshots_do_not_overwrite(make_napari_viewer, tmp_path, monkeypatch):
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    out_dir = _point_snapshot_at(panel, tmp_path)
+    monkeypatch.setattr(
+        viewer.window, "screenshot", lambda **_k: _fake_view_rgb()
+    )
+    panel._haemolynx_snapshot_button.click()
+    panel._haemolynx_snapshot_button.click()
+    written = sorted(out_dir.glob(f"{SNAPSHOT_STEM}_*.tif"))
+    assert len(written) == 2
+    assert written[0] != written[1]
+
+
+def _choose_vessel_draw(control, text: str) -> None:
+    """Pick Tubes/Lines the way a click on the view-panel radios does."""
+    button = control.lines if text == "Lines" else control.tubes
+    button.click()
+
+
+def test_vessels_default_to_tubes_and_toggle_to_lines(make_napari_viewer):
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    for group in a_run():
+        _apply_layers(viewer, group)
+
+    assert isinstance(viewer.layers[VESSELS], napari.layers.Vectors)
+    assert VESSEL_TUBES in viewer.layers
+    assert isinstance(viewer.layers[VESSEL_TUBES], napari.layers.Surface)
+    assert viewer.layers[VESSELS].visible is False
+    assert viewer.layers[VESSEL_TUBES].visible is True
+    assert panel._haemolynx_vessel_draw.currentText() == "Tubes"
+
+    n_verts = len(viewer.layers[VESSEL_TUBES].data[0])
+    assert n_verts == _tubes_of_the_shown_vessels(viewer) > 0
+
+    panel._haemolynx_vessel_draw.setCurrentText("Lines")
+    assert viewer.layers[VESSELS].visible is True
+    assert viewer.layers[VESSEL_TUBES].visible is False
+
+    panel._haemolynx_vessel_draw.setCurrentText("Tubes")
+    assert viewer.layers[VESSELS].visible is False
+    assert viewer.layers[VESSEL_TUBES].visible is True
+
+
+def test_vessel_draw_activated_toggles_visibility_both_ways(make_napari_viewer):
+    """A click on the Tubes/Lines radios must swap what is drawn."""
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    for group in a_run():
+        _apply_layers(viewer, group)
+    combo = panel._haemolynx_vessel_draw
+    n_verts = _tubes_of_the_shown_vessels(viewer)
+    assert n_verts > 0
+    assert len(viewer.layers[VESSEL_TUBES].data[0]) == n_verts
+
+    _choose_vessel_draw(combo, "Lines")
+    assert combo.currentText() == "Lines"
+    assert viewer.layers[VESSELS].visible is True
+    assert viewer.layers[VESSEL_TUBES].visible is False
+    assert len(viewer.layers[VESSEL_TUBES].data[0]) == 0
+
+    _choose_vessel_draw(combo, "Tubes")
+    assert combo.currentText() == "Tubes"
+    assert viewer.layers[VESSELS].visible is False
+    assert viewer.layers[VESSEL_TUBES].visible is True
+    assert len(viewer.layers[VESSEL_TUBES].data[0]) == n_verts
+
+    _choose_vessel_draw(combo, "Lines")
+    _choose_vessel_draw(combo, "Tubes")
+    assert viewer.layers[VESSELS].visible is False
+    assert viewer.layers[VESSEL_TUBES].visible is True
+    assert len(viewer.layers[VESSEL_TUBES].data[0]) > 0
+
+
+def test_vessel_draw_choice_survives_a_layer_rebuild(make_napari_viewer):
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    for group in a_run():
+        _apply_layers(viewer, group)
+
+    panel._haemolynx_vessel_draw.setCurrentText("Lines")
+    for group in a_run():
+        _apply_layers(viewer, group)
+
+    assert panel._haemolynx_vessel_draw.currentText() == "Lines"
+    assert viewer.layers[VESSELS].visible is True
+    if VESSEL_TUBES in viewer.layers:
+        assert viewer.layers[VESSEL_TUBES].visible is False
+
+
+def test_z_depth_filter_rebuilds_tubes_from_filtered_vectors(make_napari_viewer):
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    for group in a_run():
+        _apply_layers(viewer, group)
+    panel._haemolynx_view.results = _stack_results()
+    panel._haemolynx_after_layers_applied()
+
+    assert panel._haemolynx_vessel_draw.currentText() == "Tubes"
+    full_segments = len(viewer.layers[VESSELS].data)
+    full_verts = len(viewer.layers[VESSEL_TUBES].data[0])
+    assert full_verts == _tubes_of_the_shown_vessels(viewer)
+
+    panel._haemolynx_z_depth_slider.setValue((0.0, 5.0))
+    clipped_segments = len(viewer.layers[VESSELS].data)
+    assert clipped_segments < full_segments
+    clipped_verts = len(viewer.layers[VESSEL_TUBES].data[0])
+    assert clipped_verts == _tubes_of_the_shown_vessels(viewer) < full_verts
+    assert viewer.layers[VESSEL_TUBES].visible is True
+    assert viewer.layers[VESSELS].visible is False
+
+    panel._haemolynx_z_depth_slider.setValue((0.0, 8.0))
+    assert len(viewer.layers[VESSELS].data) == full_segments
+    assert len(viewer.layers[VESSEL_TUBES].data[0]) == full_verts
+
+
+def test_a_z_depth_window_keeps_the_vessels_colour_controls(make_napari_viewer):
+    """Narrowing the window recreates the vessels layer, and napari builds
+    fresh controls for it: the Colour by list, colour map and colour range
+    were not put back, so the vessels could not be recoloured at all until
+    the next run."""
+    from haemolynx.gui._widget import _layer_controls
+    from haemolynx.gui.results import ResultLayers
+    from test_gui_results import a_graph, network
+
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    graph = a_graph()
+    for (u, v, key), order in zip(graph.edges(keys=True), ("B01", "B02", "B03")):
+        graph.edges[u, v, key]["branch_order"] = order
+    _apply_layers(viewer, ResultLayers().stage_finished("build_network", network(graph)))
+    panel._haemolynx_view.results = _stack_results()
+    panel._haemolynx_after_layers_applied()
+    before = viewer.layers[VESSELS]
+    assert _layer_controls(viewer, before)._haemolynx_feature is not None
+
+    panel._haemolynx_z_depth_slider.setValue((0.0, 5.0))
+
+    after = viewer.layers[VESSELS]
+    assert after is not before  # recreated
+    controls = _layer_controls(viewer, after)
+    offered = [
+        controls._haemolynx_feature.native.itemText(i)
+        for i in range(controls._haemolynx_feature.native.count())
+    ]
+    assert "branch_order_rank" in offered and "branch_order" in offered
+    controls._haemolynx_feature.native.setCurrentText("branch_order_rank")
+    assert after.edge_color_mode == "colormap"
+    assert controls._haemolynx_colormap.shown is True
+    assert controls._haemolynx_scale.shown is True
+
+
+
+# --- XY / XZ / YZ view-snap buttons ------------------------------------------
+
+
+def _snap_viewer(make_napari_viewer):
+    viewer = make_napari_viewer()
+    settings_widget(napari_viewer=viewer)
+    # A box, not a cube, so every plane's centre differs.
+    viewer.add_image(np.zeros((10, 20, 40), dtype=np.uint8), scale=(2.0, 1.0, 0.5))
+    return viewer
+
+
+def test_the_view_snap_buttons_sit_in_the_canvas_bottom_left(make_napari_viewer):
+    from haemolynx.gui._widget import VIEW_SNAP_MARGIN
+
+    viewer = _snap_viewer(make_napari_viewer)
+    bar = viewer._haemolynx_view_snap_buttons
+    assert list(bar.buttons) == ["XY", "XZ", "YZ"]
+    for plane, button in bar.buttons.items():
+        assert button.text() == plane
+        assert button.toolTip()
+
+    qt_viewer = viewer.window._qt_viewer
+    native = qt_viewer.canvas.native
+    for size in ((500, 400), (800, 650)):
+        native.resize(*size)
+        bar.place()
+        corner = native.mapTo(bar.parentWidget(), native.rect().bottomLeft())
+        assert bar.x() == corner.x() + VIEW_SNAP_MARGIN
+        assert bar.geometry().bottom() == corner.y() - VIEW_SNAP_MARGIN
+
+
+def test_the_view_snap_buttons_are_not_a_pane_of_the_viewer_splitter(
+    make_napari_viewer,
+):
+    """napari's Qt viewer is a QSplitter, which turns every child into a pane:
+    a bar parented there squeezed the canvas down to the buttons' width."""
+    viewer = _snap_viewer(make_napari_viewer)
+    bar = viewer._haemolynx_view_snap_buttons
+    assert viewer.window._qt_viewer.indexOf(bar) == -1
+    assert bar.parentWidget() is viewer.window._qt_window
+
+
+def test_a_second_panel_reuses_the_viewers_view_snap_buttons(make_napari_viewer):
+    viewer = _snap_viewer(make_napari_viewer)
+    first = viewer._haemolynx_view_snap_buttons
+    settings_widget(napari_viewer=viewer)
+    assert viewer._haemolynx_view_snap_buttons is first
+
+
+@pytest.mark.parametrize(
+    ("plane", "view", "up"),
+    [
+        ("XY", (-1.0, 0.0, 0.0), (0.0, -1.0, 0.0)),
+        ("XZ", (0.0, 1.0, 0.0), (-1.0, 0.0, 0.0)),
+        ("YZ", (0.0, 0.0, -1.0), (-1.0, 0.0, 0.0)),
+    ],
+)
+def test_a_3d_snap_turns_the_camera_and_recentres(make_napari_viewer, plane, view, up):
+    viewer = _snap_viewer(make_napari_viewer)
+    viewer.dims.ndisplay = 3
+    viewer.reset_view()
+    centre = tuple(viewer.scene.camera.center)
+    # Somewhere else entirely, as a user leaves it after orbiting and panning.
+    viewer.scene.camera.angles = (35.0, -20.0, 70.0)
+    viewer.scene.camera.center = (0.0, 0.0, 0.0)
+    viewer.dims.order = (2, 1, 0)
+
+    viewer._haemolynx_view_snap_buttons.buttons[plane].click()
+
+    np.testing.assert_allclose(viewer.scene.camera.view_direction, view, atol=1e-9)
+    np.testing.assert_allclose(viewer.scene.camera.up_direction, up, atol=1e-9)
+    np.testing.assert_allclose(viewer.scene.camera.center, centre)
+    assert tuple(viewer.dims.order) == (0, 1, 2)
+
+
+@pytest.mark.parametrize(
+    ("plane", "displayed"), [("XY", (1, 2)), ("XZ", (0, 2)), ("YZ", (0, 1))]
+)
+def test_a_2d_snap_shows_the_planes_axes(make_napari_viewer, plane, displayed):
+    from haemolynx.gui._widget import snap_view_to_plane
+
+    viewer = _snap_viewer(make_napari_viewer)
+    viewer.dims.ndisplay = 2
+    viewer.scene.camera.zoom = 50.0
+
+    assert snap_view_to_plane(viewer, plane)
+
+    assert tuple(viewer.dims.displayed) == displayed
+    assert viewer.scene.camera.zoom != 50.0  # refitted to the data
+
+
+def test_tubes_stay_on_the_vessel_lines_after_a_2d_snap_then_3d(make_napari_viewer):
+    """napari 0.9 slices a fully displayed Surface in its stored axis order,
+    whatever ``dims.order`` says, while Vectors (and Image) follow the order.
+    A 2D YZ snap then a switch to 3D left the tubes rotated against the vessel
+    lines and the image they were built on -- z drawn along x."""
+    from haemolynx.gui._widget import snap_view_to_plane
+
+    viewer = make_napari_viewer()
+    settings_widget(napari_viewer=viewer)
+    for group in a_run():
+        _apply_layers(viewer, group)
+    viewer.dims.ndisplay = 2
+    assert snap_view_to_plane(viewer, "YZ")
+    viewer.dims.ndisplay = 3
+    displayed = list(viewer.dims.displayed)
+    assert displayed != sorted(displayed)
+
+    vessels = viewer.layers[VESSELS]
+    tubes = viewer.layers[VESSEL_TUBES]
+    # The lines' own on-screen coordinates: stored (z, y, x) in displayed order.
+    np.testing.assert_array_equal(
+        np.asarray(vessels._view_data)[:, 0], np.asarray(vessels.data)[:, 0][:, displayed]
+    )
+    np.testing.assert_array_equal(
+        np.asarray(tubes._view_vertices), np.asarray(tubes.data[0])[:, displayed]
+    )
+
+
+def test_snapping_without_3d_data_changes_nothing(make_napari_viewer):
+    from haemolynx.gui._widget import snap_view_to_plane
+
+    viewer = make_napari_viewer()
+    viewer.add_image(np.zeros((20, 40), dtype=np.uint8))
+    order = tuple(viewer.dims.order)
+
+    assert snap_view_to_plane(viewer, "XZ") is False
+    assert tuple(viewer.dims.order) == order
+
+
+# --- the Z-depth filter's cost ------------------------------------------------
+
+
+def test_a_z_depth_change_does_not_recompose_branch_tooltips(make_napari_viewer, monkeypatch):
+    """The tooltip text does not depend on the Z window: a filtered or
+    recreated layer takes its column from the full cache, which is kept in
+    step with the checkbox selection. Recomposing it anyway on every change
+    is what made the slider take tens of seconds per move on a real network."""
+    from haemolynx.gui import branch_hover
+
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    for group in a_run():
+        _apply_layers(viewer, group)
+    panel._haemolynx_view.results = _stack_results()
+    panel._haemolynx_after_layers_applied()
+    full_tooltips = list(viewer.layers[VESSELS].features["tooltip"])
+    assert full_tooltips and all(t.startswith("branchID: ") for t in full_tooltips)
+
+    calls = []
+    real = branch_hover.tooltips_from_feature_table
+    monkeypatch.setattr(
+        branch_hover,
+        "tooltips_from_feature_table",
+        lambda *args, **kwargs: calls.append(1) or real(*args, **kwargs),
+    )
+    slider = panel._haemolynx_z_depth_slider
+    slider.setValue((0.0, 5.0))
+    narrowed = list(viewer.layers[VESSELS].features["tooltip"])
+    slider.setValue((0.0, 8.0))
+
+    assert calls == []
+    assert narrowed and set(narrowed) <= set(full_tooltips)
+    assert list(viewer.layers[VESSELS].features["tooltip"]) == full_tooltips
+
+
+def test_the_z_depth_cache_is_the_volume_itself_not_a_copy(make_napari_viewer):
+    """A copy doubled every displayed volume's memory for nothing: the filter
+    never writes into it, since a clipped view is always a new array."""
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    for group in a_run():
+        _apply_layers(viewer, group)
+    layer, image = _load_patterned_image(viewer)
+    panel._haemolynx_view.results = _stack_results()
+    panel._haemolynx_after_layers_applied()
+
+    assert data_for_pipeline(layer) is image
+    panel._haemolynx_z_depth_slider.setValue((0.0, 5.0))
+    assert layer.data is not image
+    assert data_for_pipeline(layer) is image
+    panel._haemolynx_z_depth_slider.setValue((0.0, 8.0))
+    # Back to showing the stored volume itself, not a fresh copy of it.
+    assert layer.data is image
+
+
+def test_a_disk_backed_volume_stays_on_disk_through_the_z_filter(make_napari_viewer, tmp_path):
+    """The low-RAM option keeps big volumes in memory-mapped files; the Z
+    filter used to read each one into RAM in full just to cache it."""
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    for group in a_run():
+        _apply_layers(viewer, group)
+    layer, image = _load_patterned_image(viewer)
+    on_disk = np.memmap(tmp_path / "stack.dat", dtype=image.dtype, mode="w+", shape=image.shape)
+    on_disk[:] = image
+    layer.data = on_disk
+    _store_z_window_cache(layer, on_disk)
+    panel._haemolynx_view.results = _stack_results()
+    panel._haemolynx_after_layers_applied()
+
+    assert data_for_pipeline(layer) is on_disk
+    panel._haemolynx_z_depth_slider.setValue((0.0, 5.0))
+    assert isinstance(layer.data, np.memmap)
+    np.testing.assert_array_equal(np.asarray(layer.data)[3], 0)
+    np.testing.assert_array_equal(np.asarray(layer.data)[:3], image[:3])
+    panel._haemolynx_z_depth_slider.setValue((0.0, 8.0))
+    assert layer.data is on_disk
+
+
+# --- the Z-depth filter is display-only: it must not change what flows look like
+
+
+def _flow_network_results(n_vessels=40):
+    """A run whose vessels each carry their own flow and branch order."""
+    from types import SimpleNamespace
+
+    import networkx as nx
+
+    from haemolynx.gui.results import ResultLayers
+    from test_gui_results import network
+
+    rng = np.random.default_rng(1)
+    graph = nx.MultiGraph()
+    for i in range(n_vessels + 1):
+        graph.add_node(i, pos=np.array([i * 2.0, float(i % 5), float(i % 3)]))
+    for i in range(n_vessels):
+        a, b = graph.nodes[i]["pos"], graph.nodes[i + 1]["pos"]
+        flow = float(10 ** rng.uniform(-13, -10))
+        graph.add_edge(
+            i, i + 1, key=0,
+            voxels=[a.tolist(), ((a + b) / 2).tolist(), b.tolist()],
+            length=float(np.linalg.norm(b - a)), segment_id=i,
+            flow_abs=flow, flow_signed=flow, resistance=1e15, conductance=1e-15,
+            # The first order only near z = 0, so a window higher up lacks it.
+            branch_order="A1" if i < 5 else ("B2" if i % 2 else "V3"),
+        )
+    shape = (2 * n_vessels + 1, 6, 4)
+    results = ResultLayers()
+    groups = [
+        results.stage_finished("skeletonise", SimpleNamespace(
+            image=np.zeros(shape, dtype=np.uint8), skeleton=np.zeros(shape, dtype=bool),
+            voxel_size_xyz=(1.0, 1.0, 1.0), voxel_size_zyx=(1.0, 1.0, 1.0))),
+        results.stage_finished("build_network", network(graph, (1.0, 1.0, 1.0))),
+    ]
+    return results, groups, float(shape[0])
+
+
+def _segment_colours(layer):
+    """Each drawn segment's colour, keyed by the segment itself."""
+    data = np.asarray(layer.data)
+    colours = np.round(np.asarray(layer.edge_color), 6)
+    return {data[i].tobytes(): tuple(colours[i]) for i in range(len(data))}
+
+
+@pytest.mark.parametrize("colour_by", ["flow_abs", "branch_order"])
+def test_the_z_depth_filter_keeps_every_vessels_colour(make_napari_viewer, colour_by):
+    """Narrowing the window used to paste the full layer's per-row colours
+    onto the shorter layer, drawing each remaining vessel in some other
+    vessel's flow colour -- and widening again never put them back."""
+    from haemolynx.gui._widget import _colour_layer
+    from haemolynx.gui.results import colour_cycle_for
+
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    results, groups, extent = _flow_network_results()
+    for group in groups:
+        _apply_layers(viewer, group)
+    panel._haemolynx_view.results = results
+    panel._haemolynx_after_layers_applied()
+    layer = viewer.layers[VESSELS]
+    if colour_by == "flow_abs":
+        _colour_layer(layer, "flow_abs", "continuous")
+    else:
+        _colour_layer(layer, "branch_order", "categorical",
+                      colour_cycle_for(layer.features["branch_order"]))
+    full = _segment_colours(layer)
+    limits = tuple(layer.edge_contrast_limits) if colour_by == "flow_abs" else None
+
+    slider = panel._haemolynx_z_depth_slider
+    slider.setValue((20.0, 60.0))
+    narrowed = viewer.layers[VESSELS]
+    shown = _segment_colours(narrowed)
+    assert 0 < len(shown) < len(full)
+    assert {key: full[key] for key in shown} == shown
+    if colour_by == "flow_abs":
+        assert tuple(narrowed.edge_contrast_limits) == limits
+    else:
+        assert "A1" not in set(narrowed.features["branch_order"])
+
+    slider.setValue((0.0, extent))
+    assert _segment_colours(viewer.layers[VESSELS]) == full
+
+
+def test_a_sweep_layer_keeps_its_grid_point_through_a_z_depth_change(make_napari_viewer, tmp_path):
+    """Two ways the depth filter used to change a sweep's flows on screen: it
+    redrew from a cache still holding the first grid point, and the sweep
+    slider kept driving the layer object the filter had just replaced."""
+    from qtpy.QtWidgets import QAbstractSlider
+
+    from haemolynx.gui._widget import OURS as RESULT_OURS
+    from haemolynx.gui.results import ResultLayers, perturbation_layer_names
+    from haemolynx.pipeline import PerturbationRun
+    from test_perturbation_stage import PRESSURE_SWEEP, _run
+
+    result = _run(tmp_path, [PRESSURE_SWEEP]).results[0]
+    # That fixture's vessels run along x; turn them to run along z, so a depth
+    # window has something to leave out.
+    for _node, data in result.graph.nodes(data=True):
+        data["pos"] = np.asarray(data["pos"], dtype=float)[::-1].copy()
+    for *_ends, data in result.graph.edges(keys=True, data=True):
+        data["voxels"] = [list(point)[::-1] for point in data["voxels"]]
+    sweep = result.sweep_flows
+    last = len(sweep.axis_values[sweep.axis_names[0]]) - 1
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    _apply_layers(viewer, ResultLayers().stage_finished(
+        "run_perturbations", PerturbationRun(results=[result], output_dir=tmp_path)))
+    panel._haemolynx_after_layers_applied()
+    name = perturbation_layer_names(result.name)[0]
+    _key, sliders = panel._haemolynx_sweep_controls[name]
+    (grid_slider,) = sliders.native.findChildren(QAbstractSlider)
+
+    def expected(point):
+        tag = viewer.layers[name].metadata[RESULT_OURS]
+        per_edge = np.asarray(sweep.flow_abs_at(point), dtype=float)[tag["sweep_edge_index"]]
+        return per_edge[np.asarray(tag["segment_owner"], dtype=int)]
+
+    def shown():
+        return np.asarray(viewer.layers[name].features["flow_abs"], dtype=float)
+
+    grid_slider.setValue(last)
+    np.testing.assert_allclose(shown(), expected(last))
+    # Flows are ~1e-13, so np.allclose's default atol of 1e-8 would call any
+    # two of them equal.
+    assert not np.allclose(expected(last), expected(0), rtol=1e-6, atol=0.0)
+
+    rows = len(viewer.layers[name].data)
+    panel._haemolynx_z_depth_slider.setValue((0.0, 900.0))
+    assert len(viewer.layers[name].data) < rows  # the layer was replaced
+    np.testing.assert_allclose(shown(), expected(last))
+
+    grid_slider.setValue(0)
+    np.testing.assert_allclose(shown(), expected(0))
+
+
+def test_a_sweeps_nodes_and_arrows_follow_its_slider(make_napari_viewer, tmp_path):
+    """Showing a sweep greyed the Nodes and Flow arrows boxes: it
+    drew neither. Its nodes now take each grid point's pressures and its
+    arrows that point's flows as the slider moves."""
+    from qtpy.QtWidgets import QAbstractSlider
+
+    from haemolynx.gui._widget import OURS as RESULT_OURS
+    from haemolynx.gui.results import (
+        ResultLayers,
+        perturbation_flow_direction_layer_name,
+        perturbation_layer_names,
+    )
+    from haemolynx.pipeline import PerturbationRun
+    from test_perturbation_stage import PRESSURE_SWEEP, _run
+
+    result = _run(tmp_path, [PRESSURE_SWEEP]).results[0]
+    sweep = result.sweep_flows
+    last = len(sweep.axis_values[sweep.axis_names[0]]) - 1
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    _apply_layers(viewer, ResultLayers().stage_finished(
+        "run_perturbations", PerturbationRun(results=[result], output_dir=tmp_path)))
+    panel._haemolynx_after_layers_applied()
+    panel._haemolynx_choose_layer_set(result.name)
+    vessels, nodes = perturbation_layer_names(result.name)
+    arrows = perturbation_flow_direction_layer_name(result.name)
+
+    boxes = _show_boxes(panel)
+    assert boxes["nodes"].isEnabled() and boxes["flow direction"].isEnabled()
+    boxes["nodes"].setChecked(True)
+    boxes["flow direction"].setChecked(True)
+    assert viewer.layers[nodes].visible and viewer.layers[arrows].visible
+
+    _key, sliders = panel._haemolynx_sweep_controls[vessels]
+    (grid_slider,) = sliders.native.findChildren(QAbstractSlider)
+    for point in (last, 0):
+        grid_slider.setValue(point)
+        node_rows = viewer.layers[nodes].metadata[RESULT_OURS]["sweep_rows"]
+        np.testing.assert_array_equal(
+            viewer.layers[nodes].features["pressure"], node_rows.at(point)[1]["pressure"]
+        )
+        arrow_rows = viewer.layers[arrows].metadata[RESULT_OURS]["sweep_rows"]
+        np.testing.assert_array_equal(viewer.layers[arrows].data, arrow_rows.at(point)[0])
+        np.testing.assert_array_equal(
+            viewer.layers[arrows].features["flow_abs"], arrow_rows.at(point)[1]["flow_abs"]
+        )
+    # The inlet's pressure is the grid point's.
+    inlet = list(viewer.layers[nodes].features["node_id"]).index(0)
+    grid_slider.setValue(last)
+    assert viewer.layers[nodes].features["pressure"][inlet] == pytest.approx(
+        float(sweep.axis_values["inlet_pressure_pa"][last])
+    )
+
+
+def _baseline_and_sweep(make_napari_viewer, tmp_path):
+    """A panel showing a baseline run beside a pressure-sweep perturbation."""
+    from haemolynx.gui.results import ResultLayers, perturbation_layer_names
+    from haemolynx.pipeline import PerturbationRun
+    from test_perturbation_stage import PRESSURE_SWEEP, _run
+
+    result = _run(tmp_path, [PRESSURE_SWEEP]).results[0]
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    for group in a_run():
+        _apply_layers(viewer, group)
+    _apply_layers(viewer, ResultLayers().stage_finished(
+        "run_perturbations", PerturbationRun(results=[result], output_dir=tmp_path)))
+    panel._haemolynx_after_layers_applied()
+    return panel, viewer, result, perturbation_layer_names(result.name)[0]
+
+
+def test_a_sweep_opens_on_the_colour_range_of_its_whole_grid(make_napari_viewer, tmp_path):
+    """A layer's own controls fit a new colouring to the values it holds,
+    which for a sweep are one grid point's -- here every vessel one flow -- so
+    the grid-wide range the layer was drawn with, and its slider keeps, was
+    lost the moment the controls were attached."""
+    from haemolynx.gui._widget import _active_column
+    from haemolynx.gui.results import sweep_flow_colour_limits
+
+    _panel, viewer, result, name = _baseline_and_sweep(make_napari_viewer, tmp_path)
+    layer = viewer.layers[name]
+    grid = sweep_flow_colour_limits(result.sweep_flows, "flow_abs_log10")
+
+    assert _active_column(layer) == "flow_abs_log10"
+    assert grid[1] - grid[0] > 0.05, "the grid's points differ; one point's vessels do not"
+    assert tuple(layer.edge_contrast_limits) == pytest.approx(grid)
+
+
+def _typed_range(colour_range, low, high):
+    """Type a range into the view panel's boxes, as a user does."""
+    colour_range.low.setText(repr(low))
+    colour_range.high.setText(repr(high))
+    colour_range.high.editingFinished.emit()
+
+
+def test_colour_range_sets_the_range_of_the_tubes_on_screen(make_napari_viewer):
+    panel, viewer = _flow_panel(make_napari_viewer)
+    colour_range = panel._haemolynx_colour_range
+    _pick(panel._haemolynx_colour_by, "flow_abs_log10")
+    vessels, tubes = viewer.layers[VESSELS], viewer.layers[VESSEL_TUBES]
+    assert tubes.visible and not vessels.visible
+    assert colour_range.shown and not colour_range.row.isHidden()
+    assert colour_range.row.parentWidget() is panel._haemolynx_display_group
+    low, high = vessels.edge_contrast_limits
+    assert float(colour_range.low.text()) == pytest.approx(low, rel=1e-3)
+    assert float(colour_range.high.text()) == pytest.approx(high, rel=1e-3)
+    before = np.asarray(tubes.vertex_colors, dtype=float).copy()
+
+    _typed_range(colour_range, -12.0, -11.0)
+
+    assert tuple(vessels.edge_contrast_limits) == pytest.approx((-12.0, -11.0))
+    after = np.asarray(tubes.vertex_colors, dtype=float)
+    assert not np.allclose(after, before)
+    segment_index = tubes.metadata["haemolynx"]["segment_index"]
+    np.testing.assert_allclose(after, np.asarray(vessels.edge_color)[segment_index])
+
+    colour_range.trim_button.click()
+    log10 = np.asarray(vessels.features["flow_abs_log10"], dtype=float)
+    assert tuple(vessels.edge_contrast_limits) == pytest.approx(
+        tuple(np.nanpercentile(log10, [1.0, 99.0])))
+
+
+def test_colour_range_hides_for_a_colouring_without_a_scale(make_napari_viewer):
+    panel, _viewer = _flow_panel(make_napari_viewer)
+    colour_range = panel._haemolynx_colour_range
+    _pick(panel._haemolynx_colour_by, "flow_abs")
+    assert colour_range.shown
+    _pick(panel._haemolynx_colour_by, "branch_order")
+    assert not colour_range.shown
+    assert colour_range.row.isHidden()
+
+
+def test_the_canvas_colour_bar_follows_tubes_and_lines(make_napari_viewer):
+    """napari draws no colour bar for a hidden layer, and in Tubes mode the
+    vessels layer is hidden: the bar has to be the tubes' own."""
+    panel, viewer = _flow_panel(make_napari_viewer)
+    colour_range = panel._haemolynx_colour_range
+    _pick(panel._haemolynx_colour_by, "flow_abs_log10")
+    vessels, tubes = viewer.layers[VESSELS], viewer.layers[VESSEL_TUBES]
+
+    colour_range.in_viewer.setChecked(True)
+
+    assert tubes.visible and tubes.colorbar.visible
+    assert tuple(tubes.contrast_limits) == pytest.approx(tuple(vessels.edge_contrast_limits))
+    assert tubes.colormap.name == vessels.edge_colormap.name
+    _typed_range(colour_range, -12.5, -10.5)
+    assert tuple(tubes.contrast_limits) == pytest.approx((-12.5, -10.5))
+
+    panel._haemolynx_vessel_draw.setCurrentText("Lines")
+    assert vessels.visible and not tubes.visible
+    assert vessels._overlays["edge_colorbar"].visible
+    assert not tubes.colorbar.visible
+
+    panel._haemolynx_vessel_draw.setCurrentText("Tubes")
+    assert tubes.colorbar.visible
+
+    # A colouring with no continuous scale has no bar to draw.
+    _pick(panel._haemolynx_colour_by, "branch_order")
+    assert not tubes.colorbar.visible
+    _pick(panel._haemolynx_colour_by, "flow_abs")
+    assert tubes.colorbar.visible
+
+    colour_range.in_viewer.setChecked(False)
+    assert not tubes.colorbar.visible
+    assert not vessels._overlays["edge_colorbar"].visible
+
+
+def test_baseline_and_perturbation_each_keep_their_own_colour_range(make_napari_viewer, tmp_path):
+    from haemolynx.gui._widget import show_layer_set
+    from haemolynx.gui.vessel_tubes import vessel_tubes_layer_name
+
+    panel, viewer, result, name = _baseline_and_sweep(make_napari_viewer, tmp_path)
+    colour_range = panel._haemolynx_colour_range
+    colour_by = panel._haemolynx_colour_by
+    _pick(colour_by, "flow_abs")
+    baseline = viewer.layers[VESSELS]
+    _typed_range(colour_range, 1.0, 2.0)
+    assert tuple(baseline.edge_contrast_limits) == pytest.approx((1.0, 2.0))
+    colour_range.in_viewer.setChecked(True)
+
+    show_layer_set(viewer, result.name)
+    colour_range.follow_the_layer()
+    perturbation = viewer.layers[name]
+    from haemolynx.gui.results import sweep_flow_colour_limits
+
+    # Drawn by log flow, as the baseline's vessels are after a solve.
+    grid = sweep_flow_colour_limits(result.sweep_flows, "flow_abs_log10")
+    # The perturbation's own grid-wide range, not the baseline's, and not refitted.
+    assert tuple(perturbation.edge_contrast_limits) == pytest.approx(grid)
+    assert float(colour_range.low.text()) == pytest.approx(grid[0], rel=1e-3)
+    assert float(colour_range.high.text()) == pytest.approx(grid[1], rel=1e-3)
+    # The bar moved with the network: on the perturbation's tubes only.
+    tubes = viewer.layers[vessel_tubes_layer_name(name)]
+    assert tubes.visible and tubes.colorbar.visible
+    assert tuple(tubes.contrast_limits) == pytest.approx(grid)
+    assert not viewer.layers[VESSEL_TUBES].colorbar.visible
+
+    _typed_range(colour_range, grid[0], 0.5 * (grid[0] + grid[1]))
+    assert tuple(baseline.edge_contrast_limits) == pytest.approx((1.0, 2.0))
+
+    show_layer_set(viewer, None)
+    colour_range.follow_the_layer()
+    assert float(colour_range.low.text()) == pytest.approx(1.0)
+    assert float(colour_range.high.text()) == pytest.approx(2.0)
+    assert viewer.layers[VESSEL_TUBES].colorbar.visible
+
+
+def test_a_range_typed_on_a_sweep_survives_its_slider(make_napari_viewer, tmp_path):
+    from qtpy.QtWidgets import QAbstractSlider
+
+    from haemolynx.gui._widget import show_layer_set
+
+    panel, viewer, result, name = _baseline_and_sweep(make_napari_viewer, tmp_path)
+    show_layer_set(viewer, result.name)
+    colour_range = panel._haemolynx_colour_range
+    _pick(panel._haemolynx_colour_by, "flow_abs_log10")
+    vessels = viewer.layers[name]
+    _key, sliders = panel._haemolynx_sweep_controls[name]
+    (grid_slider,) = sliders.native.findChildren(QAbstractSlider)
+
+    _typed_range(colour_range, -14.0, -11.0)
+    for point in (1, 0):
+        grid_slider.setValue(point)
+        assert tuple(vessels.edge_contrast_limits) == pytest.approx((-14.0, -11.0))
+        assert float(colour_range.low.text()) == pytest.approx(-14.0)
+
+    # A Fit button's range is kept the same way.
+    colour_range.full_button.click()
+    fitted = tuple(vessels.edge_contrast_limits)
+    grid_slider.setValue(1)
+    assert tuple(vessels.edge_contrast_limits) == pytest.approx(fitted)
+
+
+def test_a_sweep_coloured_by_log_flow_stays_in_range_as_its_slider_moves(make_napari_viewer, tmp_path):
+    """Regression: with the sweep shown and coloured by log10 flow from the
+    view panel, the first slider move re-applied the layer's flow limits
+    (~1e-13 m^3/s) to the log10 column (~-13), so every vessel dropped below
+    the colormap and the network went dark."""
+    from qtpy.QtWidgets import QAbstractSlider
+
+    from haemolynx.gui._widget import _active_column, show_layer_set
+    from haemolynx.gui.results import ResultLayers, perturbation_layer_names
+    from haemolynx.haemodynamics.resistance import flow_abs_log10_value
+    from haemolynx.pipeline import PerturbationRun
+    from test_perturbation_stage import PRESSURE_SWEEP, _run
+
+    result = _run(tmp_path, [PRESSURE_SWEEP]).results[0]
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    for group in a_run():
+        _apply_layers(viewer, group)
+    _apply_layers(viewer, ResultLayers().stage_finished(
+        "run_perturbations", PerturbationRun(results=[result], output_dir=tmp_path)))
+    panel._haemolynx_after_layers_applied()
+    name = perturbation_layer_names(result.name)[0]
+    show_layer_set(viewer, result.name)
+    colour_by = panel._haemolynx_colour_by
+    colour_by.refresh()
+    _pick(colour_by, "flow_abs_log10")
+    vessels = viewer.layers[name]
+    assert _active_column(vessels) == "flow_abs_log10"
+    _key, sliders = panel._haemolynx_sweep_controls[name]
+    (grid_slider,) = sliders.native.findChildren(QAbstractSlider)
+
+    for point in (1, 0):
+        grid_slider.setValue(point)
+        assert _active_column(vessels) == "flow_abs_log10"
+        low, high = vessels.edge_contrast_limits
+        shown = np.asarray(vessels.features["flow_abs_log10"], dtype=float)
+        assert low <= np.nanmin(shown) and np.nanmax(shown) <= high
+    grid = result.sweep_flows.global_flow_abs_limits()
+    assert tuple(vessels.edge_contrast_limits) == pytest.approx(
+        tuple(flow_abs_log10_value(v) for v in grid))
+
+
+def test_a_sweeps_pericytes_follow_its_slider_inside_a_z_depth_window(make_napari_viewer, tmp_path):
+    """A spacing sweep moves the pericytes themselves. Moved inside a depth
+    window, only the moved points in the window show; widened again, the
+    window gives back that grid point's points, not the first one's."""
+    from qtpy.QtWidgets import QAbstractSlider
+
+    from haemolynx.gui._widget import OURS as RESULT_OURS
+    from haemolynx.gui.results import (
+        ResultLayers,
+        perturbation_layer_names,
+        perturbation_pericyte_layer_name,
+    )
+    from haemolynx.pipeline import PerturbationRun
+    from test_perturbation_stage import SPACING_SWEEP, _run
+
+    result = _run(tmp_path, [SPACING_SWEEP]).results[0]
+    # Along z, as in the test above, so a depth window leaves some out.
+    for _node, data in result.graph.nodes(data=True):
+        data["pos"] = np.asarray(data["pos"], dtype=float)[::-1].copy()
+    for *_ends, data in result.graph.edges(keys=True, data=True):
+        data["voxels"] = [list(point)[::-1] for point in data["voxels"]]
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    _apply_layers(viewer, ResultLayers().stage_finished(
+        "run_perturbations", PerturbationRun(results=[result], output_dir=tmp_path)))
+    panel._haemolynx_after_layers_applied()
+    name = perturbation_pericyte_layer_name(result.name)
+    _key, sliders = panel._haemolynx_sweep_controls[perturbation_layer_names(result.name)[0]]
+    (grid_slider,) = sliders.native.findChildren(QAbstractSlider)
+    first, second = viewer.layers[name].metadata[RESULT_OURS]["sweep_points"]
+    assert len(first[0]) > len(second[0])  # spacing 50, then 100 µm
+    full = panel._haemolynx_z_depth_slider.value()
+
+    panel._haemolynx_z_depth_slider.setValue((0.0, 900.0))
+    grid_slider.setValue(1)
+
+    shown = np.asarray(viewer.layers[name].data)
+    np.testing.assert_allclose(shown, second[0][second[0][:, 0] <= 900.0])
+    assert 0 < len(shown) < len(second[0])
+    assert set(viewer.layers[name].features["branch_order"]) <= {"Art1", "B01", "Ven1"}
+
+    panel._haemolynx_z_depth_slider.setValue(full)
+    np.testing.assert_allclose(viewer.layers[name].data, second[0])
+
+
+def _sweep_sliders(panel, viewer) -> list[str]:
+    """The layers with sweep sliders: in the view panel, or any stray dock."""
+    docks = [name for name in viewer.window._wrapped_dock_widgets if name.endswith(" sweep")]
+    return docks + list(panel._haemolynx_sweep_controls)
+
+
+def test_sweep_sliders_go_when_their_layer_goes_or_stops_being_a_sweep(make_napari_viewer, tmp_path):
+    """A sweep dock used to outlive its layer: after Clear, a run from an
+    earlier tab, or a perturbation that failed or changed type, the sliders
+    stayed docked, driving a layer that was gone or no longer a sweep."""
+    from dataclasses import replace
+
+    from haemolynx.gui.results import ResultLayers, perturbation_layer_names
+    from haemolynx.pipeline import PerturbationRun
+    from test_perturbation_stage import PRESSURE_SWEEP, _run
+
+    result = _run(tmp_path, [PRESSURE_SWEEP]).results[0]
+    name = perturbation_layer_names(result.name)[0]
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+
+    def show(perturbation):
+        _apply_layers(viewer, ResultLayers().stage_finished(
+            "run_perturbations", PerturbationRun(results=[perturbation], output_dir=tmp_path)))
+
+    show(result)
+    assert _sweep_sliders(panel, viewer) == [name]
+
+    # The same perturbation re-run as a single re-solve: same layer, no sweep.
+    show(replace(result, type="capillary_block", sweep_flows=None))
+    assert name in viewer.layers
+    assert _sweep_sliders(panel, viewer) == []
+
+    show(result)
+    assert _sweep_sliders(panel, viewer) == [name]
+    panel._haemolynx_clear()
+    assert name not in viewer.layers
+    assert _sweep_sliders(panel, viewer) == []
+    assert panel._haemolynx_sweep_group.isHidden()
+
+
+# --- "Colour by" in the view panel, for the vessels on screen -----------------
+
+
+def _flow_panel(make_napari_viewer):
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    results, groups, _extent = _flow_network_results()
+    for group in groups:
+        _apply_layers(viewer, group)
+    panel._haemolynx_view.results = results
+    panel._haemolynx_after_layers_applied()
+    return panel, viewer
+
+
+def _offered(colour_by):
+    return [action.text() for action in colour_by.menu.actions()]
+
+
+def _ticked(colour_by):
+    return [action.text() for action in colour_by.menu.actions() if action.isChecked()]
+
+
+def _pick(colour_by, column):
+    """Choose an entry the way a click on the menu does."""
+    (action,) = [a for a in colour_by.menu.actions() if a.text() == column]
+    action.trigger()
+
+
+def _layer_controls_choice(viewer, name=VESSELS):
+    from haemolynx.gui._widget import _layer_controls
+
+    return _layer_controls(viewer, viewer.layers[name])._haemolynx_feature.native
+
+
+def test_colour_by_is_hidden_until_there_are_vessels_to_colour(make_napari_viewer):
+    from haemolynx.gui.chrome_tooltips import COLOUR_BY_TOOLTIP
+
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    colour_by = panel._haemolynx_colour_by
+    assert colour_by.row.parentWidget() is panel._haemolynx_display_group
+    assert colour_by.shown is False
+    assert colour_by.row.isHidden()
+    assert colour_by.button.toolTip() == COLOUR_BY_TOOLTIP
+
+    for group in a_run():
+        _apply_layers(viewer, group)
+
+    assert colour_by.shown is True
+    assert not colour_by.row.isHidden()
+
+
+def test_colour_by_offers_what_the_vessels_layer_controls_offer(make_napari_viewer):
+    panel, viewer = _flow_panel(make_napari_viewer)
+    colour_by = panel._haemolynx_colour_by
+    combo = _layer_controls_choice(viewer)
+
+    offered = _offered(colour_by)
+    assert offered == [combo.itemText(i) for i in range(combo.count())]
+    # Flow first, as on the layer's own controls.
+    assert offered[:2] == ["flow_abs", "flow_abs_log10"]
+    assert _ticked(colour_by) == [colour_by.button.text()] == [combo.currentText()]
+
+
+def test_picking_log10_flow_recolours_the_tubes_on_screen(make_napari_viewer):
+    from haemolynx.gui._widget import _active_column
+
+    panel, viewer = _flow_panel(make_napari_viewer)
+    colour_by = panel._haemolynx_colour_by
+    assert panel._haemolynx_vessel_draw.currentText() == "Tubes"
+    vessels, tubes = viewer.layers[VESSELS], viewer.layers[VESSEL_TUBES]
+    assert tubes.visible and not vessels.visible
+    _pick(colour_by, "flow_abs")
+    before = np.asarray(tubes.vertex_colors, dtype=float).copy()
+
+    _pick(colour_by, "flow_abs_log10")
+
+    assert _active_column(vessels) == "flow_abs_log10"
+    assert vessels.edge_color_mode == "colormap"
+    # Fitted to the column's own range, not left on flow's.
+    log10 = np.asarray(vessels.features["flow_abs_log10"], dtype=float)
+    assert tuple(vessels.edge_contrast_limits) == pytest.approx(
+        (np.nanmin(log10), np.nanmax(log10)))
+    after = np.asarray(tubes.vertex_colors, dtype=float)
+    assert after.shape == before.shape
+    assert not np.allclose(after, before)
+    segment_index = tubes.metadata["haemolynx"]["segment_index"]
+    np.testing.assert_allclose(after, np.asarray(vessels.edge_color)[segment_index])
+    assert colour_by.button.text() == "flow_abs_log10"
+    assert _ticked(colour_by) == ["flow_abs_log10"]
+    # The vessels layer's own control shows the same choice.
+    assert _layer_controls_choice(viewer).currentText() == "flow_abs_log10"
+
+
+def test_colour_by_colours_the_lines_when_lines_are_drawn(make_napari_viewer):
+    from haemolynx.gui._widget import _active_column
+
+    panel, viewer = _flow_panel(make_napari_viewer)
+    colour_by = panel._haemolynx_colour_by
+    _choose_vessel_draw(panel._haemolynx_vessel_draw, "Lines")
+    vessels = viewer.layers[VESSELS]
+    assert vessels.visible
+
+    _pick(colour_by, "branch_order")
+
+    assert _active_column(vessels) == "branch_order"
+    assert len(np.unique(np.round(np.asarray(vessels.edge_color), 6), axis=0)) > 1
+    assert colour_by.button.text() == "branch_order"
+
+
+def test_picking_the_ticked_entry_again_keeps_it_ticked(make_napari_viewer):
+    """A checkable action unticks itself when clicked; the colouring stays."""
+    panel, _viewer = _flow_panel(make_napari_viewer)
+    colour_by = panel._haemolynx_colour_by
+    _pick(colour_by, "flow_abs_log10")
+
+    _pick(colour_by, "flow_abs_log10")
+
+    assert _ticked(colour_by) == ["flow_abs_log10"]
+
+
+def test_colour_by_follows_a_choice_made_on_the_layer_controls(make_napari_viewer):
+    panel, viewer = _flow_panel(make_napari_viewer)
+    colour_by = panel._haemolynx_colour_by
+
+    _layer_controls_choice(viewer).setCurrentText("length")
+    assert colour_by.button.text() == "length"
+    assert _ticked(colour_by) == ["length"]
+
+    # A text column is coloured in direct mode, which napari's colour event
+    # reports before the column is recorded -- still the one shown here.
+    _layer_controls_choice(viewer).setCurrentText("branch_order")
+    assert colour_by.button.text() == "branch_order"
+
+
+def test_colour_by_follows_the_layer_a_z_depth_window_replaces(make_napari_viewer):
+    from haemolynx.gui._widget import _active_column
+
+    panel, viewer = _flow_panel(make_napari_viewer)
+    colour_by = panel._haemolynx_colour_by
+    before = viewer.layers[VESSELS]
+
+    panel._haemolynx_z_depth_slider.setValue((20.0, 60.0))
+    after = viewer.layers[VESSELS]
+    assert after is not before
+    _pick(colour_by, "flow_abs_log10")
+
+    assert _active_column(after) == "flow_abs_log10"
+
+
+def test_colour_by_acts_on_the_network_showing_names(make_napari_viewer):
+    from haemolynx.gui._widget import _active_column
+    from haemolynx.gui.results import perturbation_layer_names
+    from test_gui_results import a_perturbation, a_perturbation_run, built
+
+    panel, viewer = _flow_panel(make_napari_viewer)
+    colour_by = panel._haemolynx_colour_by
+    _apply_layers(viewer, built().stage_finished(
+        "run_perturbations", a_perturbation_run(a_perturbation("dilate"))))
+    dilate = viewer.layers[perturbation_layer_names("dilate")[0]]
+    baseline = viewer.layers[VESSELS]
+    _pick(colour_by, "flow_abs")
+
+    panel._haemolynx_choose_layer_set("dilate")
+    # The perturbation's own colouring (log flow, as it was drawn), not the
+    # baseline's pick.
+    assert colour_by.button.text() == _active_column(dilate) == "flow_abs_log10"
+    _pick(colour_by, "flow_abs")
+    assert _active_column(dilate) == "flow_abs"
+
+    panel._haemolynx_choose_layer_set(None)
+    assert colour_by.button.text() == "flow_abs"
+    _pick(colour_by, "flow_abs_log10")
+
+    assert _active_column(baseline) == "flow_abs_log10"
+    assert _active_column(dilate) == "flow_abs"
+
+
+def test_clear_hides_colour_by(make_napari_viewer):
+    panel, _viewer = _flow_panel(make_napari_viewer)
+    colour_by = panel._haemolynx_colour_by
+    assert colour_by.shown is True
+
+    panel._haemolynx_clear()
+
+    assert colour_by.shown is False
+    assert colour_by.row.isHidden()
+    assert _offered(colour_by) == []
+
+
+def test_the_layer_controls_tab_scrolls_rather_than_holding_the_strip_tall(
+    make_napari_viewer,
+):
+    """An image layer's controls are ~310 px at their smallest, and the four
+    tabs share one height; scrolled, they no longer set its floor."""
+    import numpy as np
+    from qtpy.QtWidgets import QScrollArea
+
+    viewer = make_napari_viewer(show=True)
+    viewer.add_image(np.zeros((10, 10)))
+    settings_widget(napari_viewer=viewer)
+    _settle()
+    qt_viewer = viewer.window._qt_viewer
+    controls = qt_viewer.dockLayerControls
+
+    assert isinstance(controls.widget(), QScrollArea)
+    assert controls.widget().widget() is qt_viewer.controls
+    natural = qt_viewer.controls.minimumSizeHint().height()
+    assert controls.minimumSizeHint().height() < natural / 2
+
+
+# --- the Display box's "Show" checkboxes -------------------------------------
+
+
+def _show_boxes(panel):
+    return panel._haemolynx_view_toggles
+
+
+def test_the_show_boxes_sit_in_the_display_box_greyed_out_before_a_run(make_napari_viewer):
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+
+    boxes = _show_boxes(panel)
+    assert list(boxes) == [
+        "flow direction", "nodes", "terminal nodes", "skeleton", "segmented image",
+    ]
+    assert [box.text() for box in boxes.values()] == [
+        "Flow arrows", "Nodes", "Terminal nodes", "Skeleton", "Segmentation",
+    ]
+    assert boxes["nodes"].objectName() == "haemolynx_show_nodes"
+    assert boxes["terminal nodes"].objectName() == "haemolynx_show_terminal_nodes"
+    assert boxes["segmented image"].objectName() == "haemolynx_show_segmented_image"
+    assert panel._haemolynx_view_toggle_row.parentWidget() is panel._haemolynx_display_group
+    for box in boxes.values():
+        assert not box.isEnabled()
+        assert not box.isChecked()
+        assert box.toolTip()
+
+
+def test_the_segmented_image_box_sits_under_the_skeleton_box(qapp):
+    panel = settings_widget(napari_viewer=None)
+    layout = panel._haemolynx_view_toggle_row.layout()
+    boxes = _show_boxes(panel)
+
+    def cell(role):
+        row, column, _rows, _columns = layout.getItemPosition(layout.indexOf(boxes[role]))
+        return row, column
+
+    assert cell("skeleton") == (1, 1)
+    assert cell("segmented image") == (2, 1)
+    assert cell("terminal nodes") == (1, 0)
+
+
+def test_the_scale_bar_box_sits_beside_the_segmented_image_box(qapp):
+    panel = settings_widget(napari_viewer=None)
+    layout = panel._haemolynx_view_toggle_row.layout()
+    index = layout.indexOf(panel._haemolynx_scale_bar)
+    assert index >= 0
+    row, column, _rows, _columns = layout.getItemPosition(index)
+    assert (row, column) == (2, 0)
+    assert layout.rowCount() == 3
+
+
+def test_the_show_boxes_are_built_and_greyed_out_with_no_viewer(qapp):
+    panel = settings_widget(napari_viewer=None)
+    for box in _show_boxes(panel).values():
+        assert not box.isEnabled()
+    panel._haemolynx_refresh_view_toggles()
+    _show_boxes(panel)["skeleton"].setChecked(True)  # nothing to show: no error
+
+
+def test_each_show_box_is_ticked_as_its_layer_is_once_the_run_draws_it(make_napari_viewer):
+    from haemolynx.gui.results import SKELETON
+
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    for group in a_run():
+        _apply_layers(viewer, group)
+
+    boxes = _show_boxes(panel)
+    assert boxes["nodes"].isEnabled()
+    assert boxes["nodes"].isChecked() is bool(viewer.layers[NODES].visible)
+    assert boxes["skeleton"].isEnabled()
+    assert boxes["skeleton"].isChecked() is bool(viewer.layers[SKELETON].visible)
+    assert boxes["segmented image"].isEnabled()
+    assert boxes["segmented image"].isChecked() is bool(viewer.layers[IMAGE].visible)
+    # This run assigned no boundaries and solved no flow.
+    assert not boxes["flow direction"].isEnabled()
+    assert not boxes["terminal nodes"].isEnabled()
+
+
+def test_ticking_a_show_box_shows_and_hides_its_layer(make_napari_viewer):
+    from haemolynx.gui.results import SKELETON
+
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    for group in a_run():
+        _apply_layers(viewer, group)
+    boxes = _show_boxes(panel)
+
+    boxes["skeleton"].setChecked(True)
+    assert viewer.layers[SKELETON].visible is True
+    boxes["skeleton"].setChecked(False)
+    assert viewer.layers[SKELETON].visible is False
+
+    boxes["nodes"].setChecked(False)
+    assert viewer.layers[NODES].visible is False
+    boxes["nodes"].setChecked(True)
+    assert viewer.layers[NODES].visible is True
+    # The vessels are not the boxes' business.
+    assert viewer.layers[VESSEL_TUBES].visible is True
+
+
+def test_the_layer_list_s_eye_icon_ticks_the_show_box_back(make_napari_viewer):
+    from haemolynx.gui.results import SKELETON
+
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    for group in a_run():
+        _apply_layers(viewer, group)
+    boxes = _show_boxes(panel)
+
+    viewer.layers[SKELETON].visible = True
+    assert boxes["skeleton"].isChecked() is True
+    viewer.layers[NODES].visible = False
+    assert boxes["nodes"].isChecked() is False
+
+    viewer.layers.remove(viewer.layers[SKELETON])
+    assert not boxes["skeleton"].isEnabled()
+    assert not boxes["skeleton"].isChecked()
+
+
+def test_the_segmented_image_box_shows_and_hides_the_image_layer(make_napari_viewer):
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    for group in a_run():
+        _apply_layers(viewer, group)
+    box = _show_boxes(panel)["segmented image"]
+
+    box.setChecked(False)
+    assert viewer.layers[IMAGE].visible is False
+    box.setChecked(True)
+    assert viewer.layers[IMAGE].visible is True
+
+    viewer.layers[IMAGE].visible = False
+    assert box.isChecked() is False
+
+    viewer.layers.remove(viewer.layers[IMAGE])
+    assert not box.isEnabled()
+    assert not box.isChecked()
+
+
+def test_the_terminal_nodes_box_toggles_the_boundary_nodes_layer(make_napari_viewer):
+    from haemolynx.gui._widget import OURS
+    from haemolynx.gui.results import BOUNDARY_NODES
+
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    for group in a_run():
+        _apply_layers(viewer, group)
+    viewer.add_points(
+        np.zeros((2, 3)), name=BOUNDARY_NODES, visible=False, metadata={OURS: {"stage": "assign_boundaries"}}
+    )
+    boxes = _show_boxes(panel)
+
+    assert boxes["terminal nodes"].isEnabled()
+    assert boxes["terminal nodes"].isChecked() is False
+    boxes["terminal nodes"].setChecked(True)
+    assert viewer.layers[BOUNDARY_NODES].visible is True

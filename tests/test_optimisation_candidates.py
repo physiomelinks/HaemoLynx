@@ -1,0 +1,585 @@
+"""Unit tests for haemolynx.optimisation.candidates -- synthetic data only.
+
+Every generator must (a) always include the schema default, and (b) degrade to
+``[default]`` on pathological input rather than raising.
+"""
+from __future__ import annotations
+
+import networkx as nx
+import numpy as np
+import pytest
+
+from haemolynx.optimisation import candidates as c
+
+
+# ---------------------------------------------------------------------------
+# Group 0: segmentation cleanup
+# ---------------------------------------------------------------------------
+def test_mask_component_gap_distances_um_two_blocks():
+    mask = np.zeros((20, 20, 20), dtype=bool)
+    mask[2:5, 2:5, 2:5] = True
+    mask[2:5, 2:5, 10:13] = True
+    distances = c.mask_component_gap_distances_um(mask, (1.0, 1.0, 1.0))
+    assert distances.size == 1
+    assert distances[0] == pytest.approx(6.0)  # nearest faces at x=4 and x=10
+
+
+def test_mask_component_gap_distances_um_single_component_is_empty():
+    mask = np.zeros((10, 10, 10), dtype=bool)
+    mask[2:5, 2:5, 2:5] = True
+    assert c.mask_component_gap_distances_um(mask, (1.0, 1.0, 1.0)).size == 0
+
+
+def test_small_radius_candidates_include_default_and_are_positive():
+    result = c.small_radius_candidates((1.0, 1.0, 1.0), default=1.0)
+    assert 1.0 in result
+    assert all(v > 0 for v in result)
+    assert result == sorted(result)
+
+
+def test_small_radius_candidates_scale_with_finest_voxel_axis():
+    result = c.small_radius_candidates((1.0, 0.25, 0.25), default=1.0)
+    assert min(result) == pytest.approx(0.125)  # 0.5 * finest axis (0.25)
+
+
+def test_small_radius_candidates_with_no_typical_radius_is_unchanged():
+    """No cap requested (the pre-existing signature): identical to before."""
+    without_cap_arg = c.small_radius_candidates((1.0, 1.0, 1.0), default=1.0)
+    with_none = c.small_radius_candidates(
+        (1.0, 1.0, 1.0), default=1.0, typical_radius_um=None
+    )
+    assert with_none == without_cap_arg
+
+
+def test_small_radius_candidates_caps_at_the_typical_vessel_radius():
+    """Regression: candidates scaled purely off voxel size have no way to
+    know a vessel's own real size -- on a fine capillary bed (typical
+    radius ~1.4um), the uncapped 4x-voxel candidate (3.92um at 0.98um
+    voxels) is already ~2.8x the vessel's own radius, large enough to blur
+    or bridge distinct vessels away entirely (confirmed on real data: this
+    exact scale erased ~88% of the true vasculature). Capping at the
+    typical radius drops every candidate that reaches or exceeds it.
+    """
+    voxel_size_zyx = (1.0, 0.98, 0.98)
+    typical_radius_um = 1.4
+    uncapped = c.small_radius_candidates(voxel_size_zyx, default=1.0)
+    assert max(uncapped) > typical_radius_um, "fixture must actually need capping"
+
+    capped = c.small_radius_candidates(
+        voxel_size_zyx, default=1.0, typical_radius_um=typical_radius_um
+    )
+    assert all(v <= typical_radius_um for v in capped)
+    assert capped == sorted(capped)
+    assert capped, "must never return an empty list"
+
+
+def test_small_radius_candidates_cap_keeps_at_least_the_smallest_option():
+    """Even a typical radius smaller than every voxel-scale candidate must
+    not leave the sweep with nothing to try."""
+    result = c.small_radius_candidates(
+        (1.0, 1.0, 1.0), default=1.0, typical_radius_um=0.01
+    )
+    assert result == [pytest.approx(0.5)]  # the smallest pre-cap candidate
+
+
+def test_small_radius_candidates_cap_can_drop_the_default_itself():
+    """The one deliberate exception to 'always includes the default' (see
+    this module's own docstring): an unsafe default is not kept just
+    because it was the starting value."""
+    result = c.small_radius_candidates(
+        (1.0, 0.98, 0.98), default=7.84, typical_radius_um=1.4
+    )
+    assert 7.84 not in result
+
+
+
+@pytest.mark.parametrize("spacing, typical_radius", [((2.0, 0.5, 0.5), 2.5), ((1.5, 0.5, 0.5), 1.6)])
+def test_footprint_radius_candidates_are_each_a_different_footprint(spacing, typical_radius):
+    """Regression (audit): a whisker/closing/morphological radius is a
+    physical ball at least one finest voxel wide, so half a voxel was the
+    same footprint as one -- a wasted trial -- and on a 1.5 um z nothing on
+    the grid under the vessel's radius reached across a slice at all."""
+    from haemolynx.preprocessing.segmentation_cleanup import _physical_ball
+
+    result = c.small_radius_candidates(
+        spacing, default=0.5, typical_radius_um=typical_radius, footprint=True
+    )
+
+    footprints = [_physical_ball(r, spacing)[0] for r in result]
+    for i, a in enumerate(footprints):
+        for b in footprints[i + 1:]:
+            assert a.shape != b.shape or not np.array_equal(a, b)
+    assert any(f.shape[0] > 1 for f in footprints), "no candidate reaches along z"
+    assert max(result) <= typical_radius
+
+
+def test_a_gaussian_sigma_keeps_the_sub_voxel_grid():
+    """A sigma is not a footprint: half a voxel blurs less than one."""
+    result = c.small_radius_candidates((2.0, 0.5, 0.5), default=1.0)
+    assert min(result) == pytest.approx(0.25)
+    assert 2.0 in result and 1.5 not in result
+
+
+def test_split_marker_separation_candidates_include_default():
+    result = c.split_marker_separation_candidates(typical_radius_um=4.0, default=10.0)
+    assert 10.0 in result
+    assert all(v >= 0.0 for v in result)
+
+
+def test_split_min_body_radius_candidates_include_default():
+    result = c.split_min_body_radius_candidates(typical_radius_um=4.0, default=1.0)
+    assert 1.0 in result
+
+
+def test_split_pinch_radius_ratio_candidates_bounded_and_include_default():
+    result = c.split_pinch_radius_ratio_candidates(default=0.6)
+    assert 0.6 in result
+    assert all(0.0 <= v <= 1.0 for v in result)
+
+
+def test_reconnect_max_bridge_distance_candidates_empty_gaps_falls_back_to_default():
+    result = c.reconnect_max_bridge_distance_candidates(np.array([]), default=30.0)
+    assert result == [30.0]
+
+
+def test_reconnect_max_bridge_distance_candidates_include_default():
+    gaps = np.array([5.0, 10.0, 15.0, 20.0])
+    result = c.reconnect_max_bridge_distance_candidates(gaps, default=30.0)
+    assert 30.0 in result
+
+
+def test_reconnect_min_cylindricality_candidates_bounded_and_include_default():
+    result = c.reconnect_min_cylindricality_candidates(default=0.5)
+    assert 0.5 in result
+    assert all(0.0 <= v <= 1.0 for v in result)
+
+
+def test_reconnect_max_axis_angle_candidates_bounded_and_include_default():
+    result = c.reconnect_max_axis_angle_candidates(default=30.0)
+    assert 30.0 in result
+    assert all(0.0 <= v <= 90.0 for v in result)
+
+
+def test_reconnect_min_facing_cosine_candidates_bounded_and_include_default():
+    result = c.reconnect_min_facing_cosine_candidates(default=0.85)
+    assert 0.85 in result
+    assert all(0.0 <= v <= 1.0 for v in result)
+
+
+def test_reconnect_max_radius_ratio_candidates_at_least_one_and_include_default():
+    result = c.reconnect_max_radius_ratio_candidates(default=3.0)
+    assert 3.0 in result
+    assert all(v >= 1.0 for v in result)
+
+
+def test_smooth_method_candidates_are_the_two_known_methods():
+    assert c.smooth_method_candidates() == ["gaussian", "morphological"]
+
+
+def test_remove_small_min_volume_candidates_empty_mask_falls_back_to_default():
+    empty = np.zeros((10, 10, 10), dtype=bool)
+    assert c.remove_small_min_volume_candidates(empty, (1.0, 1.0, 1.0), default=5.0) == [5.0]
+
+
+def test_remove_small_min_volume_candidates_include_default_and_are_non_negative():
+    mask = np.zeros((20, 20, 20), dtype=bool)
+    mask[2:4, 2:4, 2:4] = True  # a small fragment
+    mask[10:18, 10:18, 10:18] = True  # a large body
+    result = c.remove_small_min_volume_candidates(mask, (1.0, 1.0, 1.0), default=5.0)
+    assert 5.0 in result
+    assert all(v >= 0.0 for v in result)
+
+
+# ---------------------------------------------------------------------------
+# Group 1: thick-vessel gating
+# ---------------------------------------------------------------------------
+def test_thick_vessel_worth_checking_false_for_thin_mask():
+    mask = np.zeros((10, 10, 10), dtype=bool)
+    mask[4:6, 4:6, :] = True  # a 2-voxel-radius rod, well under the guard
+    assert c.thick_vessel_worth_checking(mask, (1.0, 1.0, 1.0)) is False
+
+
+def test_thick_vessel_worth_checking_true_for_fat_mask():
+    mask = np.zeros((20, 20, 20), dtype=bool)
+    mask[2:18, 2:18, 2:18] = True  # a big solid block, inscribed radius > 2um
+    assert c.thick_vessel_worth_checking(mask, (1.0, 1.0, 1.0)) is True
+
+
+def test_thick_vessel_min_radius_candidates_empty_mask_falls_back_to_default():
+    empty = np.zeros((10, 10, 10), dtype=bool)
+    assert c.thick_vessel_min_radius_candidates(empty, (1.0, 1.0, 1.0), default=6.0) == [6.0]
+
+
+def test_thick_vessel_min_radius_candidates_include_default():
+    mask = np.zeros((20, 20, 20), dtype=bool)
+    mask[2:18, 2:18, 2:18] = True
+    result = c.thick_vessel_min_radius_candidates(mask, (1.0, 1.0, 1.0), default=6.0)
+    assert 6.0 in result
+    assert all(v > 0 for v in result)
+    assert result == sorted(result)
+
+
+def test_typical_thick_vessel_radius_um_empty_falls_back_to_min_radius():
+    empty = np.zeros((10, 10, 10), dtype=bool)
+    assert c.typical_thick_vessel_radius_um(empty, (1.0, 1.0, 1.0), min_radius_um=6.0) == 6.0
+
+
+def test_typical_thick_vessel_radius_um_measures_the_fat_region_only():
+    mask = np.zeros((30, 30, 30), dtype=bool)
+    mask[5:25, 5:25, 5:25] = True  # a big solid block, inscribed radius up to ~10
+    result = c.typical_thick_vessel_radius_um(mask, (1.0, 1.0, 1.0), min_radius_um=6.0)
+    assert result >= 6.0
+
+
+# ---------------------------------------------------------------------------
+# Group 1b: thick-vessel refinement
+# ---------------------------------------------------------------------------
+def test_thick_vessel_wall_absorption_candidates_always_includes_none_first():
+    result = c.thick_vessel_wall_absorption_candidates(typical_thick_radius_um=8.0)
+    assert result[0] is None
+    assert all(v is None or v > 0.0 for v in result)
+    assert len(result) == len(set(result))
+
+
+def test_thick_vessel_flake_filter_candidates_scale_with_voxel_size():
+    result = c.thick_vessel_flake_filter_candidates((2.0, 2.0, 2.0))
+    assert result[0] is None
+    assert min(v for v in result if v is not None) == pytest.approx(2.0)
+    assert max(v for v in result if v is not None) == pytest.approx(8.0)
+
+
+def test_thick_vessel_max_bridge_radius_multiple_candidates_include_default():
+    result = c.thick_vessel_max_bridge_radius_multiple_candidates(default=4.0)
+    assert 4.0 in result
+    assert all(v >= 0.0 for v in result)
+    assert None not in result
+
+
+def test_thick_vessel_max_bridge_distance_candidates_empty_gaps_is_none_only():
+    result = c.thick_vessel_max_bridge_distance_candidates(np.array([]))
+    assert result == [None]
+
+
+def test_thick_vessel_max_bridge_distance_candidates_include_none_and_percentiles():
+    gaps = np.array([1.0, 2.0, 3.0, 4.0, 100.0])
+    result = c.thick_vessel_max_bridge_distance_candidates(gaps)
+    assert result[0] is None
+    assert len(result) > 1
+
+
+def test_thick_vessel_bridge_radius_smoothing_candidates_include_zero():
+    result = c.thick_vessel_bridge_radius_smoothing_candidates(typical_thick_radius_um=8.0)
+    assert 0.0 in result
+    assert result == sorted(result)
+
+
+# ---------------------------------------------------------------------------
+# Group 2: min branch length
+# ---------------------------------------------------------------------------
+def test_min_branch_length_candidates_empty_falls_back_to_default_and_zero():
+    result = c.min_branch_length_candidates((), default=3)
+    assert result == [0, 3]
+
+
+def test_min_branch_length_candidates_respects_ceiling():
+    sizes = tuple(range(1, 200))
+    result = c.min_branch_length_candidates(sizes, default=3, ceiling=20)
+    assert all(0 <= v <= 20 for v in result)
+    assert 3 in result
+    assert 0 in result
+
+
+# ---------------------------------------------------------------------------
+# Group 3: bundle refinement
+# ---------------------------------------------------------------------------
+def test_bundle_scan_size_candidates_empty_mask_falls_back_to_default():
+    empty = np.zeros((10, 10, 10), dtype=bool)
+    assert c.bundle_scan_size_candidates(empty, (1.0, 1.0, 1.0), default=9) == [9]
+
+
+def test_bundle_scan_size_candidates_are_odd_and_bounded():
+    mask = np.zeros((30, 30, 30), dtype=bool)
+    mask[5:25, 5:25, 5:25] = True
+    result = c.bundle_scan_size_candidates(mask, (1.0, 1.0, 1.0), default=9)
+    assert 9 in result
+    assert all(5 <= v <= 25 for v in result)
+    assert all(v % 2 == 1 for v in result)
+
+
+def test_bundle_density_fraction_candidates_never_offer_floating_point_noise():
+    """Regression: a uniform filter of a 0/1 volume leaves ~1e-16 where the
+    density is zero; counted as density on a sparse mask, they made the
+    60th percentile 1e-16 -- a threshold calling every voxel near the
+    skeleton a bundle, which took most of a 29-minute search on the Stack A
+    stack. Every real density is at least one voxel's share of the window."""
+    # A block at one end of a long, empty volume: the filter's running sums
+    # leave crumbs all the way along it, five times as many as real values.
+    mask = np.zeros((20, 20, 400), dtype=bool)
+    mask[2:18, 2:18, 0:30] = True
+
+    result = c.bundle_density_fraction_candidates(mask, scan_size=5, default=0.35)
+
+    assert min(result) >= 1.0 / 5**3
+
+
+def test_bundle_density_fraction_candidates_empty_mask_falls_back_to_default():
+    empty = np.zeros((10, 10, 10), dtype=bool)
+    assert c.bundle_density_fraction_candidates(empty, scan_size=9, default=0.35) == [0.35]
+
+
+def test_bundle_density_fraction_candidates_bounded_unit_interval():
+    mask = np.zeros((20, 20, 20), dtype=bool)
+    mask[5:15, 5:15, 5:15] = True
+    result = c.bundle_density_fraction_candidates(mask, scan_size=5, default=0.35)
+    assert 0.35 in result
+    assert all(0.0 < v <= 1.0 for v in result)
+
+
+
+def _stacked_vessels_at_half_micron() -> np.ndarray:
+    """Nine 2 um-radius vessels along x, three deep in z and three across y,
+    on 0.5 um cube voxels."""
+    zz, yy = np.mgrid[0:96, 0:64]
+    mask = np.zeros((96, 64, 40), dtype=bool)
+    for zc in (24, 48, 72):
+        for yc in (16, 32, 48):
+            mask[((zz - zc) ** 2 + (yy - yc) ** 2) <= 4**2, :] = True
+    return mask
+
+
+def test_bundle_density_fraction_candidates_scan_the_refinements_own_window():
+    """Regression (audit): densities were measured over a cube of scan_size
+    voxels, 18 um deep but 4.5 um wide on a 2 um z, while bundle refinement
+    scans a window the same physical width every way -- so the thresholds on
+    offer were ones its own densities never reach. The same vessels imaged on
+    a 2 um z now offer the thresholds they do on cube voxels."""
+    cube = _stacked_vessels_at_half_micron()
+    coarse_z = cube[::4]
+
+    on_cube = c.bundle_density_fraction_candidates(
+        cube, 9, default=1.0, voxel_size_zyx=(0.5, 0.5, 0.5)
+    )
+    on_coarse_z = c.bundle_density_fraction_candidates(
+        coarse_z, 9, default=1.0, voxel_size_zyx=(2.0, 0.5, 0.5)
+    )
+
+    assert on_coarse_z[1] == pytest.approx(on_cube[1], abs=0.05)  # the 75th percentile
+
+
+def test_bundle_scan_window_is_one_physical_width():
+    from haemolynx.preprocessing.skeleton import bundle_scan_window
+
+    assert bundle_scan_window(9, (2.0, 0.5, 0.5)) == (3, 9, 9)
+    assert bundle_scan_window(9, None) == (9, 9, 9)
+    assert bundle_scan_window((5, 7, 7), (2.0, 0.5, 0.5)) == (5, 7, 7)
+    with pytest.raises(ValueError):
+        bundle_scan_window((5, 7), (2.0, 0.5, 0.5))
+
+
+def test_estimate_bundle_max_connections_on_empty_skeleton_returns_default():
+    empty = np.zeros((10, 10, 10), dtype=bool)
+    assert c.estimate_bundle_max_connections(empty) == 8
+
+
+def test_estimate_bundle_max_connections_on_a_simple_line_is_low():
+    skel = np.zeros((10, 10, 10), dtype=bool)
+    skel[2:8, 5, 5] = True
+    result = c.estimate_bundle_max_connections(skel)
+    assert 4 <= result <= 12
+
+
+def test_bundle_hub_min_spacing_for_matches_documented_formula():
+    assert c.bundle_hub_min_spacing_for(9) == 4
+    assert c.bundle_hub_min_spacing_for(1) == 1
+    assert c.bundle_hub_min_spacing_for(0) == 1
+
+
+# ---------------------------------------------------------------------------
+# Groups 4-5: closing radius, gap bridging
+# ---------------------------------------------------------------------------
+def test_closing_radius_candidates_empty_gaps_falls_back_to_defaults():
+    result = c.closing_radius_candidates(np.array([]), default=2)
+    assert result == [0, 1, 2]
+
+
+def test_closing_radius_candidates_respect_cap():
+    gaps = np.array([100.0, 200.0])
+    result = c.closing_radius_candidates(gaps, default=2, cap=5)
+    assert all(v <= 5 for v in result)
+
+
+def test_bridge_gap_size_candidates_empty_falls_back_to_default_and_zero():
+    result = c.bridge_gap_size_candidates(np.array([]), default=3)
+    assert result == [0, 3]
+
+
+def test_max_bridge_distance_candidates_include_percentiles():
+    gaps = np.array([1.0, 2.0, 3.0, 4.0, 100.0])
+    result = c.max_bridge_distance_candidates(gaps, default=4)
+    assert 4 in result
+    assert max(result) >= int(round(np.percentile(gaps, 90)))
+
+
+# ---------------------------------------------------------------------------
+# Group 6: connectivity + component percent
+# ---------------------------------------------------------------------------
+def test_component_connectivity_candidates_are_fixed():
+    assert c.component_connectivity_candidates() == [1, 2, 3]
+
+
+def test_min_component_percent_candidates_finds_the_elbow():
+    # A dominant component (1000) plus a cluster of tiny noise components.
+    sizes = (1000, 900, 5, 4, 3, 2, 1)
+    result = c.min_component_percent_candidates(sizes, voxel_count=sum(sizes), default=0.0)
+    assert 0.0 in result
+    assert 1.0 in result
+    assert 5.0 in result
+    assert all(0.0 <= v <= 100.0 for v in result)
+
+
+def test_min_component_percent_candidates_handles_single_component():
+    result = c.min_component_percent_candidates((100,), voxel_count=100, default=0.0)
+    assert result == [0.0, 1.0, 5.0]
+
+
+# ---------------------------------------------------------------------------
+# Group 7: reconnect thresholds
+# ---------------------------------------------------------------------------
+def test_reconnect_threshold_candidates_empty_falls_back_to_default():
+    assert c.reconnect_threshold_candidates(np.array([]), default=10.0) == [10.0]
+
+
+def test_orphan_threshold_candidates_are_fractions_of_reconnect():
+    result = c.orphan_threshold_candidates(reconnect_threshold=10.0, default=3.0)
+    assert 3.0 in result
+    assert pytest.approx(2.5) in result  # 0.25 * 10.0
+    assert pytest.approx(5.0) in result  # 0.5 * 10.0
+    assert pytest.approx(10.0) in result  # 1.0 * 10.0
+
+
+# ---------------------------------------------------------------------------
+# Group 8-9: cluster collapse, min stub length
+# ---------------------------------------------------------------------------
+def test_cluster_collapse_distance_candidates_empty_falls_back_to_default():
+    assert c.cluster_collapse_distance_candidates(np.array([]), default=5.0) == [5.0]
+
+
+def test_cluster_collapse_method_candidates_match_the_schema_choices():
+    assert c.cluster_collapse_method_candidates() == ["distance_only", "direction_aware", "persistence"]
+
+
+def test_cluster_collapse_max_radial_dispersion_candidates_bounded_unit_interval():
+    result = c.cluster_collapse_max_radial_dispersion_candidates()
+    assert 0.5 in result
+    assert all(0.0 <= v <= 1.0 for v in result)
+
+
+def test_cluster_collapse_persistence_search_multiple_candidates_include_default():
+    result = c.cluster_collapse_persistence_search_multiple_candidates()
+    assert 3.0 in result
+    assert all(v >= 0.0 for v in result)
+
+
+def test_min_stub_length_candidates_empty_falls_back_to_default():
+    assert c.min_stub_length_candidates(np.array([]), default=10.0) == [10.0]
+
+
+# ---------------------------------------------------------------------------
+# Group 10: centreline smoothing
+# ---------------------------------------------------------------------------
+def test_centreline_smoothing_method_candidates():
+    assert c.centreline_smoothing_method_candidates() == ["taubin", "chaikin"]
+
+
+def test_centreline_smoothing_iterations_candidates_for_taubin():
+    assert c.centreline_smoothing_iterations_candidates("taubin") == [5, 10, 15, 20]
+
+
+def test_centreline_smoothing_iterations_candidates_for_chaikin_stay_small():
+    # Chaikin doubles its point count every pass, so candidates must stay
+    # small enough that even the largest does not blow up.
+    result = c.centreline_smoothing_iterations_candidates("chaikin")
+    assert max(result) <= 6
+
+
+def test_centreline_max_deviation_candidates_scale_with_voxel_size():
+    result = c.centreline_max_deviation_candidates((2.0, 2.0, 2.0), default=1.0)
+    assert 1.0 in result
+    assert min(result) == pytest.approx(1.0)  # 0.5 voxel of 2.0um clipped by default tie
+    assert max(result) == pytest.approx(8.0)  # 4 * 2.0um
+
+
+# ---------------------------------------------------------------------------
+# Graph measurement helpers
+# ---------------------------------------------------------------------------
+def _graph_with_two_components():
+    G = nx.MultiGraph()
+    G.add_node("A", pos=(0.0, 0.0, 0.0))
+    G.add_node("B", pos=(0.0, 0.0, 1.0))
+    G.add_edge("A", "B", length=1.0)
+    G.add_node("C", pos=(0.0, 0.0, 11.0))
+    G.add_node("D", pos=(0.0, 0.0, 12.0))
+    G.add_edge("C", "D", length=1.0)
+    return G
+
+
+def test_graph_component_gap_distances_um_single_component_is_empty():
+    G = nx.MultiGraph()
+    G.add_node("A", pos=(0.0, 0.0, 0.0))
+    G.add_node("B", pos=(0.0, 0.0, 1.0))
+    G.add_edge("A", "B", length=1.0)
+    assert c.graph_component_gap_distances_um(G).size == 0
+
+
+def test_graph_component_gap_distances_um_measures_known_gap():
+    G = _graph_with_two_components()
+    gaps = c.graph_component_gap_distances_um(G)
+    assert gaps.size == 1
+    assert gaps[0] == pytest.approx(10.0)  # B at z=1 to C at z=11
+
+
+def test_nearest_neighbour_node_distances_um_excludes_self():
+    G = _graph_with_two_components()
+    dists = c.nearest_neighbour_node_distances_um(G)
+    assert dists.size == 4
+    assert np.all(dists > 0)
+    assert dists.min() == pytest.approx(1.0)
+
+
+def test_nearest_neighbour_node_distances_um_needs_two_nodes():
+    G = nx.MultiGraph()
+    G.add_node("A", pos=(0.0, 0.0, 0.0))
+    assert c.nearest_neighbour_node_distances_um(G).size == 0
+
+
+def test_terminal_edge_lengths_um_only_counts_degree_one_endpoints():
+    G = nx.MultiGraph()
+    G.add_edge("A", "B", length=5.0)  # A is degree-1 terminal
+    G.add_edge("B", "C", length=3.0)  # C is degree-1 terminal
+    G.add_edge("C", "D", length=2.0)
+    G.add_edge("D", "A", length=4.0)  # closes a loop: A and D become degree 2
+    lengths = c.terminal_edge_lengths_um(G)
+    assert lengths.size == 0  # no degree-1 nodes once the loop closes
+
+
+def test_terminal_edge_lengths_um_reads_each_stub_whole_to_its_junction():
+    """The dead-end definition's chain (PLAN_dead_ends.md 3.2 item 2): a
+    stub of two short edges off a junction is one 7 um stub, as the prune
+    judges it, not its 4 um last edge."""
+    G = nx.MultiGraph()
+    for leaf in ("A", "B", "C"):
+        G.add_edge("J", leaf, length=20.0)
+    G.add_edge("J", "x", length=3.0)
+    G.add_edge("x", "tip", length=4.0)
+    lengths = c.terminal_edge_lengths_um(G)
+    assert sorted(lengths.tolist()) == [7.0, 20.0, 20.0, 20.0]
+
+
+def test_terminal_edge_lengths_um_counts_a_piece_without_a_junction_once():
+    G = nx.MultiGraph()
+    G.add_edge("A", "B", length=5.0)
+    G.add_edge("B", "C", length=3.0)
+    G.add_edge("C", "D", length=2.0)  # A and D both end the one piece
+    assert c.terminal_edge_lengths_um(G).tolist() == [10.0]
+    G.add_edge("E", "F")  # no length: left out
+    assert c.terminal_edge_lengths_um(G).tolist() == [10.0]

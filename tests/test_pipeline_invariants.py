@@ -13,15 +13,27 @@ is stated here.
 """
 from __future__ import annotations
 
+import copy
+import logging
 from pathlib import Path
 
 import pytest
 
+import haemolynx.graph as graph_package
+from haemolynx.graph import (
+    assert_no_forbidden_edge_attributes,
+    detect_cartwheel_hubs,
+    duplicate_parallel_edges,
+    duplicate_vessel_routes,
+)
+from haemolynx.graph.assemble import mask_lumen_test
+from haemolynx.io.load import _to_binary_volume_for_skeletonization
 from haemolynx.pipeline import default_schema, resolve_settings, run_pipeline_stages
 from haemolynx.pipeline.stages import TOPOLOGY_STEP
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = REPO_ROOT / "tests" / "data" / "seven_vessel_noisy_3d.tif"
+NERVE_FIXTURE = REPO_ROOT / "tests" / "data" / "Nerve_capillaries_cropped.tif"
 
 
 @pytest.mark.slow
@@ -32,7 +44,7 @@ def test_no_stage_after_the_graph_is_built_changes_its_topology(tmp_path):
     values.update(
         {
             "input_path": FIXTURE,
-            "vtk_output_prefix": tmp_path / "run",
+            "output_dir": tmp_path,
             "plot_dir": tmp_path / "plots",
             "statistics": False,
             "show_plots_in_ide": False,
@@ -71,3 +83,563 @@ def test_no_stage_after_the_graph_is_built_changes_its_topology(tmp_path):
             "stage that edits topology needs that design revisited."
         )
         assert edges == built_edges, f"{stage} changed the graph's edges, likewise"
+
+
+@pytest.mark.slow
+@pytest.mark.integration
+def test_a_run_leaves_every_setting_default_as_it_was(tmp_path):
+    """assign_boundaries writes the nodes it chose into the run's settings in
+    place. Regression test: settings built from ``setting.default`` handed it
+    the schema's own lists, so this file's runs left inlet nodes [2, 4, 5] as
+    the default for every later caller, and test_pipeline_provenance read
+    them back as the settings a run started with."""
+    schema = default_schema()
+    before = copy.deepcopy({setting.name: setting.default for setting in schema})
+    values = {setting.name: setting.default for setting in schema}
+    values.update(
+        {
+            "input_path": FIXTURE,
+            "output_dir": tmp_path,
+            "plot_dir": tmp_path / "plots",
+            "statistics": False,
+            "show_plots_in_ide": False,
+            "interactive_plots": False,
+        }
+    )
+    settings = resolve_settings(values, schema=schema, config_path=None)
+
+    run_pipeline_stages(settings, schema)
+
+    assert settings["inlet_nodes"], "the run chose no inlets; the test proves nothing"
+    changed = [setting.name for setting in schema if setting.default != before[setting.name]]
+    assert changed == []
+
+
+@pytest.mark.slow
+@pytest.mark.integration
+@pytest.mark.parametrize("collapse_method", ["distance_only", "direction_aware"])
+def test_no_vessel_is_built_twice_between_the_same_two_nodes(tmp_path, collapse_method):
+    """No two edges joining the same two nodes, and no route through a
+    degree-2 node beside an edge, run through one lumen: one vessel, drawn
+    twice. Regression test: on this capillary bed distance_only collapse
+    left two such pairs; on Stack A direction-aware collapse and
+    degree-2 merging left hundreds, drawn in the viewer as parallel vessels
+    inside one segmented branch."""
+    schema = default_schema()
+    values = {setting.name: setting.default for setting in schema}
+    values.update(
+        {
+            "input_path": NERVE_FIXTURE,
+            "output_dir": tmp_path,
+            "plot_dir": tmp_path / "plots",
+            "statistics": False,
+            "show_plots_in_ide": False,
+            "interactive_plots": False,
+            "cluster_collapse_method": collapse_method,
+        }
+    )
+    settings = resolve_settings(values, schema=schema, config_path=None)
+    built = {}
+
+    def keep(stage: str, output) -> None:
+        if stage == "build_network":
+            built["network"] = output
+
+    run_pipeline_stages(settings, schema, on_stage_output=keep, stop_after="build_network")
+
+    network = built["network"]
+    G = network.graph
+    assert G.number_of_edges() > 100, "the fixture's capillary bed did not build; the test proves nothing"
+    inside_lumen = mask_lumen_test(
+        _to_binary_volume_for_skeletonization(network.volume.image), network.volume.voxel_size_zyx
+    )
+    assert duplicate_parallel_edges(G, inside_lumen) == []
+    assert duplicate_vessel_routes(G, inside_lumen) == []
+
+
+@pytest.mark.slow
+@pytest.mark.integration
+def test_the_cartwheel_hub_guard_never_changes_the_graph(tmp_path, caplog):
+    """detect_cartwheel_hub_artifacts is diagnostic-only: turning it on must
+    produce byte-identical topology to a run with it off (the default).
+
+    Also pins that the fixture/threshold combination actually gets the guard
+    to flag a hub (via the log line it emits), not just that "on" and "off"
+    happen to agree -- without this, a regression that silently made
+    detect_cartwheel_hubs always return [] (the same class of bug as a
+    schema-legal cartwheel_hub_tangent_length_um of 0.0 used to cause) would
+    still leave "on" and "off" topologies trivially equal, and this test
+    would keep passing with zero signal that the diagnostic path ever ran.
+    """
+    schema = default_schema()
+
+    def _settings(**overrides):
+        values = {setting.name: setting.default for setting in schema}
+        values.update(
+            {
+                "input_path": FIXTURE,
+                "output_dir": tmp_path / overrides.pop("run_name"),
+                "plot_dir": tmp_path / "plots",
+                "statistics": False,
+                "show_plots_in_ide": False,
+                "interactive_plots": False,
+            }
+        )
+        values.update(overrides)
+        return resolve_settings(values, schema=schema, config_path=None)
+
+    def _built_graph_topology(settings) -> tuple[frozenset, frozenset]:
+        captured = {}
+
+        def remember(stage: str, output) -> None:
+            if stage == "build_network":
+                captured["graph"] = output.graph
+
+        run_pipeline_stages(settings, schema, on_stage_output=remember)
+        graph = captured["graph"]
+        return frozenset(graph.nodes), frozenset(graph.edges(keys=True))
+
+    off = _settings(run_name="off", detect_cartwheel_hub_artifacts=False)
+    on = _settings(
+        run_name="on",
+        detect_cartwheel_hub_artifacts=True,
+        # Low enough to actually flag something on this fixture, proving the
+        # check ran rather than trivially finding nothing to warn about.
+        cartwheel_hub_min_degree=3,
+        cartwheel_hub_max_radial_dispersion=1.0,
+    )
+
+    topology_off = _built_graph_topology(off)
+    with caplog.at_level(logging.WARNING, logger="haemolynx.pipeline.stages"):
+        topology_on = _built_graph_topology(on)
+
+    assert topology_off == topology_on
+    assert any(
+        "Cartwheel hub guard" in record.getMessage() and "flagged" in record.getMessage()
+        for record in caplog.records
+    ), "the guard never actually flagged a hub, so this test proves nothing about it running"
+
+
+@pytest.mark.slow
+@pytest.mark.integration
+def test_cluster_collapse_direction_aware_runs_end_to_end_and_never_flags_more_hubs(tmp_path):
+    """cluster_collapse_method=direction_aware wired all the way through a
+    real run: produces a valid graph (not just on the small hand-built
+    fixtures in test_direction_aware_collapse.py), and never leaves *more*
+    cartwheel-shaped hubs behind than the legacy distance_only method does
+    on the same input -- the property the whole feature exists for. A small,
+    already-clean fixture may not exercise the pathology heavily enough for
+    this to also assert *fewer* hubs; that reduction is what the real,
+    densely-braided dataset this feature was written for is expected to show.
+    """
+    schema = default_schema()
+
+    def _settings(**overrides):
+        values = {setting.name: setting.default for setting in schema}
+        values.update(
+            {
+                "input_path": FIXTURE,
+                "output_dir": tmp_path / overrides.pop("run_name"),
+                "plot_dir": tmp_path / "plots",
+                "statistics": False,
+                "show_plots_in_ide": False,
+                "interactive_plots": False,
+                "detect_cartwheel_hub_artifacts": True,
+                "cartwheel_hub_min_degree": 3,
+                "cartwheel_hub_max_radial_dispersion": 1.0,
+            }
+        )
+        values.update(overrides)
+        return resolve_settings(values, schema=schema, config_path=None)
+
+    def _built_graph(settings):
+        captured = {}
+
+        def remember(stage: str, output) -> None:
+            if stage == "build_network":
+                captured["graph"] = output.graph
+
+        run_pipeline_stages(settings, schema, on_stage_output=remember)
+        return captured["graph"]
+
+    distance_only = _settings(run_name="distance_only", cluster_collapse_method="distance_only")
+    direction_aware = _settings(run_name="direction_aware", cluster_collapse_method="direction_aware")
+
+    graph_distance_only = _built_graph(distance_only)
+    graph_direction_aware = _built_graph(direction_aware)
+
+    assert graph_direction_aware.number_of_nodes() > 0
+    assert graph_direction_aware.number_of_edges() > 0
+    assert_no_forbidden_edge_attributes(graph_direction_aware)
+
+    hubs_distance_only = detect_cartwheel_hubs(
+        graph_distance_only, min_degree=3, max_radial_dispersion=1.0
+    )
+    hubs_direction_aware = detect_cartwheel_hubs(
+        graph_direction_aware, min_degree=3, max_radial_dispersion=1.0
+    )
+    assert len(hubs_direction_aware) <= len(hubs_distance_only)
+
+
+@pytest.mark.slow
+@pytest.mark.integration
+def test_cluster_collapse_persistence_runs_end_to_end_and_never_flags_more_hubs(tmp_path):
+    """cluster_collapse_method=persistence wired all the way through a real
+    run, mirroring the direction_aware check above: produces a valid graph,
+    and never leaves more cartwheel-shaped hubs behind than distance_only
+    does on the same input. See test_persistence_collapse.py for the hand-
+    built fixtures that show the method actually splitting a cartwheel-
+    shaped cluster this small, already-clean fixture may not exercise
+    heavily enough to also assert *fewer* hubs here.
+    """
+    schema = default_schema()
+
+    def _settings(**overrides):
+        values = {setting.name: setting.default for setting in schema}
+        values.update(
+            {
+                "input_path": FIXTURE,
+                "output_dir": tmp_path / overrides.pop("run_name"),
+                "plot_dir": tmp_path / "plots",
+                "statistics": False,
+                "show_plots_in_ide": False,
+                "interactive_plots": False,
+                "detect_cartwheel_hub_artifacts": True,
+                "cartwheel_hub_min_degree": 3,
+                "cartwheel_hub_max_radial_dispersion": 1.0,
+            }
+        )
+        values.update(overrides)
+        return resolve_settings(values, schema=schema, config_path=None)
+
+    def _built_graph(settings):
+        captured = {}
+
+        def remember(stage: str, output) -> None:
+            if stage == "build_network":
+                captured["graph"] = output.graph
+
+        run_pipeline_stages(settings, schema, on_stage_output=remember)
+        return captured["graph"]
+
+    distance_only = _settings(run_name="distance_only", cluster_collapse_method="distance_only")
+    persistence = _settings(run_name="persistence", cluster_collapse_method="persistence")
+
+    graph_distance_only = _built_graph(distance_only)
+    graph_persistence = _built_graph(persistence)
+
+    assert graph_persistence.number_of_nodes() > 0
+    assert graph_persistence.number_of_edges() > 0
+    assert_no_forbidden_edge_attributes(graph_persistence)
+
+    hubs_distance_only = detect_cartwheel_hubs(
+        graph_distance_only, min_degree=3, max_radial_dispersion=1.0
+    )
+    hubs_persistence = detect_cartwheel_hubs(
+        graph_persistence, min_degree=3, max_radial_dispersion=1.0
+    )
+    assert len(hubs_persistence) <= len(hubs_distance_only)
+
+
+@pytest.mark.slow
+@pytest.mark.integration
+def test_consistency_warn_below_settings_choose_the_right_log_level(
+    tmp_path, caplog, monkeypatch
+):
+    """Stage-wiring regression test for the three *_consistency_warn_below
+    settings (skeleton_mask_, skeleton_graph_, graph_mask_consistency_warn_
+    below): each is read from the right settings-dict key, compared with
+    the right operator, and drives WARNING vs INFO correctly.
+
+    None of tests/test_skeleton_consistency_diagnostics.py's unit tests can
+    catch a bug here: they exercise the diagnose_*/format_* functions
+    directly, never the settings lookup and log-level choice around them in
+    pipeline/stages.py. That gap is exactly where the last review's bug
+    lived -- a `requires` naming the wrong prerequisite setting -- and unit
+    tests on the functions alone stayed green through it.
+    """
+    schema = default_schema()
+    checks = (
+        ("skeleton_mask_consistency_warn_below", "Skeleton/mask consistency"),
+        ("skeleton_graph_consistency_warn_below", "Skeleton/graph consistency"),
+        ("graph_mask_consistency_warn_below", "Graph/mask consistency"),
+    )
+
+    def _settings(**overrides):
+        values = {setting.name: setting.default for setting in schema}
+        values.update(
+            {
+                "input_path": FIXTURE,
+                "output_dir": tmp_path / overrides.pop("run_name"),
+                "plot_dir": tmp_path / "plots",
+                "statistics": False,
+                "show_plots_in_ide": False,
+                "interactive_plots": False,
+            }
+        )
+        values.update(overrides)
+        return resolve_settings(values, schema=schema, config_path=None)
+
+    # The finished graph can trace every voxel of this fixture's skeleton
+    # (a stub ending at the image face is kept, not pruned), and a coverage of
+    # exactly 1.0 never warns. So the skeleton/graph check measures a copy of
+    # the real graph missing one edge: below 1.0 whatever the graph traces,
+    # and the settings lookup and comparison under test are unchanged.
+    real_skeleton_graph_check = graph_package.diagnose_skeleton_graph_consistency
+
+    def _graph_missing_one_edge(G, skeleton, **kwargs):
+        partial = G.copy()
+        partial.remove_edge(*next(iter(partial.edges(keys=True))))
+        return real_skeleton_graph_check(partial, skeleton, **kwargs)
+
+    monkeypatch.setattr(
+        graph_package, "diagnose_skeleton_graph_consistency", _graph_missing_one_edge
+    )
+
+    # 1.0 is above any coverage_fraction this real, noisy fixture achieves
+    # for the two mask checks (all measured well under 1.0 elsewhere in this
+    # test suite), and above the one-edge-short skeleton check's -- guaranteed
+    # to warn on all three at once.
+    warn_high = _settings(run_name="warn_high", **{name: 1.0 for name, _ in checks})
+    # 0.0 is at or below any achievable coverage_fraction -- guaranteed to
+    # never warn on any of the three.
+    warn_low = _settings(run_name="warn_low", **{name: 0.0 for name, _ in checks})
+
+    with caplog.at_level(logging.INFO, logger="haemolynx.pipeline.stages"):
+        caplog.clear()
+        run_pipeline_stages(warn_high, schema)
+        high_records = list(caplog.records)
+
+        caplog.clear()
+        run_pipeline_stages(warn_low, schema)
+        low_records = list(caplog.records)
+
+    for name, substring in checks:
+        assert any(
+            r.levelname == "WARNING" and substring in r.getMessage() for r in high_records
+        ), f"{name}=1.0 should have produced a WARNING containing {substring!r}"
+        assert any(
+            r.levelname == "INFO" and substring in r.getMessage() for r in low_records
+        ), f"{name}=0.0 should have produced an INFO line containing {substring!r}"
+        assert not any(
+            r.levelname == "WARNING" and substring in r.getMessage() for r in low_records
+        ), f"{name}=0.0 must never produce a WARNING containing {substring!r}"
+
+
+@pytest.mark.slow
+@pytest.mark.integration
+def test_missing_vessel_warn_below_settings_choose_the_right_log_level(tmp_path, caplog):
+    """Stage-wiring regression test for skeleton_missing_vessel_warn_below
+    and graph_missing_vessel_warn_below, mirroring the consistency test
+    above -- same rationale: a bug in the settings lookup/log-level choice
+    around diagnose_vessels_missing_from_skeleton/_graph would not be
+    caught by tests/test_skeleton_consistency_diagnostics.py's unit tests
+    on those functions alone.
+
+    missing_vessel_min_voxels=1 is set on both runs so the fixture's ~56
+    single-voxel noise specks count as vessels too, guaranteeing at least
+    one genuine miss regardless of collapse method -- at the default
+    min_vessel_voxels=2 this fixture has only one real vessel, which the
+    skeleton/graph do explain, so there would be nothing to warn about at
+    warn_below=1.0 either.
+    """
+    schema = default_schema()
+    checks = (
+        ("skeleton_missing_vessel_warn_below", "Vessels missing from skeleton"),
+        ("graph_missing_vessel_warn_below", "Vessels missing from graph"),
+    )
+
+    def _settings(**overrides):
+        values = {setting.name: setting.default for setting in schema}
+        values.update(
+            {
+                "input_path": FIXTURE,
+                "output_dir": tmp_path / overrides.pop("run_name"),
+                "plot_dir": tmp_path / "plots",
+                "statistics": False,
+                "show_plots_in_ide": False,
+                "interactive_plots": False,
+                "missing_vessel_min_voxels": 1,
+            }
+        )
+        values.update(overrides)
+        return resolve_settings(values, schema=schema, config_path=None)
+
+    # 1.0 is the schema default, and this fixture's noise specks (once
+    # counted as vessels via min_vessel_voxels=1) are guaranteed missing.
+    warn_high = _settings(run_name="warn_high", **{name: 1.0 for name, _ in checks})
+    # 0.0 is at or below any achievable explained_vessel_fraction --
+    # guaranteed to never warn on either.
+    warn_low = _settings(run_name="warn_low", **{name: 0.0 for name, _ in checks})
+
+    with caplog.at_level(logging.INFO, logger="haemolynx.pipeline.stages"):
+        caplog.clear()
+        run_pipeline_stages(warn_high, schema)
+        high_records = list(caplog.records)
+
+        caplog.clear()
+        run_pipeline_stages(warn_low, schema)
+        low_records = list(caplog.records)
+
+    for name, substring in checks:
+        assert any(
+            r.levelname == "WARNING" and substring in r.getMessage() for r in high_records
+        ), f"{name}=1.0 should have produced a WARNING containing {substring!r}"
+        assert any(
+            r.levelname == "INFO" and substring in r.getMessage() for r in low_records
+        ), f"{name}=0.0 should have produced an INFO line containing {substring!r}"
+        assert not any(
+            r.levelname == "WARNING" and substring in r.getMessage() for r in low_records
+        ), f"{name}=0.0 must never produce a WARNING containing {substring!r}"
+
+
+@pytest.mark.slow
+@pytest.mark.integration
+@pytest.mark.parametrize("short_loop_rule", ["default", "every", "off"])
+def test_the_built_network_draws_each_lumen_once(tmp_path, short_loop_rule):
+    """What graph building leaves in one segmented vessel that is not a
+    vessel (``graph.diagnose_lumen_artefacts``, on the graph build_network
+    hands over): no loop lying inside one lumen, no dead end whose tip is in
+    another vessel's lumen, beside another centreline or mostly off the
+    mask, and no two edges through one lumen unless taking either out would
+    cut vessels off (``lumen_loops.cuts_off_vessels``, the only pairs the
+    end-of-build clean-up keeps). The one-centreline-per-lumen work's
+    regression guard: on Stack A the build used to leave 124 such pairs and 12
+    loops inside one lumen.
+
+    Built three times. At the defaults the short-loop rule
+    (``remove_short_loops_under_um``, 200 um) breaks every loop the report
+    counts but those round a hole wider than ``short_loop_keep_hole_over_um``
+    (10 um, grids Q and Q2), so every loop that build leaves runs round such
+    a hole and none lies inside one lumen. With that limit at 0 ("every") it
+    breaks them all, and the build is held to leaving none. With the rule off
+    (0) the Nerve bed keeps its short loops, and the in-lumen loop rule must
+    have broken every one that lies inside one lumen."""
+    import numpy as np
+
+    from haemolynx.graph import diagnose_lumen_artefacts
+    from haemolynx.graph.lumen_loops import LOOP_SEARCH_UM, cuts_off_vessels, loop_hole_um
+    from haemolynx.graph.post_processing import short_loops
+    from haemolynx.preprocessing import MaskSupport
+
+    schema = default_schema()
+    values = {setting.name: setting.default for setting in schema}
+    values.update(
+        {
+            "input_path": NERVE_FIXTURE,
+            "output_dir": tmp_path,
+            "plot_dir": tmp_path / "plots",
+            "statistics": False,
+            "show_plots_in_ide": False,
+            "interactive_plots": False,
+        }
+    )
+    if short_loop_rule == "off":
+        values["remove_short_loops_under_um"] = 0.0
+    else:
+        # The report counts loops up to LOOP_SEARCH_UM round; the rule has to
+        # reach that far for "none left" to be what it promises.
+        assert values["remove_short_loops_under_um"] >= LOOP_SEARCH_UM
+    if short_loop_rule == "every":
+        values["short_loop_keep_hole_over_um"] = 0.0
+    settings = resolve_settings(values, schema=schema, config_path=None)
+    built = {}
+
+    def keep(stage: str, output) -> None:
+        if stage == "build_network":
+            built["network"] = output
+
+    run_pipeline_stages(settings, schema, on_stage_output=keep, stop_after="build_network")
+
+    network = built["network"]
+    G = network.graph
+    # 128 edges at the defaults, 100 with every short loop broken (2026-10-27: one
+    # fewer since the facing join reads a diagonal step in the mask as mask).
+    assert G.number_of_edges() >= 90, "the fixture's capillary bed did not build; the test proves nothing"
+    mask = _to_binary_volume_for_skeletonization(network.volume.image)
+    report = diagnose_lumen_artefacts(G, mask, voxel_size_zyx=network.volume.voxel_size_zyx)
+    if short_loop_rule == "off":
+        assert report["short_loop_count"] > 0, "no loops to judge; the loop check proves nothing"
+        assert report["loops_inside_one_lumen"] == 0
+    elif short_loop_rule == "every":
+        assert report["short_loop_count"] == 0, "the short-loop rule left loops it should have broken"
+    else:
+        support = MaskSupport(np.asarray(mask, dtype=bool), tuple(network.volume.voxel_size_zyx))
+        limit = values["short_loop_keep_hole_over_um"]
+        holes = [loop_hole_um(np.asarray(loop.points_um, dtype=float), support)
+                 for loop in short_loops(G, search_um=LOOP_SEARCH_UM)]
+        assert all(hole is not None and hole > limit for hole in holes), (
+            "the short-loop rule left loops it should have broken", holes)
+        assert report["loops_inside_one_lumen"] == 0
+    for kind in ("inside_other_lumen", "beside_vessel", "off_mask"):
+        assert report["dead_end_counts"][kind] == 0, kind
+    for left, right in report["duplicate_pairs"]:
+        assert cuts_off_vessels(G, left) and cuts_off_vessels(G, right), (left, right)
+
+
+# --- dead ends on the Nerve bed (PLAN_dead_ends.md Phase 10) ---------------------------
+
+
+@pytest.fixture(scope="module")
+def nerve_boundaries(tmp_path_factory):
+    """The Nerve fixture at the defaults, built and its boundaries chosen:
+    ``(graph, inlet nodes, outlet nodes)``."""
+    tmp_path = tmp_path_factory.mktemp("nerve_dead_ends")
+    schema = default_schema()
+    values = {setting.name: setting.default for setting in schema}
+    values.update({
+        "input_path": NERVE_FIXTURE, "output_dir": tmp_path, "plot_dir": tmp_path / "plots",
+        "statistics": False, "show_plots_in_ide": False, "interactive_plots": False,
+    })
+    settings = resolve_settings(values, schema=schema, config_path=None)
+    built = {}
+
+    def keep(stage: str, output) -> None:
+        if stage == "build_network":
+            built["graph"] = output.graph
+
+    run_pipeline_stages(settings, schema, on_stage_output=keep, stop_after="assign_boundaries")
+    return built["graph"], list(settings["inlet_nodes"]), list(settings["outlet_nodes"])
+
+
+@pytest.mark.slow
+@pytest.mark.integration
+def test_every_dead_end_of_the_nerve_bed_has_one_kind(nerve_boundaries):
+    from haemolynx.graph.dead_ends import DEAD_END_KIND, DEAD_END_KINDS
+
+    G, _inlets, _outlets = nerve_boundaries
+    tips = [n for n in G if G.degree(n) == 1]
+    assert len(tips) > 30, "the fixture's bed did not build; the test proves nothing"
+    assert {G.nodes[n].get(DEAD_END_KIND) for n in tips} <= set(DEAD_END_KINDS)
+    assert all(G.nodes[n].get(DEAD_END_KIND) for n in tips)
+    assert not any(DEAD_END_KIND in G.nodes[n] for n in G if G.degree(n) != 1)
+
+
+@pytest.mark.slow
+@pytest.mark.integration
+@pytest.mark.xfail(strict=True, reason=(
+    "PLAN_dead_ends.md Phase 10 target, not yet met: 3 of the Nerve bed's 64 dead ends are "
+    "stops_short at fc1d8607. Phase 5 (tracing them on) waits on a measure that separates "
+    "'would join' from 'stops here' (G5: the route join scored 23/29, the same as never joining)."
+))
+def test_no_dead_end_of_the_nerve_bed_is_one_the_graph_stopped_short_of(nerve_boundaries):
+    from haemolynx.graph.dead_ends import DEAD_END_KIND, STOPS_SHORT
+
+    G, _inlets, _outlets = nerve_boundaries
+    assert [n for n in G if G.degree(n) == 1 and G.nodes[n].get(DEAD_END_KIND) == STOPS_SHORT] == []
+
+
+@pytest.mark.slow
+@pytest.mark.integration
+@pytest.mark.xfail(strict=True, reason=(
+    "PLAN_dead_ends.md Phase 10 target, not yet met: the default boundary selection "
+    "(edge_percent, boundary_open_end_test=distance) picks 12 nodes on the Nerve bed at "
+    "fc1d8607, 2 of them dead ends the definition calls interior. Taking only leaves_image "
+    "terminals (Phase 3) waits on the fresh grid G2'."
+))
+def test_every_boundary_node_the_nerve_run_chooses_leaves_the_image(nerve_boundaries):
+    from haemolynx.graph.dead_ends import node_leaves_image
+
+    G, inlets, outlets = nerve_boundaries
+    assert inlets and outlets
+    assert [n for n in inlets + outlets if not node_leaves_image(G, n)] == []

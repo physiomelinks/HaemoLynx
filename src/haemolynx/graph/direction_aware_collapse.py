@@ -1,0 +1,504 @@
+"""A direction-aware alternative to :func:`collapse.collapse_node_clusters`.
+
+That function collapses every node within ``distance_threshold`` of another
+into one representative, by taking the *connected components* of a proximity
+graph -- single-linkage clustering with no limit on how far a merge can
+chain. In a densely braided or looped region (many short segments, many
+nearby branch points -- exactly what thickness-gated skeletonisation's Lee
+thinning path can produce), that chaining can sweep a whole tangled patch
+into one node over its ten repair passes, each carrying every edge from
+every node it absorbed. That is a cartwheel hub by construction -- see
+``cartwheel_guard`` for the diagnostic that names the shape, and its own
+docstring for why it cannot undo the damage after the fact: once collapsed,
+the cluster's original, separate positions are gone.
+
+This module stops the damage before it happens instead of reporting it
+afterwards. It reuses ``cartwheel_guard``'s own geometry (never
+reimplemented here) as a *gate* on the merge itself: growing a cluster is
+allowed only as long as what it would spoke out to stays directionally
+coherent. A candidate merge that would create a hub cartwheel_guard could
+flag is skipped -- the nodes involved are left as separate, nearby
+representatives instead of one. The gate alone did not stop the chaining
+along a vessel (a run of junctions has too few spokes to look like a wheel),
+so a cluster is also bounded (``_merge_stays_within``: no node, over every
+pass, further than the collapse distance from where its cluster ends up)
+and never absorbs a vessel longer than ``MAX_ABSORBED_EDGE_MULTIPLE`` times
+that distance between two of its members (``_merge_absorbs_a_vessel``: a
+loop's arc, which the merge would delete as a self-loop). Merges that pass are additionally checked
+for redundant parallel wiring to the same neighbour (several original nodes
+in a cluster reaching the same external node by slightly different
+skeleton-noise paths), keeping only the shorter of any resulting duplicates
+-- collapsing a hairball should not inflate a real neighbour's edge count
+either. Only paths that trace the same vessel count as duplicates -- the
+same route or, given the segmentation, one lumen: a member reaching that
+neighbour along a separate vessel keeps it, as a parallel edge.
+
+Opt-in via ``cluster_collapse_method="direction_aware"`` (default
+``"distance_only"``, the unmodified legacy behaviour); deliberately kept in
+its own module, reusing only read-only helpers from ``collapse``/
+``cartwheel_guard``, so it can be deleted along with its one call site and
+two settings without touching either of those modules if it does not help.
+"""
+from __future__ import annotations
+
+import logging
+from typing import Any, Callable, Union
+
+import numpy as np
+import networkx as nx
+from scipy.spatial import cKDTree
+
+from ._helpers import path_separation, paths_separated_by_background
+from .cartwheel_guard import (
+    DEFAULT_TANGENT_LENGTH_UM,
+    _incident_edge_items,
+    _spoke_direction_and_length,
+    hub_radial_dispersion,
+)
+from .collapse import (
+    MAX_ABSORBED_EDGE_MULTIPLE,
+    _edge_path_length,
+    _patch_voxel_endpoint,
+    _pick_representative,
+    _remeasure_length,
+    move_node_with_its_edges,
+    settle_self_loops,
+)
+
+logger = logging.getLogger(__name__)
+
+#: Below this many external edges, a merge is never blocked -- an ordinary
+#: bifurcation or trifurcation cannot look wheel-shaped, and this matches
+#: cartwheel_guard's own default floor for the same reason.
+DEFAULT_MIN_DEGREE_FOR_DISPERSION_CHECK = 6
+
+#: Merging must not drop a hub's radial dispersion to or below this --
+#: matches cartwheel_guard's own default "spread out enough to be a
+#: cartwheel" line, kept as a separate setting so the two features (one
+#: diagnostic, one corrective) can be tuned or removed independently.
+DEFAULT_MAX_RADIAL_DISPERSION = 0.5
+
+#: Two paths from a merged cluster to the same neighbour are one vessel when
+#: they stay this close the whole way (outside the member's own re-ended
+#: start). Wider than degree-2 merging's 3 um (``are_paths_similar``): paths
+#: 3-5 um apart here are mostly one wide vessel skeletonised twice (on the
+#: Stack A mask, 7 in 8 such pairs with mask evidence had lumen between
+#: them, not background).
+DEFAULT_DUPLICATE_PATH_TOLERANCE_UM = 5.0
+
+def _merge_absorbs_a_vessel(
+    G: Union[nx.Graph, nx.MultiGraph],
+    group_a: set,
+    group_b: set,
+    max_absorbed_length: float,
+) -> bool:
+    """Whether an edge from *group_a* to *group_b* is longer than
+    *max_absorbed_length*: merging the two would turn it into a self-loop and
+    delete it, and a path that long between nodes that close is a vessel."""
+    small, large = (group_a, group_b) if len(group_a) <= len(group_b) else (group_b, group_a)
+    for node in small:
+        if not G.has_node(node):
+            continue
+        for u, v, data in G.edges(node, data=True):
+            other = v if u == node else u
+            if other in large and _edge_path_length(G, u, v, data) > max_absorbed_length:
+                return True
+    return False
+
+
+def _merge_stays_within(origins: np.ndarray, distance_threshold: float) -> bool:
+    """Whether every original node position in *origins* lies within
+    *distance_threshold* of their centroid -- the furthest any node is moved
+    by a merge, over every pass. Union-find closest-first chains otherwise:
+    a run of junctions 4 um apart along a vessel, pairwise within the
+    threshold, became one node (81 nodes spanning 26 um on Stack A), with every
+    vessel between them deleted."""
+    if len(origins) < 2:
+        return True
+    centroid = origins.mean(axis=0)
+    return float(np.max(np.linalg.norm(origins - centroid, axis=1))) <= float(distance_threshold)
+
+
+def _precompute_node_spokes(
+    G: Union[nx.Graph, nx.MultiGraph],
+    nodes: list,
+    *,
+    tangent_length_um: float,
+) -> dict[Any, list[tuple[Any, "np.ndarray | None"]]]:
+    """Every candidate node's own (neighbor, direction) pairs, computed once
+    per iteration.
+
+    G's edges are not mutated until every candidate pair in an iteration has
+    been tested against them (the actual rewiring happens afterwards, once
+    the union-find grouping is final) -- so without this, checking each
+    candidate pair via :func:`_merge_is_direction_safe` re-walked the same
+    node's incident edges from scratch on every pair it happened to appear
+    in, which is wasted, repeated work in exactly the densely-braided case
+    this module targets, where one node can appear in many candidate pairs.
+    """
+    spokes: dict[Any, list[tuple[Any, Any]]] = {}
+    for node in nodes:
+        node_spokes = []
+        for neighbor, _key, data in _incident_edge_items(G, node):
+            direction, _length = _spoke_direction_and_length(
+                G, node, neighbor, data, tangent_length_um=tangent_length_um
+            )
+            node_spokes.append((neighbor, direction))
+        spokes[node] = node_spokes
+    return spokes
+
+
+def _merge_is_direction_safe(
+    node_spokes: dict,
+    candidate_members: set,
+    *,
+    min_degree_for_dispersion_check: int,
+    max_radial_dispersion: float,
+) -> bool:
+    """Whether merging *candidate_members* into one node stays coherent.
+
+    Every edge with exactly one end in *candidate_members* becomes a spoke
+    of the merged node; edges with both ends inside it are absorbed by the
+    merge and are not spokes. Safe when there are too few spokes to judge
+    fairly (fewer than *min_degree_for_dispersion_check*, or too few with a
+    resolvable direction), or when the spokes that do resolve still agree
+    well enough (dispersion above *max_radial_dispersion*).
+
+    *node_spokes* is precomputed once per iteration by
+    :func:`_precompute_node_spokes` -- see there for why.
+    """
+    directions: list[np.ndarray] = []
+    degree = 0
+    for node in candidate_members:
+        for neighbor, direction in node_spokes.get(node, ()):
+            if neighbor in candidate_members:
+                continue
+            degree += 1
+            if direction is not None:
+                directions.append(direction)
+
+    if degree < min_degree_for_dispersion_check:
+        return True
+    if len(directions) < min_degree_for_dispersion_check:
+        # Too many spokes have no resolvable direction (missing pos, a
+        # duplicate point) to judge fairly -- do not block on missing data.
+        return True
+    return hub_radial_dispersion(directions) > max_radial_dispersion
+
+
+def _traces_the_same_vessel(
+    data_a: dict,
+    data_b: dict,
+    rep_pos: np.ndarray,
+    moved_by: float,
+    inside_lumen: Callable[[np.ndarray], np.ndarray] | None = None,
+) -> bool:
+    """Whether two edges from a merged cluster to one neighbour are one vessel.
+
+    Their paths must stay within ``DEFAULT_DUPLICATE_PATH_TOLERANCE_UM`` of
+    each other everywhere outside *moved_by* of *rep_pos* or, given
+    *inside_lumen*, run through one lumen there (no background between them:
+    ``paths_separated_by_background``) -- Lee thinning of a wide vessel
+    leaves strands further apart than that inside it. Rewiring re-ends a
+    member's path at the representative with a straight jump as long as the
+    member's own offset, which says nothing about whether the two vessels
+    differ. Edges without a path cannot be told apart, so they count as the
+    same vessel.
+    """
+    voxels_a, voxels_b = data_a.get("voxels"), data_b.get("voxels")
+    if voxels_a is None or voxels_b is None or len(voxels_a) < 2 or len(voxels_b) < 2:
+        return True
+    moved_end = (rep_pos, moved_by)
+    if path_separation(voxels_a, voxels_b, ignore_within=moved_end) <= DEFAULT_DUPLICATE_PATH_TOLERANCE_UM:
+        return True
+    return inside_lumen is not None and not paths_separated_by_background(
+        voxels_a, voxels_b, inside_lumen, ignore_within=moved_end
+    )
+
+
+def _rewire_edges_deduplicating(
+    G: Union[nx.Graph, nx.MultiGraph],
+    old_node: Any,
+    new_node: Any,
+    is_multi: bool,
+    *,
+    protected_loop_neighbors: set | None = None,
+    inside_lumen: Callable[[np.ndarray], np.ndarray] | None = None,
+) -> None:
+    """Move every edge incident to *old_node* onto *new_node*.
+
+    Same as ``collapse._rewire_edges``, plus: when *new_node* already
+    reaches a neighbour along the same route (its own original edge, or one
+    moved there earlier in this same cluster's merge), keep only the shorter
+    of the two rather than both -- a cluster's internal nodes reaching the
+    same external neighbour by slightly different noise paths should not
+    inflate that neighbour's apparent number of distinct connections. "The
+    same route" means within ``DEFAULT_DUPLICATE_PATH_TOLERANCE_UM`` away from
+    the moved end or, given *inside_lumen*, through one lumen (see
+    :func:`_traces_the_same_vessel`); any other path is a separate vessel to
+    that neighbour and is added as a parallel edge. A plain ``nx.Graph``
+    cannot hold one, so there the shorter edge is always kept.
+
+    *protected_loop_neighbors*, when given, names neighbours *new_node*
+    already reached by two or more parallel edges before this cluster's
+    collapse began -- a genuine vascular loop the pipeline built earlier
+    (see ``reconnect_secondary_loop_edges``), not skeletonisation noise.
+    An edge to one of those neighbours is only ever added, never removed,
+    so collapsing a nearby noisy cluster cannot delete a real loop to make
+    room for a shorter, spurious duplicate. Neighbours with at most one
+    pre-existing edge keep the ordinary keep-the-shorter-of-the-two rule,
+    which is what actually deduplicates cluster-introduced noise.
+    """
+    protected_loop_neighbors = protected_loop_neighbors or set()
+    old_pos = np.asarray(G.nodes[old_node].get("pos", [0, 0, 0]), dtype=float)
+    new_pos = np.asarray(G.nodes[new_node].get("pos", [0, 0, 0]), dtype=float)
+    moved_by = float(np.linalg.norm(old_pos - new_pos))
+
+    if is_multi:
+        edges = list(G.edges(old_node, data=True, keys=True))
+        for u, v, _key, data in edges:
+            neighbor = v if u == old_node else u
+            if neighbor == new_node:
+                continue
+            patched = _remeasure_length(_patch_voxel_endpoint(data, old_pos, new_pos))
+            new_length = patched.get("length", float("inf"))
+            existing = G.get_edge_data(new_node, neighbor) or {}
+            duplicates = [] if neighbor in protected_loop_neighbors else [
+                k for k in existing
+                if _traces_the_same_vessel(existing[k], patched, new_pos, moved_by, inside_lumen)
+            ]
+            if duplicates:
+                shortest_key = min(
+                    duplicates, key=lambda k: existing[k].get("length", float("inf"))
+                )
+                shortest_length = existing[shortest_key].get("length", float("inf"))
+                if new_length < shortest_length:
+                    G.remove_edge(new_node, neighbor, key=shortest_key)
+                    G.add_edge(new_node, neighbor, **patched)
+                # else: the new parallel edge is redundant and longer; drop it.
+            else:
+                G.add_edge(new_node, neighbor, **patched)
+    else:
+        edges = list(G.edges(old_node, data=True))
+        for u, v, data in edges:
+            neighbor = v if u == old_node else u
+            if neighbor == new_node:
+                continue
+            patched = _remeasure_length(_patch_voxel_endpoint(data, old_pos, new_pos))
+            if not G.has_edge(new_node, neighbor):
+                G.add_edge(new_node, neighbor, **patched)
+            else:
+                existing_len = G[new_node][neighbor].get("length", float("inf"))
+                new_len = patched.get("length", float("inf"))
+                if new_len < existing_len:
+                    G.remove_edge(new_node, neighbor)
+                    G.add_edge(new_node, neighbor, **patched)
+
+
+def collapse_node_clusters_direction_aware(
+    G: Union[nx.Graph, nx.MultiGraph],
+    distance_threshold: float = 5.0,
+    *,
+    max_radial_dispersion: float = DEFAULT_MAX_RADIAL_DISPERSION,
+    min_degree_for_dispersion_check: int = DEFAULT_MIN_DEGREE_FOR_DISPERSION_CHECK,
+    tangent_length_um: float = DEFAULT_TANGENT_LENGTH_UM,
+    debug: bool = False,
+    max_iterations: int = 10,
+    inside_lumen: Callable[[np.ndarray], np.ndarray] | None = None,
+) -> Union[nx.Graph, nx.MultiGraph]:
+    """Collapse nearby node clusters, refusing a merge that would cartwheel.
+
+    Same proximity discovery as ``collapse_node_clusters`` (a cKDTree over
+    node positions, pairs within *distance_threshold*), but candidate pairs
+    are agglomerated closest-first with union-find rather than taken as
+    whole connected components: two (possibly already-grown) groups are
+    merged only when :func:`_merge_is_direction_safe` says the combined
+    node's spokes would still agree well enough. A chained proximity
+    component that would otherwise become one cartwheel-shaped hub instead
+    stops growing where it would start looking like one, leaving separate
+    representative nodes for what proximity alone could not tell apart.
+
+    Ties -- pairs at one distance, and the order groups and their members
+    are rewired in -- go by node position, not by the order nodes and edges
+    were added or the set order of their IDs: a change in one place of the
+    graph changes the collapse there only. (A representative's own tie still
+    goes to the lowest node ID.)
+
+    *inside_lumen* (see ``assemble.mask_lumen_test``) lets the check for
+    duplicate edges to one neighbour read the segmentation -- see
+    :func:`_rewire_edges_deduplicating`.
+
+    Raises
+    ------
+    ValueError
+        If *max_radial_dispersion* is outside ``[0.0, 1.0]`` or
+        *min_degree_for_dispersion_check* is below 2 -- mirroring
+        ``cartwheel_guard.detect_cartwheel_hubs``'s own validation, since
+        both read the same kind of value.
+    """
+    if not 0.0 <= max_radial_dispersion <= 1.0:
+        raise ValueError("max_radial_dispersion must be in [0.0, 1.0]")
+    if min_degree_for_dispersion_check < 2:
+        raise ValueError("min_degree_for_dispersion_check must be >= 2")
+
+    G = G.copy()
+    is_multi = isinstance(G, (nx.MultiGraph, nx.MultiDiGraph))
+    total_merged = 0
+    # Every original position a node has absorbed, for the extent bound.
+    origins: dict[Any, np.ndarray] = {}
+    max_absorbed = MAX_ABSORBED_EDGE_MULTIPLE * float(distance_threshold)
+
+    for iteration in range(max_iterations):
+        nodes_with_pos = [
+            (n, np.array(G.nodes[n]["pos"], dtype=float))
+            for n in G.nodes()
+            if "pos" in G.nodes[n]
+        ]
+        if len(nodes_with_pos) < 2:
+            break
+
+        node_ids = [n for n, _ in nodes_with_pos]
+        index_of = {n: k for k, n in enumerate(node_ids)}
+        coords = np.array([p for _, p in nodes_with_pos])
+
+        tree = cKDTree(coords)
+        pairs = tree.query_pairs(distance_threshold)
+        if not pairs:
+            break
+
+        # Closest first, and pairs at one distance in the order of their two
+        # nodes' positions. Nodes on the voxel lattice share distances by the
+        # hundred (58 distances among Stack A's 25,188 pairs), and which merges
+        # the checks below refuse depends on what merged before. Left to the
+        # order query_pairs' set yields them -- hash order of array indices --
+        # a node added or removed anywhere reordered the ties everywhere, and
+        # moved junctions 180 um away (PLAN_dale_review_fixes.md, item 2).
+        positions = [tuple(p) for p in coords.tolist()]
+
+        def position(n):
+            return positions[index_of[n]]
+
+        pair_list = sorted(
+            pairs,
+            key=lambda ij: (
+                float(np.linalg.norm(coords[ij[0]] - coords[ij[1]])),
+                min(positions[ij[0]], positions[ij[1]]),
+                max(positions[ij[0]], positions[ij[1]]),
+            ),
+        )
+
+        # Computed once for the whole iteration -- see _precompute_node_spokes
+        # for why this is safe (G's edges don't change until every candidate
+        # pair below has been tested).
+        node_spokes = _precompute_node_spokes(
+            G, node_ids, tangent_length_um=tangent_length_um
+        )
+
+        parent = {n: n for n in node_ids}
+        members: dict[Any, set] = {n: {n} for n in node_ids}
+
+        def find(x):
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]
+                x = parent[x]
+            return x
+
+        blocked_this_iter = 0
+        for i, j in pair_list:
+            root_a, root_b = find(node_ids[i]), find(node_ids[j])
+            if root_a == root_b:
+                continue
+            candidate = members[root_a] | members[root_b]
+            if not _merge_stays_within(
+                np.vstack([origins.get(n, coords[index_of[n]][None, :]) for n in candidate]),
+                distance_threshold,
+            ) or _merge_absorbs_a_vessel(G, members[root_a], members[root_b], max_absorbed):
+                blocked_this_iter += 1
+                continue
+            if not _merge_is_direction_safe(
+                node_spokes,
+                candidate,
+                min_degree_for_dispersion_check=min_degree_for_dispersion_check,
+                max_radial_dispersion=max_radial_dispersion,
+            ):
+                blocked_this_iter += 1
+                continue
+            if len(members[root_a]) < len(members[root_b]):
+                root_a, root_b = root_b, root_a
+            parent[root_b] = root_a
+            members[root_a] |= members[root_b]
+            del members[root_b]
+
+        # Groups, and each group's members, in position order too: which
+        # group is rewired first, and in what order a group's edges move onto
+        # its representative, decide which of two duplicate edges is kept --
+        # not something to leave to set or node order.
+        groups = sorted(
+            (sorted(group, key=position) for group in members.values() if len(group) >= 2),
+            key=lambda group: position(group[0]),
+        )
+        merged_this_iter = 0
+        for group in groups:
+            group = [n for n in group if G.has_node(n)]
+            if len(group) < 2:
+                continue
+
+            rep = _pick_representative(G, group)
+            others = [n for n in group if n != rep]
+
+            if debug:
+                logger.info(
+                    "Collapsing cluster of %d nodes %s -> representative %s "
+                    "(direction-aware)",
+                    len(group), group, rep,
+                )
+
+            origins[rep] = np.vstack([
+                origins.pop(n, np.asarray(G.nodes[n]["pos"], dtype=float)[None, :])
+                for n in group if "pos" in G.nodes[n]
+            ])
+            cluster_positions = np.array(
+                [G.nodes[n]["pos"] for n in group if "pos" in G.nodes[n]]
+            )
+            move_node_with_its_edges(G, rep, cluster_positions.mean(axis=0))
+
+            # Neighbours rep already reaches by 2+ parallel edges before any
+            # of this cluster's members are merged in -- a genuine loop, not
+            # noise -- must not have one of those edges deleted to make room
+            # for a shorter one a merged member happens to contribute.
+            protected_loop_neighbors = {
+                neighbor
+                for neighbor in (set(G.neighbors(rep)) - set(group))
+                if G.number_of_edges(rep, neighbor) >= 2
+            } if is_multi else set()
+
+            for other in others:
+                if not G.has_node(other):
+                    continue
+                _rewire_edges_deduplicating(
+                    G, other, rep, is_multi,
+                    protected_loop_neighbors=protected_loop_neighbors,
+                    inside_lumen=inside_lumen,
+                )
+                G.remove_node(other)
+                merged_this_iter += 1
+
+        total_merged += merged_this_iter
+        if debug:
+            logger.info(
+                "Iteration %d: merged %d nodes, blocked %d cartwheel-shaped, too wide or vessel-absorbing "
+                "merges (%d total merged)",
+                iteration + 1, merged_this_iter, blocked_this_iter, total_merged,
+            )
+        if merged_this_iter == 0:
+            break
+
+    settle_self_loops(G, distance_threshold, debug)
+
+    if debug or total_merged > 0:
+        logger.info(
+            "collapse_node_clusters_direction_aware: merged %d nodes, "
+            "graph now has %d nodes / %d edges",
+            total_merged, G.number_of_nodes(), G.number_of_edges(),
+        )
+    return G

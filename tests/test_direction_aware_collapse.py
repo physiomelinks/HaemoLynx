@@ -1,0 +1,556 @@
+"""Direction-aware node-cluster collapse: hand-verified geometry, no pipeline involved.
+
+Mirrors tests/test_cartwheel_guard.py's style, since this module exists
+specifically to stop collapse_node_clusters from producing the shape that
+guard flags -- see graph/direction_aware_collapse.py's own docstring.
+"""
+from __future__ import annotations
+
+import math
+
+import numpy as np
+import networkx as nx
+from scipy.spatial import cKDTree
+
+from haemolynx.graph._helpers import calculate_path_length, path_separation
+import pytest
+
+from haemolynx.graph.cartwheel_guard import detect_cartwheel_hubs
+from haemolynx.graph.collapse import collapse_node_clusters
+from haemolynx.graph.direction_aware_collapse import (
+    DEFAULT_DUPLICATE_PATH_TOLERANCE_UM,
+    DEFAULT_MAX_RADIAL_DISPERSION,
+    DEFAULT_MIN_DEGREE_FOR_DISPERSION_CHECK,
+    collapse_node_clusters_direction_aware,
+)
+
+
+def _wheel_graph(
+    n_spokes: int = 8, hub_jitter: float = 0.3, spoke_length: float = 20.0
+) -> nx.MultiGraph:
+    """*n_spokes* tightly-clustered hub nodes, each with one edge leaving in
+    its own evenly-spaced direction -- the shape cartwheel_guard exists to
+    flag, and the shape a naive collapse would produce by merging every hub
+    node into one representative carrying every spoke."""
+    G = nx.MultiGraph()
+    rng = np.random.default_rng(0)
+    for i in range(n_spokes):
+        offset = rng.normal(scale=hub_jitter, size=3)
+        G.add_node(i, pos=np.array([0.0, 0.0, 0.0]) + offset)
+    for i in range(n_spokes):
+        angle = 2 * math.pi * i / n_spokes
+        direction = np.array([0.0, math.cos(angle), math.sin(angle)])
+        ext_pos = direction * spoke_length
+        ext_id = 100 + i
+        G.add_node(ext_id, pos=ext_pos)
+        c_pos = G.nodes[i]["pos"]
+        G.add_edge(
+            i, ext_id,
+            length=float(np.linalg.norm(ext_pos - c_pos)),
+            voxels=[c_pos.tolist(), ext_pos.tolist()],
+        )
+    return G
+
+
+def _coherent_bundle_graph(
+    n_branches: int = 8, spread_degrees: float = 20.0, spoke_length: float = 150.0
+) -> nx.MultiGraph:
+    """*n_branches* tightly-clustered hub nodes, each leaving in a direction
+    within a narrow cone -- a real busy junction where every branch
+    continues roughly one way, not a cartwheel. Collapsing all of them
+    should stay allowed. *spoke_length* is long enough that neighbouring
+    external endpoints stay outside the default 5 um collapse distance from
+    each other despite the narrow angular spread -- this fixture is only
+    testing whether the *hub* side stays free to merge, not creating a
+    second cluster on the external side by accident."""
+    G = nx.MultiGraph()
+    rng = np.random.default_rng(1)
+    spread = math.radians(spread_degrees)
+    for i in range(n_branches):
+        offset = rng.normal(scale=0.3, size=3)
+        G.add_node(i, pos=np.array([0.0, 0.0, 0.0]) + offset)
+        angle = -spread / 2 + spread * i / max(n_branches - 1, 1)
+        direction = np.array([0.0, math.cos(angle), math.sin(angle)])
+        ext_pos = direction * spoke_length
+        ext_id = 100 + i
+        G.add_node(ext_id, pos=ext_pos)
+        c_pos = G.nodes[i]["pos"]
+        G.add_edge(
+            i, ext_id,
+            length=float(np.linalg.norm(ext_pos - c_pos)),
+            voxels=[c_pos.tolist(), ext_pos.tolist()],
+        )
+    return G
+
+
+# --- the core claim: refuses to build what cartwheel_guard would flag ------
+
+
+def test_a_wheel_shaped_cluster_is_not_collapsed_into_one_cartwheel_hub():
+    G = _wheel_graph()
+
+    legacy = collapse_node_clusters(G, distance_threshold=5.0)
+    aware = collapse_node_clusters_direction_aware(G, distance_threshold=5.0)
+
+    # The legacy behaviour really does produce the pathology this exists to
+    # fix -- otherwise this fixture proves nothing.
+    legacy_hubs = detect_cartwheel_hubs(
+        legacy,
+        min_degree=DEFAULT_MIN_DEGREE_FOR_DISPERSION_CHECK,
+        max_radial_dispersion=DEFAULT_MAX_RADIAL_DISPERSION,
+    )
+    assert legacy_hubs, "fixture bug: legacy collapse did not even produce a cartwheel hub"
+    assert max(dict(legacy.degree()).values()) == 8
+
+    aware_hubs = detect_cartwheel_hubs(
+        aware,
+        min_degree=DEFAULT_MIN_DEGREE_FOR_DISPERSION_CHECK,
+        max_radial_dispersion=DEFAULT_MAX_RADIAL_DISPERSION,
+    )
+    assert aware_hubs == [], "direction-aware collapse still produced a flaggable cartwheel hub"
+    # And it did not just refuse to collapse anything at all.
+    assert aware.number_of_nodes() < G.number_of_nodes()
+
+
+def test_a_coherent_busy_junction_still_collapses_fully():
+    """The fix must not become "never merge more than a few nodes" -- a
+    real junction where every branch leaves roughly the same way should
+    collapse exactly as the legacy method does."""
+    G = _coherent_bundle_graph()
+
+    legacy = collapse_node_clusters(G, distance_threshold=5.0)
+    aware = collapse_node_clusters_direction_aware(G, distance_threshold=5.0)
+
+    assert aware.number_of_nodes() == legacy.number_of_nodes()
+    assert aware.number_of_edges() == legacy.number_of_edges()
+    assert max(dict(aware.degree()).values()) == 8
+
+
+def test_a_small_cluster_below_min_degree_always_collapses_regardless_of_shape():
+    """Two hub nodes each with one external spoke pointing the opposite way
+    -- as wheel-shaped as two spokes can be -- but degree 2 is below the
+    default floor of 6, so it merges exactly as the legacy method would."""
+    G = nx.MultiGraph()
+    G.add_node(0, pos=np.array([0.0, 0.0, 0.0]))
+    G.add_node(1, pos=np.array([1.0, 0.0, 0.0]))
+    G.add_node(10, pos=np.array([0.0, 0.0, -20.0]))
+    G.add_node(11, pos=np.array([0.0, 0.0, 20.0]))
+    G.add_edge(0, 10, length=20.0, voxels=[[0, 0, 0], [0, 0, -20]])
+    G.add_edge(1, 11, length=19.0, voxels=[[1, 0, 0], [0, 0, 20]])
+
+    aware = collapse_node_clusters_direction_aware(G, distance_threshold=5.0)
+
+    assert aware.number_of_nodes() == 3
+    assert set(dict(aware.degree()).values()) == {2, 1, 1}
+
+
+# --- deduplicating redundant parallel wiring after a merge -----------------
+
+
+def test_two_cluster_members_reaching_the_same_neighbour_keep_only_the_shorter_edge():
+    G = nx.MultiGraph()
+    G.add_node(0, pos=np.array([0.0, 0.0, 0.0]))
+    G.add_node(1, pos=np.array([1.0, 0.0, 0.0]))
+    G.add_node(2, pos=np.array([20.0, 0.0, 0.0]))
+    # Lengths are what the paths measure: the representative's own edge takes
+    # a detour, the member's runs straight.
+    G.add_edge(0, 2, length=20.9, voxels=[[0, 0, 0], [10, 3, 0], [20, 0, 0]])
+    G.add_edge(1, 2, length=19.0, voxels=[[1, 0, 0], [20, 0, 0]])
+
+    out = collapse_node_clusters_direction_aware(G, distance_threshold=5.0)
+
+    assert out.number_of_nodes() == 2
+    assert out.number_of_edges() == 1
+    remaining = list(out.edges(data=True))[0][2]
+    # The straight path, now starting at the merged node's centroid (0.5, 0, 0).
+    assert len(remaining["voxels"]) == 2
+    assert remaining["length"] == pytest.approx(19.5)
+
+
+def _bowed_path(start, end, bulge, n_points=31):
+    """*n_points* from *start* to *end*, bowing *bulge* um out along y at the middle."""
+    t = np.linspace(0.0, 1.0, n_points)
+    points = np.outer(1.0 - t, start) + np.outer(t, end)
+    points[:, 1] += bulge * np.sin(np.pi * t)
+    return points.tolist()
+
+
+@pytest.mark.parametrize("member_takes", ["the bowed vessel", "the straight vessel"])
+def test_cluster_members_reaching_one_neighbour_by_separate_vessels_keep_both(member_takes):
+    """Regression test: two vessels from a cluster to one neighbour, 10 um
+    apart, are two vessels. Deduplication used to keep only the shorter edge
+    whatever its route, so merging the member either dropped its own vessel
+    (longer) or deleted the representative's (shorter) -- as at Stack A
+    node 4932, whose 31 um vessel to node 3643 vanished behind the
+    representative's 28 um one, 11 um away."""
+    G = nx.MultiGraph()
+    G.add_node(0, pos=np.array([0.0, 0.0, 0.0]))
+    G.add_node(1, pos=np.array([1.5, 0.0, 0.0]))
+    G.add_node(2, pos=np.array([30.0, 0.0, 0.0]))
+    straight = _bowed_path([0.0, 0.0, 0.0], [30.0, 0.0, 0.0], bulge=0.0)
+    bowed = _bowed_path([1.5, 0.0, 0.0], [30.0, 0.0, 0.0], bulge=10.0)
+    if member_takes == "the straight vessel":
+        straight = _bowed_path([1.5, 0.0, 0.0], [30.0, 0.0, 0.0], bulge=0.0)
+        bowed = _bowed_path([0.0, 0.0, 0.0], [30.0, 0.0, 0.0], bulge=10.0)
+    for path in (straight, bowed):
+        node = 0 if path[0] == [0.0, 0.0, 0.0] else 1
+        G.add_edge(node, 2, voxels=path, length=calculate_path_length(path))
+
+    out = collapse_node_clusters_direction_aware(G, distance_threshold=5.0)
+
+    assert out.number_of_nodes() == 2  # 0 and 1 merged into one representative
+    assert out.number_of_edges(0, 2) == 2
+    centroid = [0.75, 0.0, 0.0]
+    expected = sorted(calculate_path_length([centroid] + path[1:]) for path in (straight, bowed))
+    assert sorted(d["length"] for _, _, d in out.edges(data=True)) == pytest.approx(expected)
+
+
+def _lumen_round(paths, radius_um, shape=(32, 14, 1)):
+    """`inside_lumen` for a mask of 1 um voxels: tubes of *radius_um* round each path."""
+    from haemolynx.graph._helpers import densify_polyline
+    from haemolynx.graph.assemble import mask_lumen_test
+
+    grid = np.stack(np.indices(shape), axis=-1).reshape(-1, 3).astype(float)
+    mask = np.zeros(len(grid), dtype=bool)
+    for path in paths:
+        points = densify_polyline(np.asarray(path, dtype=float), max_step_um=0.5)
+        mask |= cKDTree(points).query(grid)[0] <= radius_um
+    return mask_lumen_test(mask.reshape(shape), (1.0, 1.0, 1.0))
+
+
+@pytest.mark.parametrize("lumen", ["one", "two"])
+def test_cluster_members_reaching_one_neighbour_through_one_lumen_keep_one_edge(lumen):
+    """Regression test: the two vessels of the test above, 10 um apart, are
+    one vessel when the segmentation has lumen all the way between them --
+    Lee thinning leaves strands that far apart through one wide vessel, and
+    keeping both left the Stack A graph with parallel edges inside one
+    segmented vessel. Where the segmentation has tissue between them they
+    stay two."""
+    G = nx.MultiGraph()
+    G.add_node(0, pos=np.array([0.0, 0.0, 0.0]))
+    G.add_node(1, pos=np.array([1.5, 0.0, 0.0]))
+    G.add_node(2, pos=np.array([30.0, 0.0, 0.0]))
+    straight = _bowed_path([0.0, 0.0, 0.0], [30.0, 0.0, 0.0], bulge=0.0)
+    bowed = _bowed_path([1.5, 0.0, 0.0], [30.0, 0.0, 0.0], bulge=10.0)
+    G.add_edge(0, 2, voxels=straight, length=calculate_path_length(straight))
+    G.add_edge(1, 2, voxels=bowed, length=calculate_path_length(bowed))
+    # One lumen: tubes wide enough to meet, so the space between the two is
+    # lumen all the way; two vessels: 2 um tubes, with tissue between.
+    inside_lumen = _lumen_round([straight, bowed], 6.0 if lumen == "one" else 2.0)
+
+    out = collapse_node_clusters_direction_aware(G, distance_threshold=5.0, inside_lumen=inside_lumen)
+
+    assert out.number_of_nodes() == 2
+    centroid = [0.75, 0.0, 0.0]
+    lengths = sorted(calculate_path_length([centroid] + path[1:]) for path in (straight, bowed))
+    kept = sorted(d["length"] for _, _, d in out.edges(data=True))
+    assert kept == pytest.approx(lengths[:1] if lumen == "one" else lengths)
+
+
+def test_a_members_noise_route_is_merged_even_when_its_rewired_end_jumps_past_the_tolerance():
+    """A cluster 0-1-2-3-4 (4.5 um steps, every member within the 9 um
+    collapse distance of the centroid) collapses onto node 2, its centroid.
+    Node 4 reaches neighbour 5 by skeleton noise -- an approach
+    onto node 2's route, then a voxel staircase never more than 1 um off it
+    -- so that is node 2's vessel twice, and only the shorter copy stays.
+    Re-ending node 4's path at node 2 adds a straight 9 um jump running up
+    to 8 um from node 2's route: that is where the member was, not a second
+    vessel, so it must not count."""
+    G = nx.MultiGraph()
+    positions = {
+        0: [0, 0, 0], 1: [4.5, 0, 0], 2: [9, 0, 0], 3: [13.5, 0, 0], 4: [18, 0, 0],
+        5: [9, 30, 0], 6: [9, -30, 0], 7: [-30, 0, 0],
+    }
+    for node, pos in positions.items():
+        G.add_node(node, pos=np.array(pos, dtype=float))
+    route = [[9.0, float(y), 0.0] for y in range(31)]
+    noise = (
+        [[18.0 - k, float(k), 0.0] for k in range(9)]
+        + [[9.0, float(y), float(y % 2)] for y in range(9, 30)]
+        + [[9.0, 30.0, 0.0]]
+    )
+    for u, v, path in (
+        (2, 5, route),
+        (4, 5, noise),
+        (2, 6, [[9.0, 0.0, 0.0], [9.0, -30.0, 0.0]]),  # node 2 is the best-connected,
+        (0, 7, [[0.0, 0.0, 0.0], [-30.0, 0.0, 0.0]]),  # so it represents the cluster
+    ):
+        G.add_edge(u, v, voxels=path, length=calculate_path_length(path))
+    # Whole-path separation alone would call the rewired noise a second vessel.
+    assert path_separation(route, [[9.0, 0.0, 0.0]] + noise[1:]) > DEFAULT_DUPLICATE_PATH_TOLERANCE_UM
+
+    out = collapse_node_clusters_direction_aware(G, distance_threshold=9.0)
+
+    assert sorted(out.nodes) == [2, 5, 6, 7]
+    assert out.number_of_edges(2, 5) == 1
+    remaining = next(iter(out.get_edge_data(2, 5).values()))
+    assert remaining["voxels"] == route
+    assert remaining["length"] == pytest.approx(30.0)
+
+
+def test_two_centrelines_of_one_wide_vessel_are_merged():
+    """Two cluster members 4 um apart, each reaching the neighbour along its
+    own centreline 4 um from the other: one wide vessel skeletonised twice
+    (on real data, such pairs mostly have lumen between them), so it keeps
+    one edge -- though the paths are further apart than degree-2 merging's
+    3 um tolerance."""
+    G = nx.MultiGraph()
+    G.add_node(0, pos=np.array([0.0, 0.0, 0.0]))
+    G.add_node(1, pos=np.array([0.0, 4.0, 0.0]))
+    G.add_node(2, pos=np.array([30.0, 2.0, 0.0]))
+    near = [[float(x), 0.0, 0.0] for x in range(30)] + [[30.0, 2.0, 0.0]]
+    far = [[float(x), 4.0, 0.0] for x in range(30)] + [[30.0, 2.0, 0.0]]
+    G.add_edge(0, 2, voxels=near, length=calculate_path_length(near))
+    G.add_edge(1, 2, voxels=far, length=calculate_path_length(far))
+    assert 3.0 < path_separation(near, far) <= DEFAULT_DUPLICATE_PATH_TOLERANCE_UM
+
+    out = collapse_node_clusters_direction_aware(G, distance_threshold=5.0)
+
+    assert out.number_of_nodes() == 2
+    assert out.number_of_edges(0, 2) == 1
+    remaining = next(iter(out.get_edge_data(0, 2).values()))
+    # Equally long, so the representative's own copy stays, re-ended at the centroid.
+    assert remaining["voxels"] == [[0.0, 2.0, 0.0]] + near[1:]
+
+
+def test_a_genuine_pre_existing_loop_survives_a_merged_members_shorter_edge():
+    """Regression test: the representative already has a real loop -- two
+    pre-existing parallel edges to the same external neighbour, lengths 8
+    and 12 -- before any cluster member merges into it. A cluster member
+    contributing a shorter edge to that same neighbour (noise, or simply a
+    closer path) must not delete either genuine pre-existing edge: only
+    edges introduced *during this collapse* are fair game for the
+    keep-the-shorter rule (see test_two_cluster_members_reaching_the_same_
+    neighbour_keep_only_the_shorter_edge above), not edges that predate it."""
+    G = nx.MultiGraph()
+    G.add_node(0, pos=np.array([0.0, 0.0, 0.0]))
+    G.add_node(1, pos=np.array([1.0, 0.0, 0.0]))
+    G.add_node(99, pos=np.array([20.0, 0.0, 0.0]))
+    # Two genuine, differently shaped loop paths, and a straighter one from
+    # the member; lengths are what the paths measure.
+    loop_a = [[0, 0, 0], [10, 2, 0], [20, 0, 0]]
+    loop_b = [[0, 0, 0], [10, 6, 0], [20, 0, 0]]
+    G.add_edge(0, 99, length=20.4, voxels=loop_a)
+    G.add_edge(0, 99, length=23.3, voxels=loop_b)
+    G.add_edge(1, 99, length=19.0, voxels=[[1, 0, 0], [20, 0, 0]])
+
+    out = collapse_node_clusters_direction_aware(G, distance_threshold=5.0)
+
+    assert out.number_of_nodes() == 2  # 0 and 1 merged into one representative
+    lengths = sorted(data["length"] for _, _, data in out.edges(0, data=True))
+    moved = [0.5, 0.0, 0.0]  # the merged node's centroid
+    expected = sorted(
+        calculate_path_length(path)
+        for path in ([moved] + loop_a[1:], [moved] + loop_b[1:], [moved, [20, 0, 0]])
+    )
+    assert lengths == pytest.approx(expected), (
+        "both genuine pre-existing edges must survive alongside the merged "
+        "member's shorter edge, none of them deleted"
+    )
+
+
+# --- distance_only parity: reusing the option must not add new settings ---
+
+
+@pytest.mark.parametrize(
+    "build_graph", [_wheel_graph, _coherent_bundle_graph], ids=["wheel", "coherent_bundle"]
+)
+def test_the_legacy_method_is_unaffected_by_this_modules_existence(build_graph):
+    """collapse_node_clusters itself is never called by this module, and
+    never imported for its behaviour (only two small, pure, read-only
+    helpers) -- confirmed by re-running it directly and comparing."""
+    G = build_graph()
+    a = collapse_node_clusters(G, distance_threshold=5.0)
+    b = collapse_node_clusters(G, distance_threshold=5.0)
+    assert set(a.nodes) == set(b.nodes)
+    assert set(a.edges(keys=True)) == set(b.edges(keys=True))
+
+
+# --- validation --------------------------------------------------------
+
+
+@pytest.mark.parametrize("bad_dispersion", [-0.1, 1.1])
+def test_a_max_radial_dispersion_outside_0_1_is_rejected(bad_dispersion):
+    G = nx.MultiGraph()
+    with pytest.raises(ValueError, match="max_radial_dispersion"):
+        collapse_node_clusters_direction_aware(
+            G, max_radial_dispersion=bad_dispersion
+        )
+
+
+def test_a_min_degree_below_two_is_rejected():
+    G = nx.MultiGraph()
+    with pytest.raises(ValueError, match="min_degree_for_dispersion_check"):
+        collapse_node_clusters_direction_aware(
+            G, min_degree_for_dispersion_check=1
+        )
+
+
+def test_a_graph_with_fewer_than_two_positioned_nodes_is_left_alone():
+    G = nx.MultiGraph()
+    G.add_node(0, pos=np.array([0.0, 0.0, 0.0]))
+    out = collapse_node_clusters_direction_aware(G, distance_threshold=5.0)
+    assert list(out.nodes) == [0]
+
+
+def _chain_graph(step_um: float, count: int):
+    """Junctions *count* in a row along x, *step_um* apart, each joined to the
+    next by a straight vessel of that length and carrying a side branch, with
+    an anchor 30 um beyond each end."""
+    G = nx.MultiGraph()
+    xs = [k * step_um for k in range(count)]
+    for k, x in enumerate(xs):
+        G.add_node(k, pos=np.array([x, 0.0, 0.0]))
+        G.add_node(100 + k, pos=np.array([x, 20.0, 0.0]))
+        side = [[x, 0.0, 0.0], [x, 20.0, 0.0]]
+        G.add_edge(k, 100 + k, voxels=side, length=20.0)
+    for k in range(count - 1):
+        path = [[xs[k], 0.0, 0.0], [xs[k + 1], 0.0, 0.0]]
+        G.add_edge(k, k + 1, voxels=path, length=step_um)
+    G.add_node(200, pos=np.array([xs[0] - 30.0, 0.0, 0.0]))
+    G.add_node(201, pos=np.array([xs[-1] + 30.0, 0.0, 0.0]))
+    G.add_edge(200, 0, voxels=[[xs[0] - 30.0, 0.0, 0.0], [xs[0], 0.0, 0.0]], length=30.0)
+    G.add_edge(count - 1, 201, voxels=[[xs[-1], 0.0, 0.0], [xs[-1] + 30.0, 0.0, 0.0]], length=30.0)
+    return G
+
+
+def test_a_run_of_junctions_closer_than_the_threshold_does_not_chain_into_one_node():
+    """Seven junctions 4 um apart span 24 um. Single-linkage over the repair
+    passes merged them all into one node at the middle, moving the end ones
+    12 um and deleting the vessel between them; on Stack A one such cluster
+    held 81 nodes over 26 um. A cluster is now bounded: no node is moved
+    further than the collapse distance, so the run survives in pieces."""
+    G = _chain_graph(4.0, 7)
+    before = {n: np.array(G.nodes[n]["pos"]) for n in range(7)}
+
+    out = collapse_node_clusters_direction_aware(G, distance_threshold=5.0)
+
+    survivors = np.array([out.nodes[n]["pos"] for n in out.nodes])
+    for pos in before.values():
+        nearest = np.min(np.linalg.norm(survivors - pos, axis=1))
+        assert nearest <= 5.0, f"a node at {pos} was moved {nearest:.1f} um"
+    kept_along_the_run = sum(
+        d["length"] for u, v, d in out.edges(data=True)
+        if u < 100 and v < 100
+    )
+    assert kept_along_the_run >= 12.0
+    assert out.number_of_nodes() >= 3 + 7 + 2 - 4  # at least three pieces of the run
+
+
+def _loop_graph(arc_length_um: float):
+    """Two junctions 3 um apart joined twice: straight, and by an arc of
+    *arc_length_um* bowing out in y. Each junction also leads to an anchor."""
+    G = nx.MultiGraph()
+    a, b = np.array([0.0, 0.0, 0.0]), np.array([3.0, 0.0, 0.0])
+    G.add_node(0, pos=a)
+    G.add_node(1, pos=b)
+    G.add_node(2, pos=np.array([-30.0, 0.0, 0.0]))
+    G.add_node(3, pos=np.array([33.0, 0.0, 0.0]))
+    G.add_edge(0, 1, voxels=[a.tolist(), b.tolist()], length=3.0)
+    # A half-ellipse from a to b: scale its height until it is arc_length_um long.
+    t = np.linspace(0.0, math.pi, 200)
+    lo, hi = 0.0, arc_length_um
+    for _ in range(60):
+        h = 0.5 * (lo + hi)
+        arc = np.stack([1.5 - 1.5 * np.cos(t), h * np.sin(t), np.zeros_like(t)], axis=1)
+        length = calculate_path_length(arc.tolist())
+        lo, hi = (h, hi) if length < arc_length_um else (lo, h)
+    G.add_edge(0, 1, voxels=arc.tolist(), length=calculate_path_length(arc.tolist()))
+    G.add_edge(2, 0, voxels=[[-30.0, 0.0, 0.0], a.tolist()], length=30.0)
+    G.add_edge(1, 3, voxels=[b.tolist(), [33.0, 0.0, 0.0]], length=30.0)
+    return G
+
+
+def test_a_loop_longer_than_twice_the_threshold_between_two_close_junctions_is_kept():
+    """A 20 um arc between junctions 3 um apart is a vessel that leaves and
+    comes back. Merging the two junctions made it a self-loop and deleted it,
+    whatever its length; the merge is refused, and the loop stays for the
+    lumen rules to judge with the mask."""
+    out = collapse_node_clusters_direction_aware(_loop_graph(20.0), distance_threshold=5.0)
+
+    assert out.has_node(0) and out.has_node(1)
+    assert out.number_of_edges(0, 1) == 2
+    assert max(d["length"] for d in out.get_edge_data(0, 1).values()) == pytest.approx(20.0, abs=0.1)
+    assert not list(nx.selfloop_edges(out))
+
+
+def test_a_ring_no_longer_than_twice_the_threshold_is_still_absorbed():
+    """An 8 um ring round a junction is Lee thinning's hole, not a loop round
+    tissue: the two junctions still merge and the ring goes with them."""
+    out = collapse_node_clusters_direction_aware(_loop_graph(8.0), distance_threshold=5.0)
+
+    assert out.number_of_nodes() == 3
+    assert not list(nx.selfloop_edges(out))
+    assert out.number_of_edges() == 2
+
+
+def _lattice_graph(seed: int, size: int = 8) -> nx.MultiGraph:
+    """Junctions on a 1 um grid in one plane, each joined to some of its grid
+    neighbours by a straight vessel. Every candidate pair ties with dozens of
+    others, as nodes on the voxel lattice do before collapse (58 distances
+    among Stack A's 25,188 pairs)."""
+    rng = np.random.default_rng(seed)
+    G = nx.MultiGraph()
+    for y in range(size):
+        for x in range(size):
+            G.add_node(y * size + x, pos=np.array([0.0, float(y), float(x)]))
+    for y in range(size):
+        for x in range(size):
+            for dy, dx in ((0, 1), (1, 0)):
+                if y + dy < size and x + dx < size and rng.random() < 0.7:
+                    a, b = y * size + x, (y + dy) * size + x + dx
+                    path = [G.nodes[a]["pos"].tolist(), G.nodes[b]["pos"].tolist()]
+                    G.add_edge(a, b, voxels=path, length=1.0)
+    return G
+
+
+def _presented(G, *, shift=0, isolated=0, reverse_nodes=False, reverse_edges=False):
+    """*G* again, its node IDs shifted, *isolated* far-away nodes added first,
+    or its nodes or edges added in reverse order."""
+    H = nx.MultiGraph()
+    for k in range(isolated):
+        H.add_node(-1 - k, pos=np.array([1.0e4 + 100.0 * k, 1.0e4, 1.0e4]))
+    nodes = list(G.nodes(data=True))
+    for n, data in nodes[::-1] if reverse_nodes else nodes:
+        H.add_node(n + shift, **data)
+    edges = list(G.edges(data=True))
+    for u, v, data in edges[::-1] if reverse_edges else edges:
+        H.add_edge(u + shift, v + shift, **data)
+    return H
+
+
+def _layout(G):
+    """Where the nodes are and what each edge's centreline is, IDs aside."""
+    positions = sorted(tuple(np.round(G.nodes[n]["pos"], 9)) for n in G.nodes if G.nodes[n]["pos"][0] < 1.0e3)
+    edges = []
+    for _u, _v, data in G.edges(data=True):
+        path = tuple(map(tuple, np.round(np.asarray(data["voxels"], dtype=float), 9)))
+        edges.append(min(path, path[::-1]))
+    return positions, sorted(edges)
+
+
+@pytest.mark.parametrize("seed", [0, 1, 2])
+@pytest.mark.parametrize(
+    "presentation",
+    [
+        {"shift": 1000},
+        {"isolated": 2},
+        {"reverse_nodes": True},
+        {"reverse_edges": True},
+    ],
+    ids=["ids_shifted", "two_nodes_added_first", "nodes_reversed", "edges_reversed"],
+)
+def test_collapse_does_not_depend_on_node_order_or_ids(seed, presentation):
+    """Pairs at one distance were taken in the order cKDTree.query_pairs' set
+    yields them -- hash order of array indices -- and merged groups in node
+    order. A node added or removed anywhere reordered every tie, and on
+    Stack A a change at the image faces moved junctions 180 um away
+    (PLAN_dale_review_fixes.md, item 2). Two isolated nodes added first, or
+    the nodes taken in reverse, changed this lattice's collapse."""
+    G = _lattice_graph(seed)
+
+    plain = collapse_node_clusters_direction_aware(_presented(G), distance_threshold=2.5)
+    other = collapse_node_clusters_direction_aware(_presented(G, **presentation), distance_threshold=2.5)
+
+    assert plain.number_of_nodes() < G.number_of_nodes()  # it did collapse
+    assert _layout(other) == _layout(plain)

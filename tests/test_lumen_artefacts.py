@@ -1,0 +1,379 @@
+"""The lumen-artefact report: what graph building leaves in a segmented vessel
+that is not a vessel, measured against the mask.
+
+``graph.diagnose_lumen_artefacts`` is read-only; these tests pin what it
+reports on one synthetic case of each kind (``tests/lumen_artefact_fixtures.py``),
+and that the per-sample "beside another vessel in the same lumen" test it
+counts with agrees with the per-path guard every reconnect uses.
+"""
+from __future__ import annotations
+
+import networkx as nx
+import numpy as np
+import pytest
+from scipy.spatial import cKDTree
+
+from haemolynx.graph import (
+    diagnose_lumen_artefacts,
+    format_lumen_artefacts_report,
+    lumen_artefacts_found,
+)
+from haemolynx.graph.diagnostics import DEAD_END_KINDS, classify_dead_ends
+from haemolynx.graph.lumen_loops import iter_short_loops
+from lumen_artefact_fixtures import hair_along_a_wall, wide_vessel
+from haemolynx.preprocessing import MaskSupport, path_shadows_existing_vessel, shadowed_samples
+
+from lumen_artefact_fixtures import (
+    VOXEL_SIZE,
+    dead_end_cases,
+    fork_in_one_lumen,
+    loop_round_tissue,
+    polyline_graph,
+    ring_in_one_lumen,
+    two_strands_in_one_lumen,
+)
+
+
+def _report(mask, G, **kwargs):
+    kwargs.setdefault("image_face_margin_um", 0.0)
+    return diagnose_lumen_artefacts(G, mask, voxel_size_zyx=VOXEL_SIZE, **kwargs)
+
+
+def _line(z, y, x0, x1):
+    return np.array([[z, y, x] for x in np.arange(x0, x1 + 0.25, 0.5)], dtype=float)
+
+
+# --- shadowed_samples: the per-sample form of the guard ---------------------
+
+
+def test_a_second_strand_is_beside_the_first_along_its_middle_and_not_at_its_ends():
+    support = MaskSupport(wide_vessel(), VOXEL_SIZE)
+    first = _line(7, 5, 2, 57)
+    samples, judged, beside = shadowed_samples(
+        _line(7, 9, 2, 57), cKDTree(first), first, support.inside, support.radius
+    )
+    assert len(samples) == len(judged) == len(beside)
+    assert beside[judged].mean() > 0.9
+    # Within a lumen radius of either end nothing is judged, so nothing is beside.
+    assert not beside[~judged].any()
+    assert not judged[0] and not judged[-1]
+
+
+def test_a_vessel_behind_background_is_never_beside():
+    mask = np.zeros((9, 22, 60), dtype=bool)
+    mask[1:8, 1:8] = True
+    mask[1:8, 11:18] = True
+    support = MaskSupport(mask, VOXEL_SIZE)
+    first = _line(4, 4, 2, 57)
+    _samples, judged, beside = shadowed_samples(
+        _line(4, 14, 2, 57), cKDTree(first), first, support.inside, support.radius
+    )
+    assert judged.any()
+    assert not beside.any()
+
+
+@pytest.mark.parametrize(
+    "path",
+    [_line(7, 9, 2, 57), _line(7, 9, 2, 30), np.vstack([_line(7, 9, 2, 20), [[7, 14, 40]]])],
+)
+def test_the_per_path_guard_is_half_the_judged_samples_beside(path):
+    """``path_shadows_existing_vessel`` and ``shadowed_samples`` ask one
+    question; the guard's verdict is the per-sample answer on half the path."""
+    support = MaskSupport(wide_vessel(), VOXEL_SIZE)
+    first = _line(7, 5, 2, 57)
+    _samples, judged, beside = shadowed_samples(path, cKDTree(first), first, support.inside, support.radius)
+    verdict = path_shadows_existing_vessel(path, cKDTree(first), first, support.inside, support.radius)
+    assert verdict == bool(judged.any() and 2 * beside[judged].sum() >= judged.sum())
+
+
+# --- iter_short_loops -------------------------------------------------------
+
+
+def test_each_short_loop_is_listed_once():
+    _mask, G = loop_round_tissue()
+    loops = list(iter_short_loops(G))
+    assert len(loops) == 1
+    cycle, polyline = loops[0]
+    assert len(cycle) == 4
+    assert polyline.shape[1] == 3
+
+
+def test_a_tree_has_no_loops():
+    G = polyline_graph([[(0, 0, 0), (0, 0, 10)], [(0, 0, 10), (0, 0, 20)], [(0, 0, 10), (0, 10, 10)]])
+    assert list(iter_short_loops(G)) == []
+
+
+# --- diagnose_lumen_artefacts -----------------------------------------------
+
+
+def test_two_strands_in_one_lumen_are_a_pair_and_their_middles_are_duplicated_centreline():
+    mask, G = two_strands_in_one_lumen()
+    report = _report(mask, G)
+    assert report["duplicate_pair_count"] == 1
+    assert report["fork_pair_count"] == 0
+    # Each strand is 55 um; all but about a lumen radius at each end runs beside the other.
+    assert 70.0 < report["duplicated_centreline_um"] < 110.0
+    assert report["duplicated_centreline_fraction"] == pytest.approx(
+        report["duplicated_centreline_um"] / report["centreline_um"]
+    )
+    assert lumen_artefacts_found(report)
+
+
+def test_two_edges_leaving_one_node_through_one_lumen_are_a_fork():
+    mask, G = fork_in_one_lumen()
+    report = _report(mask, G)
+    assert report["duplicate_pair_count"] == 1
+    assert report["fork_pair_count"] == 1
+
+
+# --- doubled runs: where the doubled centreline lies ---------------------------
+
+
+def _place_um(report):
+    return {place: round(counts["um"]) for place, counts in report["doubled_runs_by_place"].items() if counts["runs"]}
+
+
+def test_two_strands_are_doubled_in_the_middle_of_each_edge_as_one_long_run_each():
+    mask, G = two_strands_in_one_lumen()
+    report = _report(mask, G)
+    runs = report["doubled_runs"]
+    # One run per strand, each reaching from the first judged sample to the last.
+    assert len(runs) == 2
+    assert all(r.at_start and r.at_end for r in runs)
+    assert {r.edge for r in runs} == {r.partner for r in runs}
+    assert set(_place_um(report)) == {"mid_edge"}
+    assert report["doubled_long_runs"]["runs"] == 2
+    assert report["doubled_long_runs"]["um"] == pytest.approx(report["duplicated_centreline_um"], rel=0.05)
+
+
+def test_a_fork_is_doubled_at_the_junction_the_two_edges_share():
+    mask, G = fork_in_one_lumen()
+    report = _report(mask, G)
+    assert set(_place_um(report)) == {"fork"}
+    assert all(r.at_start or r.at_end for r in report["doubled_runs"])
+
+
+def test_a_hair_along_a_wall_is_doubled_on_a_dead_end_chain():
+    mask, G = hair_along_a_wall()
+    report = _report(mask, G)
+    places = _place_um(report)
+    assert set(places) == {"dead_end_chain"}
+    # The hair runs 20 um beside the trunk; the trunk's own edge is counted
+    # beside the hair too, so the doubled length is about twice that.
+    assert 25 < places["dead_end_chain"] < 50
+    assert report["doubled_long_runs"]["runs"] == 2
+
+
+def test_a_second_strand_in_the_middle_of_a_long_edge_is_a_mid_edge_run():
+    mask = wide_vessel()
+    # A short strand beside the middle of a long one: neither reaches an end.
+    G = polyline_graph([[(7, 7, 2), (7, 7, 57)], [(7, 11, 20), (7, 11, 40)]])
+    report = _report(mask, G)
+    places = _place_um(report)
+    assert "mid_edge" in places and places["mid_edge"] > 10
+    long_run = next(r for r in report["doubled_runs"] if r.edge[0][2] == 2.0 or r.edge[1][2] == 57.0)
+    assert not long_run.at_start and not long_run.at_end
+
+
+def test_a_run_with_a_thick_vessel_bridge_is_counted_with_the_bridge():
+    from haemolynx.graph import IS_ZERO_RESISTANCE
+
+    mask, G = two_strands_in_one_lumen()
+    u, v, key = next(iter(G.edges(keys=True)))
+    G.edges[u, v, key][IS_ZERO_RESISTANCE] = True
+    report = _report(mask, G)
+    assert set(_place_um(report)) == {"bridge"}
+
+
+def test_loops_are_counted_by_what_they_run_through():
+    mask, G = ring_in_one_lumen()
+    report = _report(mask, G)
+    # Two arcs in one lumen: a loop of two edges, each a doubled side of the other.
+    assert report["short_loops_by_side"] == {"doubled_side": 1, "through_bridge": 0, "triangle": 1}
+    mask, G = loop_round_tissue()
+    report = _report(mask, G)
+    assert report["short_loops_by_side"] == {"doubled_side": 0, "through_bridge": 0, "triangle": 0}
+
+
+def test_a_ring_round_nothing_is_a_loop_inside_one_lumen():
+    mask, G = ring_in_one_lumen()
+    report = _report(mask, G)
+    assert report["short_loop_count"] == 1
+    assert report["loops_inside_one_lumen"] == 1
+    assert lumen_artefacts_found(report)
+
+
+def test_a_loop_round_tissue_is_not_an_artefact():
+    mask, G = loop_round_tissue()
+    report = _report(mask, G)
+    assert report["short_loop_count"] == 1
+    assert report["loops_inside_one_lumen"] == 0
+    assert report["duplicate_pair_count"] == 0
+    assert report["duplicated_centreline_um"] == pytest.approx(0.0, abs=1.0)
+    assert not lumen_artefacts_found(report)
+
+
+def test_each_kind_of_dead_end_is_reported_and_a_real_branch_is_none_of_them():
+    mask, G, tips = dead_end_cases()
+    report = _report(mask, G)
+    dead_ends = report["dead_ends"]
+    assert tips["inside_other_lumen"] in dead_ends["inside_other_lumen"]
+    assert tips["off_mask"] in dead_ends["off_mask"]
+    assert tips["mask_continues"] in dead_ends["mask_continues"]
+    assert tips["short"] in dead_ends["short"]
+    for kind, nodes in dead_ends.items():
+        assert tips["real_branch"] not in nodes, kind
+    assert tips["off_mask"] not in dead_ends["mask_continues"]
+    assert tips["short"] not in dead_ends["mask_continues"]
+    assert report["isolated_single_edges"] == 1
+    # The trunk's two ends lie on the image's x faces.
+    assert report["dead_ends_at_image_face"] == 2
+    assert report["interior_dead_ends"] == 5
+    assert report["dead_end_counts"] == {kind: len(nodes) for kind, nodes in dead_ends.items()}
+
+
+def test_dead_ends_near_an_image_face_are_not_judged():
+    mask, G, _tips = dead_end_cases()
+    report = diagnose_lumen_artefacts(G, mask, voxel_size_zyx=VOXEL_SIZE, image_face_margin_um=200.0)
+    assert report["interior_dead_ends"] == 0
+    assert report["dead_ends_at_image_face"] == 7
+    assert all(not nodes for nodes in report["dead_ends"].values())
+
+
+def test_the_short_rule_follows_the_radius_multiple():
+    mask, G, tips = dead_end_cases()
+    assert tips["short"] in _report(mask, G, stub_radius_multiple=3.0)["dead_ends"]["short"]
+    assert tips["short"] not in _report(mask, G, stub_radius_multiple=1.0)["dead_ends"]["short"]
+
+
+def test_the_report_changes_nothing_and_reads_as_one_line():
+    mask, G = fork_in_one_lumen()
+    before = (sorted(map(str, G.nodes)), sorted(map(str, G.edges(keys=True))))
+    report = _report(mask, G)
+    assert (sorted(map(str, G.nodes)), sorted(map(str, G.edges(keys=True)))) == before
+    line = format_lumen_artefacts_report(report)
+    assert "\n" not in line
+    assert line.startswith("Lumen artefacts: 1 pair(s) of edges share one lumen (1 leaving one node side by side)")
+
+
+def test_an_empty_graph_reports_nothing():
+    report = _report(wide_vessel(), nx.MultiGraph())
+    assert report["duplicate_pair_count"] == 0
+    assert report["short_loop_count"] == 0
+    assert report["interior_dead_ends"] == 0
+    assert not lumen_artefacts_found(report)
+
+
+# --- classify_dead_ends: the dead ends alone, tip by tip ---------------------
+
+
+def test_classifying_dead_ends_alone_agrees_with_the_report_tip_for_tip():
+    mask, G, tips = dead_end_cases()
+    for margin in (0.0, 10.0):
+        report = _report(mask, G, image_face_margin_um=margin)
+        judged = classify_dead_ends(G, mask, voxel_size_zyx=VOXEL_SIZE, image_face_margin_um=margin)
+
+        assert judged["dead_ends"] == report["dead_ends"]
+        assert len(judged["interior"]) == report["interior_dead_ends"]
+        assert len(judged["at_image_face"]) == report["dead_ends_at_image_face"]
+        assert judged["isolated_single_edges"] == report["isolated_single_edges"]
+        for tip, kinds in judged["kinds"].items():
+            assert kinds == tuple(k for k in DEAD_END_KINDS if tip in report["dead_ends"][k])
+
+
+def test_each_tip_carries_its_own_kinds_and_a_real_branch_none():
+    mask, G, tips = dead_end_cases()
+    kinds = classify_dead_ends(G, mask, voxel_size_zyx=VOXEL_SIZE, image_face_margin_um=0.0)["kinds"]
+
+    assert kinds[tips["real_branch"]] == ()
+    assert "off_mask" in kinds[tips["off_mask"]]
+    assert "short" in kinds[tips["short"]]
+    assert kinds[tips["inside_other_lumen"]][0] == "inside_other_lumen"
+    assert set(kinds) == set(tips.values())
+
+
+def _dead_end_through_a_bridge():
+    """A 2 um trunk along x with a branch off it at x = 30: a zero-resistance
+    bridge from the trunk's centreline (y = 10) to a wide opening (y = 14, a
+    4 um ball), then 8 um of vessel to its tip -- one dead end in two edges,
+    as the thick-vessel split leaves a capillary opening into a fat vessel."""
+    from haemolynx.graph import IS_ZERO_RESISTANCE
+    from lumen_artefact_fixtures import capsule
+
+    mask = np.zeros((11, 30, 60), dtype=bool)
+    capsule(mask, (5, 10, -5), (5, 10, 65), 2)
+    capsule(mask, (5, 14, 30), (5, 14, 30), 4)
+    capsule(mask, (5, 14, 30), (5, 22, 30), 1.5)
+    G = polyline_graph([
+        [(5, 10, 0), (5, 10, 30)], [(5, 10, 30), (5, 10, 59)],
+        [(5, 10, 30), (5, 14, 30)], [(5, 14, 30), (5, 22, 30)],
+    ])
+    for u, v, key in G.edges(keys=True):
+        if {u, v} == {(5.0, 10.0, 30.0), (5.0, 14.0, 30.0)}:
+            G.edges[u, v, key][IS_ZERO_RESISTANCE] = True
+    return mask, G, (5.0, 22.0, 30.0)
+
+
+def test_a_dead_end_is_judged_short_as_its_whole_chain_as_the_prune_judges_it():
+    """Regression: the report read a dead end's last edge alone, against the
+    radius at the node it ended on. Where the thick-vessel split had cut the
+    chain at the fat region's edge, that was 8 um of vessel against a 4 um
+    opening -- short -- although the stub prune, judging the chain to its
+    junction (12 um against the 2 um trunk), had rightly kept it: 25 of
+    Stack A's 49 "short" dead ends."""
+    mask, G, tip = _dead_end_through_a_bridge()
+
+    report = _report(mask, G, stub_radius_multiple=3.0)
+
+    assert tip not in report["dead_ends"]["short"]
+    # The same chain, judged against a radius multiple it does not reach, is.
+    assert tip in _report(mask, G, stub_radius_multiple=7.0)["dead_ends"]["short"]
+
+
+def test_a_tip_is_never_inside_its_own_chains_lumen():
+    """Regression: the report left out a dead end's last edge alone, so a
+    tip 3 um beyond the 4 um opening the thick-vessel split cut off as a
+    bridge read as inside "another" lumen -- its own (15 of Stack A's 21)."""
+    from haemolynx.graph import IS_ZERO_RESISTANCE
+    from lumen_artefact_fixtures import capsule
+
+    mask = np.zeros((11, 30, 60), dtype=bool)
+    capsule(mask, (5, 10, -5), (5, 10, 65), 2)
+    capsule(mask, (5, 14, 30), (5, 14, 30), 4)
+    capsule(mask, (5, 14, 30), (5, 17, 30), 1.5)
+    G = polyline_graph([
+        [(5, 10, 0), (5, 10, 30)], [(5, 10, 30), (5, 10, 59)],
+        [(5, 10, 30), (5, 14, 30)], [(5, 14, 30), (5, 17, 30)],
+    ])
+    for u, v, key in G.edges(keys=True):
+        if {u, v} == {(5.0, 10.0, 30.0), (5.0, 14.0, 30.0)}:
+            G.edges[u, v, key][IS_ZERO_RESISTANCE] = True
+    tip = (5.0, 17.0, 30.0)
+
+    report = _report(mask, G)
+
+    assert report["interior_dead_ends"] == 1, "the branch is the one dead end judged"
+    assert tip not in report["dead_ends"]["inside_other_lumen"]
+
+
+def test_the_counts_a_run_keeps_are_the_reports_and_say_what_was_found():
+    """``lumen_artefact_counts``: the numbers ``build_network`` keeps on the
+    graph and the run's manifest repeats, plain and JSON-safe; ``found`` is
+    the warning's own test."""
+    import json
+
+    from haemolynx.graph import lumen_artefact_counts
+
+    mask, G = two_strands_in_one_lumen()
+    report = _report(mask, G)
+    counts = lumen_artefact_counts(report)
+    assert counts["found"] is True
+    assert counts["pairs_in_one_lumen"] == report["duplicate_pair_count"] == 1
+    assert counts["loops_inside_one_lumen"] == report["loops_inside_one_lumen"]
+    assert counts["tips_in_another_lumen"] == report["dead_end_counts"]["inside_other_lumen"]
+    assert counts["doubled_centreline_um"] == pytest.approx(report["duplicated_centreline_um"])
+    assert counts["interior_dead_ends"] == report["interior_dead_ends"]
+    assert json.loads(json.dumps(counts)) == counts
+
+    clean = lumen_artefact_counts(_report(wide_vessel(), nx.MultiGraph()))
+    assert clean["found"] is False and clean["pairs_in_one_lumen"] == 0

@@ -14,16 +14,38 @@ This turns those settings into two napari layers and back:
     ``scale=(1, 1, 1)`` and node ``pos`` is physical. So there is no conversion
     anywhere in this module, only bookkeeping.
 
-``HaemoLynx BC regions``
-    A Shapes layer, one rectangle per volume box, drawn at the box's z centre
-    with the box's y/x extent. The z extent it came from rides alongside as a
-    ``depth`` feature, so every region keeps its own rather than sharing one.
-    :func:`rectangle_from_box` and :func:`box_from_rectangle` are exact
-    inverses, which is what lets the layer be treated as the setting.
+``HaemoLynx BC <role> regions``
+    A Shapes layer per role, one rectangle per volume box, drawn at the box's z
+    centre with the box's y/x extent. The z extent it came from rides alongside
+    as a ``depth`` feature, so every region keeps its own rather than sharing
+    one. :func:`rectangle_from_box` and :func:`box_from_rectangle` are exact
+    inverses, which is what lets the layer be treated as the setting. Nothing
+    but those rectangles goes in it: it is the layer napari's own drawing tool
+    works on, and anything else in it is something that tool can trip over.
 
-Both layers are editable, and everything here is pure: settings in, layer specs
-out, layer data in, settings out. Nothing imports napari, so it is all testable
-without a display -- the same contract :mod:`haemolynx.gui.results` keeps.
+``HaemoLynx BC <role> boxes``
+    A Surface layer per role showing what the rectangles stand for: each box as
+    a translucent solid in a shade of its own (:func:`box_mesh`), plus the band
+    an ``edge_percent`` role selects from. Drawn from the settings only, so it
+    is never edited and never read back, and it is the one that shows in 3D.
+
+``HaemoLynx BC box nodes``
+    A Points layer marking every node inside the box being edited on a role's
+    page (:func:`nodes_in_box`): yellow and larger than the network's own
+    dots, open ends (degree 1) larger still with a red rim. Drawn from the
+    graph and the box, never read back; choosing one of those nodes for the
+    role writes its ID (:func:`use_node_for_role`).
+
+``HaemoLynx BC node IDs``
+    A Points layer marking the nodes each ``node_ids`` role lists, at their
+    positions in the run's graph. The IDs are the setting, not the positions,
+    so this one is drawn from the settings and never read back: a node is
+    added or removed by clicking it on the graph (:func:`toggle_node_id`).
+
+The coordinates and regions layers are editable, and everything here is pure:
+settings in, layer specs out, layer data in, settings out. Nothing imports
+napari, so it is all testable without a display -- the same contract
+:mod:`haemolynx.gui.results` keeps.
 
 One hazard is worth naming, because it is silent. The settings rows are edited
 by magicgui's ``LiteralEvalLineEdit``, which stores ``str(value)`` and reads it
@@ -42,21 +64,73 @@ from typing import Any, Iterable, Mapping, Sequence
 
 import numpy as np
 
-from haemolynx.graph.boundaries import BOUNDARY_ROLE_SETTINGS
-from haemolynx.gui.results import PREFIX, LayerSpec, StageLayers, role_colours
+from haemolynx.graph.boundaries import network_is_synthetic
+from haemolynx.graph.boundaries import (
+    BOUNDARY_ROLE_SETTINGS,
+    assigns_large_vessel_branch_orders,
+    inlets_outlets_from_vessel_masks,
+    manual_vessel_boundaries_read,
+)
+from haemolynx.gui.results import (
+    BOUNDARY_COORDINATE_POINT_SIZE,
+    POINTS_PROJECTION,
+    PREFIX,
+    LayerSpec,
+    StageLayers,
+    role_colours,
+)
 
 __all__ = [
+    "AUTOMATED_OVERRIDES_MANUAL_NOTE",
+    "BC_BOX_NAMES",
+    "BC_BOX_NODES",
     "BC_COORDINATES",
+    "BOX_NODE_COLUMNS",
+    "BoxNode",
+    "DEFAULT_BOX_SIZE_UM",
+    "MOVE_DIRECTIONS",
+    "box_around",
+    "box_centre",
+    "box_node_rows",
+    "box_node_styles",
+    "CHOSEN_BOX_NODE_COLOUR",
+    "box_nodes_spec",
+    "box_size",
+    "move_box",
+    "nodes_in_box",
+    "resize_box",
+    "use_node_for_role",
+    "view_centre_zyx",
     "BC_LAYER_NAMES",
+    "BC_NODE_IDS",
     "BC_REGION_NAMES",
+    "boxes_name",
     "regions_name",
     "ROLES",
+    "LARGE_AUTO_ROLES",
+    "SMALL_AUTO_ROLES",
+    "LARGE_VESSEL_NETWORK_ROLES",
+    "SMALL_VESSEL_OVERRIDES_MANUAL_NOTE",
+    "LARGE_VESSEL_NETWORK_MODE_OFF_NOTE",
+    "DISABLED_ROLE_TOOLTIP",
+    "chooses_no_nodes",
+    "node_made_after_boundaries",
+    "SYNTHETIC_CHOOSES_NOTE",
+    "GLOBAL_MASKS_NOTE",
+    "role_disabled_note",
     "BoundaryPicks",
+    "box_colours",
     "box_from_rectangle",
-    "box_outline",
+    "box_from_view_drag",
+    "box_mesh",
     "region_shapes",
+    "role_boxes",
     "coordinate_setting",
+    "node_id_note",
+    "node_id_points",
+    "node_id_setting",
     "orderable_settings",
+    "role_manual_controls_enabled",
     "settings_for_method",
     "visible_settings",
     "group_for",
@@ -67,7 +141,7 @@ __all__ = [
     "snap",
     "specs_for",
     "terminal_points",
-    "BAND",
+    "toggle_node_id",
     "PERCENT_FOR_NODE_ROLE",
     "band_boxes",
     "terminal_axis_span",
@@ -79,12 +153,109 @@ __all__ = [
     "wanted_rows",
 ]
 
-#: The four boundary roles, in the order a run assigns them. Taken from the
-#: selector's own table rather than restated, so a fifth role would reach the
+#: Shown on the Boundaries tab between the automated mask rows and the
+#: manual role controls. Kept here so tests can assert the exact wording
+#: without importing Qt.
+AUTOMATED_OVERRIDES_MANUAL_NOTE = (
+    "While \"Inlets outlets from vessel masks\" is on, the masks choose the "
+    "inlets and outlets and override the manual Inlet and Outlet tabs below. "
+    "Untick it to set them by hand"
+)
+
+#: The boundary roles, in the order a run assigns them. Taken from the
+#: selector's own table rather than restated, so a new role would reach the
 #: panel without anything here changing.
 ROLES: tuple[str, ...] = tuple(BOUNDARY_ROLE_SETTINGS)
 
+#: Inlet/outlet: greyed while the large-vessel masks choose them
+#: (:func:`~haemolynx.graph.boundaries.inlets_outlets_from_vessel_masks`).
+LARGE_AUTO_ROLES: frozenset[str] = frozenset({"inlet", "outlet"})
+
+#: Arteriole/venule: greyed while the small-vessel masks are in use.
+SMALL_AUTO_ROLES: frozenset[str] = frozenset(
+    {"arteriole_boundary", "venule_boundary"}
+)
+
+#: Large-vessel network inlet/outlet: greyed while the feature itself is off,
+#: the opposite polarity from LARGE_AUTO_ROLES/SMALL_AUTO_ROLES above (which
+#: grey when some *other* automation has taken the role over). There is
+#: nothing to override until assign_large_vessel_branch_orders is on.
+LARGE_VESSEL_NETWORK_ROLES: frozenset[str] = frozenset(
+    {"large_vessel_inlet", "large_vessel_outlet"}
+)
+
+
+def role_manual_controls_enabled(role: str, values: Mapping[str, Any]) -> bool:
+    """Whether *role*'s manual sub-tab should stay interactive.
+
+    The large-vessel masks replace manual inlet/outlet picking only while
+    they choose the inlets and outlets (:func:`inlets_outlets_from_vessel_masks`);
+    the small-vessel masks, while in use, replace manual arteriole/venule
+    boundary picking, which global vessel masks leave unread
+    (:func:`manual_vessel_boundaries_read`). Each asks whether its switch is
+    in effect, not what it holds: a switch left ticked under one the user
+    unticked is hidden and greys nothing. The sub-tab stays visible but is
+    greyed out -- unlike vessel-mask option rows, which hide.
+    """
+    if network_is_synthetic(values):
+        return False  # the generator chose every role's nodes
+    if role in LARGE_AUTO_ROLES and inlets_outlets_from_vessel_masks(values):
+        return False
+    if role in SMALL_AUTO_ROLES and not manual_vessel_boundaries_read(values):
+        return False
+    if role in LARGE_VESSEL_NETWORK_ROLES and not assigns_large_vessel_branch_orders(values):
+        return False
+    return True
+
+
+#: Same wording _widget.py used inline for the small-vessel-mask case, now
+#: shared so a third disabled reason does not need adding to two call sites.
+SMALL_VESSEL_OVERRIDES_MANUAL_NOTE = (
+    "The small vessel masks choose the arteriole and venule boundaries, "
+    "overriding manual selection"
+)
+LARGE_VESSEL_NETWORK_MODE_OFF_NOTE = (
+    "Only used when \"Assign large vessel branch orders\" is on, with the "
+    "large vessel masks in use and the network not cut at them"
+)
+
+#: Why a role's sub-tab/actions are greyed, keyed by role. One lookup instead
+#: of an if/elif duplicated at both call sites in _widget.py.
+DISABLED_ROLE_TOOLTIP: dict[str, str] = {
+    "inlet": AUTOMATED_OVERRIDES_MANUAL_NOTE,
+    "outlet": AUTOMATED_OVERRIDES_MANUAL_NOTE,
+    "arteriole_boundary": SMALL_VESSEL_OVERRIDES_MANUAL_NOTE,
+    "venule_boundary": SMALL_VESSEL_OVERRIDES_MANUAL_NOTE,
+    "large_vessel_inlet": LARGE_VESSEL_NETWORK_MODE_OFF_NOTE,
+    "large_vessel_outlet": LARGE_VESSEL_NETWORK_MODE_OFF_NOTE,
+}
+
+SYNTHETIC_CHOOSES_NOTE = (
+    "A synthetic network chooses its own inlets, outlets and boundary nodes"
+)
+GLOBAL_MASKS_NOTE = (
+    "Masks without a venule mask give no branch orders, so arteriole and venule "
+    "boundaries are not used"
+)
+
+
+def role_disabled_note(role: str, values: Mapping[str, Any]) -> str:
+    """Why *role*'s sub-tab is greyed for *values*: the synthetic note when
+    the network is generated, the global masks' for the arteriole and venule
+    roles under global vessel masks, else :data:`DISABLED_ROLE_TOOLTIP`'s."""
+    from haemolynx.io.vessel_masks import vessel_masks_are_global
+
+    if network_is_synthetic(values):
+        return SYNTHETIC_CHOOSES_NOTE
+    if role in SMALL_AUTO_ROLES and vessel_masks_are_global(values):
+        return GLOBAL_MASKS_NOTE
+    return DISABLED_ROLE_TOOLTIP[role]
+
+
 BC_COORDINATES = f"{PREFIX}BC coordinates"
+
+#: The nodes the ``node_ids`` roles list, marked where the graph has them.
+BC_NODE_IDS = f"{PREFIX}BC node IDs"
 
 #: How many decimal places a picked coordinate keeps. A micron is the unit and
 #: a nanometre is far below what a click can mean, so three keeps the config
@@ -97,6 +268,7 @@ DECIMALS = 3
 METHOD_SETTINGS: Mapping[str, str] = {
     "coordinates": "coordinates",
     "volume": "volume_boxes",
+    "node_ids": "node_ids",
 }
 
 #: Settings shared by every role that selects by band or by distance, so they
@@ -118,11 +290,20 @@ PERCENT_FOR_NODE_ROLE: Mapping[str, str] = {
 }
 
 
+def chooses_no_nodes(role: str, method: Any) -> bool:
+    """Whether *method* chooses no nodes for *role*: the arteriole and venule
+    boundaries are only ever a list (coordinates, boxes or node IDs), so the
+    run reads any other method as no boundary (``boundary_role_configured``)."""
+    return role in SMALL_AUTO_ROLES and str(method) not in METHOD_SETTINGS
+
+
 def settings_for_method(role: str, method: str) -> tuple[str, ...]:
     """The settings *role* reads when it selects nodes by *method*."""
     key = METHOD_SETTINGS.get(str(method))
     if key is not None:
         return (BOUNDARY_ROLE_SETTINGS[role][key],)
+    if chooses_no_nodes(role, method):
+        return ()
     if str(method) == "edge_percent":
         return ("boundary_axis",
                 PERCENT_FOR_NODE_ROLE[BOUNDARY_ROLE_SETTINGS[role]["node_role"]])
@@ -132,9 +313,10 @@ def settings_for_method(role: str, method: str) -> tuple[str, ...]:
 def visible_settings(values: Mapping[str, Any]) -> set[str]:
     """Which boundary settings the chosen methods will actually read.
 
-    The Boundaries tab declares twenty-one rows and a run reads a handful of
-    them: four methods, plus whatever those four methods ask for. Showing the
-    rest invites filling in a coordinate list that nothing will look at.
+    The Boundaries tab declares many rows and a run reads a handful of them:
+    one method per role, plus whatever each role's chosen method asks for.
+    Showing the rest invites filling in a coordinate list that nothing will
+    look at.
     """
     wanted: set[str] = set()
     for role in ROLES:
@@ -163,6 +345,7 @@ def role_settings(role: str) -> tuple[str, ...]:
         method_setting(role),
         coordinate_setting(role),
         volume_setting(role),
+        node_id_setting(role),
         f"{role}_nodes",
     ]
     return tuple(dict.fromkeys(names))
@@ -192,11 +375,24 @@ def regions_name(role: str) -> str:
     return f"{PREFIX}BC {role_title(role).lower()} regions"
 
 
+def boxes_name(role: str) -> str:
+    """The layer a role's regions are drawn in as solid boxes."""
+    return f"{PREFIX}BC {role_title(role).lower()} boxes"
+
+
 #: Every region layer, in role order.
 BC_REGION_NAMES = tuple(regions_name(role) for role in ROLES)
 
+#: Every box layer, in role order.
+BC_BOX_NAMES = tuple(boxes_name(role) for role in ROLES)
+
 #: All of them, for "is this one of the picking layers?".
-BC_LAYER_NAMES = frozenset({BC_COORDINATES, *BC_REGION_NAMES})
+#: The nodes inside the box being edited, drawn to choose from.
+BC_BOX_NODES = f"{PREFIX}BC box nodes"
+
+BC_LAYER_NAMES = frozenset(
+    {BC_COORDINATES, BC_NODE_IDS, BC_BOX_NODES, *BC_REGION_NAMES, *BC_BOX_NAMES}
+)
 
 
 def outside_extent(
@@ -247,6 +443,11 @@ def method_setting(role: str) -> str:
     return BOUNDARY_ROLE_SETTINGS[role]["method"]
 
 
+def node_id_setting(role: str) -> str:
+    """The setting holding the node IDs *role* takes with ``node_ids``."""
+    return BOUNDARY_ROLE_SETTINGS[role]["node_ids"]
+
+
 def plain(value: Any) -> Any:
     """*value* as builtin floats and lists, however deeply nested.
 
@@ -290,6 +491,32 @@ def _finite_point(value: Any) -> list[float] | None:
     if len(numbers) != 3 or not all(math.isfinite(n) for n in numbers):
         return None
     return numbers
+
+
+def _node_id(value: Any) -> Any | None:
+    """*value* as a plain node ID, or None if it cannot be one.
+
+    Node IDs are ints; one that arrived as ``np.int64`` or ``12.0`` is the
+    same node, and goes back to a row as a plain int (see :func:`plain`).
+    """
+    value = plain(value)
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value) if math.isfinite(value) and value.is_integer() else None
+    if isinstance(value, str) and value.strip():
+        text = value.strip()
+        return int(text) if text.lstrip("-").isdigit() else text
+    return None
+
+
+def _node_id_entries(value: Any) -> list[Any]:
+    """A node-ID setting as a list of entries: a lone ID typed bare is one."""
+    if isinstance(value, (str, int, float, np.generic)) and not isinstance(value, bool):
+        return [value]
+    return _entries(value)
 
 
 def _corner_pair(value: Any) -> list[list[float]] | None:
@@ -353,32 +580,163 @@ def box_from_rectangle(
     return [plain([round(v, DECIMALS) for v in lo]), plain([round(v, DECIMALS) for v in hi])]
 
 
-def box_outline(
-    corner_a: Sequence[float], corner_b: Sequence[float]
-) -> list[np.ndarray]:
-    """The twelve edges of a box, as two-point segments.
+def _unit_cube() -> tuple[np.ndarray, np.ndarray]:
+    """A unit cube's eight corners and its twelve outward-wound triangles.
 
-    A rectangle is the only thing napari can *edit*, and it is flat -- so on
-    its own it says nothing about how deep a region is. These draw the box the
-    rectangle stands for. They are regenerated from the setting every time, so
-    dragging one does nothing lasting; the rectangle is the handle.
+    Corner ``i`` has bit 4 for z, 2 for y and 1 for x, so ``lo + corner * size``
+    places it. The winding is settled once here, by turning each triangle to
+    face away from the centre, because flat shading lights a face by its
+    normal and an inward one reads as a hole in the box.
     """
-    lo = np.minimum(np.asarray(corner_a, dtype=float), np.asarray(corner_b, dtype=float))
-    hi = np.maximum(np.asarray(corner_a, dtype=float), np.asarray(corner_b, dtype=float))
-    corners = np.array(list(itertools.product(*zip(lo, hi))), dtype=float)
-    edges = []
-    for a, b in itertools.combinations(range(len(corners)), 2):
-        # An edge joins two corners that differ along exactly one axis.
-        if int(np.count_nonzero(corners[a] != corners[b])) == 1:
-            edges.append(np.array([corners[a], corners[b]], dtype=float))
-    return edges
+    corners = np.array(list(itertools.product((0.0, 1.0), repeat=3)))
+    quads = []
+    for axis in range(3):
+        for side in (0.0, 1.0):
+            quad = [i for i in range(8) if corners[i][axis] == side]
+            # Round the face, not across it: swap the last two into order.
+            quads.append([quad[0], quad[1], quad[3], quad[2]])
+    faces = []
+    centre = np.full(3, 0.5)
+    for a, b, c, d in quads:
+        for tri in ((a, b, c), (a, c, d)):
+            p = corners[list(tri)]
+            normal = np.cross(p[1] - p[0], p[2] - p[0])
+            if np.dot(normal, p.mean(axis=0) - centre) < 0:
+                tri = (tri[0], tri[2], tri[1])
+            faces.append(tri)
+    return corners, np.asarray(faces, dtype=int)
 
 
-#: What a shape in the regions layer is for: the editable rectangle, or one of
-#: the twelve segments drawing the box it stands for.
-BAND = "band"
-HANDLE = "handle"
-OUTLINE = "outline"
+_CUBE_CORNERS, _CUBE_FACES = _unit_cube()
+
+
+def box_mesh(
+    boxes: Sequence[tuple[Sequence[float], Sequence[float]]],
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Every box as a closed solid: vertices, triangles and whose each vertex is.
+
+    Each box has its own eight vertices rather than sharing any, so it can
+    carry a colour of its own (:func:`box_colours`) -- the whole point of
+    drawing them as separate solids is that two regions of one role can be
+    told apart in 3D.
+    """
+    if not len(boxes):
+        return (np.empty((0, 3), dtype=float), np.empty((0, 3), dtype=int),
+                np.empty((0,), dtype=int))
+    vertices, faces, owner = [], [], []
+    for index, (corner_a, corner_b) in enumerate(boxes):
+        lo = np.minimum(np.asarray(corner_a, dtype=float), np.asarray(corner_b, dtype=float))
+        hi = np.maximum(np.asarray(corner_a, dtype=float), np.asarray(corner_b, dtype=float))
+        vertices.append(lo + _CUBE_CORNERS * (hi - lo))
+        faces.append(_CUBE_FACES + 8 * index)
+        owner.append(np.full(8, index, dtype=int))
+    return np.concatenate(vertices), np.concatenate(faces), np.concatenate(owner)
+
+
+def box_colours(
+    colour: Sequence[float], count: int
+) -> list[tuple[float, float, float, float]]:
+    """*count* shades of one role's colour, one per box, all telling apart.
+
+    The role stays readable (an inlet box is still green) while two inlet
+    boxes are not the same green: the shades run from darker to lighter than
+    the role colour, which a single box keeps exactly.
+    """
+    base = np.asarray(colour, dtype=float)[:3]
+    alpha = float(colour[3]) if len(colour) > 3 else 1.0
+    if count <= 1:
+        return [(*(float(v) for v in base), alpha)] * max(count, 0)
+    shades = []
+    for step in np.linspace(-0.45, 0.45, count):
+        towards = np.ones(3) if step > 0 else np.zeros(3)
+        rgb = base + abs(step) * (towards - base)
+        shades.append((*(float(v) for v in rgb), alpha))
+    return shades
+
+
+def role_boxes(
+    picks: "BoundaryPicks",
+    bands: Mapping[str, tuple[Sequence[float], Sequence[float]]] | None = None,
+    *,
+    extra: Mapping[str, Sequence[tuple[Sequence[float], Sequence[float]]]] | None = None,
+) -> dict[str, list[tuple[list[float], list[float]]]]:
+    """The boxes each role's box layer shows: its band, its regions, *extra*.
+
+    *extra* is a box still being dragged out in 3D -- shown so the drag has
+    something to look at, but in no setting until the mouse comes up.
+    """
+    out: dict[str, list] = {}
+    for role in ROLES:
+        boxes = []
+        if bands and role in bands:
+            lo, hi = bands[role]
+            boxes.append(([float(v) for v in lo], [float(v) for v in hi]))
+        for lo, hi in picks.volumes.get(role, ()):
+            boxes.append(([float(v) for v in lo], [float(v) for v in hi]))
+        for lo, hi in (extra or {}).get(role, ()):
+            boxes.append(([float(v) for v in lo], [float(v) for v in hi]))
+        if boxes:
+            out[role] = boxes
+    return out
+
+
+def box_from_view_drag(
+    start: Sequence[float],
+    end: Sequence[float],
+    view_direction: Sequence[float],
+    up_direction: Sequence[float],
+    lo: Sequence[float],
+    hi: Sequence[float],
+    *,
+    depth: float | None = None,
+) -> list[list[float]] | None:
+    """The box a mouse drag across the 3D view describes, or None.
+
+    A drag on screen is a rectangle in the plane facing the camera: across it,
+    the box takes the rectangle; along the line of sight -- the axis the camera
+    looks down most nearly -- it runs through the whole image, since a 3D view
+    shows no depth to point at. On a z view, *depth* trims that to a slab
+    centred on the image, which is what the Region depth slider says. Looking
+    straight down an axis gives exactly the rectangle dragged; at an angle, the
+    smallest axis-aligned box holding it.
+
+    None for a drag with no area across the screen, or one that misses the
+    image altogether: there is no box to add, and adding a flat one would
+    select nothing.
+    """
+    start = np.asarray(start, dtype=float)[-3:]
+    end = np.asarray(end, dtype=float)[-3:]
+    view = np.asarray(view_direction, dtype=float)[-3:]
+    up = np.asarray(up_direction, dtype=float)[-3:]
+    low = np.asarray(lo, dtype=float)
+    high = np.asarray(hi, dtype=float)
+    if not np.linalg.norm(view):
+        return None
+    view = view / np.linalg.norm(view)
+    up = up - np.dot(up, view) * view
+    if not np.linalg.norm(up):
+        return None
+    up = up / np.linalg.norm(up)
+    right = np.cross(view, up)
+    delta = end - start
+    across, along = float(np.dot(delta, right)), float(np.dot(delta, up))
+    corners = np.array([
+        start,
+        start + across * right,
+        start + along * up,
+        start + across * right + along * up,
+    ])
+    box_lo, box_hi = corners.min(axis=0), corners.max(axis=0)
+    sight = int(np.argmax(np.abs(view)))
+    box_lo[sight], box_hi[sight] = low[sight], high[sight]
+    if depth is not None and sight == 0 and math.isfinite(depth) and depth > 0:
+        centre = (low[0] + high[0]) / 2.0
+        box_lo[0], box_hi[0] = centre - depth / 2.0, centre + depth / 2.0
+    box_lo, box_hi = np.maximum(box_lo, low), np.minimum(box_hi, high)
+    if any(box_hi[axis] - box_lo[axis] <= 0 for axis in range(3) if axis != sight):
+        return None
+    return [plain([round(float(v), DECIMALS) for v in box_lo]),
+            plain([round(float(v), DECIMALS) for v in box_hi])]
 
 
 def terminal_axis_span(graph, axis: int):
@@ -428,7 +786,8 @@ def band_boxes(
     span = float(end) - float(start)
     boxes: dict[str, tuple[list[float], list[float]]] = {}
     for role in ROLES:
-        if str(values.get(method_setting(role))) != "edge_percent":
+        method = values.get(method_setting(role))
+        if str(method) != "edge_percent" or chooses_no_nodes(role, method):
             continue
         name = PERCENT_FOR_NODE_ROLE[BOUNDARY_ROLE_SETTINGS[role]["node_role"]]
         try:
@@ -449,50 +808,31 @@ def band_boxes(
 
 def region_shapes(
     picks: "BoundaryPicks",
-    bands: Mapping[str, tuple[Sequence[float], Sequence[float]]] | None = None,
     *,
     only: str | None = None,
 ) -> tuple[list[np.ndarray], list[str], dict[str, np.ndarray]]:
-    """Every region as one editable rectangle plus the box it describes.
+    """Every region as the one editable rectangle that stands for it.
 
-    A band gets the box and no rectangle: it is not a region anyone typed, it
-    is what a percentage works out to, so there is no handle to drag and
-    nothing for the settings to read back.
+    Only rectangles: the box each one describes is drawn in its own layer
+    (:func:`box_mesh`). It used to be twelve line segments in this one, which
+    made thirteen shapes per region for napari to rebuild on every edit and
+    left its drawing tool working on a layer that was being rewritten
+    underneath it.
     """
     data: list[np.ndarray] = []
-    kinds: list[str] = []
     roles: list[str] = []
     depths: list[float] = []
-    parts: list[str] = []
-    for role, (lo, hi) in (bands or {}).items():
-        if only is not None and role != only:
-            continue
-        for edge in box_outline(lo, hi):
-            data.append(edge)
-            kinds.append("line")
-            roles.append(role)
-            depths.append(abs(float(hi[0]) - float(lo[0])))
-            parts.append(BAND)
     for role in ROLES if only is None else (only,):
         for lo, hi in picks.volumes.get(role, ()):
             corners, depth = rectangle_from_box(lo, hi)
             data.append(corners)
-            kinds.append("rectangle")
             roles.append(role)
             depths.append(depth)
-            parts.append(HANDLE)
-            for edge in box_outline(lo, hi):
-                data.append(edge)
-                kinds.append("line")
-                roles.append(role)
-                depths.append(depth)
-                parts.append(OUTLINE)
     features = {
         "role": np.asarray(roles, dtype=object),
         "depth": np.asarray(depths, dtype=float),
-        "part": np.asarray(parts, dtype=object),
     }
-    return data, kinds, features
+    return data, ["rectangle"] * len(data), features
 
 
 @dataclass(frozen=True)
@@ -505,14 +845,29 @@ class BoundaryPicks:
     #: must not fall over on a hand-edited config; the run raises for the same
     #: value later, which is the right place for a hard error.
     problems: tuple[str, ...] = field(default=())
+    #: The node IDs each role lists for the ``node_ids`` method, in order.
+    node_ids: Mapping[str, tuple[Any, ...]] = field(default_factory=dict)
 
     @classmethod
     def from_settings(cls, values: Mapping[str, Any]) -> "BoundaryPicks":
         """Read all four roles out of a settings dict, skipping what will not read."""
         coordinates: dict[str, tuple] = {}
         volumes: dict[str, tuple] = {}
+        node_ids: dict[str, tuple] = {}
         problems: list[str] = []
         for role in ROLES:
+            ids: list[Any] = []
+            for index, entry in enumerate(_node_id_entries(values.get(node_id_setting(role)))):
+                node = _node_id(entry)
+                if node is None:
+                    problems.append(
+                        f"{node_id_setting(role)}[{index}] is not a node ID: {entry!r}"
+                    )
+                    continue
+                if node not in ids:
+                    ids.append(node)
+            node_ids[role] = tuple(ids)
+
             points: list[tuple[float, float, float]] = []
             for index, entry in enumerate(_entries(values.get(coordinate_setting(role)))):
                 point = _finite_point(entry)
@@ -536,7 +891,7 @@ class BoundaryPicks:
                     continue
                 boxes.append((tuple(pair[0]), tuple(pair[1])))
             volumes[role] = tuple(boxes)
-        return cls(coordinates, volumes, tuple(problems))
+        return cls(coordinates, volumes, tuple(problems), node_ids)
 
     def to_settings(self) -> dict[str, list]:
         """The eight settings these picks describe, as plain lists of floats."""
@@ -600,18 +955,110 @@ class BoundaryPicks:
             for role in ROLES
             if self.volumes.get(role)
         ]
+        parts += [
+            f"{role} node ID{'' if len(self.node_ids[role]) == 1 else 's'} "
+            f"{list(self.node_ids[role])}"
+            for role in ROLES
+            if self.node_ids.get(role)
+        ]
         if not parts:
             return "No boundary conditions configured."
         return ", ".join(parts)
 
 
-def specs_for(values: Mapping[str, Any], bands=None) -> tuple[LayerSpec, ...]:
-    """The layers that draw what *values* describes.
+def toggle_node_id(
+    values: Mapping[str, Any], role: str, node_id: Any
+) -> tuple[dict[str, list], str]:
+    """The node-ID settings after clicking *node_id* for *role*, and what changed.
+
+    A click adds the node to *role*, or takes it off again if *role* already
+    has it -- so a misclick is undone by clicking the same node. A node another
+    role lists moves to this one rather than being listed twice: a run gives
+    each node to the first role that claims it (inlets, outlets, then the
+    vessel boundaries), so a second listing would only be silently ignored.
+    Entries that cannot be read are kept as they are; the report box names them.
+    """
+    node = _node_id(node_id)
+    if node is None:
+        return {}, f"{node_id!r} is not a node ID."
+    proposed: dict[str, list] = {}
+    moved_from: list[str] = []
+    for other in ROLES:
+        if other == role:
+            continue
+        entries = _node_id_entries(values.get(node_id_setting(other)))
+        kept = [plain(entry) for entry in entries if _node_id(entry) != node]
+        if len(kept) != len(entries):
+            proposed[node_id_setting(other)] = kept
+            moved_from.append(other)
+    entries = _node_id_entries(values.get(node_id_setting(role)))
+    mine = [plain(entry) for entry in entries if _node_id(entry) != node]
+    if len(mine) != len(entries) and not moved_from:
+        proposed[node_id_setting(role)] = mine
+        return proposed, f"Removed node {node} from {role}."
+    proposed[node_id_setting(role)] = [*mine, node]
+    moved = f" (moved from {', '.join(moved_from)})" if moved_from else ""
+    return proposed, f"Added node {node} to {role}{moved}."
+
+
+def node_made_after_boundaries(node_id: Any, boundaries_graph: Any, shown_graph: Any) -> bool:
+    """Whether a node clicked on the network on screen is missing from the
+    graph the Boundaries stage runs on (*boundaries_graph*): one an edit on
+    the Post processing tab added. A run from Boundaries would stop on its
+    ID. A terminal the large-vessel cut made is not: the cut makes it again.
+    Without a Boundaries graph, nothing can be said."""
+    from haemolynx.graph.cut_at_large_vessel_volumes import CUT_FROM_LARGE_VESSEL
+
+    if boundaries_graph is None or node_id in boundaries_graph:
+        return False
+    data = shown_graph.nodes[node_id] if shown_graph is not None and node_id in shown_graph else {}
+    return data.get(CUT_FROM_LARGE_VESSEL) is None
+
+
+def node_id_points(
+    graph: Any, values: Mapping[str, Any]
+) -> tuple[np.ndarray, dict[str, np.ndarray], dict[str, list]]:
+    """Where each listed node is, its role and ID, and the IDs *graph* lacks.
+
+    Without a graph nothing can be placed and nothing can be called missing:
+    node IDs only mean something against the graph a run built.
+    """
+    picks = BoundaryPicks.from_settings(values)
+    positions: list[np.ndarray] = []
+    roles: list[str] = []
+    ids: list[Any] = []
+    missing: dict[str, list] = {}
+    for role in ROLES:
+        for node in picks.node_ids.get(role, ()):
+            if graph is None:
+                continue
+            # `_node_id` has already turned "12" into 12, as the run does.
+            position = graph.nodes[node].get("pos") if node in graph.nodes else None
+            if position is None:
+                missing.setdefault(role, []).append(node)
+                continue
+            positions.append(np.asarray(position, dtype=float)[:3])
+            roles.append(role)
+            ids.append(node)
+    data = np.asarray(positions, dtype=float) if positions else np.empty((0, 3), dtype=float)
+    features = {
+        "role": np.asarray(roles, dtype=object),
+        "node_id": np.asarray(ids, dtype=object),
+    }
+    return data, features, missing
+
+
+def specs_for(values: Mapping[str, Any], graph: Any = None) -> tuple[LayerSpec, ...]:
+    """The editable layers that draw what *values* describes.
 
     The coordinates layer is emitted even when empty -- it is the surface the
     user clicks into, so it has to exist before there is anything on it. The
     regions layer is not: an empty Shapes layer draws nothing and would only be
-    one more row in the layer list until a region is drawn.
+    one more row in the layer list until a region is drawn. The box layers are
+    not specs at all: napari has no Surface in `LayerSpec`'s vocabulary, and
+    they are drawn from :func:`role_boxes` by the panel. The node IDs layer is
+    emitted whenever a role lists any, placed on *graph* -- empty without one,
+    since an ID has no position until a run has built the graph it names.
     """
     picks = BoundaryPicks.from_settings(values)
     points, point_features = picks.points()
@@ -628,14 +1075,14 @@ def specs_for(values: Mapping[str, Any], bands=None) -> tuple[LayerSpec, ...]:
                 # A ring, so what you asked for cannot be mistaken for
                 # `HaemoLynx boundary nodes`, which is what the run snapped to.
                 "symbol": "ring",
-                "size": 8.0,
+                "size": BOUNDARY_COORDINATE_POINT_SIZE,
                 "border_width": 0.25,
-                "out_of_slice_display": True,
+                "projection_mode": POINTS_PROJECTION,
             },
         )
     ]
     for role in ROLES:
-        shapes, kinds, shape_features = region_shapes(picks, bands, only=role)
+        shapes, kinds, shape_features = region_shapes(picks, only=role)
         if not shapes:
             continue
         specs.append(
@@ -650,23 +1097,74 @@ def specs_for(values: Mapping[str, Any], bands=None) -> tuple[LayerSpec, ...]:
                 options={"shape_type": kinds, "edge_width": 1.5, "opacity": 0.25},
             )
         )
+    if any(picks.node_ids.values()):
+        nodes, node_features, _missing = node_id_points(graph, values)
+        specs.append(
+            LayerSpec(
+                kind="points",
+                name=BC_NODE_IDS,
+                data=nodes,
+                features=node_features,
+                colour_by="role",
+                colour_kind="categorical",
+                colour_cycle=role_colours(),
+                options={
+                    # A square, so a listed node cannot be mistaken for a
+                    # coordinate's ring or for the run's own boundary nodes.
+                    "symbol": "square",
+                    "size": BOUNDARY_COORDINATE_POINT_SIZE,
+                    "border_width": 0.25,
+                    "projection_mode": POINTS_PROJECTION,
+                },
+            )
+        )
     return tuple(specs)
 
 
-def group_for(values: Mapping[str, Any], bands=None) -> StageLayers:
+def node_id_note(graph: Any, values: Mapping[str, Any]) -> str:
+    """What the report box says about the listed node IDs, if anything."""
+    picks = BoundaryPicks.from_settings(values)
+    if not any(picks.node_ids.values()):
+        return ""
+    if graph is None:
+        return (
+            "  Node IDs are placed once a run has built the graph ('3. Graph'); "
+            "until then they cannot be shown or checked."
+        )
+    _points, _features, missing = node_id_points(graph, values)
+    if not missing:
+        return ""
+    listed = "; ".join(f"{role} {ids}" for role, ids in missing.items())
+    return (
+        f"  Not in the current graph: {listed}. A run with these IDs stops and "
+        "says so -- rebuilding the graph renumbers its nodes, so pick them again."
+    )
+
+
+def group_for(values: Mapping[str, Any], bands=None, graph: Any = None) -> StageLayers:
     """The picking layers as a group the panel can hand to `_apply_layers`."""
     picks = BoundaryPicks.from_settings(values)
     note = picks.summary()
     if bands:
         drawn = ", ".join(f"{role} band" for role in bands)
-        configured = any(picks.coordinates.values()) or any(picks.volumes.values())
+        configured = (any(picks.coordinates.values()) or any(picks.volumes.values())
+                      or any(picks.node_ids.values()))
         note = f"{note}, {drawn}" if configured else drawn
     if picks.problems:
         note = f"{note} ({len(picks.problems)} entry could not be read: {picks.problems[0]})"
+    unread = [
+        f"{role_title(role)} boundary: {values.get(method_setting(role))} chooses no nodes for it "
+        "(coordinates, volume or node_ids do)"
+        for role in ROLES
+        if chooses_no_nodes(role, values.get(method_setting(role)))
+    ]
+    if unread:
+        note += "  " + "; ".join(unread) + "."
+    note += node_id_note(graph, values)
     return StageLayers(
         stage="boundary_picking",
         title="Boundary conditions",
-        layers=specs_for(values, bands),
+        layers=specs_for(values, graph),
         note=note,
     )
 
@@ -765,3 +1263,261 @@ def snap(points: Any, candidates: Any) -> tuple[np.ndarray, np.ndarray]:
     distances = np.linalg.norm(moved[:, None, :] - targets[None, :, :], axis=2)
     nearest = np.argmin(distances, axis=1)          # ties take the lowest index
     return targets[nearest].copy(), distances[np.arange(len(moved)), nearest]
+
+
+# --- inserting a box and choosing a node from it ------------------------------
+
+#: The size, (z, y, x) in microns, of a box Insert a box places.
+DEFAULT_BOX_SIZE_UM: tuple[float, float, float] = (10.0, 10.0, 10.0)
+
+#: The box-moving buttons, in the order the panel lays them out, each with the
+#: screen direction it stands for. "back"/"forward" move through the axis not
+#: on screen -- the slices, in the usual XY view.
+MOVE_DIRECTIONS: tuple[str, ...] = ("left", "right", "up", "down", "back", "forward")
+
+#: Header of the "nodes in this box" table, one entry per :func:`box_node_rows` cell.
+BOX_NODE_COLUMNS = ("Node ID", "Vessels", "Open end", "z (um)", "y (um)", "x (um)")
+
+
+def _corners(box: Sequence[Sequence[float]]) -> tuple[np.ndarray, np.ndarray]:
+    pair = _corner_pair(box)
+    if pair is None:
+        raise ValueError(f"A box is two (z, y, x) corners, got {box!r}")
+    a, b = np.asarray(pair[0], dtype=float), np.asarray(pair[1], dtype=float)
+    return np.minimum(a, b), np.maximum(a, b)
+
+
+def _as_box(lo: np.ndarray, hi: np.ndarray) -> list[list[float]]:
+    return [plain([round(float(v), DECIMALS) for v in lo]),
+            plain([round(float(v), DECIMALS) for v in hi])]
+
+
+def box_around(
+    centre: Sequence[float], size: Sequence[float] = DEFAULT_BOX_SIZE_UM
+) -> list[list[float]]:
+    """The box of *size* (z, y, x) microns centred on *centre*, as two corners."""
+    middle = np.asarray(centre, dtype=float)[-3:]
+    half = np.abs(np.asarray(size, dtype=float)[-3:]) / 2.0
+    if middle.shape != (3,) or half.shape != (3,) or not np.all(np.isfinite([*middle, *half])):
+        raise ValueError(f"A box needs a (z, y, x) centre and size, got {centre!r}, {size!r}")
+    return _as_box(middle - half, middle + half)
+
+
+def box_centre(box: Sequence[Sequence[float]]) -> list[float]:
+    """The (z, y, x) middle of *box*."""
+    lo, hi = _corners(box)
+    return plain([round(float(v), DECIMALS) for v in (lo + hi) / 2.0])
+
+
+def box_size(box: Sequence[Sequence[float]]) -> list[float]:
+    """The (z, y, x) extent of *box*, in microns."""
+    lo, hi = _corners(box)
+    return plain([round(float(v), DECIMALS) for v in hi - lo])
+
+
+def resize_box(box: Sequence[Sequence[float]], size: Sequence[float]) -> list[list[float]]:
+    """*box* at a new (z, y, x) *size*, about the same centre."""
+    return box_around(box_centre(box), size)
+
+
+def move_box(
+    box: Sequence[Sequence[float]],
+    direction: str,
+    step: float,
+    displayed: Sequence[int] = (1, 2),
+    *,
+    view_direction: Sequence[float] | None = None,
+    up_direction: Sequence[float] | None = None,
+) -> list[list[float]]:
+    """*box* moved *step* microns in a *direction* as the viewer shows it.
+
+    In 2D, *displayed* is napari's ``dims.displayed``: the last axis runs
+    across the screen (left/right), the one before it down the screen
+    (up/down -- napari draws rows downwards, so "up" lowers that coordinate),
+    and back/forward step through the axis not on screen, the slices.
+
+    In 3D, pass the camera's *view_direction* and *up_direction* (napari's,
+    in displayed-axis order): the box moves *step* microns exactly along the
+    screen's right (left/right), its up (up/down), or the line of sight
+    (forward = away from you, back = towards you), however the view is
+    turned. Only its position follows the view; it stays a box square to the
+    image. (Snapping each move to the nearest image axis instead made
+    back/forward slide sideways in a turned view.) Without the camera, 3D
+    falls back to z/y/x.
+    """
+    if direction not in MOVE_DIRECTIONS:
+        raise ValueError(f"direction must be one of {MOVE_DIRECTIONS}, not {direction!r}")
+    axes = [int(a) for a in displayed if 0 <= int(a) < 3]
+    lo, hi = _corners(box)
+    shift = np.zeros(3)
+    if len(axes) == 3 and view_direction is not None and up_direction is not None:
+        view = np.asarray(view_direction, dtype=float)[-3:]
+        up = np.asarray(up_direction, dtype=float)[-3:]
+        right = np.cross(view, up)
+        on_screen = {"right": right, "left": -right, "up": up, "down": -up,
+                     "forward": view, "back": -view}[direction]
+        length = float(np.linalg.norm(on_screen))
+        if length == 0.0:
+            return _as_box(lo, hi)
+        for index, axis in enumerate(axes):
+            shift[axis] = on_screen[index] / length * abs(float(step))
+        return _as_box(lo + shift, hi + shift)
+    axes = axes[-2:] if len(axes) >= 2 else [1, 2]
+    vertical, horizontal = axes
+    depth = next((a for a in range(3) if a not in axes), 0)
+    axis, sign = {
+        "left": (horizontal, -1.0), "right": (horizontal, 1.0),
+        "up": (vertical, -1.0), "down": (vertical, 1.0),
+        "back": (depth, -1.0), "forward": (depth, 1.0),
+    }[direction]
+    shift[axis] = sign * abs(float(step))
+    return _as_box(lo + shift, hi + shift)
+
+
+@dataclass(frozen=True)
+class BoxNode:
+    """One node of the graph inside a box, as the panel lists it."""
+
+    node_id: Any
+    degree: int
+    position: tuple[float, float, float]
+
+    @property
+    def open_end(self) -> bool:
+        """A vessel ends here: the kind of node an inlet or outlet usually is."""
+        return self.degree == 1
+
+
+def nodes_in_box(graph: Any, box: Sequence[Sequence[float]]) -> list[BoxNode]:
+    """Every node of *graph* inside *box* (edges included), open ends first.
+
+    Then by distance from the box's centre, so the node the box was put round
+    comes to the top of its group.
+    """
+    if graph is None:
+        return []
+    lo, hi = _corners(box)
+    middle = (lo + hi) / 2.0
+    found = []
+    for node, degree in graph.degree():
+        pos = graph.nodes[node].get("pos")
+        if pos is None:
+            continue
+        p = np.asarray(pos, dtype=float)[:3]
+        if np.all(p >= lo) and np.all(p <= hi):
+            found.append(BoxNode(node, int(degree), tuple(float(v) for v in p)))
+    found.sort(key=lambda n: (not n.open_end,
+                              float(np.linalg.norm(np.asarray(n.position) - middle)), str(n.node_id)))
+    return found
+
+
+def box_node_rows(nodes: Sequence[BoxNode]) -> list[tuple[str, ...]]:
+    """The "nodes in this box" table's cells, one row per node, in order."""
+    return [
+        (
+            str(n.node_id),
+            str(n.degree),
+            "open end" if n.open_end else "",
+            *(f"{v:.1f}" for v in n.position),
+        )
+        for n in nodes
+    ]
+
+
+#: The node chosen in the box's list: cyan, and this much larger again.
+CHOSEN_BOX_NODE_COLOUR = (0.0, 0.9, 1.0, 1.0)
+CHOSEN_BOX_NODE_SCALE = 1.8
+
+
+def box_node_styles(
+    nodes: Sequence[BoxNode], chosen: int | None = None
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Per-node size, face colour and rim colour for the box's nodes.
+
+    Yellow and larger than the network's dots; open ends larger again with a
+    red rim; the *chosen* one (an index into *nodes*) cyan and larger still,
+    so the node picked in the list is the one that stands out.
+    """
+    open_end = np.asarray([n.open_end for n in nodes], dtype=bool)
+    yellow, red = (1.0, 0.9, 0.0, 1.0), (1.0, 0.15, 0.1, 1.0)
+    sizes = np.where(open_end, BOUNDARY_COORDINATE_POINT_SIZE * 1.5,
+                     BOUNDARY_COORDINATE_POINT_SIZE).astype(float)
+    faces = np.asarray([yellow] * len(nodes), dtype=float).reshape(-1, 4)
+    rims = np.asarray([red if o else yellow for o in open_end], dtype=float).reshape(-1, 4)
+    if chosen is not None and 0 <= chosen < len(nodes):
+        sizes[chosen] *= CHOSEN_BOX_NODE_SCALE
+        faces[chosen] = CHOSEN_BOX_NODE_COLOUR
+        rims[chosen] = CHOSEN_BOX_NODE_COLOUR
+    return sizes, faces, rims
+
+
+def box_nodes_spec(nodes: Sequence[BoxNode], chosen: int | None = None) -> LayerSpec:
+    """The nodes in the box, styled by :func:`box_node_styles`."""
+    data = (np.asarray([n.position for n in nodes], dtype=float)
+            if nodes else np.empty((0, 3), dtype=float))
+    open_end = np.asarray([n.open_end for n in nodes], dtype=bool)
+    sizes, faces, rims = box_node_styles(nodes, chosen)
+    return LayerSpec(
+        kind="points",
+        name=BC_BOX_NODES,
+        data=data,
+        features={
+            "node_id": np.asarray([n.node_id for n in nodes], dtype=object),
+            "open_end": open_end,
+        },
+        options={
+            "size": sizes,
+            "face_color": faces,
+            "border_color": rims,
+            "border_width": 0.3,
+            "projection_mode": POINTS_PROJECTION,
+        },
+    )
+
+
+def use_node_for_role(
+    values: Mapping[str, Any], role: str, node_id: Any
+) -> tuple[dict[str, Any], str]:
+    """The settings that make *node_id* one of *role*'s nodes, and what changed.
+
+    The node is added to the role's node IDs (taken off any other role that
+    listed it, as a click does -- :func:`toggle_node_id`) and the role is
+    switched to the ``node_ids`` method, so a run takes exactly the nodes
+    chosen rather than every open end in the box. Choosing a node the role
+    already has changes nothing.
+    """
+    node = _node_id(node_id)
+    if node is None:
+        return {}, f"{node_id!r} is not a node ID."
+    proposed: dict[str, Any] = {}
+    already = node in [_node_id(e) for e in _node_id_entries(values.get(node_id_setting(role)))]
+    if not already:
+        proposed, _toggled = toggle_node_id(values, role, node)
+    if str(values.get(method_setting(role))) != "node_ids":
+        proposed[method_setting(role)] = "node_ids"
+    if already and not proposed:
+        return {}, f"Node {node} is already one of {role}'s nodes."
+    return proposed, f"Node {node} is now one of {role}'s nodes."
+
+
+def view_centre_zyx(
+    point: Sequence[float], displayed: Sequence[int], camera_centre: Sequence[float]
+) -> list[float]:
+    """The (z, y, x) micron point in the middle of what the viewer shows.
+
+    *point* is napari's ``dims.point`` (the slice each axis is at, in world
+    units), *displayed* its ``dims.displayed`` and *camera_centre* its
+    ``camera.center``, whose last entries are the on-screen axes in displayed
+    order. Axes on screen take the camera's centre, the rest the slice -- so a
+    box inserted in the XY view lands on the slice being looked at.
+    """
+    full = [float(v) for v in point]
+    offset = max(0, len(full) - 3)
+    centre = [float(v) for v in camera_centre][-len(displayed):] if displayed else []
+    for axis, value in zip(displayed, centre):
+        if 0 <= int(axis) < len(full):
+            full[int(axis)] = value
+    out = full[offset:offset + 3]
+    while len(out) < 3:
+        out.insert(0, 0.0)
+    return out

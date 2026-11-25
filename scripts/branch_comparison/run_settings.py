@@ -6,6 +6,7 @@ state exactly which of them a given branch could not accept.
 """
 from __future__ import annotations
 
+from pathlib import PurePath
 from typing import Any
 
 #: The dataset the tool was built around, relative to a checkout root.
@@ -64,7 +65,12 @@ SETTING_ALIASES: dict[str, tuple[str, ...]] = {
         "do_pericyte_construction",
         "do_pericyte_constriction",
     ),
+    "output_dir": ("output_dir", "vtk_output_prefix"),
 }
+
+#: The VTK files' stem on a branch from before the output folder, whose
+#: ``vtk_output_prefix`` named them inside it.
+LEGACY_VTK_NAME = "comparison_run"
 
 #: Accepted by the settings-dict entry point even though it is derived rather
 #: than declared in the schema.
@@ -72,7 +78,7 @@ DERIVED_SETTINGS = ("plot_dir",)
 
 #: Never pinned from one side onto the other: they name this run's own paths,
 #: which the tool sets per side.
-PER_SIDE_SETTINGS = ("input_path", "plot_dir", "base_plot_dir", "vtk_output_prefix")
+PER_SIDE_SETTINGS = ("input_path", "plot_dir", "base_plot_dir", "output_dir")
 
 
 def aliases_for(name: str) -> tuple[str, ...]:
@@ -80,11 +86,20 @@ def aliases_for(name: str) -> tuple[str, ...]:
     return SETTING_ALIASES.get(name, (name,))
 
 
+def alias_value(name: str, alias: str, value: Any) -> Any:
+    """*value* of setting *name* as a branch knowing it as *alias* reads it.
+    The same value but for the output folder, which such a branch took as a
+    prefix inside it."""
+    if name == "output_dir" and alias == "vtk_output_prefix" and value is not None:
+        return str(PurePath(value) / LEGACY_VTK_NAME)
+    return value
+
+
 def build_settings(
     *,
     image_path: str,
     plot_dir: str,
-    vtk_output_prefix: str,
+    output_dir: str,
     axis_order: str = "zyx",
     voxel_size_xyz: tuple[float, float, float] | None = DEFAULT_VOXEL_SIZE_XYZ,
     boundary_settings: dict[str, Any] | None = None,
@@ -111,7 +126,7 @@ def build_settings(
     # Both sides must write where the tool looks, or there is nothing to read
     # back and the report would be empty rather than wrong-but-visible.
     required["plot_dir"] = plot_dir
-    required["vtk_output_prefix"] = vtk_output_prefix
+    required["output_dir"] = output_dir
     if voxel_size_xyz is not None:
         required["voxel_size_override_xyz"] = list(voxel_size_xyz)
         required["voxel_size_policy"] = "override"

@@ -1,0 +1,734 @@
+"""Perturbation disk outputs and napari layer gating."""
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+from types import SimpleNamespace
+
+import pytest
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+SRC_DIR = REPO_ROOT / "src"
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
+
+from haemolynx.haemodynamics import (  # noqa: E402
+    PERTURBATION_TYPES,
+    SWEEP_PERTURBATION_TYPES,
+    is_sweep_perturbation,
+    perturbation_folder_name,
+)
+from haemolynx.gui.results import ResultLayers, perturbation_layer_names  # noqa: E402
+from haemolynx.pipeline import PerturbationResult, PerturbationRun  # noqa: E402
+from haemolynx.visualization.perturbation_plots import (  # noqa: E402
+    SWEEP_AXIS_BY_TYPE,
+    export_sweep_perturbation_plots,
+    wants_napari_flow_layer,
+)
+
+# Reuse the stage test fixtures' network builder via a thin local copy so this
+# file stays focused on outputs, not on haemodynamic numbers.
+from test_perturbation_stage import (  # noqa: E402
+    ARTERIOLE_DILATION,
+    DILATION_SWEEP,
+    SPACING_SWEEP,
+    _run,
+)
+
+
+def test_every_declared_sweep_type_is_classified_as_a_sweep():
+    declared_sweeps = {name for name in PERTURBATION_TYPES if "sweep" in name}
+    assert declared_sweeps == set(SWEEP_PERTURBATION_TYPES)
+    for name in declared_sweeps:
+        assert is_sweep_perturbation(name)
+        assert wants_napari_flow_layer(name)
+    for name in PERTURBATION_TYPES:
+        if name not in declared_sweeps:
+            assert not is_sweep_perturbation(name)
+            if name != "none":
+                assert wants_napari_flow_layer(name)
+            else:
+                assert not wants_napari_flow_layer(name)
+
+
+def test_every_sweep_type_has_axis_labelling():
+    for name in SWEEP_PERTURBATION_TYPES:
+        assert name in SWEEP_AXIS_BY_TYPE, name
+
+
+def test_a_dilation_sweep_writes_alice_style_plots_and_keeps_geometry(tmp_path):
+    run = _run(tmp_path, [DILATION_SWEEP])
+    result = run.results[0]
+    assert result.error is None, result.error
+    assert result.graph is not None
+    assert result.sweep_flows is not None
+    assert result.output_dir == (
+        tmp_path
+        / "out"
+        / perturbation_folder_name(DILATION_SWEEP["name"], DILATION_SWEEP["type"])
+    )
+    written = {path.name for path in result.output_dir.iterdir()}
+    assert "pericyte_dilation_sweep.csv" in written
+    assert "resistance_vs_pericyte_dilation.png" in written
+    assert "flow_vs_pericyte_dilation.png" in written
+    # The sweep CSV is the result: re-solving the unperturbed copy would only
+    # write the baseline's numbers under this perturbation's name.
+    assert f"{DILATION_SWEEP['name']}_summary.csv" not in written
+    assert f"{DILATION_SWEEP['name']}_edges.csv" not in written
+    assert "equivalent_resistance" not in result.summary
+    assert result.summary["sweep_points"] > 0
+
+
+def test_a_spacing_sweep_writes_axis_corrected_plots(tmp_path):
+    run = _run(tmp_path, [SPACING_SWEEP])
+    result = run.results[0]
+    assert result.error is None, result.error
+    assert result.graph is not None
+    assert result.sweep_flows is not None
+    written = {path.name for path in result.output_dir.iterdir()}
+    assert "pericyte_spacing_sweep.csv" in written
+    assert "resistance_vs_pericyte_spacing.png" in written
+    assert "flow_vs_pericyte_spacing.png" in written
+
+
+def test_a_non_sweep_writes_pipeline_like_artifacts_and_keeps_its_graph(tmp_path):
+    run = _run(tmp_path, [ARTERIOLE_DILATION])
+    result = run.results[0]
+    assert result.error is None, result.error
+    assert result.graph is not None
+    assert result.sweep_flows is None
+    assert result.output_dir == (
+        tmp_path
+        / "out"
+        / perturbation_folder_name(
+            ARTERIOLE_DILATION["name"], ARTERIOLE_DILATION["type"]
+        )
+    )
+    written = {path.name for path in result.output_dir.iterdir()}
+    assert f"{ARTERIOLE_DILATION['name']}_summary.csv" in written
+    assert f"{ARTERIOLE_DILATION['name']}_edges.csv" in written
+    assert f"{ARTERIOLE_DILATION['name']}_statistics.csv" in written
+    assert f"{ARTERIOLE_DILATION['name']}_branch_statistics.csv" in written
+    assert "node_degree_distribution.png" in written
+    assert (
+        "edges_and_nodes_overlay.png" in written
+        or "edges_and_nodes_overlay_3d.html" in written
+    )
+    assert not list(result.output_dir.glob("*.vtp"))
+
+
+def test_results_builder_gives_sweep_a_vectors_layer_not_a_static_pair():
+    """Sweeps: one Vectors layer; non-sweeps: vessels + nodes."""
+    from test_gui_results import a_perturbation_run, solved_graph
+    from haemolynx.haemodynamics.sweep_flows import SweepFlowGrid
+    import numpy as np
+
+    sweep_flows = SweepFlowGrid(
+        axis_names=("dilation_percent",),
+        axis_values={"dilation_percent": np.asarray([0, 10])},
+        flow_abs=np.ones((2, solved_graph().number_of_edges()), dtype=float),
+    )
+    sweep = PerturbationResult(
+        name="dilate_grid",
+        type="pericyte_dilation_sweep",
+        graph=solved_graph(),
+        sweep_flows=sweep_flows,
+    )
+    single = PerturbationResult(
+        name="art_dilate_20",
+        type="arteriole_diameter_change",
+        graph=solved_graph(),
+    )
+    group = ResultLayers().stage_finished(
+        "run_perturbations", a_perturbation_run(sweep, single)
+    )
+    names = [spec.name for spec in group.layers]
+    vessels, nodes = perturbation_layer_names("art_dilate_20")
+    assert vessels in names and nodes in names
+    sweep_vessels, sweep_nodes = perturbation_layer_names("dilate_grid")
+    assert sweep_vessels in names
+    assert sweep_nodes not in names
+
+
+def test_export_sweep_plots_accept_raw_rows(tmp_path):
+    rows = [
+        {
+            "dilation_percent": 0,
+            "inlet_pressure_pa": 5000,
+            "equivalent_resistance": 1.0,
+            "total_inlet_flow": 2.0,
+        },
+        {
+            "dilation_percent": 10,
+            "inlet_pressure_pa": 5000,
+            "equivalent_resistance": 0.5,
+            "total_inlet_flow": 4.0,
+        },
+    ]
+    paths = export_sweep_perturbation_plots(
+        "arteriole_diameter_sweep", rows, tmp_path
+    )
+    assert len(paths) == 2
+    assert (tmp_path / "resistance_vs_arteriole_dilation.png").is_file()
+    assert (tmp_path / "flow_vs_arteriole_dilation.png").is_file()
+
+
+# --- a single re-solve recomputes everything the baseline derives from its flows -----
+
+from test_perturbation_stage import (  # noqa: E402
+    BRANCH_ORDERS,
+    NON_SWEEP_TYPES_FOR_RECOMPUTE,
+)
+
+
+def _terminals():
+    return {"inlet_nodes": [0], "outlet_nodes": [len(BRANCH_ORDERS)]}
+
+
+@pytest.mark.parametrize("entry", NON_SWEEP_TYPES_FOR_RECOMPUTE, ids=lambda e: e["type"])
+def test_a_single_re_solve_reruns_the_selected_network_analyses_on_its_own_flows(tmp_path, entry):
+    """With inlets and outlets set, the flow-based analyses a baseline report
+    runs are run again on the perturbed network -- so its CSV has them, and
+    its own vessels carry the per-vessel values for its layer."""
+    run = _run(tmp_path, [entry], **_terminals())
+
+    result = run.results[0]
+    assert result.error is None, result.error
+    stats_csv = (result.output_dir / f"{entry['name']}_statistics.csv").read_text()
+    assert "Equivalent Inlet-Outlet Resistance" in stats_csv
+    assert "Occlusion" not in stats_csv  # off by default, so off here too
+    edge = next(iter(result.graph.edges(keys=True, data=True)))[3]
+    assert "current_flow_share" in edge
+    assert "arteriolar_territory" in edge
+
+
+def test_a_perturbation_honours_the_runs_measure_selection(tmp_path):
+    run = _run(
+        tmp_path,
+        [ARTERIOLE_DILATION],
+        statistics_current_flow=False,
+        statistics_cyclomatic_number=False,
+        **_terminals(),
+    )
+
+    result = run.results[0]
+    stats_csv = (result.output_dir / f"{ARTERIOLE_DILATION['name']}_statistics.csv").read_text()
+    assert "Equivalent Inlet-Outlet Resistance" not in stats_csv
+    assert "Cyclomatic Number" not in stats_csv
+    assert all("current_flow_share" not in d for *_e, d in result.graph.edges(keys=True, data=True))
+
+
+def test_current_flow_shares_follow_the_perturbed_flow_not_the_baselines(tmp_path):
+    """Resistance weighting: the share is computed from this perturbation's
+    own conductances, which the arteriole dilation has changed."""
+    run = _run(
+        tmp_path, [ARTERIOLE_DILATION], statistics_route_weighting="resistance", **_terminals()
+    )
+    stats_csv = (
+        run.results[0].output_dir / f"{ARTERIOLE_DILATION['name']}_statistics.csv"
+    ).read_text()
+    assert "Current Flow Route Weighting,resistance" in stats_csv.replace(", ", ",")
+
+
+@pytest.mark.parametrize("statistics_on", [True, False])
+def test_a_perturbation_writes_the_betweenness_and_community_reports_like_the_run(
+    tmp_path, statistics_on
+):
+    """export_results writes them only with statistics on; so does a perturbation."""
+    run = _run(tmp_path, [ARTERIOLE_DILATION], statistics=statistics_on)
+    written = {path.name for path in run.results[0].outputs}
+    for suffix in ("resistance", "edge_length", "edge_flow"):
+        name = f"{ARTERIOLE_DILATION['name']}_betweenness_communities_{suffix}.json"
+        assert (name in written) == statistics_on
+
+
+def test_a_perturbation_keeps_its_statistics_report_where_the_statistics_tab_finds_it(tmp_path):
+    """Regression: a perturbation's statistics went to its CSV only, so the
+    Statistics tab could show nothing but the baseline's. Its report is kept
+    on its own graph, as the baseline's is, naming the perturbation, and the
+    viewer's results keep each perturbation's graph by name."""
+    from haemolynx.pipeline.stages import BRANCH_ORDER_SECTION, STATISTICS_REPORT
+
+    run = _run(tmp_path, [ARTERIOLE_DILATION], statistics=True)
+    (result,) = run.results
+    report = result.graph.graph[STATISTICS_REPORT]
+    assert report["network"] == ARTERIOLE_DILATION["name"]
+    assert report["csv"].endswith(f"{ARTERIOLE_DILATION['name']}_statistics.csv")
+    assert "basic" in report["sections"] and BRANCH_ORDER_SECTION in report["sections"]
+
+    results = ResultLayers()
+    results.stage_finished("run_perturbations", run)
+    assert results.perturbation_graphs == {ARTERIOLE_DILATION["name"]: result.graph}
+
+
+def test_a_perturbation_leaves_the_weighted_reports_out_with_betweenness_and_communities_off(
+    tmp_path,
+):
+    """Regression: a perturbation wrote them whenever statistics was on; the
+    run writes them only while betweenness or communities is."""
+    run = _run(
+        tmp_path, [ARTERIOLE_DILATION], statistics=True,
+        statistics_betweenness=False, statistics_community=False,
+    )
+    written = {path.name for path in run.results[0].outputs}
+    assert f"{ARTERIOLE_DILATION['name']}_statistics.csv" in written
+    assert not [name for name in written if "_betweenness_communities_" in name]
+
+
+def test_a_synthetic_networks_perturbation_divides_by_the_baselines_box(tmp_path):
+    """With no image (a synthetic run), the export sizes the box on the
+    template's voxel grid; a perturbation sized it in 1 um voxels and then
+    scaled by that grid's voxel size, so its vessel density was not the
+    baseline's whenever the voxels were not 1 um."""
+    import numpy as np
+
+    from haemolynx.pipeline import run_perturbations
+    from haemolynx.pipeline.stages import synthetic_box_shape
+
+    from test_perturbation_stage import SCHEMA, _boundaries, _model, _settings, _statistics
+
+    model = _model()
+    voxel = (2.0, 1.0, 2.0)
+    model.graph.graph["image_extent_um"] = (10.0, 10.0, 1600.0)
+    model.graph.graph["image_voxel_size_zyx"] = voxel
+    run = run_perturbations(
+        _settings(tmp_path, [ARTERIOLE_DILATION], statistics=True), model, _boundaries(), SCHEMA
+    )
+    result = run.results[0]
+    assert result.ok, result.error
+
+    rows = _statistics(result.output_dir / f"{ARTERIOLE_DILATION['name']}_statistics.csv")
+    (volume,) = [float(value) for (_section, metric), value in rows.items() if metric.startswith("Total Image Volume")]
+    expected = float(np.prod(np.multiply(synthetic_box_shape(model.graph), voxel)))
+    assert volume == pytest.approx(expected, rel=1e-12)
+
+
+def test_a_perturbation_reassigns_vascular_communities_on_its_own_network(tmp_path):
+    run = _run(
+        tmp_path,
+        [ARTERIOLE_DILATION],
+        compute_vascular_communities=True,
+        statistics=True,
+        vascular_community_weighting="flow",
+    )
+    result = run.results[0]
+    assert all("vascular_community" in d for *_e, d in result.graph.edges(keys=True, data=True))
+    assert result.summary["vascular_communities"] >= 1
+
+
+def test_perturbation_statistics_scale_by_the_runs_voxel_size(tmp_path, monkeypatch):
+    from haemolynx import statistics
+
+    seen = []
+    real = statistics.compute_vessel_statistics_by_measure
+
+    def spy(*args, **kwargs):
+        seen.append(tuple(kwargs["voxel_size"]))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(statistics, "compute_vessel_statistics_by_measure", spy)
+    from test_perturbation_stage import _model, _boundaries, _settings, SCHEMA
+    from haemolynx.pipeline import run_perturbations
+
+    model = _model()
+    model.graph.graph["image_voxel_size_zyx"] = (2.0, 0.5, 0.5)
+    run_perturbations(_settings(tmp_path, [ARTERIOLE_DILATION]), model, _boundaries(), SCHEMA)
+
+    assert seen == [(2.0, 0.5, 0.5)]
+
+
+def test_perturbations_use_the_baseline_images_voxel_size_for_statistics_and_plots(
+    tmp_path, monkeypatch
+):
+    """The loaded image's voxel size wins over anything else -- never 1 um."""
+    from types import SimpleNamespace
+
+    from haemolynx import statistics
+    from haemolynx.pipeline import run_perturbations
+    from haemolynx.visualization import perturbation_plots
+    from test_perturbation_stage import SCHEMA, _boundaries, _model, _settings
+
+    seen = {"statistics": [], "plots": []}
+    real_stats = statistics.compute_vessel_statistics_by_measure
+    real_plot = perturbation_plots.visualize_geometry_with_edge_resistance
+
+    def spy_stats(*args, **kwargs):
+        seen["statistics"].append(tuple(kwargs["voxel_size"]))
+        return real_stats(*args, **kwargs)
+
+    def spy_plot(*args, **kwargs):
+        seen["plots"].append(tuple(kwargs["voxel_size"]))
+        return real_plot(*args, **kwargs)
+
+    monkeypatch.setattr(statistics, "compute_vessel_statistics_by_measure", spy_stats)
+    monkeypatch.setattr(perturbation_plots, "visualize_geometry_with_edge_resistance", spy_plot)
+    model = _model()
+    model.graph.graph["image_voxel_size_zyx"] = (9.0, 9.0, 9.0)  # the volume's must win
+    network = SimpleNamespace(volume=SimpleNamespace(voxel_size_zyx=(2.0, 0.5, 0.25), image=None))
+
+    run_perturbations(
+        _settings(tmp_path, [ARTERIOLE_DILATION]), model, _boundaries(), SCHEMA, network=network
+    )
+
+    assert seen == {"statistics": [(2.0, 0.5, 0.25)], "plots": [(2.0, 0.5, 0.25)]}
+
+
+def test_without_a_volume_the_graphs_own_voxel_size_is_used_and_1um_only_as_a_warned_last_resort(
+    caplog,
+):
+    import logging
+
+    import networkx as nx
+    from haemolynx.pipeline.stages import _baseline_voxel_size_zyx
+
+    G = nx.MultiGraph()
+    G.graph["voxel_size"] = (3.0, 1.0, 1.0)
+    assert _baseline_voxel_size_zyx(G, None) == (3.0, 1.0, 1.0)
+    G.graph["image_voxel_size_zyx"] = (4.0, 1.0, 1.0)
+    assert _baseline_voxel_size_zyx(G, None) == (4.0, 1.0, 1.0)
+
+    with caplog.at_level(logging.WARNING):
+        assert _baseline_voxel_size_zyx(nx.MultiGraph(), None) == (1.0, 1.0, 1.0)
+    assert "assume 1 um voxels" in caplog.text
+
+
+# --- sweeps: the slider moves every flow-derived column ---------------------------------
+
+
+def test_sweep_direction_columns_pick_each_edges_own_direction_per_grid_point():
+    import numpy as np
+
+    from haemolynx.gui.results import sweep_direction_columns
+
+    forward = {"flow_dir_z": np.array([1.0, 0.5, 1.0]), "flow_heading_deg": np.array([0.0, 90.0, 0.0]),
+               "flow_dir_rgb": np.zeros(3)}
+    backward = {"flow_dir_z": np.array([-1.0, -0.5, -1.0]), "flow_heading_deg": np.array([180.0, 270.0, 180.0]),
+                "flow_dir_rgb": np.zeros(3)}
+
+    columns = sweep_direction_columns((forward, backward), np.array([2.0, -3.0, 0.0]))
+
+    assert columns["flow_dir_z"][:2].tolist() == [1.0, -0.5]
+    assert np.isnan(columns["flow_dir_z"][2])  # no flow, no direction
+    assert columns["flow_heading_deg"][:2].tolist() == [0.0, 270.0]
+    assert columns["flow_dir_rgb"].tolist() == [0.0, 0.0, 0.0]
+
+
+def test_a_sweep_layer_starts_with_its_first_grid_points_directions_and_log_flow(tmp_path):
+    import numpy as np
+
+    run = _run(tmp_path, [DILATION_SWEEP])
+    result = run.results[0]
+    layers = ResultLayers().stage_finished(
+        "run_perturbations", PerturbationRun(results=[result], output_dir=tmp_path)
+    ).layers
+    vessels = next(spec for spec in layers if spec.name == perturbation_layer_names(result.name)[0])
+
+    for column in ("flow_abs_log10", "flow_dir_z", "flow_heading_deg", "flow_dir_rgb"):
+        assert column in vessels.features, column
+    assert vessels.sweep_directions is not None
+    signed0 = np.asarray(result.sweep_flows.flow_signed_at(0), dtype=float)[vessels.sweep_edge_index]
+    expected_z = np.where(
+        signed0 > 0,
+        np.asarray(vessels.sweep_directions[0]["flow_dir_z"]),
+        np.asarray(vessels.sweep_directions[1]["flow_dir_z"]),
+    )
+    assert np.allclose(
+        np.asarray(vessels.features["flow_dir_z"]), expected_z[vessels.segment_owner], equal_nan=True
+    )
+
+
+def test_moving_a_sweep_slider_updates_log_flow_and_directions(tmp_path, monkeypatch):
+    """Regression: the slider swapped flow_abs but left flow_abs_log10 at grid
+    point 0, so colouring by it never moved; directions did not exist at all."""
+    import numpy as np
+
+    from haemolynx.gui import _widget
+    from haemolynx.haemodynamics.resistance import flow_abs_log10_value
+
+    from test_perturbation_stage import PRESSURE_SWEEP
+
+    run = _run(tmp_path, [PRESSURE_SWEEP])
+    result = run.results[0]
+    first = np.asarray(result.sweep_flows.flow_abs_at(0), dtype=float)
+    spec = next(
+        s
+        for s in ResultLayers().stage_finished(
+            "run_perturbations", PerturbationRun(results=[result], output_dir=tmp_path)
+        ).layers
+        if s.name == perturbation_layer_names(result.name)[0]
+    )
+    layer = SimpleNamespace(features=dict(spec.features), metadata={})
+    monkeypatch.setattr(_widget, "_is_ours", lambda _layer: True, raising=False)
+    layer.metadata[_widget.OURS] = {}
+    _widget._store_sweep_metadata(layer, spec)
+    monkeypatch.setattr(_widget, "_colour_layer", lambda *a, **k: None)
+
+    last = len(result.sweep_flows.axis_values[result.sweep_flows.axis_names[0]]) - 1
+    _widget._apply_sweep_index(layer, (last,))
+
+    flow = np.asarray(result.sweep_flows.flow_abs_at(last), dtype=float)[spec.sweep_edge_index]
+    assert not np.allclose(flow, first[spec.sweep_edge_index], rtol=1e-6, atol=0), "the grid points must differ"
+    expected_log = np.asarray([flow_abs_log10_value(v) for v in flow])[spec.segment_owner]
+    assert np.allclose(np.asarray(layer.features["flow_abs_log10"]), expected_log, equal_nan=True)
+    signed = np.asarray(result.sweep_flows.flow_signed_at(last), dtype=float)[spec.sweep_edge_index]
+    from haemolynx.gui.results import sweep_direction_columns
+
+    expected_dir = sweep_direction_columns(spec.sweep_directions, signed)["flow_dir_z"][spec.segment_owner]
+    assert np.allclose(np.asarray(layer.features["flow_dir_z"]), expected_dir, equal_nan=True)
+
+
+@pytest.mark.parametrize("column, expected", [
+    ("flow_abs", "flow"),
+    ("flow_abs_log10", "log10 of flow"),
+    ("diameter_um", "its own range"),
+])
+def test_the_slider_keeps_each_colourings_own_range(tmp_path, monkeypatch, column, expected):
+    """Regression: the slider handed every colouring the layer's flow limits
+    (m^3/s, ~1e-13). A network coloured by log10 flow (~-13) went dark the
+    moment the slider moved: every vessel below the bottom of the map."""
+    import numpy as np
+
+    from haemolynx.gui import _widget
+    from haemolynx.haemodynamics.resistance import flow_abs_log10_value
+
+    from test_perturbation_stage import PRESSURE_SWEEP
+
+    result = _run(tmp_path, [PRESSURE_SWEEP]).results[0]
+    spec = next(
+        s
+        for s in ResultLayers().stage_finished(
+            "run_perturbations", PerturbationRun(results=[result], output_dir=tmp_path)
+        ).layers
+        if s.name == perturbation_layer_names(result.name)[0]
+    )
+    layer = SimpleNamespace(features=dict(spec.features), metadata={_widget.OURS: {}})
+    _widget._store_sweep_metadata(layer, spec)
+    layer.metadata[_widget.OURS]["colour_by"] = column
+    coloured: list[tuple] = []
+    monkeypatch.setattr(_widget, "_colour_layer", lambda *a, **k: coloured.append(a))
+
+    _widget._apply_sweep_index(layer, (1,))
+
+    ((_layer, chosen, _kind, _cycle, limits),) = coloured
+    assert chosen == column
+    grid = result.sweep_flows.global_flow_abs_limits()
+    if expected == "flow":
+        assert limits == pytest.approx(grid)
+    elif expected == "log10 of flow":
+        assert limits == pytest.approx(tuple(flow_abs_log10_value(v) for v in grid))
+        shown = np.asarray(layer.features["flow_abs_log10"], dtype=float)
+        assert limits[0] <= np.nanmin(shown) and np.nanmax(shown) <= limits[1]
+    else:
+        assert limits is None
+
+
+def test_a_range_the_user_set_wins_over_the_sweeps_own(tmp_path):
+    """A range typed or fitted on a sweep layer is the one every grid point keeps."""
+    from haemolynx.gui import _widget
+
+    from test_perturbation_stage import PRESSURE_SWEEP
+
+    sweep = _run(tmp_path, [PRESSURE_SWEEP]).results[0].sweep_flows
+    tag = {_widget.USER_CONTRAST_LIMITS: {"flow_abs_log10": (-14.0, -11.0)}}
+    assert _widget._sweep_contrast_limits(sweep, tag, "flow_abs_log10") == (-14.0, -11.0)
+    # Only for the column it was set on.
+    assert _widget._sweep_contrast_limits(sweep, tag, "flow_abs") == pytest.approx(
+        sweep.global_flow_abs_limits())
+    assert _widget._sweep_contrast_limits(sweep, tag, "diameter_um") is None
+
+
+def _sweep_layer_features(axis_names):
+    """The vessels layer a sweep over *axis_names* gets, as its features."""
+    from test_gui_results import a_perturbation_run, solved_graph
+    from haemolynx.haemodynamics.sweep_flows import SweepFlowGrid
+    import numpy as np
+
+    graph = solved_graph()
+    for _u, _v, _k, data in graph.edges(keys=True, data=True):
+        data["diameter_um"] = 6.0
+        data["transit_time_s"] = 0.5
+    sweep_flows = SweepFlowGrid(
+        axis_names=tuple(axis_names),
+        axis_values={name: np.asarray([0, 10]) for name in axis_names},
+        flow_abs=np.ones((2 ** len(axis_names), graph.number_of_edges()), dtype=float),
+    )
+    result = PerturbationResult(
+        name="grid", type="pericyte_dilation_sweep", graph=graph, sweep_flows=sweep_flows
+    )
+    group = ResultLayers().stage_finished("run_perturbations", a_perturbation_run(result))
+    (layer,) = [spec for spec in group.layers if spec.sweep is not None]
+    return layer.features
+
+
+def test_a_dilation_sweep_layer_does_not_show_the_baselines_diameters_or_resistances():
+    """The retained graph is the unperturbed baseline: its diameters and
+    resistances are wrong at every dilated grid point, so they are left out
+    rather than shown beside the grid point's flows."""
+    features = _sweep_layer_features(("dilation_percent", "inlet_pressure_pa"))
+    for column in ("diameter_um", "resistance", "conductance", "transit_time_s"):
+        assert column not in features, column
+    assert "length" in features
+    assert "flow_abs" in features
+
+
+def test_a_pressure_only_sweep_layer_keeps_geometry_but_not_flow_magnitudes():
+    features = _sweep_layer_features(("inlet_pressure_pa",))
+    np_resistance = [float(value) for value in features["resistance"]]
+    assert np_resistance and all(value == 1e15 for value in np_resistance)
+    assert "diameter_um" in features
+    # Transit time is volume / flow: it moves with the inlet pressure.
+    assert "transit_time_s" not in features
+
+
+# --- where each perturbation put its pericytes --------------------------------
+
+
+def test_exactly_the_perturbations_that_place_pericytes_get_a_pericytes_layer(tmp_path):
+    """One worked entry of every type, run together: a pericytes layer for
+    each type that places sites, and none for the rest."""
+    from haemolynx.gui.results import perturbation_pericyte_layer_name
+    from haemolynx.haemodynamics import PERICYTE_PERTURBATION_TYPES, places_pericytes
+    from test_perturbation_stage import ENTRY_FOR_TYPE
+
+    assert PERICYTE_PERTURBATION_TYPES == {
+        "pressure_and_pericyte_sweep",
+        "pericyte_dilation_sweep",
+        "pericyte_spacing_sweep",
+        "pericyte_length_sweep",
+        "pericyte_diameter_change",
+        "arteriole_and_pericyte_diameter_change",
+        "pericyte_measured_constriction",
+    }
+    run = _run(tmp_path, [ENTRY_FOR_TYPE[name] for name in PERTURBATION_TYPES])
+    assert not run.failures, [(result.name, result.error) for result in run.failures]
+    names = {
+        spec.name
+        for spec in ResultLayers().stage_finished("run_perturbations", run).layers
+    }
+
+    for result in run.solved:
+        has_layer = perturbation_pericyte_layer_name(result.name) in names
+        assert has_layer == places_pericytes(result.type), result.type
+
+
+def test_a_pericyte_change_draws_its_sites_on_the_vessels_it_narrows(tmp_path):
+    """Its own sites, hidden like the rest of its network: on the two
+    capillaries the entry halves, not on the arteriole or venule it leaves be."""
+    import numpy as np
+
+    from haemolynx.gui.results import perturbation_pericyte_layer_name
+    from test_perturbation_stage import EDGE_LENGTH_UM, PERICYTE_TONE
+
+    result = _run(tmp_path, [PERICYTE_TONE]).results[0]
+    group = ResultLayers().stage_finished(
+        "run_perturbations", PerturbationRun(results=[result], output_dir=tmp_path)
+    )
+    (pericytes,) = [
+        spec for spec in group.layers
+        if spec.name == perturbation_pericyte_layer_name(result.name)
+    ]
+
+    assert pericytes.kind == "points"
+    assert pericytes.visible is False
+    assert pericytes.layer_set == result.name
+    assert pericytes.sweep_points is None
+    assert set(pericytes.features["branch_order"]) == {"B01"}
+    # The fixture's vessels run end to end along the last axis; the two
+    # capillaries are its second and third, a constriction every 100 µm from
+    # 20 µm in.
+    expected = [
+        EDGE_LENGTH_UM * edge + centre
+        for edge in (1, 2)
+        for centre in (20.0, 120.0, 220.0, 320.0)
+    ]
+    np.testing.assert_allclose(np.asarray(pericytes.data)[:, 2], expected)
+    np.testing.assert_allclose(np.asarray(pericytes.data)[:, :2], 0.0)
+
+
+def test_a_pericyte_change_that_places_none_still_gets_its_empty_layer():
+    """Empty rather than absent, so a re-run never leaves the sites from a
+    previous run of the same perturbation on screen."""
+    from test_gui_results import a_perturbation_run, solved_graph
+    from haemolynx.gui.results import perturbation_pericyte_layer_name
+
+    result = PerturbationResult(
+        name="no_sites", type="pericyte_diameter_change", graph=solved_graph()
+    )
+    group = ResultLayers().stage_finished("run_perturbations", a_perturbation_run(result))
+    (pericytes,) = [
+        spec for spec in group.layers
+        if spec.name == perturbation_pericyte_layer_name("no_sites")
+    ]
+    assert len(pericytes.data) == 0
+    assert set(pericytes.features) == {"edge_index", "branch_order", "arc_length_um"}
+
+
+# --- the edges CSV says where a vessel's flow is no answer -----------------------
+
+
+def _network_with_unsolved_pieces():
+    """The stage tests' arteriole-capillary-venule line, plus a capillary
+    hanging off its middle (a blind end: its zero flow is the answer) and a
+    capillary on its own (no inlet or outlet reaches it: no answer at all)."""
+    import numpy as np
+
+    from test_perturbation_stage import DIAMETERS, _network
+    from haemolynx.haemodynamics import PoiseuilleModel
+    from haemolynx.pipeline import HaemodynamicModel
+
+    G = _network()
+    for node, pos in {5: (0.0, 50.0, 800.0), 6: (0.0, 500.0, 0.0), 7: (0.0, 500.0, 50.0)}.items():
+        G.add_node(node, pos=np.asarray(pos))
+    for u, v in ((2, 5), (6, 7)):
+        G.add_edge(u, v, key=0, length=50.0, branch_order="B01",
+                   voxels=[G.nodes[u]["pos"].tolist(), G.nodes[v]["pos"].tolist()])
+    G, _results = PoiseuilleModel(
+        constriction_length=40.0, constriction_spacing=100.0, viscosity_law="constant",
+    ).set_poiseuille_resistances(G, DIAMETERS)
+    return HaemodynamicModel(graph=G)
+
+
+def test_the_edges_csv_blanks_flows_where_no_inlet_and_outlet_reach_and_says_which_vessels_solved(tmp_path):
+    """PLAN_dale_review_fixes.md item 5, step 3: a vessel in a piece with no
+    inlet and outlet (flow_state no_boundary) has no flow and no pressure drop
+    in its perturbation's edges CSV -- blank, not the 0 the solve left there --
+    while a blind end keeps its exact zero, every row says whether its vessel
+    was solved, and a solved vessel's numbers are its own."""
+    import csv
+
+    from test_perturbation_stage import SCHEMA, _boundaries, _settings
+    from haemolynx.pipeline import run_perturbations
+    from haemolynx.pipeline.stages import solve
+
+    settings = _settings(tmp_path, [ARTERIOLE_DILATION], inlet_nodes=[0], outlet_nodes=[4])
+    model = _network_with_unsolved_pieces()
+    solve(settings, model, _boundaries(), SCHEMA)
+    run = run_perturbations(settings, model, _boundaries(), SCHEMA)
+
+    result = run.results[0]
+    assert result.error is None, result.error
+    G = result.graph
+    with (result.output_dir / f"{ARTERIOLE_DILATION['name']}_edges.csv").open(encoding="utf-8") as handle:
+        rows = {(int(row["u"]), int(row["v"])): row for row in csv.DictReader(handle)}
+    assert len(rows) == G.number_of_edges() == 6
+
+    island = rows[(6, 7)]
+    assert island["flow_state"] == "no_boundary" and island["flow_solved"] == "False"
+    assert island["pressure_drop_pa"] == "" and island["flow_signed_m3_s"] == ""
+    # The blanks are the CSV's: the graph holds what the solve left there,
+    # and the vessel keeps its resistance and geometry.
+    assert G.edges[6, 7, 0]["flow_signed"] == 0.0
+    assert float(island["resistance_pa_s_per_m3"]) == pytest.approx(G.edges[6, 7, 0]["resistance"])
+    assert float(island["length_um"]) == 50.0
+
+    blind = rows[(2, 5)]
+    assert blind["flow_state"] == "blind_end" and blind["flow_solved"] == "False"
+    assert float(blind["flow_signed_m3_s"]) == 0.0 and float(blind["pressure_drop_pa"]) == 0.0
+
+    for u in range(4):
+        row, data = rows[(u, u + 1)], G.edges[u, u + 1, 0]
+        assert row["flow_state"] == "solved" and row["flow_solved"] == "True"
+        assert data["flow_signed"] > 0
+        assert float(row["flow_signed_m3_s"]) == pytest.approx(data["flow_signed"], rel=1e-12)
+        assert float(row["pressure_drop_pa"]) == pytest.approx(data["pressure_drop"], rel=1e-12)

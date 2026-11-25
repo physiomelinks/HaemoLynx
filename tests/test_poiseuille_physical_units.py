@@ -25,7 +25,13 @@ from haemolynx.haemodynamics.poiseuille import (
     set_edge_resistance,
 )
 
-MODEL = PoiseuilleModel(constriction_length=40.0, constriction_spacing=100.0)
+# Every number in this file is the capillary power law's, so it names that
+# law rather than taking the default -- which is `pries` now, and different.
+MODEL = PoiseuilleModel(
+    constriction_length=40.0,
+    constriction_spacing=100.0,
+    viscosity_law="capillary_power_law",
+)
 
 # A representative brain capillary.
 CAPILLARY_DIAMETER_UM = 5.0
@@ -169,6 +175,27 @@ def test_non_positive_diameter_is_rejected():
         MODEL.calculate_viscosity(0.0)
 
 
+def test_resistance_of_uniform_segment_treats_a_closed_vessel_as_infinite():
+    """diameter=0 has no channel to carry flow, same as length=0.
+
+    Regression: this used to reach ``calculate_viscosity(0.0)`` and raise
+    ``ValueError`` from inside the resistance formula instead of returning a
+    value a caller can use directly, matching the existing length<=0 case.
+    """
+    assert MODEL.resistance_of_uniform_segment(CAPILLARY_LENGTH_UM, 0.0) == float("inf")
+    assert MODEL.resistance_of_uniform_segment(CAPILLARY_LENGTH_UM, -1.0) == float("inf")
+
+
+def test_resistance_integrand_treats_a_closed_vessel_as_infinite():
+    """pericyte_constriction_factor is schema-permitted down to 0.0 (fully
+    closed at the site), which drives d2 to 0 and would otherwise raise
+    ``ZeroDivisionError`` mid-integration instead of reporting infinite
+    resistance for the genuinely closed segment.
+    """
+    closed_at_site = MODEL.resistance_integrand(20, 40.0, 5.0, 0.0)
+    assert closed_at_site == float("inf")
+
+
 # --- warning on the placeholder regime -------------------------------------
 #
 # 7-100 um is where the constant is a placeholder rather than a model, so a run
@@ -204,14 +231,20 @@ def test_the_warning_does_not_change_the_value_returned():
     assert warned == LARGE_VESSEL_VISCOSITY_PA_S
 
 
-def test_warning_names_the_regime_and_the_tracking_issue():
-    """An operator reading the log must be able to act on it."""
+def test_warning_names_the_regime_and_the_way_out():
+    """An operator reading the log must be able to act on it.
+
+    It used to point at issue #90, "model the transition instead of the
+    constant". That is what `pries_in_vivo` is, so the message names the
+    setting rather than an issue to go and read.
+    """
     with pytest.warns(PlaceholderViscosityWarning) as caught:
         MODEL.calculate_viscosity(20.0)
     message = str(caught[0].message)
     assert f"{CAPILLARY_REGIME_MAX_DIAMETER_UM}" in message
     assert f"{PLACEHOLDER_REGIME_MAX_DIAMETER_UM}" in message
-    assert "#90" in message
+    assert "pries" in message
+    assert "viscosity_law" in message
     assert "order-of-magnitude" in message
 
 

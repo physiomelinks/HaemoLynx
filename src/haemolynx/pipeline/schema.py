@@ -21,9 +21,13 @@ settings are plain data, so a GUI can render its whole form from
 """
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any, Mapping
 
+from ..io.crop import CROP_LOCATIONS, CROP_METHODS, CROP_Z_LOCATIONS
+from ..haemodynamics.red_cells import DEFAULT_RED_CELL_VOLUME_FL
+from ..io.downsample import DOWNSAMPLE_CHOICES
 from ..parsers import Schema, Setting, dump_config
 
 # Path defaults are relative, and so are resolved against the directory a run
@@ -35,8 +39,9 @@ _CLASSIFIERS = "classifiers"
 _OUTPUTS = "outputs"
 _PLOTS = "plots"
 
-#: Axis orders accepted by the loader: any permutation of x, y and z.
-AXIS_ORDERS = ("zyx", "zxy", "yzx", "yxz", "xzy", "xyz")
+#: Axis orders accepted by the loader: any permutation of x, y and z, or
+#: "auto" for each file's own axis labels (io.axis_order.axis_order_for_run).
+AXIS_ORDERS = ("zyx", "zxy", "yzx", "yxz", "xzy", "xyz", "auto")
 
 #: Boundary-node selection methods understood by ``select_boundary_nodes_by_method``.
 NODE_SELECTION_METHODS = (
@@ -45,7 +50,15 @@ NODE_SELECTION_METHODS = (
     "volume",
     "edge_percent",
     "degree_1_from_inlet",
+    "node_ids",
 )
+
+#: The large-vessel inlet/outlet roles' own methods: everything the other four
+#: roles can do, plus reading the pick from the large-vessel mask's own
+#: geometry (see graph.large_vessel_network). Not folded into
+#: NODE_SELECTION_METHODS itself -- "mask_stump" would be a meaningless choice
+#: for the other four roles' dropdowns.
+LARGE_VESSEL_NODE_SELECTION_METHODS = NODE_SELECTION_METHODS + ("mask_stump",)
 
 _INPUT_AND_SEGMENTATION = "Input and segmentation"
 _VESSEL_MASKS = "Vessel masks"
@@ -55,8 +68,116 @@ _PIPELINE_STAGES = "Pipeline stages"
 # Named "Statistics and measurements" rather than "Statistics" so the YAML
 # section heading does not collide with the setting also called `statistics`.
 _STATISTICS = "Statistics and measurements"
+_PERICYTE_MEASUREMENTS = "Pericyte measurements"
+_NETWORK_ANALYSIS = "Connectivity/Network Analysis"
+_VASCULAR_COMMUNITIES = "Vascular communities"
+_CARTWHEEL_GUARD = "Cartwheel hub guard"
 _DIAMETERS_AND_PERICYTES = "Diameters and pericytes"
 _FWHM = "FWHM diameter measurement"
+_EDT_DIAMETER = "EDT mask diameter estimate"
+_ENDOTHELIAL = "Endothelial diameter"
+# Not "Perturbations": the YAML key of a section may not collide with a
+# setting name, and `perturbations` is one of the settings in it.
+_PERTURBATION_RUNS = "Perturbation runs"
+#: What is done to the assigned network before its haemodynamic model is
+#: built (the "6. Haemodynamics" tab's own box; see pipeline.stages
+#: apply_network_handling).
+_NETWORK_HANDLING = "Network handling"
+
+
+#: What one raw image (``raw_image_path``, ``raw_image_channel``,
+#: ``raw_image_stain``) took over on 2026-10-13: the ilastik input, FWHM's raw
+#: image and the endothelial stain, each with its channel; the two diameter
+#: switches, now one (``measure_diameters_from_raw_image``) whose method
+#: follows the stain. ``diameter_basis`` itself -- what the dataset's
+#: diameters measure -- is ``segmentation_source`` on the Input tab now (its
+#: ``replaces``).
+_RETIRED_RAW_IMAGE_SETTINGS = (
+    "ilastik_unsegmented_image_path",
+    "fwhm_raw_tiff_path",
+    "fwhm_raw_channel",
+    "endothelial_image_path",
+    "endothelial_channel",
+    "use_fwhm_edge_diameters",
+    "use_endothelial_diameters",
+)
+
+
+def _migrate_raw_image(values: Mapping[str, Any]) -> dict[str, Any]:
+    """A config written before one raw image, read as one.
+
+    The raw image is the one the run measured diameters from, else the one
+    ilastik segmented, else FWHM's (which the check and the tissue volume
+    shared), else the endothelial stain -- each path with its own channel,
+    never one's path and another's channel. A run that measured diameters
+    keeps doing so by the same method: endothelial diameters make the stain
+    endothelial, FWHM ones plasma_column, so it reproduces. Its
+    ``diameter_basis`` said what the segmentation's diameters were, and is
+    read into ``segmentation_source`` by that setting's ``replaces``.
+    """
+    fwhm = bool(values.get("use_fwhm_edge_diameters"))
+    endothelial = bool(values.get("use_endothelial_diameters"))
+    ilastik = bool(values.get("use_ilastik_segmentation"))
+    pairs = []
+    if endothelial:
+        pairs.append(("endothelial_image_path", "endothelial_channel"))
+    if fwhm:
+        pairs.append(("fwhm_raw_tiff_path", "fwhm_raw_channel"))
+    if ilastik:
+        pairs.append(("ilastik_unsegmented_image_path", None))
+    pairs += [("fwhm_raw_tiff_path", "fwhm_raw_channel"), ("endothelial_image_path", "endothelial_channel")]
+    out: dict[str, Any] = {}
+    for path, channel in pairs:
+        if values.get(path):
+            out["raw_image_path"] = values[path]
+            if channel is not None and values.get(channel) is not None:
+                out["raw_image_channel"] = values[channel]
+            break
+    segmented_from = values.get("ilastik_unsegmented_image_path")
+    if ilastik and segmented_from and out.get("raw_image_path") not in (None, segmented_from):
+        logging.getLogger(__name__).warning(
+            "This config's ilastik input (%s) and the image its diameters were measured from (%s) "
+            "differ; there is one raw image now, and ilastik will read %s.",
+            segmented_from, out["raw_image_path"], out["raw_image_path"],
+        )
+    if endothelial:
+        out["raw_image_stain"] = "endothelial"
+    elif fwhm:
+        out["raw_image_stain"] = "plasma_column"
+    if fwhm or endothelial:
+        out["measure_diameters_from_raw_image"] = True
+    return out
+
+
+def _migrate_ilastik_mask_input(retired: str, switch: str):
+    """What a config written before vessel-mask ilastik read the raw image
+    becomes, for the classifier that read the image *retired* names: nothing.
+    It segments the run's raw image now (the whole file until its channels
+    are chosen), so a different file, while *switch* has ilastik make these
+    masks, is reported: the masks would come from another image than before."""
+
+    def migrate(values: Mapping[str, Any]) -> dict[str, Any]:
+        image, raw = values.get(retired), values.get("raw_image_path")
+        if values.get(switch) and image and (not raw or Path(str(image)) != Path(str(raw))):
+            logging.getLogger(__name__).warning(
+                "This config's %s (%s) is retired: its classifier segments the run's raw image "
+                "(%s) now, the whole file until its channels are chosen.",
+                retired, image, raw or "not set",
+            )
+        return {}
+
+    return migrate
+
+
+def _migrate_vtk_output_prefix(values: Mapping[str, Any]) -> dict[str, Any]:
+    """A config written before the output folder: ``vtk_output_prefix``
+    named the VTK files' stem inside the run's folder, so its folder is
+    ``output_dir``. The VTK files carry the image's stem now, as every other
+    output does."""
+    prefix = values.get("vtk_output_prefix")
+    if prefix in (None, ""):
+        return {}
+    return {"output_dir": Path(str(prefix)).parent}
 
 
 SCHEMA = Schema(
@@ -64,6 +185,183 @@ SCHEMA = Schema(
         # ------------------------------------------------------------------
         # Input and segmentation
         # ------------------------------------------------------------------
+        # The napari Input tab hides gated rows (``input_path`` vs main-ilastik
+        # children) until ``use_ilastik_segmentation`` applies. Shared
+        # executable / output knobs are declared once here; the form hosts them
+        # on Input when main ilastik is on, or on Boundaries when only
+        # large/small vessel ilastik is on (schema ``requires`` cannot OR).
+        # Which input the run has: a segmented image, or a synthetic network
+        # drawn to a previous run's .haemorun (haemolynx.synthetic). Under
+        # synthetic the image rows below hide (they require the image choice)
+        # and the run starts at the Boundaries stage. The choice literals are
+        # graph.boundaries.NETWORK_SOURCES (this module stays importable
+        # without numpy, so they are repeated); tests/test_parsers_schema.py
+        # pins them equal.
+        Setting(
+            name="network_source",
+            kind="choice",
+            default="segmented_image",
+            help=(
+                "Analyse a segmented image; generate a synthetic vascular network "
+                "matched to a previous run's .haemorun file; or draw one round that "
+                "run's own network, joined at the vessels its image faces cut "
+                "(synthetic_surround). A synthetic network starts at the Boundaries "
+                "stage; the Skeletonise and Graph tabs' settings are then not read"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            choices=("segmented_image", "synthetic", "synthetic_surround"),
+        ),
+        Setting(
+            name="synthetic_template_path",
+            kind="path",
+            default=None,
+            help=(
+                "The .haemorun file of a finished microscopy-image run the synthetic "
+                "network is matched to: not itself synthetic, saved with Statistics on, "
+                "with inlets and outlets and arteriole/venule branch orders assigned; or a "
+                "batch run's .haemobatch, its condition's runs averaged"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            must_exist=True,
+            requires=("network_source!=segmented_image",),
+        ),
+        Setting(
+            name="synthetic_template_source",
+            kind="choice",
+            default="statistics",
+            help=(
+                "Where the template's characteristics come from: statistics reads the "
+                "run's saved statistics report (each section it needs must have been "
+                "switched on), graph reads per-vessel distributions off the template "
+                "graph in the file"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            choices=("statistics", "graph"),
+            requires=("network_source!=segmented_image",),
+        ),
+        Setting(
+            name="synthetic_seed",
+            kind="int",
+            # Kept equal to haemolynx.synthetic.generate's DEFAULT_SEED.
+            default=20240917,
+            help=(
+                "Draw the synthetic network from this seed, so a run repeats; another "
+                "seed draws another network, and null draws a fresh one every run"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            requires=("network_source!=segmented_image",),
+            advanced=True,
+        ),
+        Setting(
+            name="synthetic_scale",
+            kind="float",
+            default=1.0,
+            help=(
+                "Size of the synthetic box relative to the template's image, 1 for the "
+                "same extent, along the axes synthetic_scale_axes names; vessel counts "
+                "scale with the volume, inlets and outlets with the faces. A surround "
+                "(synthetic_surround) needs it above 1"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            minimum=0.1,
+            maximum=10.0,
+            requires=("network_source!=segmented_image",),
+            advanced=True,
+        ),
+        Setting(
+            name="synthetic_scale_axes",
+            kind="choice",
+            # Kept equal to haemolynx.synthetic.template's SCALE_AXES.
+            default="xyz",
+            choices=("xyz", "xy"),
+            help=(
+                "The axes synthetic_scale grows the synthetic box along: xyz all three, "
+                "xy only x and y, keeping the template's depth (a wider field of the "
+                "same tissue, so vessel counts scale with the area)"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            requires=("network_source!=segmented_image",),
+            advanced=True,
+        ),
+        Setting(
+            name="synthetic_extension_arteriole_density",
+            kind="float",
+            default=1.0,
+            help=(
+                "Arterial trees in the part of the synthetic box beyond the template's "
+                "own size, as a share of the template's density: 1 as many, 0 none "
+                "beyond the template's own (an image framed round its large vessels has "
+                "more of them than the tissue round it)"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            minimum=0.0,
+            maximum=10.0,
+            requires=("network_source!=segmented_image",),
+            advanced=True,
+        ),
+        Setting(
+            name="synthetic_extension_venule_density",
+            kind="float",
+            default=1.0,
+            help=(
+                "Venous trees in the part of the synthetic box beyond the template's "
+                "own size, as a share of the template's density: 1 as many, 0 none "
+                "beyond the template's own"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            minimum=0.0,
+            maximum=10.0,
+            requires=("network_source!=segmented_image",),
+            advanced=True,
+        ),
+        Setting(
+            name="synthetic_interior_dead_ends",
+            kind="bool",
+            # Off (Harvey, 2026-10-25: D3a): the image runs' interior dead
+            # ends are mostly broken segmentation, not tissue.
+            default=False,
+            help=(
+                "Give the synthetic network the template's number of dead ends inside "
+                "the tissue; off, its only dead ends are on the faces (in a closed "
+                "network, its inlets and outlets)"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            requires=("network_source!=segmented_image",),
+            advanced=True,
+        ),
+        Setting(
+            name="synthetic_open_ends",
+            kind="choice",
+            # Kept equal to haemolynx.synthetic.generate's OPEN_ENDS.
+            default="closed",
+            choices=("closed", "template"),
+            help=(
+                "Whether vessels of the synthetic network leave its box: closed keeps "
+                "every vessel inside, so blood enters only at the inlets and leaves only "
+                "at the outlets; template cuts as many vessels at the faces as the "
+                "template run had leaving its image, open ends the haemodynamics then "
+                "treat by open_end_model"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            requires=("network_source!=segmented_image",),
+            advanced=True,
+        ),
+        Setting(
+            name="synthetic_bed_model",
+            kind="choice",
+            # Kept equal to haemolynx.synthetic.bed's BED_MODELS.
+            default="delaunay",
+            choices=("delaunay", "voronoi"),
+            help=(
+                "How the synthetic capillary bed is drawn: delaunay joins jittered "
+                "lattice points along Delaunay edges, voronoi runs the capillaries along "
+                "the edges of a Voronoi tessellation of random points; both are pruned "
+                "to the template's capillary count, loops and dead ends"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            requires=("network_source!=segmented_image",),
+            advanced=True,
+        ),
         Setting(
             name="input_path",
             # No default: there is no image every run should read, and a
@@ -72,26 +370,175 @@ SCHEMA = Schema(
             # panel fills it in from the layer you have open.
             kind="path",
             default=None,
-            help="Read this already-segmented image as the pipeline input",
+            help=(
+                "The segmented image (a vessel mask) the pipeline reads; its raw image is "
+                "raw_image_path"
+            ),
             section=_INPUT_AND_SEGMENTATION,
             must_exist=True,
-            requires=("!use_ilastik_segmentation",)
+            requires=(
+                "!use_ilastik_segmentation",
+                "!use_pixel_classifier_segmentation",
+                "network_source=segmented_image",
+            ),
+        ),
+        Setting(
+            name="segmentation_source",
+            kind="choice",
+            default="plasma_column",
+            choices=("plasma_column", "endothelial"),
+            help=(
+                "What the segmented vessels are, and so what a diameter taken from the "
+                "segmentation measures: plasma_column for a mask of the channel blood "
+                "flows in (a luminal label, as a plasma stain images it), or endothelial "
+                "(anatomical) for a mask of the vessel wall to wall, which includes the "
+                "~1.1 um endothelial surface layer. The pries viscosity law takes the "
+                "matching form for every diameter the segmentation gave -- the mask's "
+                "own widths, the class medians and the table; a diameter measured from "
+                "the raw image carries the raw image's own. Choosing endothelial for a "
+                "plasma label subtracts that layer twice and roughly quintuples "
+                "capillary resistance"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            value_aliases={"anatomical": "endothelial", "luminal": "plasma_column"},
+            replaces={
+                "diameter_basis": {
+                    "plasma_column": "plasma_column",
+                    "anatomical": "endothelial",
+                    "endothelial": "endothelial",
+                }
+            },
+            # Read by the Diameters stage (the per-vessel basis) and the
+            # haemodynamics, each behind its own switch.
+            always_effective=True,
+        ),
+        Setting(
+            name="segmented_image_downsample",
+            kind="choice",
+            default="none",
+            choices=DOWNSAMPLE_CHOICES,
+            help=(
+                "Read the segmented image onto a coarser grid, every 2 (4, 8, 16) voxels "
+                "along each axis becoming one -- fewer along an axis whose voxels are "
+                "already coarser, so the grid stays near isotropic -- and run every stage "
+                "on it: the skeleton, the graph, the diameters and the exports are all at "
+                "that resolution, in the same microns. A coarse voxel is vessel when at least "
+                "half the voxels in it were, so vessels keep their width, but one thinner "
+                "than about a coarse voxel, and a short dead end, can be lost. The large and "
+                "small vessel masks are reduced the same way, and the pericyte and cell masks "
+                "so that no object is lost (a coarse voxel is in them if any voxel was), so "
+                "each still lands on the vessels it belongs to. The skeleton settings counted "
+                "in voxels keep their size in the image's own voxels. Applied after "
+                "crop_on_import's box is cut"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            value_aliases={"1": "none", "2": "2x", "4": "4x", "8": "8x", "16": "16x"},
+            requires=("network_source=segmented_image",),
+        ),
+        Setting(
+            name="raw_image_path",
+            kind="path",
+            default=None,
+            help=(
+                "The raw (unsegmented) image of the same field, one channel of it "
+                "(raw_image_channel): what ilastik segments when it runs, what diameters are "
+                "measured from, what 'Check segmented image' and 'Optimise settings' compare "
+                "the segmentation with, and where tissue volume is found unless "
+                "tissue_raw_tiff_path names another. ilastik reads the whole file, as its "
+                "project was trained on it. Optional: without one the run goes on from "
+                "the segmented image alone, and everything that reads the raw image "
+                "(ilastik, measuring diameters from it) is off"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            must_exist=True,
+            requires=("network_source=segmented_image",),
+            # Read by ilastik, the diameters, the check, the optimiser and the
+            # tissue volume, each gated by its own switch.
+            always_effective=True,
+            migrates=_RETIRED_RAW_IMAGE_SETTINGS,
+            migrate=_migrate_raw_image,
+        ),
+        Setting(
+            name="raw_image_channel",
+            kind="int",
+            default=None,
+            help=(
+                "Which channel of a multi-channel raw image to read, counting from 0 (the "
+                "panel lists them as Fiji names them: C1 is 0); leave unset for a "
+                "single-channel file"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            minimum=0,
+            requires=("raw_image_path",),
+            always_effective=True,
+            placeholder="single-channel file",
+        ),
+        Setting(
+            name="raw_image_stain",
+            kind="choice",
+            default="auto",
+            choices=("auto", "plasma_column", "endothelial"),
+            help=(
+                "What the raw image's channel stains: plasma_column for a luminal (plasma) "
+                "label filling the channel blood flows in, endothelial for the vessel wall "
+                "(claudin-5, CD31, isolectin...), or auto to tell from how it reads across the "
+                "segmented vessels, bright in the middle or at the wall. It picks how "
+                "diameters are measured from it (FWHM, or the lumen inside the wall ring) "
+                "and what those diameters mean: wall to wall for an endothelial stain, whose "
+                "viscosity then takes that form of the law. Diameters taken from the "
+                "segmentation itself follow segmentation_source instead"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            value_aliases={"anatomical": "endothelial", "luminal": "plasma_column"},
+            requires=("raw_image_path",),
+            always_effective=True,
+        ),
+        Setting(
+            name="raw_image_downsample",
+            kind="choice",
+            default="none",
+            choices=DOWNSAMPLE_CHOICES,
+            help=(
+                "Read the raw image onto a coarser grid, each coarse voxel the mean of the "
+                "voxels in it. Everything that reads the raw image does so beside the "
+                "segmentation and needs it on the segmented image's grid (the diameters, "
+                "the stain reading, the tissue volume, the checks), so a finer choice than "
+                "segmented_image_downsample is read at that one, and a coarser choice is "
+                "reduced by its own factor and each coarse voxel spread over the grid: a "
+                "blockier image. ilastik reads the whole file whatever this says, as its "
+                "project was trained on it"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            value_aliases={"1": "none", "2": "2x", "4": "4x", "8": "8x", "16": "16x"},
+            requires=("raw_image_path",),
+            always_effective=True,
+        ),
+        Setting(
+            name="output_dir",
+            kind="path",
+            default=_OUTPUTS,
+            help=(
+                "Write the run's outputs into this folder: the VTK files, the CSVs and "
+                "statistics, the skeleton and graph, the run manifest and the cached stages, "
+                "each named after the analysed image (outputs/{image stem}_vessels.vtp). "
+                "Plots go under base_plot_dir and ilastik's segmentations under "
+                "ilastik_output_dir; perturbations come here too unless "
+                "perturbation_output_dir is set"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            migrates=("vtk_output_prefix",),
+            migrate=_migrate_vtk_output_prefix,
         ),
         Setting(
             name="use_ilastik_segmentation",
             kind="bool",
             default=False,
-            help="Segment the main input image with ilastik instead of reading a segmented file",
+            help=(
+                "Segment the raw image (raw_image_path) with ilastik instead of reading a "
+                "segmented file"
+            ),
             section=_INPUT_AND_SEGMENTATION,
-        ),
-        Setting(
-            name="ilastik_unsegmented_image_path",
-            kind="path",
-            default=f"{_IMAGES}/Nerve_capillaries.tif",
-            help="Read this raw image as the ilastik input for main-image segmentation",
-            section=_INPUT_AND_SEGMENTATION,
-            requires=("use_ilastik_segmentation",),
-            must_exist=True,
+            requires=("raw_image_path",),
         ),
         Setting(
             name="ilastik_classifier_path",
@@ -103,6 +550,20 @@ SCHEMA = Schema(
             must_exist=True,
         ),
         Setting(
+            name="ilastik_vessel_label",
+            kind="str",
+            default=None,
+            placeholder="a label name or number in the project",
+            help=(
+                "Read this label of the ilastik project as the vessel: one of the "
+                "project's label names, or its number (1 for the first label made "
+                "in ilastik). Every other label is background. Preflight lists the "
+                "project's labels"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            requires=("use_ilastik_segmentation",),
+        ),
+        Setting(
             name="ilastik_executable",
             kind="str",
             default="ilastik.exe",
@@ -110,11 +571,46 @@ SCHEMA = Schema(
             section=_INPUT_AND_SEGMENTATION,
         ),
         Setting(
+            name="ilastik_timeout_seconds",
+            kind="float",
+            default=7200.0,
+            help=(
+                "Kill an ilastik headless run that takes longer than this, or "
+                "never with 0. A hang usually means a bad project file or "
+                "unreadable input, not a slow but working run -- raise it for "
+                "very large volumes"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            minimum=0.0,
+            advanced=True,
+        ),
+        Setting(
+            name="ilastik_reuse_existing_output",
+            kind="bool",
+            default=True,
+            help=(
+                "Skip ilastik when its output for an image already exists and "
+                "its record beside it ({output}.haemolynx.json) says it was made "
+                "from this image, unchanged, by a project with the same contents, "
+                "at the same vessel label, and use that output. Turn off to "
+                "segment again on every run"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            advanced=True,
+        ),
+        Setting(
             name="ilastik_output_dir",
             kind="path",
             default=f"{_OUTPUTS}/segmentations",
-            help="Write ilastik-generated segmentations into this directory",
+            help=(
+                "Write ilastik-generated segmentations into this directory, as "
+                "{image stem}_segmented for the main image and {image stem}_"
+                "{large|small}_{arteriole|venule}_segmented for the vessel masks, "
+                "so one raw stack segmented by several classifiers keeps every "
+                "output"
+            ),
             section=_INPUT_AND_SEGMENTATION,
+            advanced=True,
         ),
         Setting(
             name="ilastik_output_suffix",
@@ -122,6 +618,105 @@ SCHEMA = Schema(
             default=".tif",
             help="Give ilastik segmentation outputs this file suffix",
             section=_INPUT_AND_SEGMENTATION,
+            advanced=True,
+        ),
+        Setting(
+            name="use_pixel_classifier_segmentation",
+            kind="bool",
+            default=False,
+            help=(
+                "Segment the raw image (raw_image_path) with a classifier trained in "
+                "HaemoLynx's own training window instead of reading a segmented file. "
+                "The mask is written into output_dir as {raw image stem}_segmented.tif "
+                "and used again while its record says this classifier made it from "
+                "this image. Follows use_memmap_loading"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            requires=("raw_image_path", "!use_ilastik_segmentation"),
+        ),
+        Setting(
+            name="pixel_classifier_path",
+            kind="path",
+            default=None,
+            help=(
+                "Segment the main image with this classifier (.haemoclf), trained in "
+                "the panel to tell vessel from background"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            requires=("use_pixel_classifier_segmentation",),
+            must_exist=True,
+        ),
+        Setting(
+            name="use_pixel_classifier_pericyte_segmentation",
+            kind="bool",
+            default=False,
+            help=(
+                "Make the pericyte mask from the raw image with a classifier trained in "
+                "HaemoLynx's own training window, instead of reading pericyte_mask_path and "
+                "pericyte_measurement_mask_path. Written into output_dir as {raw image "
+                "stem}_pericytes_segmented.tif, only while something reads it"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            requires=("raw_image_path",),
+            advanced=False,  # shown where the mask is read (gui.form.HOSTED_CLASSIFIER_ROWS)
+        ),
+        Setting(
+            name="pixel_classifier_pericyte_path",
+            kind="path",
+            default=None,
+            help=(
+                "Segment the pericytes with this classifier (.haemoclf), trained in the panel "
+                "to tell pericytes from background; each blob it finds is one pericyte"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            requires=("use_pixel_classifier_pericyte_segmentation",),
+            must_exist=True,
+            advanced=False,  # shown where the mask is read (gui.form.HOSTED_CLASSIFIER_ROWS)
+        ),
+        Setting(
+            name="use_pixel_classifier_block_segmentation",
+            kind="bool",
+            default=False,
+            help=(
+                "Make the capillary block mask from the raw image with a classifier trained in "
+                "HaemoLynx's own training window, instead of reading capillary_block_mask_path. "
+                "Written into output_dir as {raw image stem}_blocks_segmented.tif, only while a "
+                "capillary_block_mask perturbation reads it"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            requires=("raw_image_path",),
+            advanced=False,  # shown where the mask is read (gui.form.HOSTED_CLASSIFIER_ROWS)
+        ),
+        Setting(
+            name="pixel_classifier_block_path",
+            kind="path",
+            default=None,
+            help=(
+                "Segment the capillary blocks with this classifier (.haemoclf), trained in the "
+                "panel to tell blocks from background; each blob it finds is one block"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            requires=("use_pixel_classifier_block_segmentation",),
+            must_exist=True,
+            advanced=False,  # shown where the mask is read (gui.form.HOSTED_CLASSIFIER_ROWS)
+        ),
+        Setting(
+            name="pixel_classifier_downsample",
+            kind="choice",
+            default="none",
+            choices=("none", "2x", "4x", "8x", "16x"),
+            help=(
+                "Classify the raw image on a grid this much coarser -- block means of its "
+                "voxels, a coarser axis reduced less, as segmented_image_downsample reduces "
+                "them -- and write every mask the HaemoLynx classifier makes back at the "
+                "image's own size, a block of voxels per voxel classified. 2x classifies "
+                "about 8 times fewer voxels, at the coarser grid's resolution; none "
+                "classifies every voxel. Read while use_pixel_classifier_segmentation is on, "
+                "for every classifier the run then uses; off, every one classifies every voxel"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            requires=("use_pixel_classifier_segmentation",),
+            advanced=True,
         ),
         Setting(
             name="voxel_size_override_xyz",
@@ -130,6 +725,7 @@ SCHEMA = Schema(
             help="Override the voxel size with these (x, y, z) values instead of reading image metadata",
             section=_INPUT_AND_SEGMENTATION,
             unit="um",
+            requires=("voxel_size_policy!=metadata_only", "network_source=segmented_image"),
         ),
         Setting(
             name="voxel_size_policy",
@@ -138,24 +734,565 @@ SCHEMA = Schema(
             help="Choose how the voxel size is resolved from metadata and the manual override",
             section=_INPUT_AND_SEGMENTATION,
             choices=("auto", "override", "metadata_only"),
+            requires=("network_source=segmented_image",),
         ),
         Setting(
             name="image_axis_order",
             kind="choice",
             default="zyx",
-            help="Declare which array axis is which in the input files, so volumes can be transposed to canonical (z, y, x) on load",
+            help=(
+                "Declare which array axis is which in the input files, so volumes can be "
+                "transposed to canonical (z, y, x) on load. auto reads each file's own axis "
+                "labels (a TIFF's OME or ImageJ metadata, an HDF5's axistags); a file that "
+                "names none is read in the segmented image's order, else zyx"
+            ),
             section=_INPUT_AND_SEGMENTATION,
             choices=AXIS_ORDERS,
+            requires=("network_source=segmented_image",),
+        ),
+        Setting(
+            name="mid_run_postprocessing",
+            kind="bool",
+            default=False,
+            help=(
+                "Pause a napari panel run after Haemodynamics, on the Post "
+                "processing tab, to fix the solved network by hand; the tab's "
+                "Continue button brings the edits in line, solves the "
+                "haemodynamics again and runs the rest. A command-line run "
+                "does not pause"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+        ),
+        Setting(
+            name="use_memmap_loading",
+            kind="bool",
+            default=False,
+            help=(
+                "Load the input image, and any vessel/pericyte/cell masks, into a disk-backed "
+                "array instead of RAM, and write the largest full-volume working buffers "
+                "(connected-component labels, distance transforms) to disk too, instead of a "
+                "fresh in-RAM array each time. Same result, much less peak RAM, at the cost of "
+                "disk space (as large as the volume itself) and slower reads -- turn on for a "
+                "volume too large to hold in memory outright. Covers "
+                "use_thick_vessel_skeletonisation too, with the same skeleton; one very large "
+                "thick component can still need much memory, which "
+                "skeleton_thick_vessel_large_stack_tree avoids"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            requires=("network_source=segmented_image",),
+        ),
+        Setting(
+            name="memmap_directory",
+            kind="path",
+            default=None,
+            help=(
+                "Write use_memmap_loading's disk-backed arrays here instead "
+                "of the OS temp directory -- point this at a drive with "
+                "enough free space for a volume-sized file (or a faster "
+                "disk than the default temp drive) when the default "
+                "location cannot take it. Setting this also lets a later "
+                "run reuse the raw input image already decompressed here "
+                "instead of reloading it, as long as the input file and "
+                "image_axis_order have not changed (skeletonisation and "
+                "everything after it are always rebuilt fresh either way). "
+                "Created if it does not already exist; leave unset to use "
+                "the OS default with no reuse between runs"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            requires=("use_memmap_loading",),
+            advanced=True,
         ),
         # ------------------------------------------------------------------
-        # Vessel masks
+        # Segmentation cleanup (Input tab): seven independently-toggleable
+        # cleanup steps on the raw segmented mask, before skeletonisation.
+        # Each defaults off -- an existing run's output does not change
+        # unless a toggle is explicitly turned on. All seven nest under one
+        # master switch, so a panel with none of them wanted shows one
+        # checkbox rather than twenty rows.
         # ------------------------------------------------------------------
+        Setting(
+            name="segmentation_cleanup",
+            kind="bool",
+            default=False,
+            help="Clean up the raw segmented mask before skeletonisation -- reveals the individual cleanup steps below",
+            section=_INPUT_AND_SEGMENTATION,
+            requires=("network_source=segmented_image",),
+        ),
+        Setting(
+            name="segmentation_cleanup_fill_cavities",
+            kind="bool",
+            default=False,
+            help=(
+                "Fill small internal air-gaps/voids -- imaging noise inside "
+                "an otherwise solid vessel lumen -- before skeletonisation, "
+                "the same fill done for use_thick_vessel_skeletonisation's "
+                "own thickness-gated path but here for the plain-Lee path "
+                "too. Run first, so a hollow lumen does not throw off later "
+                "steps' own radius measurements. No parameter: a cavity is "
+                "either enclosed or it is not, with nothing to size"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            requires=("segmentation_cleanup",),
+        ),
+        Setting(
+            name="segmentation_cleanup_remove_whiskers",
+            kind="bool",
+            default=False,
+            help=(
+                "Morphologically open the mask to strip thin (1-2 voxel) "
+                "surface spikes still attached to an otherwise clean vessel, "
+                "before skeletonisation -- run first, so later steps measure "
+                "radii and axes off the cleaned-up shape"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            requires=("segmentation_cleanup",),
+        ),
+        Setting(
+            name="segmentation_cleanup_whisker_radius_um",
+            kind="float",
+            default=1.0,
+            help="Strip surface spikes with no core at least this physical radius thick",
+            section=_INPUT_AND_SEGMENTATION,
+            unit="um",
+            minimum=0.0,
+            requires=("segmentation_cleanup", "segmentation_cleanup_remove_whiskers"),
+        ),
+        Setting(
+            name="segmentation_cleanup_split_narrow_necks",
+            kind="bool",
+            default=False,
+            help=(
+                "Cut the mask apart at genuine pinch points -- narrow necks "
+                "where two distinct, touching vessels were segmented as one "
+                "blob -- before skeletonisation. The inverse of reconnecting "
+                "gaps: gated so a uniform-radius vessel is never cut"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            requires=("segmentation_cleanup",),
+        ),
+        Setting(
+            name="segmentation_cleanup_split_min_marker_separation_um",
+            kind="float",
+            default=10.0,
+            help="Treat two local-radius maxima as separate vessel bodies only if at least this far apart",
+            section=_INPUT_AND_SEGMENTATION,
+            unit="um",
+            minimum=0.0,
+            requires=("segmentation_cleanup", "segmentation_cleanup_split_narrow_necks"),
+            advanced=True,
+        ),
+        Setting(
+            name="segmentation_cleanup_split_min_pinch_radius_ratio",
+            kind="float",
+            default=0.6,
+            help=(
+                "Only cut where the narrowest point between two vessel "
+                "bodies is at most this fraction of their own typical radius"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            minimum=0.0,
+            maximum=1.0,
+            requires=("segmentation_cleanup", "segmentation_cleanup_split_narrow_necks"),
+            advanced=True,
+        ),
+        Setting(
+            name="segmentation_cleanup_split_min_body_radius_um",
+            kind="float",
+            default=1.0,
+            help="Ignore candidate vessel bodies with a typical radius below this -- too thin to judge reliably",
+            section=_INPUT_AND_SEGMENTATION,
+            unit="um",
+            minimum=0.0,
+            requires=("segmentation_cleanup", "segmentation_cleanup_split_narrow_necks"),
+            advanced=True,
+        ),
+        Setting(
+            name="segmentation_cleanup_close_gaps",
+            kind="bool",
+            default=False,
+            help=(
+                "Morphologically close single-voxel-scale dropouts within a "
+                "vessel, indiscriminately (no shape test) -- a much smaller, "
+                "lighter version of reconnect_gaps for gaps too small and "
+                "too close to a junction for reconnect's own shape test to "
+                "confidently accept, before skeletonisation"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            requires=("segmentation_cleanup",),
+        ),
+        Setting(
+            name="segmentation_cleanup_close_gaps_radius_um",
+            kind="float",
+            default=0.5,
+            help="Physical closing radius, sampled anisotropy-aware per axis from voxel_size_zyx",
+            section=_INPUT_AND_SEGMENTATION,
+            unit="um",
+            minimum=0.0,
+            requires=("segmentation_cleanup", "segmentation_cleanup_close_gaps"),
+        ),
+        Setting(
+            name="segmentation_cleanup_reconnect_gaps",
+            kind="bool",
+            default=False,
+            help=(
+                "Bridge disconnected mask fragments that look like the same "
+                "vessel tube continuing, before skeletonisation. Limited to "
+                "cylindrical, well-aligned pairs -- does not indiscriminately "
+                "join nearby blobs"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            requires=("segmentation_cleanup",),
+        ),
+        Setting(
+            name="segmentation_cleanup_reconnect_max_bridge_distance_um",
+            kind="float",
+            default=30.0,
+            help="Bridge fragment pairs no further apart than this physical distance",
+            section=_INPUT_AND_SEGMENTATION,
+            unit="um",
+            minimum=0.0,
+            requires=("segmentation_cleanup", "segmentation_cleanup_reconnect_gaps"),
+        ),
+        Setting(
+            name="segmentation_cleanup_reconnect_min_cylindricality",
+            kind="float",
+            default=0.5,
+            help=(
+                "Require both fragments' PCA linearity (near 1 = tube-like, "
+                "near 0 = blob-like) to be at least this before bridging"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            minimum=0.0,
+            maximum=1.0,
+            requires=("segmentation_cleanup", "segmentation_cleanup_reconnect_gaps"),
+            advanced=True,
+        ),
+        Setting(
+            name="segmentation_cleanup_reconnect_max_axis_angle_degrees",
+            kind="float",
+            default=30.0,
+            help=(
+                "Reject a bridge when the two fragments' principal axes "
+                "disagree by more than this many degrees -- no degrees unit "
+                "is registered in the schema vocabulary"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            minimum=0.0,
+            maximum=90.0,
+            requires=("segmentation_cleanup", "segmentation_cleanup_reconnect_gaps"),
+            advanced=True,
+        ),
+        Setting(
+            name="segmentation_cleanup_reconnect_min_facing_cosine",
+            kind="float",
+            default=0.85,
+            help=(
+                "Require the candidate endpoints to face each other at least "
+                "this closely along each fragment's own axis"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            minimum=0.0,
+            maximum=1.0,
+            requires=("segmentation_cleanup", "segmentation_cleanup_reconnect_gaps"),
+            advanced=True,
+        ),
+        Setting(
+            name="segmentation_cleanup_reconnect_max_radius_ratio",
+            kind="float",
+            default=3.0,
+            help="Reject a bridge when the fragments' median radii differ by more than this ratio",
+            section=_INPUT_AND_SEGMENTATION,
+            minimum=1.0,
+            requires=("segmentation_cleanup", "segmentation_cleanup_reconnect_gaps"),
+            advanced=True,
+        ),
+        Setting(
+            name="segmentation_cleanup_smooth_surfaces",
+            kind="bool",
+            default=False,
+            help="Smooth the mask to reduce surface noise, before skeletonisation",
+            section=_INPUT_AND_SEGMENTATION,
+            requires=("segmentation_cleanup",),
+        ),
+        Setting(
+            name="segmentation_cleanup_smooth_method",
+            kind="choice",
+            default="gaussian",
+            help=(
+                "How to smooth: gaussian blur-then-rethreshold is fast but "
+                "slightly erodes thin/highly-curved vessels (worse the more "
+                "curved), which biases their diameter and therefore "
+                "resistance; morphological closing-then-opening avoids that "
+                "threshold-driven bias, at the cost of coarser size control"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            choices=("gaussian", "morphological"),
+            requires=("segmentation_cleanup", "segmentation_cleanup_smooth_surfaces"),
+        ),
+        Setting(
+            name="segmentation_cleanup_smooth_sigma_um",
+            kind="float",
+            default=1.0,
+            help="Physical smoothing sigma for the gaussian method, sampled anisotropy-aware per axis from voxel_size_zyx",
+            section=_INPUT_AND_SEGMENTATION,
+            unit="um",
+            minimum=0.0,
+            requires=(
+                "segmentation_cleanup",
+                "segmentation_cleanup_smooth_surfaces",
+                "segmentation_cleanup_smooth_method=gaussian",
+            ),
+        ),
+        Setting(
+            name="segmentation_cleanup_smooth_morphological_radius_um",
+            kind="float",
+            default=1.0,
+            help="Physical closing/opening radius for the morphological method, sampled anisotropy-aware per axis from voxel_size_zyx",
+            section=_INPUT_AND_SEGMENTATION,
+            unit="um",
+            minimum=0.0,
+            requires=(
+                "segmentation_cleanup",
+                "segmentation_cleanup_smooth_surfaces",
+                "segmentation_cleanup_smooth_method=morphological",
+            ),
+        ),
+        Setting(
+            name="segmentation_cleanup_remove_small_volumes",
+            kind="bool",
+            default=False,
+            help="Remove small disconnected segmented volumes, before skeletonisation",
+            section=_INPUT_AND_SEGMENTATION,
+            requires=("segmentation_cleanup",),
+        ),
+        Setting(
+            name="segmentation_cleanup_remove_small_min_volume_um3",
+            kind="float",
+            default=5.0,
+            help="Remove connected components smaller than this physical volume",
+            section=_INPUT_AND_SEGMENTATION,
+            unit="um3",
+            minimum=0.0,
+            requires=("segmentation_cleanup", "segmentation_cleanup_remove_small_volumes"),
+        ),
+        # ------------------------------------------------------------------
+        # Crop on import (Input tab, under Segmentation cleanup): one box of
+        # voxels cut out of the main image and every volume read alongside it,
+        # as each is loaded (see io.crop). Off by default.
+        # ------------------------------------------------------------------
+        Setting(
+            name="crop_on_import",
+            kind="bool",
+            default=False,
+            help=(
+                "Analyse only one box of the image: crop the input image, and every "
+                "mask and raw image read alongside it, to the same box of voxels as "
+                "each is loaded. Every position after that -- node positions, the "
+                "exports, boundary node coordinates and volumes -- is measured from "
+                "the box's corner, not the whole image's"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            requires=("network_source=segmented_image",),
+        ),
+        Setting(
+            name="crop_method",
+            kind="choice",
+            default="size",
+            help=(
+                "Give the box as a size in voxels placed at a location (size), or as "
+                "the voxel coordinates of two opposite corners (coordinates)"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            choices=CROP_METHODS,
+            requires=("crop_on_import",),
+        ),
+        Setting(
+            name="crop_size_xyz",
+            kind="int_list",
+            default=None,
+            help=(
+                "Keep this many voxels along x, y and z; an axis shorter than this "
+                "is kept whole"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            unit="voxels",
+            requires=("crop_on_import", "crop_method=size"),
+        ),
+        Setting(
+            name="crop_location",
+            kind="choice",
+            default="centre",
+            help=(
+                "Place the box here in the x-y plane, as napari draws a slice "
+                "(top is y = 0, left is x = 0)"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            choices=CROP_LOCATIONS,
+            requires=("crop_on_import", "crop_method=size"),
+        ),
+        Setting(
+            name="crop_z_location",
+            kind="choice",
+            default="centre",
+            help="Take the box's slices from the start of the stack (z = 0), its middle, or its end",
+            section=_INPUT_AND_SEGMENTATION,
+            choices=CROP_Z_LOCATIONS,
+            requires=("crop_on_import", "crop_method=size"),
+        ),
+        Setting(
+            name="crop_start_xyz",
+            kind="int_list",
+            default=None,
+            help=(
+                "Start the box at this voxel (x, y, z), the corner with the smallest "
+                "index on every axis, as napari shows it under the cursor"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            unit="voxels",
+            requires=("crop_on_import", "crop_method=coordinates"),
+        ),
+        Setting(
+            name="crop_end_xyz",
+            kind="int_list",
+            default=None,
+            help=(
+                "End the box at this voxel (x, y, z), which is kept: the opposite "
+                "corner to crop_start_xyz. A corner past the image's edge stops at it"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            unit="voxels",
+            requires=("crop_on_import", "crop_method=coordinates"),
+        ),
+        # ------------------------------------------------------------------
+        # Segmented-image quality check (Input tab): dataset-specific
+        # overrides for "Check segmented image"'s own reasoned defaults.
+        # Both default to unset, which reproduces today's behaviour exactly
+        # (see preprocessing.segmentation_quality's module docstring for why
+        # a single universal number is wrong for some of these).
+        # ------------------------------------------------------------------
+        Setting(
+            name="expected_boundary_vessel_count",
+            kind="int",
+            default=None,
+            help=(
+                "How many places this dataset's own vessel network is expected to "
+                "cross the image boundary (a whole-organ scan or multi-inlet "
+                "preparation legitimately has more than a single-vessel crop). "
+                "Leave unset to use a generic default of 2"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            minimum=0,
+            requires=("network_source=segmented_image",),
+            advanced=True,
+        ),
+        Setting(
+            name="min_voxels_across_vessel_radius",
+            kind="float",
+            default=None,
+            help=(
+                "How many voxels across a vessel's own radius the 'Check segmented "
+                "image' resolution score expects for full marks -- below this, "
+                "FWHM and EDT diameter measurements are known to carry a growing, "
+                "uncorrectable discretisation bias. Leave unset to use a generic "
+                "default of 3.0"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            minimum=0.0,
+            requires=("network_source=segmented_image",),
+            advanced=True,
+        ),
+        Setting(
+            name="min_acceptable_segmentation_quality",
+            kind="float",
+            default=None,
+            help=(
+                "If set, preflight logs a warning (never blocks the run) when the "
+                "segmented input's own 0-10 quality score -- the same score 'Check "
+                "segmented image' reports -- falls below this, naming which tier "
+                "(source data vs pipeline-fixable) is responsible. Leave unset to "
+                "opt out entirely, which is the default"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            minimum=0.0,
+            maximum=10.0,
+            requires=("network_source=segmented_image",),
+            advanced=True,
+        ),
+        # ------------------------------------------------------------------
+        # Vessel masks (Boundaries tab: under automated_vessel_assignment)
+        # ------------------------------------------------------------------
+        # Gate first: the Boundaries panel lists this checkbox, then the mask
+        # rows below, then manual methods. Automated assignment overrides the
+        # manual inlet/outlet methods when it is applied.
+        Setting(
+            name="automated_vessel_assignment",
+            kind="bool",
+            default=False,
+            help=(
+                "Use the large arteriole and venule masks for the large-vessel "
+                "treatment. While inlets_outlets_from_vessel_masks is also on, "
+                "they also choose the inlet and outlet nodes, which overrides the "
+                "manual inlet/outlet selection methods"
+            ),
+            section=_VESSEL_MASKS,
+            # A synthetic network has no image for a mask to lie on: the
+            # generator chooses its boundaries (graph.vessel_masks_in_use).
+            requires=("network_source=segmented_image",),
+        ),
         Setting(
             name="use_large_vessel_masks",
             kind="bool",
             default=False,
-            help="Load large arteriole and venule masks for automated inlet/outlet node assignment",
+            help=(
+                "Load large arteriole and venule masks for automated inlet/outlet node "
+                "assignment. Ticked in the panel, it fills the mask rows from files beside "
+                "the input image named like it with 'large' and 'arteriole' or 'venule' "
+                "(artery, vein and plurals too) added; 'large' alone is a global mask, "
+                "and while no file says 'large', 'arteriole' or 'venule' alone counts"
+            ),
             section=_VESSEL_MASKS,
+            requires=("automated_vessel_assignment",),
+        ),
+        Setting(
+            name="large_arteriole_mask_path",
+            kind="path",
+            default=f"{_IMAGES}/large_arteriole_mask.tif",
+            help=(
+                "Read this pre-segmented large arteriole mask -- or, with no large "
+                "venule mask entered, a global mask of every large vessel, "
+                "arteriole or venule: the vessels in it are then unknown large "
+                "vessels, and the run gives every vessel an unknown class "
+                "(large, small, capillary) instead of a branch order"
+            ),
+            section=_VESSEL_MASKS,
+            requires=(
+                "use_large_vessel_masks",
+                "automated_vessel_assignment",
+                "!use_ilastik_large_vessel_segmentation",
+                "!use_pixel_classifier_large_vessel_segmentation",
+            ),
+            must_exist=True,
+        ),
+        Setting(
+            name="large_venule_mask_path",
+            kind="path",
+            # Unset (the default) makes the arteriole/global row a global
+            # mask: io.vessel_masks_are_global.
+            default=None,
+            placeholder="none: the arteriole/global mask is a global mask",
+            help=(
+                "Read this pre-segmented large venule mask. Leave it empty to "
+                "read the arteriole/global mask as a global mask of every large "
+                "vessel"
+            ),
+            section=_VESSEL_MASKS,
+            requires=(
+                "use_large_vessel_masks",
+                "automated_vessel_assignment",
+                "!use_ilastik_large_vessel_segmentation",
+                "!use_pixel_classifier_large_vessel_segmentation",
+            ),
+            must_exist=True,
         ),
         Setting(
             name="use_ilastik_large_vessel_segmentation",
@@ -163,76 +1300,821 @@ SCHEMA = Schema(
             default=False,
             help="Produce the large-vessel masks with ilastik instead of reading pre-segmented files",
             section=_VESSEL_MASKS,
-            requires=("use_large_vessel_masks",),
-        ),
-        Setting(
-            name="large_vessel_mask_dilation_microns",
-            kind="float",
-            default=0.0,
-            help="Dilate the large-vessel masks by this distance before selecting terminal nodes",
-            section=_VESSEL_MASKS,
-            minimum=0.0,
-            unit="um",
-            requires=("use_large_vessel_masks",),
-        ),
-        Setting(
-            name="large_arteriole_mask_path",
-            kind="path",
-            default=f"{_IMAGES}/large_arteriole_mask.tif",
-            help="Read this pre-segmented large arteriole mask",
-            section=_VESSEL_MASKS,
-            requires=("use_large_vessel_masks",),
-            must_exist=True,
-        ),
-        Setting(
-            name="large_venule_mask_path",
-            kind="path",
-            default=f"{_IMAGES}/large_venule_mask.tif",
-            help="Read this pre-segmented large venule mask",
-            section=_VESSEL_MASKS,
-            requires=("use_large_vessel_masks",),
-            must_exist=True,
-        ),
-        Setting(
-            name="ilastik_unsegmented_arteriole_image_path",
-            kind="path",
-            default=f"{_IMAGES}/large_arteriole_mask.tif",
-            help="Read this raw image as the ilastik input for the large arteriole mask",
-            section=_VESSEL_MASKS,
-            requires=("use_large_vessel_masks", "use_ilastik_large_vessel_segmentation"),
-        ),
-        Setting(
-            name="ilastik_unsegmented_venule_image_path",
-            kind="path",
-            default=f"{_IMAGES}/large_venule_mask.tif",
-            help="Read this raw image as the ilastik input for the large venule mask",
-            section=_VESSEL_MASKS,
-            requires=("use_large_vessel_masks", "use_ilastik_large_vessel_segmentation"),
+            requires=("use_large_vessel_masks", "automated_vessel_assignment"),
         ),
         Setting(
             name="ilastik_arteriole_classifier_path",
             kind="path",
             default=f"{_CLASSIFIERS}/arteriole_classifier.ilp",
-            help="Use this trained ilastik project to segment arterioles",
+            help=(
+                "Use this trained ilastik project to segment arterioles -- or, "
+                "with no venule classifier entered, every large vessel, as a "
+                "global mask"
+            ),
             section=_VESSEL_MASKS,
-            requires=("use_large_vessel_masks", "use_ilastik_large_vessel_segmentation"),
+            requires=(
+                "use_large_vessel_masks",
+                "automated_vessel_assignment",
+                "use_ilastik_large_vessel_segmentation",
+            ),
             must_exist=True,
+        ),
+        Setting(
+            name="ilastik_arteriole_vessel_label",
+            kind="str",
+            default=None,
+            placeholder="a label name or number in the project",
+            help=(
+                "Read this label of the arteriole classifier as the arteriole (or, "
+                "with no venule classifier, as every large vessel): one of the "
+                "project's label names, or its number (1 for the first label made "
+                "in ilastik). Every other label is background. Preflight lists the "
+                "project's labels"
+            ),
+            section=_VESSEL_MASKS,
+            requires=(
+                "use_large_vessel_masks",
+                "automated_vessel_assignment",
+                "use_ilastik_large_vessel_segmentation",
+            ),
+        ),
+        Setting(
+            name="ilastik_arteriole_channels",
+            kind="int_list",
+            default=None,
+            placeholder="the whole raw image",
+            help=(
+                "Give the arteriole/global classifier these channels of the raw image "
+                "(raw_image_path), kept separate and in this order, e.g. [1, 2]: the "
+                "channels it was trained on, counting from 0 as raw_image_channel does "
+                "(C1 is 0). Leave unset for the whole file"
+            ),
+            section=_VESSEL_MASKS,
+            requires=(
+                "use_large_vessel_masks",
+                "automated_vessel_assignment",
+                "use_ilastik_large_vessel_segmentation",
+                "raw_image_path",
+            ),
+            migrates=("ilastik_unsegmented_arteriole_image_path",),
+            migrate=_migrate_ilastik_mask_input(
+                "ilastik_unsegmented_arteriole_image_path", "use_ilastik_large_vessel_segmentation"
+            ),
         ),
         Setting(
             name="ilastik_venule_classifier_path",
             kind="path",
-            default=f"{_CLASSIFIERS}/venule_classifier.ilp",
-            help="Use this trained ilastik project to segment venules",
+            default=None,
+            placeholder="none: the arteriole/global classifier makes a global mask",
+            help=(
+                "Use this trained ilastik project to segment venules. Leave it "
+                "empty to read what the arteriole/global classifier segments as "
+                "a global mask of every large vessel"
+            ),
             section=_VESSEL_MASKS,
-            requires=("use_large_vessel_masks", "use_ilastik_large_vessel_segmentation"),
+            requires=(
+                "use_large_vessel_masks",
+                "automated_vessel_assignment",
+                "use_ilastik_large_vessel_segmentation",
+            ),
             must_exist=True,
+        ),
+        Setting(
+            name="ilastik_venule_vessel_label",
+            kind="str",
+            default=None,
+            placeholder="a label name or number in the project",
+            help=(
+                "Read this label of the venule classifier as the venule: one of the "
+                "project's label names, or its number (1 for the first label made "
+                "in ilastik). Every other label is background. Preflight lists the "
+                "project's labels"
+            ),
+            section=_VESSEL_MASKS,
+            requires=(
+                "use_large_vessel_masks",
+                "automated_vessel_assignment",
+                "use_ilastik_large_vessel_segmentation",
+                "ilastik_venule_classifier_path",
+            ),
+        ),
+        Setting(
+            name="ilastik_venule_channels",
+            kind="int_list",
+            default=None,
+            placeholder="the whole raw image",
+            help=(
+                "Give the venule classifier these channels of the raw image "
+                "(raw_image_path), kept separate and in this order, e.g. [2]: the "
+                "channels it was trained on, counting from 0 as raw_image_channel does "
+                "(C1 is 0). Leave unset for the whole file"
+            ),
+            section=_VESSEL_MASKS,
+            requires=(
+                "use_large_vessel_masks",
+                "automated_vessel_assignment",
+                "use_ilastik_large_vessel_segmentation",
+                "ilastik_venule_classifier_path",
+                "raw_image_path",
+            ),
+            migrates=("ilastik_unsegmented_venule_image_path",),
+            migrate=_migrate_ilastik_mask_input(
+                "ilastik_unsegmented_venule_image_path", "use_ilastik_large_vessel_segmentation"
+            ),
+        ),
+        Setting(
+            name="use_pixel_classifier_large_vessel_segmentation",
+            kind="bool",
+            default=False,
+            help=(
+                "Produce the large arteriole and venule masks from the raw image "
+                "(raw_image_path) with a classifier trained in HaemoLynx's own training "
+                "window, instead of reading pre-segmented files. Follows use_memmap_loading"
+            ),
+            section=_VESSEL_MASKS,
+            requires=(
+                "use_large_vessel_masks",
+                "automated_vessel_assignment",
+                "!use_ilastik_large_vessel_segmentation",
+                "raw_image_path",
+            ),
+        ),
+        Setting(
+            name="pixel_classifier_large_vessel_path",
+            kind="path",
+            default=None,
+            help=(
+                "Segment the large arterioles and venules with this classifier (.haemoclf), "
+                "trained in the panel to tell them from background. One never shown a "
+                "venule makes a global mask of every large vessel"
+            ),
+            section=_VESSEL_MASKS,
+            requires=(
+                "use_large_vessel_masks",
+                "automated_vessel_assignment",
+                "use_pixel_classifier_large_vessel_segmentation",
+            ),
+            must_exist=True,
+        ),
+        Setting(
+            # Offered only while no small masks are given: with them, the
+            # small masks are their own files (graph.small_vessel_masks_split_from_large).
+            name="split_large_vessel_masks_by_diameter",
+            kind="bool",
+            default=False,
+            help=(
+                "Cut each large mask in two by vessel width: the part at least "
+                "large_vessel_mask_split_diameter_um wide stays the large arteriole "
+                "(or venule) mask, and the rest becomes the small arteriole (or "
+                "venule) mask, used as small vessel masks are for the arteriole and "
+                "venule boundaries. A voxel is wide where a ball that wide fits in the "
+                "segmented image around it, centred in the same mask: the mask says "
+                "only which side a vessel is on, since a classifier's mask may be "
+                "thinner than the vessel. Only while no small vessel masks are given; "
+                "a global mask splits into a global large and small mask"
+            ),
+            section=_VESSEL_MASKS,
+            requires=(
+                "use_large_vessel_masks",
+                "automated_vessel_assignment",
+                "!use_small_vessel_masks_for_boundary_assignment",
+            ),
+        ),
+        Setting(
+            name="large_vessel_mask_split_diameter_um",
+            kind="float",
+            # No default: the width a large vessel becomes a small one is a
+            # convention whoever runs it states (checks.check_large_vessel_mask_split).
+            default=None,
+            placeholder="no default: state the width",
+            help=(
+                "Split the large masks at this vessel width: wider stays large, "
+                "narrower becomes small. Read on the segmented image the skeleton "
+                "is made from, so neither the masks' own thickness nor their "
+                "load-time dilation (large_vessel_mask_dilation_microns) moves it"
+            ),
+            section=_VESSEL_MASKS,
+            minimum=0.0,
+            unit="um",
+            requires=(
+                "use_large_vessel_masks",
+                "automated_vessel_assignment",
+                "!use_small_vessel_masks_for_boundary_assignment",
+                "split_large_vessel_masks_by_diameter",
+            ),
+        ),
+        Setting(
+            # Split from automated_vessel_assignment: the masks drive the
+            # large-vessel treatment either way, and this alone decides
+            # whether they also pick the inlets and outlets -- so a run can
+            # keep its masks and still set its inlets and outlets by hand.
+            name="inlets_outlets_from_vessel_masks",
+            kind="bool",
+            default=True,
+            help=(
+                "Choose the inlet and outlet nodes where the large arteriole and "
+                "venule masks meet the network's open ends. Off: set them on the "
+                "Inlet and Outlet tabs, while the masks still drive the "
+                "large-vessel treatment"
+            ),
+            section=_VESSEL_MASKS,
+            requires=("use_large_vessel_masks", "automated_vessel_assignment"),
+        ),
+        Setting(
+            name="large_vessel_mask_dilation_microns",
+            kind="float",
+            default=0.0,
+            help=(
+                "One-shot load-time dilation of large-vessel masks (microns) applied "
+                "when the masks are loaded. Distinct from "
+                "large_vessel_assignment_max_dilation_microns, which runs a progressive "
+                "0, +5, … µm schedule only during terminal-node assignment"
+            ),
+            section=_VESSEL_MASKS,
+            minimum=0.0,
+            unit="um",
+            requires=("use_large_vessel_masks", "automated_vessel_assignment"),
+            advanced=True,
+        ),
+        Setting(
+            name="large_vessel_assignment_max_dilation_microns",
+            kind="float",
+            default=0.0,
+            help=(
+                "Maximum dilation (microns) for progressive large-vessel terminal "
+                "assignment: assign at 0 µm, then in 5 µm steps up to this value, "
+                "locking each node at the first step it is claimed. Does not replace "
+                "large_vessel_mask_dilation_microns (load-time one-shot dilation)"
+            ),
+            section=_VESSEL_MASKS,
+            minimum=0.0,
+            unit="um",
+            requires=("use_large_vessel_masks", "automated_vessel_assignment"),
+        ),
+        Setting(
+            name="large_vessel_min_component_volume_um3",
+            kind="float",
+            default=200.0,
+            help=(
+                "Remove connected components smaller than this physical volume from "
+                "large-vessel masks after dilation (set 0 to disable)"
+            ),
+            section=_VESSEL_MASKS,
+            minimum=0.0,
+            unit="um3",
+            requires=("use_large_vessel_masks", "automated_vessel_assignment"),
+            advanced=True,
+        ),
+        Setting(
+            name="large_vessel_swap_minority_components",
+            kind="bool",
+            default=False,
+            help=(
+                "Relabel a large arteriole/venule component that touches a larger "
+                "one of the other class as that class, so a vessel segmented partly "
+                "as each becomes one continuous vessel. Masks exported with one "
+                "label per voxel touch without overlapping, which "
+                "exclude_smaller_overlapping_volumes cannot fix. Runs at load time, "
+                "after the component-volume filter and before the opposite-attached "
+                "cleanup; the run log lists every component it swaps"
+            ),
+            section=_VESSEL_MASKS,
+            requires=("use_large_vessel_masks", "automated_vessel_assignment"),
+            advanced=True,
+        ),
+        Setting(
+            name="large_vessel_swap_max_size_ratio",
+            kind="float",
+            default=1.0,
+            help=(
+                "Swap a large-vessel component only when its volume is at most this "
+                "fraction of the touching other-class component's (1 = any smaller "
+                "component, 0.5 = at most half the size)"
+            ),
+            section=_VESSEL_MASKS,
+            unit="fraction",
+            minimum=0.01,
+            maximum=1.0,
+            requires=(
+                "use_large_vessel_masks",
+                "automated_vessel_assignment",
+                "large_vessel_swap_minority_components",
+            ),
+            advanced=True,
+        ),
+        Setting(
+            name="large_vessel_swap_min_contact_fraction",
+            kind="float",
+            default=0.3,
+            help=(
+                "Swap a large-vessel component only when at least this fraction of "
+                "its surface area faces the larger other-class component. A vessel "
+                "whose labels split lengthwise faces the other part over about a "
+                "third of its surface; one merely running beside or across another, "
+                "a few percent, and is kept; a short piece joined end to end, its end "
+                "(about 0.1-0.15). Lower it to catch those"
+            ),
+            section=_VESSEL_MASKS,
+            unit="fraction",
+            minimum=0.0,
+            maximum=1.0,
+            requires=(
+                "use_large_vessel_masks",
+                "automated_vessel_assignment",
+                "large_vessel_swap_minority_components",
+            ),
+            advanced=True,
+        ),
+        Setting(
+            name="large_vessel_remove_small_opposite_attached_components",
+            kind="bool",
+            default=True,
+            help=(
+                "Remove tiny large-vessel components that sit attached near the "
+                "opposite-type mask surface (suppresses small mislabelled attachments)"
+            ),
+            section=_VESSEL_MASKS,
+            requires=("use_large_vessel_masks", "automated_vessel_assignment"),
+            advanced=True,
+        ),
+        Setting(
+            name="large_vessel_opposite_attached_max_component_volume_um3",
+            kind="float",
+            default=250.0,
+            help=(
+                "Maximum physical volume of a large-vessel component eligible for "
+                "opposite-attached cleanup"
+            ),
+            section=_VESSEL_MASKS,
+            minimum=0.0,
+            unit="um3",
+            requires=(
+                "use_large_vessel_masks",
+                "automated_vessel_assignment",
+                "large_vessel_remove_small_opposite_attached_components",
+            ),
+            advanced=True,
+        ),
+        Setting(
+            name="large_vessel_opposite_attached_max_distance_microns",
+            kind="float",
+            default=3.0,
+            help=(
+                "Maximum distance from the opposite large-vessel mask for a tiny "
+                "component to count as opposite-attached and be removed"
+            ),
+            section=_VESSEL_MASKS,
+            minimum=0.0,
+            unit="um",
+            requires=(
+                "use_large_vessel_masks",
+                "automated_vessel_assignment",
+                "large_vessel_remove_small_opposite_attached_components",
+            ),
+            advanced=True,
+        ),
+        Setting(
+            name="exclude_smaller_overlapping_volumes",
+            kind="bool",
+            default=False,
+            help=(
+                "At load time, remove large arteriole/venule overlap voxels from the smaller "
+                "overlapping connected component; the rest of that component keeps its class "
+                "(large_vessel_swap_minority_components relabels it). The small masks have no "
+                "load-time equivalent. Assignment-time cleanup is controlled separately by "
+                "automated_vessel_assignment_enable_overlap_cleanup / fast_mode (large) and "
+                "small_vessel_boundary_assignment_* (small)"
+            ),
+            section=_VESSEL_MASKS,
+            requires=("use_large_vessel_masks", "automated_vessel_assignment"),
+            advanced=True,
+        ),
+        Setting(
+            name="automated_vessel_assignment_enable_overlap_cleanup",
+            kind="bool",
+            default=True,
+            help=(
+                "Master switch for large-vessel overlap cleanup at assignment time. "
+                "If False, cleanup is skipped even when fast mode is on"
+            ),
+            section=_VESSEL_MASKS,
+            requires=("use_large_vessel_masks", "automated_vessel_assignment"),
+            advanced=True,
+            # The worker count was accepted and never read: the overlap
+            # tie-break has always run sequentially.
+            replaces={"automated_vessel_overlap_parallel_workers": {}},
+        ),
+        Setting(
+            name="automated_vessel_assignment_fast_mode",
+            kind="bool",
+            default=True,
+            help=(
+                "Pre-clean large arteriole/venule overlap voxels from the smaller "
+                "component once before progressive terminal assignment (when "
+                "overlap cleanup is enabled)"
+            ),
+            section=_VESSEL_MASKS,
+            requires=(
+                "use_large_vessel_masks",
+                "automated_vessel_assignment",
+                "automated_vessel_assignment_enable_overlap_cleanup",
+            ),
+            advanced=True,
+        ),
+        Setting(
+            name="automated_vessel_assignment_apply_overlap_cleanup_in_normal_mode",
+            kind="bool",
+            default=False,
+            help=(
+                "When fast mode is off, still clean the large masks' arteriole/venule overlap "
+                "once, inside the legacy inlet/outlet selection only: the masks the cut and the "
+                "rest of the run read keep their overlap, and the confidence-based selection "
+                "(automated_vessel_assignment_use_legacy_mode off) ignores this (requires overlap"
+                " cleanup enabled)"
+            ),
+            section=_VESSEL_MASKS,
+            requires=(
+                "use_large_vessel_masks",
+                "automated_vessel_assignment",
+                "automated_vessel_assignment_enable_overlap_cleanup",
+                "!automated_vessel_assignment_fast_mode",
+            ),
+            advanced=True,
+        ),
+        Setting(
+            name="automated_vessel_assignment_use_legacy_mode",
+            kind="bool",
+            default=True,
+            help=(
+                "Use legacy progressive large-vessel terminal assignment. Set "
+                "False for confidence-based robust assignment with unresolved-node QC"
+            ),
+            section=_VESSEL_MASKS,
+            requires=("use_large_vessel_masks", "automated_vessel_assignment"),
+            advanced=True,
+        ),
+        Setting(
+            name="automated_vessel_confidence_margin",
+            kind="float",
+            default=0.08,
+            help="Minimum score-gap margin required to keep an automated I/O assignment",
+            section=_VESSEL_MASKS,
+            minimum=0.0,
+            requires=(
+                "use_large_vessel_masks",
+                "automated_vessel_assignment",
+                "!automated_vessel_assignment_use_legacy_mode",
+            ),
+            advanced=True,
+        ),
+        Setting(
+            name="automated_vessel_min_confidence",
+            kind="float",
+            default=0.12,
+            help="Minimum confidence required to keep an automated I/O assignment",
+            section=_VESSEL_MASKS,
+            minimum=0.0,
+            requires=(
+                "use_large_vessel_masks",
+                "automated_vessel_assignment",
+                "!automated_vessel_assignment_use_legacy_mode",
+            ),
+            advanced=True,
+        ),
+        Setting(
+            name="automated_vessel_topology_penalty",
+            kind="float",
+            default=0.12,
+            help="Topology-consistency penalty weight for implausible local assignments",
+            section=_VESSEL_MASKS,
+            minimum=0.0,
+            requires=(
+                "use_large_vessel_masks",
+                "automated_vessel_assignment",
+                "!automated_vessel_assignment_use_legacy_mode",
+            ),
+            advanced=True,
+        ),
+        Setting(
+            name="automated_vessel_quality_max_overlap_fraction",
+            kind="float",
+            default=0.20,
+            help=(
+                "Quality gate: max arteriole/venule mask overlap fraction before "
+                "conservative mode is auto-enabled"
+            ),
+            section=_VESSEL_MASKS,
+            minimum=0.0,
+            maximum=1.0,
+            unit="fraction",
+            requires=(
+                "use_large_vessel_masks",
+                "automated_vessel_assignment",
+                "!automated_vessel_assignment_use_legacy_mode",
+            ),
+            advanced=True,
+        ),
+        Setting(
+            name="automated_vessel_quality_min_terminal_coverage",
+            kind="float",
+            default=0.20,
+            help="Quality gate: minimum terminal coverage by either large-vessel mask",
+            section=_VESSEL_MASKS,
+            minimum=0.0,
+            maximum=1.0,
+            unit="fraction",
+            requires=(
+                "use_large_vessel_masks",
+                "automated_vessel_assignment",
+                "!automated_vessel_assignment_use_legacy_mode",
+            ),
+            advanced=True,
+        ),
+        Setting(
+            name="automated_vessel_quality_max_component_count",
+            kind="int",
+            default=12,
+            help=(
+                "Quality gate: maximum connected-component count allowed per "
+                "large-vessel mask before conservative mode"
+            ),
+            section=_VESSEL_MASKS,
+            minimum=1,
+            requires=(
+                "use_large_vessel_masks",
+                "automated_vessel_assignment",
+                "!automated_vessel_assignment_use_legacy_mode",
+            ),
+            advanced=True,
+        ),
+        Setting(
+            name="automated_vessel_conservative_max_dilation_microns",
+            kind="float",
+            default=15.0,
+            help="Conservative-mode cap for progressive dilation in robust assignment",
+            section=_VESSEL_MASKS,
+            minimum=0.0,
+            unit="um",
+            requires=(
+                "use_large_vessel_masks",
+                "automated_vessel_assignment",
+                "!automated_vessel_assignment_use_legacy_mode",
+            ),
+            advanced=True,
+        ),
+        Setting(
+            name="write_fast_mode_preassignment_large_vessel_debug_3d_html",
+            kind="bool",
+            default=False,
+            help=(
+                "Write before/after Plotly HTML diagnostics of large-vessel masks "
+                "around fast-mode overlap cleanup"
+            ),
+            section=_VESSEL_MASKS,
+            requires=(
+                "use_large_vessel_masks",
+                "automated_vessel_assignment",
+                "automated_vessel_assignment_fast_mode",
+            ),
+            advanced=True,
+        ),
+        Setting(
+            name="large_vessel_3d_volume_downsample_stride",
+            kind="int",
+            default=1,
+            help=(
+                "Block-max downsample stride for large/small vessel volume traces "
+                "in the automated-assignment Plotly HTML view, in voxels of the "
+                "finest axis: a coarser axis is pooled over proportionally fewer "
+                "voxels, so each block is about the same size in microns every way"
+            ),
+            section=_VESSEL_MASKS,
+            minimum=1,
+            requires=("use_large_vessel_masks", "automated_vessel_assignment"),
+            advanced=True,
+        ),
+        Setting(
+            name="cut_network_at_large_vessel_volumes",
+            kind="bool",
+            default=False,
+            help=(
+                "Before automated terminal assignment, cut the graph at large "
+                "arteriole/venule mask boundaries: remove edges inside the "
+                "volume and split crossing edges so new degree-1 terminals sit "
+                "on the exterior side of the cut. Off by default: the large "
+                "vessels stay in the network (assign_large_vessel_branch_orders "
+                "labels them Large_Art/Large_Ven)"
+            ),
+            section=_VESSEL_MASKS,
+            requires=("use_large_vessel_masks", "automated_vessel_assignment"),
+        ),
+        Setting(
+            name="remove_orphaned_branches_outside_large_vessel_volumes",
+            kind="bool",
+            default=False,
+            help=(
+                "After cutting at large-vessel volumes, remove connected "
+                "components that remain outside the volume when their total "
+                "edge count is below orphaned_branch_max_edge_count"
+            ),
+            section=_VESSEL_MASKS,
+            requires=(
+                "use_large_vessel_masks",
+                "automated_vessel_assignment",
+                "cut_network_at_large_vessel_volumes",
+            ),
+            advanced=True,
+        ),
+        Setting(
+            name="orphaned_branch_max_edge_count",
+            kind="int",
+            default=3,
+            help=(
+                "Edge-count threshold for orphan cleanup after large-vessel "
+                "volume cuts: drop a remaining exterior component when "
+                "edge_count < this value"
+            ),
+            section=_VESSEL_MASKS,
+            minimum=1,
+            requires=(
+                "use_large_vessel_masks",
+                "automated_vessel_assignment",
+                "cut_network_at_large_vessel_volumes",
+                "remove_orphaned_branches_outside_large_vessel_volumes",
+            ),
+            advanced=True,
+        ),
+        Setting(
+            name="assign_large_vessel_branch_orders",
+            kind="bool",
+            default=False,
+            help=(
+                "Keep large arteriole/venule mask material in the network as "
+                "first-class Large_Art{n}/Large_Ven{n} branch orders "
+                "(numbered by hop distance from the image-edge stump, "
+                "exactly like Art{n}/Ven{n}) instead of cutting it away. "
+                "Works with either skeletonisation method -- thickness-gated "
+                "or plain Lee -- since it tags edges by large-vessel-mask "
+                "overlap alone, not by how the centreline through them was "
+                "built. Requires cut_network_at_large_vessel_volumes=False, "
+                "and needs small-vessel boundaries configured too "
+                "(use_small_vessel_masks_for_boundary_assignment, or manual "
+                "arteriole/venule boundaries) or hierarchical Art*/Ven* "
+                "labelling -- and this tier with it -- will not run"
+            ),
+            section=_VESSEL_MASKS,
+            requires=(
+                "use_large_vessel_masks",
+                "automated_vessel_assignment",
+                "!cut_network_at_large_vessel_volumes",
+            ),
+        ),
+        Setting(
+            name="large_vessel_mask_min_overlap_fraction",
+            kind="float",
+            default=0.5,
+            help=(
+                "Require at least this fraction of an edge to lie inside a "
+                "large-vessel mask before tagging it Large_Art/Large_Ven"
+            ),
+            section=_VESSEL_MASKS,
+            unit="fraction",
+            minimum=0.0,
+            maximum=1.0,
+            requires=(
+                "use_large_vessel_masks",
+                "automated_vessel_assignment",
+                "!cut_network_at_large_vessel_volumes",
+                "assign_large_vessel_branch_orders",
+            ),
+            advanced=True,
+        ),
+        Setting(
+            name="large_vessel_stump_min_component_fraction",
+            kind="float",
+            default=0.05,
+            help=(
+                "A large-vessel mask component gives a stump (an inlet or outlet "
+                "where the field of view cut the vessel off, the mask_stump "
+                "method) only when it holds at least this fraction of the voxels "
+                "of the mask's largest component. The specks a classifier leaves "
+                "at the image faces each used to seed an inlet of their own: on "
+                "Stack A, 468 arteriole components, of which the vessel is one "
+                "and the next largest 0.5% of it. 0 keeps every component"
+            ),
+            section=_VESSEL_MASKS,
+            unit="fraction",
+            minimum=0.0,
+            maximum=1.0,
+            requires=(
+                "use_large_vessel_masks",
+                "automated_vessel_assignment",
+                "!cut_network_at_large_vessel_volumes",
+                "assign_large_vessel_branch_orders",
+            ),
+            advanced=True,
+        ),
+        Setting(
+            name="skeleton_thick_vessel_restrict_to_mask",
+            kind="choice",
+            default="off",
+            choices=("off", "large", "small", "both"),
+            help=(
+                "Take the fat/thick region from the chosen mask(s) instead of from width: every "
+                "segmented voxel inside them is fat, and the radius test runs nowhere "
+                "(skeleton_thick_vessel_min_radius_um still sizes the wall margin by default), so"
+                " outside the mask only that margin is fat. Off (the default), local radius alone"
+                " decides, which can sweep dense, complex vasculature into one large connected "
+                "'fat' region purely because it locally measures wide, or -- the opposite failure"
+                " -- miss a real large vessel entirely when it never reaches the radius threshold"
+                " anywhere (an artery imaged before full muscularisation can measure narrower "
+                "everywhere than its paired vein, for instance). 'large' needs "
+                "use_large_vessel_masks; 'small' needs "
+                "use_small_vessel_masks_for_boundary_assignment; 'both' needs both. If the mask "
+                "has no overlap with the segmented image at all, skeletonisation falls back to "
+                "plain Lee on the whole mask, same as when no fat trunk is present"
+            ),
+            section=_VESSEL_MASKS,
+            requires=("use_thick_vessel_skeletonisation",),
+            advanced=True,
+        ),
+        Setting(
+            name="skeleton_thick_vessel_restrict_to_mask_warn_below",
+            kind="float",
+            default=0.5,
+            help=(
+                "Log a warning instead of an info line when fewer than "
+                "this fraction of a large/small vessel mask's own voxels "
+                "fall on the segmented image, while "
+                "skeleton_thick_vessel_restrict_to_mask is using it -- see "
+                "preprocessing.thick_vessels.diagnose_mask_restriction_"
+                "alignment. A low fraction usually means that mask is "
+                "misaligned with, or a different shape than, the vessel "
+                "as it actually appears in the segmented image, so much "
+                "of it contributes nothing to the fat catchment "
+                "regardless of wall absorption. Reported per mask (large "
+                "arteriole and venule counted separately), not blended"
+            ),
+            section=_VESSEL_MASKS,
+            minimum=0.0,
+            maximum=1.0,
+            requires=(
+                "use_thick_vessel_skeletonisation",
+                "skeleton_thick_vessel_restrict_to_mask!=off",
+            ),
+            advanced=True,
         ),
         Setting(
             name="use_small_vessel_masks_for_boundary_assignment",
             kind="bool",
             default=False,
-            help="Assign arteriole and venule boundary nodes from small-vessel masks",
+            help=(
+                "Assign arteriole and venule boundary nodes from small-vessel masks. "
+                "Ticked in the panel, it fills the mask rows from files beside the input "
+                "image named like it with 'small' and 'arteriole' or 'venule' (artery, "
+                "vein and plurals too) added; 'small' alone is a global mask"
+            ),
+            requires=("automated_vessel_assignment",),
             section=_VESSEL_MASKS,
+        ),
+        Setting(
+            name="small_arteriole_mask_path",
+            kind="path",
+            default=f"{_IMAGES}/small_arteriole_mask.tif",
+            help=(
+                "Read this pre-segmented small arteriole mask -- or, with no small "
+                "venule mask entered, a global mask of every small vessel, "
+                "arteriole or venule: the vessels in it are then unknown small "
+                "vessels, and the run gives every vessel an unknown class "
+                "(large, small, capillary) instead of a branch order"
+            ),
+            section=_VESSEL_MASKS,
+            requires=(
+                "use_small_vessel_masks_for_boundary_assignment",
+                "automated_vessel_assignment",
+                "!use_ilastik_small_vessel_segmentation",
+                "!use_pixel_classifier_small_vessel_segmentation",
+            ),
+            must_exist=True,
+        ),
+        Setting(
+            name="small_venule_mask_path",
+            kind="path",
+            default=None,
+            placeholder="none: the arteriole/global mask is a global mask",
+            help=(
+                "Read this pre-segmented small venule mask. Leave it empty to "
+                "read the arteriole/global mask as a global mask of every small "
+                "vessel"
+            ),
+            section=_VESSEL_MASKS,
+            requires=(
+                "use_small_vessel_masks_for_boundary_assignment",
+                "automated_vessel_assignment",
+                "!use_ilastik_small_vessel_segmentation",
+                "!use_pixel_classifier_small_vessel_segmentation",
+            ),
+            must_exist=True,
         ),
         Setting(
             name="use_ilastik_small_vessel_segmentation",
@@ -240,7 +2122,163 @@ SCHEMA = Schema(
             default=False,
             help="Produce the small-vessel masks with ilastik instead of reading pre-segmented files",
             section=_VESSEL_MASKS,
-            requires=("use_small_vessel_masks_for_boundary_assignment",),
+            requires=("use_small_vessel_masks_for_boundary_assignment", "automated_vessel_assignment"),
+        ),
+        Setting(
+            name="ilastik_small_arteriole_classifier_path",
+            kind="path",
+            default=f"{_CLASSIFIERS}/arteriole_classifier.ilp",
+            help=(
+                "Use this trained ilastik project to segment small arterioles -- "
+                "or, with no small venule classifier entered, every small vessel, "
+                "as a global mask"
+            ),
+            section=_VESSEL_MASKS,
+            requires=(
+                "use_small_vessel_masks_for_boundary_assignment",
+                "automated_vessel_assignment",
+                "use_ilastik_small_vessel_segmentation",
+            ),
+            must_exist=True,
+        ),
+        Setting(
+            name="ilastik_small_arteriole_vessel_label",
+            kind="str",
+            default=None,
+            placeholder="a label name or number in the project",
+            help=(
+                "Read this label of the small arteriole classifier as the small "
+                "arteriole (or, with no small venule classifier, as every small "
+                "vessel): one of the project's label names, or its number (1 for "
+                "the first label made in ilastik). Every other label is background. "
+                "Preflight lists the project's labels"
+            ),
+            section=_VESSEL_MASKS,
+            requires=(
+                "use_small_vessel_masks_for_boundary_assignment",
+                "automated_vessel_assignment",
+                "use_ilastik_small_vessel_segmentation",
+            ),
+        ),
+        Setting(
+            name="ilastik_small_arteriole_channels",
+            kind="int_list",
+            default=None,
+            placeholder="the whole raw image",
+            help=(
+                "Give the small arteriole/global classifier these channels of the raw "
+                "image (raw_image_path), kept separate and in this order, e.g. [1, 2]: "
+                "the channels it was trained on, counting from 0 as raw_image_channel "
+                "does (C1 is 0). Leave unset for the whole file"
+            ),
+            section=_VESSEL_MASKS,
+            requires=(
+                "use_small_vessel_masks_for_boundary_assignment",
+                "automated_vessel_assignment",
+                "use_ilastik_small_vessel_segmentation",
+                "raw_image_path",
+            ),
+            migrates=("ilastik_unsegmented_small_arteriole_image_path",),
+            migrate=_migrate_ilastik_mask_input(
+                "ilastik_unsegmented_small_arteriole_image_path",
+                "use_ilastik_small_vessel_segmentation",
+            ),
+        ),
+        Setting(
+            name="ilastik_small_venule_classifier_path",
+            kind="path",
+            default=None,
+            placeholder="none: the arteriole/global classifier makes a global mask",
+            help=(
+                "Use this trained ilastik project to segment small venules. Leave "
+                "it empty to read what the arteriole/global classifier segments as "
+                "a global mask of every small vessel"
+            ),
+            section=_VESSEL_MASKS,
+            requires=(
+                "use_small_vessel_masks_for_boundary_assignment",
+                "automated_vessel_assignment",
+                "use_ilastik_small_vessel_segmentation",
+            ),
+            must_exist=True,
+        ),
+        Setting(
+            name="ilastik_small_venule_vessel_label",
+            kind="str",
+            default=None,
+            placeholder="a label name or number in the project",
+            help=(
+                "Read this label of the small venule classifier as the small "
+                "venule: one of the project's label names, or its number (1 for the "
+                "first label made in ilastik). Every other label is background. "
+                "Preflight lists the project's labels"
+            ),
+            section=_VESSEL_MASKS,
+            requires=(
+                "use_small_vessel_masks_for_boundary_assignment",
+                "automated_vessel_assignment",
+                "use_ilastik_small_vessel_segmentation",
+                "ilastik_small_venule_classifier_path",
+            ),
+        ),
+        Setting(
+            name="ilastik_small_venule_channels",
+            kind="int_list",
+            default=None,
+            placeholder="the whole raw image",
+            help=(
+                "Give the small venule classifier these channels of the raw image "
+                "(raw_image_path), kept separate and in this order, e.g. [2]: the "
+                "channels it was trained on, counting from 0 as raw_image_channel does "
+                "(C1 is 0). Leave unset for the whole file"
+            ),
+            section=_VESSEL_MASKS,
+            requires=(
+                "use_small_vessel_masks_for_boundary_assignment",
+                "automated_vessel_assignment",
+                "use_ilastik_small_vessel_segmentation",
+                "ilastik_small_venule_classifier_path",
+                "raw_image_path",
+            ),
+            migrates=("ilastik_unsegmented_small_venule_image_path",),
+            migrate=_migrate_ilastik_mask_input(
+                "ilastik_unsegmented_small_venule_image_path",
+                "use_ilastik_small_vessel_segmentation",
+            ),
+        ),
+        Setting(
+            name="use_pixel_classifier_small_vessel_segmentation",
+            kind="bool",
+            default=False,
+            help=(
+                "Produce the small arteriole and venule masks from the raw image "
+                "(raw_image_path) with a classifier trained in HaemoLynx's own training "
+                "window, instead of reading pre-segmented files. Follows use_memmap_loading"
+            ),
+            section=_VESSEL_MASKS,
+            requires=(
+                "use_small_vessel_masks_for_boundary_assignment",
+                "automated_vessel_assignment",
+                "!use_ilastik_small_vessel_segmentation",
+                "raw_image_path",
+            ),
+        ),
+        Setting(
+            name="pixel_classifier_small_vessel_path",
+            kind="path",
+            default=None,
+            help=(
+                "Segment the small arterioles and venules with this classifier (.haemoclf), "
+                "trained in the panel to tell them from background. One never shown a "
+                "venule makes a global mask of every small vessel"
+            ),
+            section=_VESSEL_MASKS,
+            requires=(
+                "use_small_vessel_masks_for_boundary_assignment",
+                "automated_vessel_assignment",
+                "use_pixel_classifier_small_vessel_segmentation",
+            ),
+            must_exist=True,
         ),
         Setting(
             name="small_vessel_mask_min_overlap_fraction",
@@ -251,7 +2289,553 @@ SCHEMA = Schema(
             unit="fraction",
             minimum=0.0,
             maximum=1.0,
-            requires=("use_small_vessel_masks_for_boundary_assignment",),
+            requires=("use_small_vessel_masks_for_boundary_assignment", "automated_vessel_assignment"),
+            advanced=True,
+        ),
+        Setting(
+            name="small_vessel_mask_dilation_microns",
+            kind="float",
+            default=0.0,
+            help=(
+                "Maximum dilation (microns) for progressive small-vessel boundary "
+                "assignment: label at 0 µm, then at 1 µm and in 5 µm steps up to "
+                "this value, each edge keeping the label of the first step that "
+                "reaches it; the boundary nodes are read from the final labels. "
+                "There is no separate load-time small-vessel dilation setting"
+            ),
+            section=_VESSEL_MASKS,
+            minimum=0.0,
+            unit="um",
+            requires=("use_small_vessel_masks_for_boundary_assignment", "automated_vessel_assignment"),
+        ),
+        Setting(
+            name="small_vessel_boundary_assignment_enable_overlap_cleanup",
+            kind="bool",
+            default=True,
+            help=(
+                "Master switch for small-vessel overlap cleanup at assignment time. "
+                "If False, cleanup is skipped even when fast mode is on"
+            ),
+            section=_VESSEL_MASKS,
+            requires=("use_small_vessel_masks_for_boundary_assignment", "automated_vessel_assignment"),
+            advanced=True,
+            # Accepted and never read; the edge classification is sequential.
+            replaces={"small_vessel_overlap_parallel_workers": {}},
+        ),
+        Setting(
+            name="small_vessel_boundary_assignment_fast_mode",
+            kind="bool",
+            default=True,
+            help=(
+                "Pre-clean small arteriole/venule overlap voxels from the smaller "
+                "component once before progressive boundary labelling (when "
+                "overlap cleanup is enabled)"
+            ),
+            section=_VESSEL_MASKS,
+            requires=(
+                "use_small_vessel_masks_for_boundary_assignment",
+                "automated_vessel_assignment",
+                "small_vessel_boundary_assignment_enable_overlap_cleanup",
+            ),
+            advanced=True,
+        ),
+        Setting(
+            name="small_vessel_boundary_assignment_apply_overlap_cleanup_in_normal_mode",
+            kind="bool",
+            default=False,
+            help=(
+                "When small-vessel fast mode is off, still clean the small masks' "
+                "arteriole/venule overlap once before labelling -- the same clean-up fast mode "
+                "makes (requires cleanup enabled)"
+            ),
+            section=_VESSEL_MASKS,
+            requires=(
+                "use_small_vessel_masks_for_boundary_assignment",
+                "automated_vessel_assignment",
+                "small_vessel_boundary_assignment_enable_overlap_cleanup",
+                "!small_vessel_boundary_assignment_fast_mode",
+            ),
+            advanced=True,
+        ),
+        Setting(
+            name="small_vessel_mask_continuity_enable",
+            kind="bool",
+            default=False,
+            help=(
+                "Bridge gaps in small-vessel masks with type-locked cylinder links "
+                "(same-type small↔small / small↔large) before boundary labelling"
+            ),
+            section=_VESSEL_MASKS,
+            requires=("use_small_vessel_masks_for_boundary_assignment", "automated_vessel_assignment"),
+            advanced=True,
+        ),
+        Setting(
+            name="small_vessel_mask_continuity_allow_small_to_large",
+            kind="bool",
+            default=True,
+            help="Allow continuity bridges from small components to large same-type masks",
+            section=_VESSEL_MASKS,
+            requires=(
+                "use_small_vessel_masks_for_boundary_assignment",
+                "automated_vessel_assignment",
+                "small_vessel_mask_continuity_enable",
+            ),
+            advanced=True,
+        ),
+        Setting(
+            name="small_vessel_mask_continuity_allow_small_to_small",
+            kind="bool",
+            default=True,
+            help="Allow continuity bridges between small components of the same type",
+            section=_VESSEL_MASKS,
+            requires=(
+                "use_small_vessel_masks_for_boundary_assignment",
+                "automated_vessel_assignment",
+                "small_vessel_mask_continuity_enable",
+            ),
+            advanced=True,
+        ),
+        Setting(
+            name="small_vessel_mask_continuity_enforce_cylinder_only",
+            kind="bool",
+            default=True,
+            help="Restrict continuity bridges to cylinder-to-cylinder links only",
+            section=_VESSEL_MASKS,
+            requires=(
+                "use_small_vessel_masks_for_boundary_assignment",
+                "automated_vessel_assignment",
+                "small_vessel_mask_continuity_enable",
+            ),
+            advanced=True,
+        ),
+        Setting(
+            name="small_vessel_mask_continuity_min_cylindricality",
+            kind="float",
+            default=0.45,
+            help="Minimum cylindricality score required for a continuity bridge endpoint",
+            section=_VESSEL_MASKS,
+            minimum=0.0,
+            maximum=1.0,
+            requires=(
+                "use_small_vessel_masks_for_boundary_assignment",
+                "automated_vessel_assignment",
+                "small_vessel_mask_continuity_enable",
+            ),
+            advanced=True,
+        ),
+        Setting(
+            name="small_vessel_mask_continuity_max_axis_angle_degrees",
+            kind="float",
+            default=45.0,
+            help="Maximum axis-angle (degrees) between bridged cylinder axes",
+            section=_VESSEL_MASKS,
+            minimum=0.0,
+            requires=(
+                "use_small_vessel_masks_for_boundary_assignment",
+                "automated_vessel_assignment",
+                "small_vessel_mask_continuity_enable",
+            ),
+            advanced=True,
+        ),
+        Setting(
+            name="small_vessel_mask_continuity_min_facing_cosine",
+            kind="float",
+            default=0.82,
+            help="Minimum facing-cosine between cylinder endpoints for a bridge",
+            section=_VESSEL_MASKS,
+            minimum=0.0,
+            maximum=1.0,
+            requires=(
+                "use_small_vessel_masks_for_boundary_assignment",
+                "automated_vessel_assignment",
+                "small_vessel_mask_continuity_enable",
+            ),
+            advanced=True,
+        ),
+        Setting(
+            name="small_vessel_mask_continuity_max_radius_ratio",
+            kind="float",
+            default=3.0,
+            help="Maximum allowed radius ratio between bridged cylinder endpoints",
+            section=_VESSEL_MASKS,
+            minimum=1.0,
+            requires=(
+                "use_small_vessel_masks_for_boundary_assignment",
+                "automated_vessel_assignment",
+                "small_vessel_mask_continuity_enable",
+            ),
+            advanced=True,
+        ),
+        Setting(
+            name="small_vessel_mask_continuity_max_bridge_distance_microns",
+            kind="float",
+            default=35.0,
+            help="Maximum bridge length (microns) for continuity linking",
+            section=_VESSEL_MASKS,
+            minimum=0.0,
+            unit="um",
+            requires=(
+                "use_small_vessel_masks_for_boundary_assignment",
+                "automated_vessel_assignment",
+                "small_vessel_mask_continuity_enable",
+            ),
+            advanced=True,
+        ),
+        Setting(
+            name="small_vessel_mask_continuity_corridor_max_distance_microns",
+            kind="float",
+            default=12.0,
+            help="Maximum corridor half-width (microns) around an accepted bridge",
+            section=_VESSEL_MASKS,
+            minimum=0.0,
+            unit="um",
+            requires=(
+                "use_small_vessel_masks_for_boundary_assignment",
+                "automated_vessel_assignment",
+                "small_vessel_mask_continuity_enable",
+            ),
+            advanced=True,
+        ),
+        Setting(
+            name="small_vessel_mask_continuity_opposite_exclusion_distance_microns",
+            kind="float",
+            default=3.0,
+            help=(
+                "Reject bridges that come within this distance of the opposite-type mask"
+            ),
+            section=_VESSEL_MASKS,
+            minimum=0.0,
+            unit="um",
+            requires=(
+                "use_small_vessel_masks_for_boundary_assignment",
+                "automated_vessel_assignment",
+                "small_vessel_mask_continuity_enable",
+            ),
+            advanced=True,
+        ),
+        Setting(
+            name="small_vessel_tangential_redefinition_enable",
+            kind="bool",
+            default=False,
+            help=(
+                "Relabel a small-vessel piece that runs alongside a large vessel as "
+                "that large vessel's class, then flip a small piece lying in line "
+                "between two pieces of the other class. Runs at boundary assignment; "
+                "the first part needs the large-vessel masks. The napari mask layers "
+                "show the result from the Boundaries stage on, and the run log names "
+                "each piece changed. To relabel a small piece by what it touches in "
+                "the small masks, use small_vessel_swap_minority_components"
+            ),
+            section=_VESSEL_MASKS,
+            requires=("use_small_vessel_masks_for_boundary_assignment", "automated_vessel_assignment"),
+            advanced=True,
+        ),
+        Setting(
+            name="small_vessel_tangential_redefinition_max_contact_distance_microns",
+            kind="float",
+            default=12.0,
+            help=(
+                "How far from a large vessel (microns) a small piece is examined: the "
+                "stretch of it within this distance gives the direction that is "
+                "judged against the large vessel's surface"
+            ),
+            section=_VESSEL_MASKS,
+            minimum=0.0,
+            unit="um",
+            requires=(
+                "use_small_vessel_masks_for_boundary_assignment",
+                "automated_vessel_assignment",
+                "small_vessel_tangential_redefinition_enable",
+            ),
+            advanced=True,
+        ),
+        Setting(
+            name="small_vessel_tangential_redefinition_touch_distance_microns",
+            kind="float",
+            default=3.0,
+            help=(
+                "A small piece has to come this close (microns) to a large vessel for "
+                "the contact to count; its voxels this close are the part touching it"
+            ),
+            section=_VESSEL_MASKS,
+            minimum=0.0,
+            unit="um",
+            requires=(
+                "use_small_vessel_masks_for_boundary_assignment",
+                "automated_vessel_assignment",
+                "small_vessel_tangential_redefinition_enable",
+            ),
+            advanced=True,
+        ),
+        Setting(
+            name="small_vessel_tangential_redefinition_tangency_cosine_max",
+            kind="float",
+            default=0.35,
+            help=(
+                "Largest |cosine| between a small piece's direction and the large "
+                "vessel's surface normal for the piece to count as running alongside "
+                "it (0 = along the surface, 1 = pointing straight into it; 0.35 is "
+                "within about 20 degrees of the surface). A piece meeting a large "
+                "vessel end-on is a branch, and keeps its class"
+            ),
+            section=_VESSEL_MASKS,
+            minimum=0.0,
+            maximum=1.0,
+            requires=(
+                "use_small_vessel_masks_for_boundary_assignment",
+                "automated_vessel_assignment",
+                "small_vessel_tangential_redefinition_enable",
+            ),
+            advanced=True,
+        ),
+        Setting(
+            name="small_vessel_tangential_redefinition_min_contact_fraction",
+            kind="float",
+            default=0.15,
+            help=(
+                "Relabel a small piece only when at least this fraction of its voxels "
+                "touch the large vessel it runs alongside, so one contact near the tip "
+                "of a large small-vessel tree does not relabel the whole tree"
+            ),
+            section=_VESSEL_MASKS,
+            unit="fraction",
+            minimum=0.0,
+            maximum=1.0,
+            requires=(
+                "use_small_vessel_masks_for_boundary_assignment",
+                "automated_vessel_assignment",
+                "small_vessel_tangential_redefinition_enable",
+            ),
+            advanced=True,
+        ),
+        Setting(
+            name="small_vessel_tangential_redefinition_margin",
+            kind="float",
+            default=0.10,
+            help=(
+                "When a piece runs alongside both a large arteriole and a large "
+                "venule, the better contact has to score lower by at least this much "
+                "to win (score: distance in microns, plus 4 x tangency cosine, plus a "
+                "penalty for coming within 3 microns of the other class)"
+            ),
+            section=_VESSEL_MASKS,
+            minimum=0.0,
+            requires=(
+                "use_small_vessel_masks_for_boundary_assignment",
+                "automated_vessel_assignment",
+                "small_vessel_tangential_redefinition_enable",
+            ),
+            advanced=True,
+        ),
+        Setting(
+            name="small_vessel_tangential_redefinition_parallel_workers",
+            kind="int",
+            default=8,
+            help=(
+                "Worker threads for judging small pieces against the large vessels "
+                "(0 or 1 = one at a time)"
+            ),
+            section=_VESSEL_MASKS,
+            minimum=0,
+            requires=(
+                "use_small_vessel_masks_for_boundary_assignment",
+                "automated_vessel_assignment",
+                "small_vessel_tangential_redefinition_enable",
+            ),
+            advanced=True,
+        ),
+        Setting(
+            name="small_vessel_sandwiched_reassignment_enable",
+            kind="bool",
+            default=True,
+            help=(
+                "Flip a small piece lying in line between two pieces of the other "
+                "class, one beyond each of its ends, when it is smaller than the two "
+                "together (part of tangential redefinition)"
+            ),
+            section=_VESSEL_MASKS,
+            requires=(
+                "use_small_vessel_masks_for_boundary_assignment",
+                "automated_vessel_assignment",
+                "small_vessel_tangential_redefinition_enable",
+            ),
+            advanced=True,
+        ),
+        Setting(
+            name="small_vessel_sandwiched_max_gap_microns",
+            kind="float",
+            default=12.0,
+            help=(
+                "Largest gap (microns) between a sandwiched piece's end and the piece "
+                "beyond it"
+            ),
+            section=_VESSEL_MASKS,
+            minimum=0.0,
+            unit="um",
+            requires=(
+                "use_small_vessel_masks_for_boundary_assignment",
+                "automated_vessel_assignment",
+                "small_vessel_tangential_redefinition_enable",
+                "small_vessel_sandwiched_reassignment_enable",
+            ),
+            advanced=True,
+        ),
+        Setting(
+            name="small_vessel_sandwiched_min_facing_cosine",
+            kind="float",
+            default=0.82,
+            help=(
+                "Across a gap, the piece beyond an end has to lie within this cosine "
+                "of the direction the end points (0.82 is about 35 degrees)"
+            ),
+            section=_VESSEL_MASKS,
+            minimum=0.0,
+            maximum=1.0,
+            requires=(
+                "use_small_vessel_masks_for_boundary_assignment",
+                "automated_vessel_assignment",
+                "small_vessel_tangential_redefinition_enable",
+                "small_vessel_sandwiched_reassignment_enable",
+            ),
+            advanced=True,
+        ),
+        Setting(
+            name="small_vessel_sandwiched_max_axis_angle_degrees",
+            kind="float",
+            default=45.0,
+            help=(
+                "Largest angle (degrees) between a sandwiched piece's direction and "
+                "each neighbour's direction near it, so a vessel it merely ends "
+                "against side-on does not count"
+            ),
+            section=_VESSEL_MASKS,
+            minimum=0.0,
+            maximum=90.0,
+            requires=(
+                "use_small_vessel_masks_for_boundary_assignment",
+                "automated_vessel_assignment",
+                "small_vessel_tangential_redefinition_enable",
+                "small_vessel_sandwiched_reassignment_enable",
+            ),
+            advanced=True,
+        ),
+        Setting(
+            name="use_gpu_mask_continuity_acceleration",
+            kind="bool",
+            default=False,
+            help=(
+                "Optional CuPy GPU acceleration for the distance transforms of "
+                "continuity bridging (falls back to CPU if unavailable)"
+            ),
+            section=_VESSEL_MASKS,
+            requires=("use_small_vessel_masks_for_boundary_assignment", "automated_vessel_assignment"),
+            advanced=True,
+        ),
+        Setting(
+            name="small_vessel_boundary_fallback_to_hop_distance",
+            kind="bool",
+            default=True,
+            help=(
+                "For each inlet or outlet whose own vessels the small-vessel mask "
+                "of its class never reaches (nor the large one, when the large "
+                "vessels stay in the network), add the nodes a fixed hop distance "
+                "from it to that class's boundary nodes. The nodes the masks did "
+                "find are kept"
+            ),
+            section=_VESSEL_MASKS,
+            requires=("use_small_vessel_masks_for_boundary_assignment", "automated_vessel_assignment"),
+            advanced=True,
+        ),
+        Setting(
+            name="small_vessel_boundary_fallback_hop_distance",
+            kind="int",
+            default=1,
+            help="Hop distance used when small-vessel boundary hop-distance fallback is enabled",
+            section=_VESSEL_MASKS,
+            minimum=1,
+            requires=(
+                "use_small_vessel_masks_for_boundary_assignment",
+                "automated_vessel_assignment",
+                "small_vessel_boundary_fallback_to_hop_distance",
+            ),
+            advanced=True,
+        ),
+        Setting(
+            name="small_vessel_min_component_volume_um3",
+            kind="float",
+            default=50.0,
+            help=(
+                "Remove connected components smaller than this physical volume from "
+                "small-vessel masks before boundary assignment (set 0 to disable)"
+            ),
+            section=_VESSEL_MASKS,
+            minimum=0.0,
+            unit="um3",
+            requires=("use_small_vessel_masks_for_boundary_assignment", "automated_vessel_assignment"),
+            advanced=True,
+        ),
+        Setting(
+            name="small_vessel_swap_minority_components",
+            kind="bool",
+            default=False,
+            help=(
+                "Relabel a small arteriole/venule component that touches a larger "
+                "one of the other class as that class, so a vessel segmented partly "
+                "as each becomes one continuous vessel. Runs at load time, after the "
+                "component-volume filter and before boundary labelling; the run log "
+                "lists every component it swaps. Unlike "
+                "small_vessel_tangential_redefinition_enable it compares the two "
+                "small masks with each other only, never with the large masks, and "
+                "needs touching, not alignment: a piece with one larger neighbour, "
+                "or split across the vessel's width, is swapped. The two can be "
+                "used together; this one runs first"
+            ),
+            section=_VESSEL_MASKS,
+            requires=("use_small_vessel_masks_for_boundary_assignment", "automated_vessel_assignment"),
+            advanced=True,
+        ),
+        Setting(
+            name="small_vessel_swap_max_size_ratio",
+            kind="float",
+            default=1.0,
+            help=(
+                "Swap a small-vessel component only when its volume is at most this "
+                "fraction of the touching other-class component's (1 = any smaller "
+                "component, 0.5 = at most half the size)"
+            ),
+            section=_VESSEL_MASKS,
+            unit="fraction",
+            minimum=0.01,
+            maximum=1.0,
+            requires=(
+                "use_small_vessel_masks_for_boundary_assignment",
+                "automated_vessel_assignment",
+                "small_vessel_swap_minority_components",
+            ),
+            advanced=True,
+        ),
+        Setting(
+            name="small_vessel_swap_min_contact_fraction",
+            kind="float",
+            default=0.3,
+            help=(
+                "Swap a small-vessel component only when at least this fraction of "
+                "its surface area faces the larger other-class component. A vessel "
+                "whose labels split lengthwise faces the other part over about a "
+                "third of its surface; one merely running beside or across another, "
+                "a few percent, and is kept; a short piece joined end to end, its end "
+                "(about 0.1-0.15). Lower it to catch those"
+            ),
+            section=_VESSEL_MASKS,
+            unit="fraction",
+            minimum=0.0,
+            maximum=1.0,
+            requires=(
+                "use_small_vessel_masks_for_boundary_assignment",
+                "automated_vessel_assignment",
+                "small_vessel_swap_minority_components",
+            ),
+            advanced=True,
         ),
         Setting(
             name="write_small_vessel_boundary_labelling_3d_html",
@@ -259,71 +2843,57 @@ SCHEMA = Schema(
             default=True,
             help="Write an interactive 3D HTML diagnostic of the small-vessel boundary labelling",
             section=_VESSEL_MASKS,
-            requires=("use_small_vessel_masks_for_boundary_assignment",),
+            requires=("use_small_vessel_masks_for_boundary_assignment", "automated_vessel_assignment"),
+            advanced=True,
         ),
+        # Vessel classes without masks: a size convention the user states
+        # (graph.vessel_classes_by_size, graph/vessel_size_classes.py). Read
+        # in the Diameters stage, once the widths are measured.
         Setting(
-            name="small_arteriole_mask_path",
-            kind="path",
-            default=f"{_IMAGES}/small_arteriole_mask.tif",
-            help="Read this pre-segmented small arteriole mask",
-            section=_VESSEL_MASKS,
-            requires=("use_small_vessel_masks_for_boundary_assignment",),
-            must_exist=True,
-        ),
-        Setting(
-            name="small_venule_mask_path",
-            kind="path",
-            default=f"{_IMAGES}/small_venule_mask.tif",
-            help="Read this pre-segmented small venule mask",
-            section=_VESSEL_MASKS,
-            requires=("use_small_vessel_masks_for_boundary_assignment",),
-            must_exist=True,
-        ),
-        Setting(
-            name="ilastik_unsegmented_small_arteriole_image_path",
-            kind="path",
-            default=f"{_IMAGES}/small_arteriole_mask.tif",
-            help="Read this raw image as the ilastik input for the small arteriole mask",
-            section=_VESSEL_MASKS,
-            requires=(
-                "use_small_vessel_masks_for_boundary_assignment",
-                "use_ilastik_small_vessel_segmentation",
+            name="classify_vessels_by_size",
+            kind="bool",
+            default=False,
+            help=(
+                "Class every vessel by its measured width against the two thresholds "
+                "below, instead of by vessel masks: wide, mid or narrow, named by their "
+                "widths in the outputs. A convention you state, not arterioles, venules "
+                "or capillaries: no vessel is given a side, and every step that acts on "
+                "capillaries acts on the narrow class"
             ),
+            section=_VESSEL_MASKS,
+            requires=("network_source=segmented_image", "!automated_vessel_assignment"),
         ),
         Setting(
-            name="ilastik_unsegmented_small_venule_image_path",
-            kind="path",
-            default=f"{_IMAGES}/small_venule_mask.tif",
-            help="Read this raw image as the ilastik input for the small venule mask",
-            section=_VESSEL_MASKS,
-            requires=(
-                "use_small_vessel_masks_for_boundary_assignment",
-                "use_ilastik_small_vessel_segmentation",
+            name="vessel_size_mid_min_diameter_um",
+            kind="float",
+            default=None,
+            placeholder="no default: state the convention",
+            help=(
+                "Class a vessel at least this wide, and narrower than the wide "
+                "threshold, as mid; a narrower one is narrow. Compared with each "
+                "vessel's width as measured, in the basis it was measured on (an "
+                "endothelial fit reads wall to wall, FWHM the plasma column), so a "
+                "threshold stated for one basis does not carry to the other"
             ),
+            section=_VESSEL_MASKS,
+            minimum=0.0,
+            unit="um",
+            requires=("classify_vessels_by_size", "!automated_vessel_assignment"),
         ),
         Setting(
-            name="ilastik_small_arteriole_classifier_path",
-            kind="path",
-            default=f"{_CLASSIFIERS}/arteriole_classifier.ilp",
-            help="Use this trained ilastik project to segment small arterioles",
-            section=_VESSEL_MASKS,
-            requires=(
-                "use_small_vessel_masks_for_boundary_assignment",
-                "use_ilastik_small_vessel_segmentation",
+            name="vessel_size_wide_min_diameter_um",
+            kind="float",
+            default=None,
+            placeholder="no default: state the convention",
+            help=(
+                "Class a vessel at least this wide as wide. Compared with each vessel's "
+                "width as measured, in the basis it was measured on; must be above the "
+                "mid threshold"
             ),
-            must_exist=True,
-        ),
-        Setting(
-            name="ilastik_small_venule_classifier_path",
-            kind="path",
-            default=f"{_CLASSIFIERS}/venule_classifier.ilp",
-            help="Use this trained ilastik project to segment small venules",
             section=_VESSEL_MASKS,
-            requires=(
-                "use_small_vessel_masks_for_boundary_assignment",
-                "use_ilastik_small_vessel_segmentation",
-            ),
-            must_exist=True,
+            minimum=0.0,
+            unit="um",
+            requires=("classify_vessels_by_size", "!automated_vessel_assignment"),
         ),
         # ------------------------------------------------------------------
         # Boundary assignment
@@ -332,16 +2902,13 @@ SCHEMA = Schema(
             name="base_plot_dir",
             kind="path",
             default=_PLOTS,
-            help="Write plot artifacts under this base directory",
+            help=(
+                "Write plot artifacts under this base directory, each image's in a folder "
+                "of its own named after it ({image stem}); a relative path is relative to "
+                "the working directory"
+            ),
             section=_BOUNDARY_ASSIGNMENT,
-        ),
-        Setting(
-            name="automated_vessel_assignment",
-            kind="bool",
-            default=False,
-            help="Select inlet and outlet nodes automatically from the large-vessel masks instead of manually",
-            section=_BOUNDARY_ASSIGNMENT,
-            requires=("use_large_vessel_masks",),
+            advanced=True,
         ),
         # "edge_percent" is the default for the two that every run needs
         # because it is the only method that asks nothing of the dataset: it
@@ -349,10 +2916,17 @@ SCHEMA = Schema(
         # one axis, so an image nobody has looked at yet still gets inlets and
         # outlets. "coordinates" and "volume" describe one dataset and no
         # other, which is why they are chosen rather than defaulted to.
+        # Greyed while automated_vessel_assignment is on: that path overrides
+        # these manual inlet/outlet methods.
         Setting(
             name="inlet_node_selection_method",
             kind="choice",
             default="edge_percent",
+            # No `requires`: it applies unless the masks choose the inlets,
+            # which is automated_vessel_assignment AND
+            # inlets_outlets_from_vessel_masks -- an "and" `requires` cannot
+            # negate. graph.inlets_outlets_from_vessel_masks is that test, and
+            # pipeline/checks.py warns when a manual inlet would be ignored.
             help="Choose how manual inlet nodes are picked from the graph",
             section=_BOUNDARY_ASSIGNMENT,
             choices=NODE_SELECTION_METHODS,
@@ -361,6 +2935,11 @@ SCHEMA = Schema(
             name="outlet_node_selection_method",
             kind="choice",
             default="edge_percent",
+            # No `requires`: it applies unless the masks choose the outlets,
+            # which is automated_vessel_assignment AND
+            # inlets_outlets_from_vessel_masks -- an "and" `requires` cannot
+            # negate. graph.inlets_outlets_from_vessel_masks is that test, and
+            # pipeline/checks.py warns when a manual outlet would be ignored.
             help="Choose how manual outlet nodes are picked from the graph",
             section=_BOUNDARY_ASSIGNMENT,
             choices=NODE_SELECTION_METHODS,
@@ -369,7 +2948,11 @@ SCHEMA = Schema(
             name="arteriole_boundary_selection_method",
             kind="choice",
             default="coordinates",
-            help="Choose how manual arteriole boundary nodes are picked from the graph",
+            help=(
+                "Choose how manual arteriole boundary nodes are picked from the graph: only "
+                "coordinates, volume and node_ids set any, from that method's list; any other "
+                "method, or an empty list, sets none"
+            ),
             section=_BOUNDARY_ASSIGNMENT,
             choices=NODE_SELECTION_METHODS,
         ),
@@ -377,9 +2960,46 @@ SCHEMA = Schema(
             name="venule_boundary_selection_method",
             kind="choice",
             default="coordinates",
-            help="Choose how manual venule boundary nodes are picked from the graph",
+            help=(
+                "Choose how manual venule boundary nodes are picked from the graph: only "
+                "coordinates, volume and node_ids set any, from that method's list; any other "
+                "method, or an empty list, sets none"
+            ),
             section=_BOUNDARY_ASSIGNMENT,
             choices=NODE_SELECTION_METHODS,
+        ),
+        # The large-vessel network's own inlet/outlet, seeded by default from
+        # the arteriole/venule mask's own image-edge stump (see
+        # graph.large_vessel_network) rather than any of the methods above.
+        # Greyed on the Boundaries tab while assign_large_vessel_branch_orders
+        # is off, since there is nothing to override yet.
+        Setting(
+            name="large_vessel_inlet_node_selection_method",
+            kind="choice",
+            default="mask_stump",
+            help=(
+                "Choose how the large-vessel network's inlet node(s) are picked. "
+                "mask_stump reads them from the large arteriole mask's own "
+                "geometry (where the mask is truncated by the image's field "
+                "of view); the other methods override that with a manual pick"
+            ),
+            section=_BOUNDARY_ASSIGNMENT,
+            choices=LARGE_VESSEL_NODE_SELECTION_METHODS,
+            requires=("assign_large_vessel_branch_orders",),
+        ),
+        Setting(
+            name="large_vessel_outlet_node_selection_method",
+            kind="choice",
+            default="mask_stump",
+            help=(
+                "Choose how the large-vessel network's outlet node(s) are picked. "
+                "mask_stump reads them from the large venule mask's own "
+                "geometry (where the mask is truncated by the image's field "
+                "of view); the other methods override that with a manual pick"
+            ),
+            section=_BOUNDARY_ASSIGNMENT,
+            choices=LARGE_VESSEL_NODE_SELECTION_METHODS,
+            requires=("assign_large_vessel_branch_orders",),
         ),
         # What the "edge_percent" method reads. Shared by every role: one axis
         # and one pair of bands describe the whole network.
@@ -421,6 +3041,36 @@ SCHEMA = Schema(
             unit="um",
             minimum=0.0,
         ),
+        Setting(
+            name="boundary_open_end_max_distance_um",
+            kind="float",
+            default=10.0,
+            help=(
+                "With edge_percent or degree_1_from_inlet, choose only terminals "
+                "within this distance of an image face -- vessels the image cut "
+                "through -- not dead ends inside the tissue, where no flow "
+                "enters or leaves. Leave empty to allow any terminal"
+            ),
+            section=_BOUNDARY_ASSIGNMENT,
+            unit="um",
+            minimum=0.0,
+            advanced=True,
+        ),
+        Setting(
+            name="boundary_open_end_test",
+            kind="choice",
+            default="distance",
+            help=(
+                "How edge_percent and degree_1_from_inlet tell a terminal the image "
+                "cut through. distance: within boundary_open_end_max_distance_um of "
+                "a face. leaves_image: the dead end leaves the image as graph "
+                "building judged it (it touches a face, or the segmented vessel "
+                "runs on to one)"
+            ),
+            section=_BOUNDARY_ASSIGNMENT,
+            choices=("distance", "leaves_image"),
+            advanced=True,
+        ),
         # The coordinates below apply whenever a role's selection method is
         # "coordinates". They are empty by default because a coordinate is a
         # statement about one dataset: the previous default named six points in
@@ -455,6 +3105,22 @@ SCHEMA = Schema(
             kind="any",
             default=[],
             help="Pick venule boundary nodes nearest to these (z, y, x) coordinates when the coordinates method is used",
+            section=_BOUNDARY_ASSIGNMENT,
+            unit="um",
+        ),
+        Setting(
+            name="large_vessel_inlet_node_coordinates",
+            kind="any",
+            default=[],
+            help="Pick the large-vessel inlet node(s) nearest to these (z, y, x) coordinates when the coordinates method is used",
+            section=_BOUNDARY_ASSIGNMENT,
+            unit="um",
+        ),
+        Setting(
+            name="large_vessel_outlet_node_coordinates",
+            kind="any",
+            default=[],
+            help="Pick the large-vessel outlet node(s) nearest to these (z, y, x) coordinates when the coordinates method is used",
             section=_BOUNDARY_ASSIGNMENT,
             unit="um",
         ),
@@ -493,6 +3159,70 @@ SCHEMA = Schema(
             unit="um",
         ),
         Setting(
+            name="large_vessel_inlet_node_volumes",
+            kind="any",
+            default=[],
+            help="Select the large-vessel inlet node(s) falling inside these (min corner, max corner) boxes, each corner (z, y, x)",
+            section=_BOUNDARY_ASSIGNMENT,
+            unit="um",
+        ),
+        Setting(
+            name="large_vessel_outlet_node_volumes",
+            kind="any",
+            default=[],
+            help="Select the large-vessel outlet node(s) falling inside these (min corner, max corner) boxes, each corner (z, y, x)",
+            section=_BOUNDARY_ASSIGNMENT,
+            unit="um",
+        ),
+        # The node lists below apply whenever a role's selection method is
+        # "node_ids". Unlike every other method they are not limited to
+        # terminals: an arteriole/venule boundary is where a vessel hands
+        # over to the capillaries, which is usually a junction. A node ID
+        # names a node in one build of the graph, so these are empty by
+        # default for the same reason the coordinates are.
+        Setting(
+            name="inlet_node_ids",
+            kind="any",
+            default=[],
+            help="Use exactly these graph node IDs as inlet nodes when the node_ids method is used",
+            section=_BOUNDARY_ASSIGNMENT,
+        ),
+        Setting(
+            name="outlet_node_ids",
+            kind="any",
+            default=[],
+            help="Use exactly these graph node IDs as outlet nodes when the node_ids method is used",
+            section=_BOUNDARY_ASSIGNMENT,
+        ),
+        Setting(
+            name="arteriole_boundary_node_ids",
+            kind="any",
+            default=[],
+            help="Use exactly these graph node IDs as arteriole boundary nodes when the node_ids method is used",
+            section=_BOUNDARY_ASSIGNMENT,
+        ),
+        Setting(
+            name="venule_boundary_node_ids",
+            kind="any",
+            default=[],
+            help="Use exactly these graph node IDs as venule boundary nodes when the node_ids method is used",
+            section=_BOUNDARY_ASSIGNMENT,
+        ),
+        Setting(
+            name="large_vessel_inlet_node_ids",
+            kind="any",
+            default=[],
+            help="Use exactly these graph node IDs as the large-vessel inlet node(s) when the node_ids method is used",
+            section=_BOUNDARY_ASSIGNMENT,
+        ),
+        Setting(
+            name="large_vessel_outlet_node_ids",
+            kind="any",
+            default=[],
+            help="Use exactly these graph node IDs as the large-vessel outlet node(s) when the node_ids method is used",
+            section=_BOUNDARY_ASSIGNMENT,
+        ),
+        Setting(
             # The pipeline fills these in place (`inlet_nodes[:] = []`), so
             # they must stay mutable lists rather than fixed-length tuples.
             name="inlet_nodes",
@@ -527,11 +3257,85 @@ SCHEMA = Schema(
             advanced=True,
         ),
         Setting(
+            # Not to be confused with large_arteriole_boundary_nodes below,
+            # which is the Large_Art/Art hand-off point inside a network that
+            # already spans both tiers -- this is the large-vessel network's
+            # own inlet, the same role inlet_nodes plays for the rest of the
+            # network. Also copied into inlet_nodes; kept here too so its own
+            # Boundaries sub-tab has something to show for what was picked.
+            name="large_vessel_inlet_nodes",
+            kind="any",
+            default=[],
+            help="Hold the large-vessel inlet node ID(s) chosen during the run; leave empty to let the pipeline fill it",
+            section=_BOUNDARY_ASSIGNMENT,
+            advanced=True,
+        ),
+        Setting(
+            name="large_vessel_outlet_nodes",
+            kind="any",
+            default=[],
+            help="Hold the large-vessel outlet node ID(s) chosen during the run; leave empty to let the pipeline fill it",
+            section=_BOUNDARY_ASSIGNMENT,
+            advanced=True,
+        ),
+        Setting(
+            name="large_arteriole_boundary_nodes",
+            kind="any",
+            default=[],
+            help=(
+                "Hold the Large_Art/Art hand-off node IDs chosen during the "
+                "run; leave empty to let the pipeline fill it"
+            ),
+            section=_BOUNDARY_ASSIGNMENT,
+            advanced=True,
+        ),
+        Setting(
+            name="large_venule_boundary_nodes",
+            kind="any",
+            default=[],
+            help=(
+                "Hold the Ven/Large_Ven hand-off node IDs chosen during the "
+                "run; leave empty to let the pipeline fill it"
+            ),
+            section=_BOUNDARY_ASSIGNMENT,
+            advanced=True,
+        ),
+        Setting(
             name="strict_branch_order_assignment",
             kind="bool",
             default=False,
-            help="Fail rather than fall back when the hierarchical branch-order prerequisites are not met",
+            help=(
+                "When small-arteriole/venule terminals were expected but are "
+                "missing, raise; when they were never assigned, still label "
+                "capillary B* orders from inlets and warn. Also raise when the "
+                "Art or Ven tier crosses the capillary bed because a branch has "
+                "no boundary node of its own (otherwise a warning). Unread while vessels "
+                "are classed by size, which assigns no branch orders"
+            ),
             section=_BOUNDARY_ASSIGNMENT,
+            requires=("!classify_vessels_by_size",),
+            advanced=True,
+        ),
+        Setting(
+            name="branch_order_steps",
+            kind="choice",
+            default="every_junction",
+            help=(
+                "Where the Large_Art, Art, Ven and Large_Ven orders step. "
+                "every_junction: at every junction the tier passes, a side branch "
+                "leaving it included, so each order is one segment between side "
+                "branches. tier_branchings: only where three or more of the tier's "
+                "own vessels meet, so a trunk is one order until it divides (as the "
+                "pericyte literature counts from a penetrating arteriole). Capillary "
+                "B orders step at every junction either way. A synthetic network is "
+                "always numbered every_junction (its generator reads each tier order "
+                "as one segment), and refuses a template numbered tier_branchings. "
+                "Per-order diameter tables and statistics by order are not "
+                "comparable across the two"
+            ),
+            section=_BOUNDARY_ASSIGNMENT,
+            choices=("every_junction", "tier_branchings"),
+            advanced=True,
         ),
         # ------------------------------------------------------------------
         # Solver and output
@@ -544,6 +3348,7 @@ SCHEMA = Schema(
             section=_SOLVER_AND_OUTPUT,
             minimum=0.0,
             unit="Pa",
+            requires=("run_haemodynamics",),
         ),
         Setting(
             name="outlet_p_bc",
@@ -553,13 +3358,19 @@ SCHEMA = Schema(
             section=_SOLVER_AND_OUTPUT,
             minimum=0.0,
             unit="Pa",
+            requires=("run_haemodynamics",),
         ),
         Setting(
             name="visualize_results",
             kind="bool",
             default=True,
-            help="Generate the matplotlib visualizations at the end of the run",
+            help=(
+                "Write IDE plot files (matplotlib PNG and Plotly HTML, including "
+                "final_graph_3d.html and the skeleton's projections) into "
+                "base_plot_dir/{image stem}. Off skips all of that production"
+            ),
             section=_SOLVER_AND_OUTPUT,
+            advanced=True,
         ),
         Setting(
             name="interactive_plots",
@@ -568,14 +3379,16 @@ SCHEMA = Schema(
             help="Show plots interactively instead of saving them to the plot directory",
             section=_SOLVER_AND_OUTPUT,
             requires=("visualize_results",),
+            advanced=True,
         ),
         Setting(
             name="show_plots_in_ide",
             kind="bool",
-            default=True,
+            default=False,
             help="Open saved plots in IDE windows while the run proceeds",
             section=_SOLVER_AND_OUTPUT,
             requires=("visualize_results",),
+            advanced=True,
         ),
         Setting(
             name="ide_plot_mode",
@@ -585,6 +3398,7 @@ SCHEMA = Schema(
             section=_SOLVER_AND_OUTPUT,
             choices=("all", "final_only", "none"),
             requires=("visualize_results", "show_plots_in_ide"),
+            advanced=True,
         ),
         Setting(
             name="hold_ide_plots_open",
@@ -593,6 +3407,7 @@ SCHEMA = Schema(
             help="Block at the end of the script so the IDE plot windows stay open",
             section=_SOLVER_AND_OUTPUT,
             requires=("visualize_results", "show_plots_in_ide"),
+            advanced=True,
         ),
         Setting(
             name="final_render_mode",
@@ -602,28 +3417,76 @@ SCHEMA = Schema(
             section=_SOLVER_AND_OUTPUT,
             choices=("2d", "3d"),
             requires=("visualize_results",),
+            advanced=True,
         ),
         Setting(
             name="vtk_export",
             kind="bool",
             default=True,
-            help="Export vessels, pericytes and nodes as VTK files",
+            help=(
+                "Export vessels, pericytes and nodes as VTK files: geometry, diameters and "
+                "branch orders always, pressures and flows when the network was solved"
+            ),
             section=_SOLVER_AND_OUTPUT,
-            requires=("run_haemodynamics",),
         ),
         Setting(
             name="visualize_vtk",
             kind="bool",
             default=False,
-            help="Open the exported VTK network in the interactive viewer",
+            help=(
+                "Open the exported VTK network in the interactive viewer (a script run "
+                "only: the napari panel never opens it)"
+            ),
             section=_SOLVER_AND_OUTPUT,
-            requires=("run_haemodynamics", "vtk_export"),
+            requires=("vtk_export",),
+            advanced=True,
+        ),
+        Setting(
+            name="flow_direction_colouring",
+            kind="bool",
+            default=True,
+            help=(
+                "Include flow direction axis components (flow_dir_z/y/x) as "
+                "colour options in the flow-direction Vectors layer (select "
+                "from the layer colour-by dropdown). The layer itself -- a "
+                "napari Vectors layer of mid-edge arrows -- is always added "
+                "after the solve"
+            ),
+            section=_SOLVER_AND_OUTPUT,
+            requires=("run_haemodynamics",),
+        ),
+        Setting(
+            name="flow_arrow_scale",
+            kind="float",
+            default=1.0,
+            minimum=0.1,
+            maximum=5.0,
+            help=(
+                "Initial uniform scale for flow-direction arrow heads in the "
+                "napari Vectors layer (adjust live via the layer's length "
+                "control after export)"
+            ),
+            section=_SOLVER_AND_OUTPUT,
+            requires=("run_haemodynamics",),
         ),
         Setting(
             name="verbose_logging",
             kind="bool",
             default=False,
             help="Print verbose per-stage logging while the pipeline runs",
+            section=_SOLVER_AND_OUTPUT,
+            advanced=True,
+        ),
+        Setting(
+            name="export_citations",
+            kind="bool",
+            default=True,
+            help=(
+                "Write a text file listing the software packages and "
+                "haemodynamics models this run actually used, with a "
+                "citation for each -- only the ones this run's own "
+                "settings turned on, not everything the pipeline can do"
+            ),
             section=_SOLVER_AND_OUTPUT,
         ),
         # ------------------------------------------------------------------
@@ -642,6 +3505,7 @@ SCHEMA = Schema(
             default=True,
             help="Run the graph-building stage instead of reusing the cached graph",
             section=_PIPELINE_STAGES,
+            requires=("network_source=segmented_image",),
         ),
         Setting(
             name="run_haemodynamics",
@@ -657,19 +3521,59 @@ SCHEMA = Schema(
             help="Compute the two-point equivalent resistance between the chosen node pair",
             section=_PIPELINE_STAGES,
             requires=("run_haemodynamics",),
+            advanced=True,
         ),
         Setting(
-            name="vtk_output_prefix",
-            kind="path",
-            default=f"{_OUTPUTS}/resistance_network",
-            help="Prefix every VTK artifact and cached stage file with this output path",
+            name="haemodynamics_solver",
+            kind="choice",
+            default="sparse",
+            choices=["dense", "sparse"],
+            help=(
+                "How every flow solve holds and solves the network -- the "
+                "baseline, each haematocrit pass, perturbations and sweeps. "
+                "dense is an N x N table of conductances solved densely: about "
+                "42 N^2 bytes at its peak (17 GB at 20,000 nodes) and time "
+                "cubic in N; the run warns when it would take more than half "
+                "the free memory. sparse stores only the vessels and "
+                "factorises the same equations: the same pressures and flows "
+                "to rounding, in about a second at 50,000 nodes"
+            ),
             section=_PIPELINE_STAGES,
+            requires=("run_haemodynamics",),
+            advanced=True,
+        ),
+        Setting(
+            name="equivalent_resistance_solver",
+            kind="choice",
+            default="sparse",
+            choices=["eigendecomposition", "sparse"],
+            help=(
+                "How the two-point equivalent resistance (first inlet to first "
+                "outlet, unless Post processing chose two other nodes) is found. "
+                "eigendecomposition computes every eigenvalue and eigenvector "
+                "of the network's Laplacian: minutes at 5,000 nodes, hours at "
+                "20,000, and about 49 N^2 bytes at its peak (20 GB at 20,000 "
+                "nodes); the run warns when it would take more than half the "
+                "free memory. sparse is one sparse solve, a unit current in at one "
+                "node and the other grounded: the same resistance to rounding, "
+                "and infinite rather than a finite number when no conductive "
+                "path joins the two nodes"
+            ),
+            section=_PIPELINE_STAGES,
+            requires=("do_equiv_resistance_calculation",),
+            advanced=True,
         ),
         Setting(
             name="skeleton_closing_radius",
             kind="int",
             default=2,
-            help="Close gaps in the mask with a structuring element of this radius before skeletonizing",
+            help=(
+                "Close gaps in the skeleton itself, after its small pieces are dropped and its "
+                "tangles collapsed, with a structuring element of this radius, then thin it again"
+                " -- held within a voxel of the segmented mask while bridge_require_mask_support "
+                "is on. In voxels of the finest axis: a physical radius of this many times the "
+                "smallest voxel size, so it reaches fewer voxels along a coarser z"
+            ),
             section=_PIPELINE_STAGES,
             unit="voxels",
             minimum=0,
@@ -679,7 +3583,13 @@ SCHEMA = Schema(
             name="skeleton_bridge_gap_size",
             kind="int",
             default=3,
-            help="Bridge skeleton gaps no larger than this many voxels",
+            help=(
+                "Fill gaps in the skeleton itself by growing it this many voxels, then thin it "
+                "again -- held within a voxel of the segmented mask while "
+                "bridge_require_mask_support is on. In voxels of the finest axis: a physical "
+                "distance of this many times the smallest voxel size, so fewer voxels along a "
+                "coarser z"
+            ),
             section=_PIPELINE_STAGES,
             unit="voxels",
             minimum=0,
@@ -689,7 +3599,11 @@ SCHEMA = Schema(
             name="skeleton_min_branch_length",
             kind="int",
             default=3,
-            help="Drop skeleton branches shorter than this many voxels during cleaning",
+            help=(
+                "Drop skeleton pieces shorter than this many voxels of the finest axis during "
+                "cleaning, unless a bridge can join them to a larger piece; each voxel counts for"
+                " its physical length -- one along a coarser z counts for more"
+            ),
             section=_PIPELINE_STAGES,
             unit="voxels",
             minimum=0,
@@ -699,11 +3613,114 @@ SCHEMA = Schema(
             name="skeleton_max_bridge_distance",
             kind="int",
             default=4,
-            help="Reconnect skeleton fragments no further apart than this distance",
+            help=(
+                "Reconnect a skeleton fragment's branch end to another fragment "
+                "no further away than this, counted in voxels of the finest axis "
+                "and measured physically, so a gap along a coarse z axis counts "
+                "for its real length"
+            ),
             section=_PIPELINE_STAGES,
             unit="voxels",
             minimum=0,
             requires=("do_skeletonize",),
+        ),
+        Setting(
+            name="skeleton_bridge_weight_by_segmentation",
+            kind="bool",
+            default=False,
+            help=(
+                "Draw skeleton bridges by routing through the segmented mask "
+                "instead of a straight line -- prefers a path that stays "
+                "inside real segmented tissue over one that cuts through "
+                "background. With bridge_require_mask_support on, a bridge "
+                "is tried along the route through the mask anyway, and one "
+                "with no route through it is not drawn; this setting decides "
+                "which path is tried first"
+            ),
+            section=_PIPELINE_STAGES,
+            requires=("do_skeletonize",),
+            advanced=True,
+        ),
+        Setting(
+            name="skeleton_bridge_z_distance_weight",
+            kind="float",
+            default=1.0,
+            help=(
+                "Multiplies the z-component of a gap distance, on top of the "
+                "physical voxel size, before it is compared to "
+                "skeleton_max_bridge_distance. Above 1.0 discourages bridging "
+                "mostly through z; below 1.0 does the reverse; 1.0 measures "
+                "plain microns"
+            ),
+            section=_PIPELINE_STAGES,
+            minimum=0.0,
+            requires=("do_skeletonize",),
+            advanced=True,
+        ),
+        Setting(
+            name="skeleton_bridge_min_facing_cosine",
+            kind="float",
+            default=0.5,
+            help=(
+                "Only bridge from a fragment's branch end toward something "
+                "roughly ahead of it: the cosine of the largest angle allowed "
+                "between the end's direction and the bridge (0.5 is 60 "
+                "degrees). Stops side-by-side vessels being cross-linked; -1 "
+                "allows any direction"
+            ),
+            section=_PIPELINE_STAGES,
+            minimum=-1.0,
+            maximum=1.0,
+            requires=("do_skeletonize",),
+            advanced=True,
+        ),
+        Setting(
+            name="bridge_require_mask_support",
+            kind="bool",
+            default=True,
+            help=(
+                "Draw a bridge across a gap -- in skeleton cleaning, and in "
+                "graph building's gap, topology and orphan reconnects -- only "
+                "along a route through the segmented mask, and not beside a "
+                "vessel already in the same lumen. Two vessels with background "
+                "between them are then never joined across it, however close; "
+                "a vessel broken by a short dropout in the segmentation still "
+                "is. Off draws every bridge within its distance limit, as "
+                "before. No effect without the segmented mask"
+            ),
+            section=_PIPELINE_STAGES,
+            advanced=True,
+        ),
+        Setting(
+            name="bridge_max_background_gap_um",
+            kind="float",
+            default=2.0,
+            help=(
+                "The longest single run of background a mask-supported bridge "
+                "may cross: a dropout in the segmentation of a vessel, not "
+                "tissue between two vessels"
+            ),
+            section=_PIPELINE_STAGES,
+            unit="um",
+            minimum=0.0,
+            requires=("bridge_require_mask_support",),
+            advanced=True,
+        ),
+        Setting(
+            name="bridge_min_mask_fraction",
+            kind="float",
+            default=0.8,
+            help=(
+                "The least fraction of a mask-supported bridge's length that "
+                "must lie in the mask, unless all the background it crosses "
+                "adds up to no more than bridge_max_background_gap_um"
+            ),
+            section=_PIPELINE_STAGES,
+            unit="fraction",
+            minimum=0.0,
+            maximum=1.0,
+            requires=("bridge_require_mask_support",),
+            advanced=True,
         ),
         Setting(
             name="skeleton_component_connectivity",
@@ -714,6 +3731,7 @@ SCHEMA = Schema(
             minimum=1,
             maximum=3,
             requires=("do_skeletonize",),
+            advanced=True,
         ),
         Setting(
             name="graph_reconnect_threshold",
@@ -739,11 +3757,350 @@ SCHEMA = Schema(
             name="min_stub_length",
             kind="float",
             default=10.0,
-            help="Prune terminal stubs shorter than this length",
+            help=(
+                "Prune terminal stubs shorter than this length, wherever the "
+                "stub is not judged by its parent vessel's radius instead (see "
+                "min_stub_length_radius_multiple). A stub ending at an image "
+                "face is kept -- that is a vessel the image cut through"
+            ),
+            section=_PIPELINE_STAGES,
+            requires=("network_source=segmented_image",),
+            unit="um",
+            minimum=0.0,
+        ),
+        Setting(
+            name="min_stub_length_radius_multiple",
+            kind="float",
+            default=3.0,
+            help=(
+                "Prune a terminal stub shorter than this many radii of the "
+                "vessel it branches from, read from the segmented mask: a "
+                "skeleton spur on a wide vessel is about as long as the vessel "
+                "is thick, and one fixed length removes those or real short "
+                "capillary ends, never just the spurs. 0 uses min_stub_length "
+                "for every stub"
+            ),
+            section=_PIPELINE_STAGES,
+            requires=("network_source=segmented_image",),
+            minimum=0.0,
+        ),
+        Setting(
+            name="remove_pieces_without_junction",
+            kind="bool",
+            default=False,
+            help=(
+                "At the end of graph building, remove every piece of the network "
+                "with no junction: a vessel on its own, both its ends dead ends "
+                "(the dead ends counted as ends of pieces without a junction, or as "
+                "leaving the image where they do), "
+                "whatever its length or where it lies. On a speckled segmentation "
+                "most of these are specks, but some are pieces of real vessel the "
+                "segmentation cut off, and those go too"
+            ),
+            section=_PIPELINE_STAGES,
+            requires=("do_graph_building",),
+            advanced=True,
+        ),
+        Setting(
+            name="remove_interior_dead_ends",
+            kind="bool",
+            default=False,
+            help=(
+                "At the end of graph building, remove every dead end inside the image "
+                "(classed stops short, broken, artefact or unknown: not one leaving the "
+                "image, not an island's), back to the junction it hangs from; then trace "
+                "the segmented vessels the graph no longer covers, keeping only those that "
+                "join the network at both ends, run the lumen clean-up with "
+                "recovery_short_loop_keep_hole_over_um, and remove the interior dead ends "
+                "it leaves. Harvey's marks called most interior dead ends not a vessel; "
+                "on Stack A they were 17% of the network and carried "
+                "no flow; recovery drew 6.5 mm back as vessels joined at both ends, 8.0 mm "
+                "having gone (before its clean-up). Fitted on Stack A alone, so off by "
+                "default: on the nerve test crop it took a fifth of the network's length. "
+                "A network with no loop and no vessel leaving the image goes whole. No "
+                "effect without the segmented mask or with bridge_require_mask_support off"
+            ),
+            section=_PIPELINE_STAGES,
+            requires=("do_graph_building", "bridge_require_mask_support"),
+            advanced=True,
+        ),
+        Setting(
+            name="recovery_short_loop_keep_hole_over_um",
+            kind="float",
+            default=5.3,
+            help=(
+                "short_loop_keep_hole_over_um for the lumen clean-up remove_interior_dead_ends "
+                "runs after its recovery: a short loop round a tissue hole wider than this "
+                "is kept. Most loops recovery closes are real: at the 10 um limit the rule "
+                "broke a real loop 16 times in 24; at 5.3 um it was right "
+                "19 times in 29 on fresh examples, against 13 at 10 um and 16 keeping "
+                "every loop. Below 5.3 um it is about even. 0 breaks every short loop"
+            ),
+            section=_PIPELINE_STAGES,
+            unit="um",
+            minimum=0.0,
+            requires=("do_graph_building", "bridge_require_mask_support", "remove_interior_dead_ends"),
+            advanced=True,
+        ),
+        Setting(
+            name="remove_interior_dead_ends_and_merge",
+            kind="bool",
+            default=False,
+            help=(
+                "At the end of graph building, remove every dead end inside the image "
+                "(classed stops short, broken, artefact, unknown or at a thick vessel's wall: "
+                "not one leaving the image, not an island's), back to the junction it hangs "
+                "from, then merge each junction that leaves with two vessels into one vessel, "
+                "whatever the junctions beside it (the build's own merge leaves a node beside "
+                "a junction of four vessels). Nothing is traced back, unlike "
+                "remove_interior_dead_ends; with both on, this runs after it. A node where a "
+                "vessel meets a thick-vessel bridge stays, as does one with a loop on it. A "
+                "network with no loop and no vessel leaving the image goes whole. No effect "
+                "without the segmented mask"
+            ),
+            section=_PIPELINE_STAGES,
+            requires=("do_graph_building",),
+            advanced=True,
+        ),
+        Setting(
+            name="recover_uncovered_mask_vessels",
+            kind="bool",
+            default=True,
+            help=(
+                "After the reconnects, trace the segmented vessels the graph "
+                "does not run through (a capillary the skeleton lost) and join "
+                "each to the network through the mask, where one of its ends "
+                "reaches it. No effect without the segmented mask"
+            ),
+            section=_PIPELINE_STAGES,
+            requires=("do_graph_building",),
+            advanced=True,
+        ),
+        Setting(
+            name="recovery_min_region_volume_um3",
+            kind="float",
+            default=30.0,
+            help=(
+                "Recover only uncovered mask regions at least this large: "
+                "smaller ones are segmentation specks, not vessels. Read by the recovery "
+                "remove_interior_dead_ends runs too"
+            ),
+            section=_PIPELINE_STAGES,
+            unit="um3",
+            minimum=0.0,
+            requires=("do_graph_building",),
+            advanced=True,
+        ),
+        Setting(
+            name="recovery_min_length_um",
+            kind="float",
+            default=5.0,
+            help=(
+                "Recover only traced vessels at least this long, unless both "
+                "their ends join the network. Read by the recovery remove_interior_dead_ends "
+                "runs too"
+            ),
             section=_PIPELINE_STAGES,
             unit="um",
             minimum=0.0,
             requires=("do_graph_building",),
+            advanced=True,
+        ),
+        Setting(
+            name="facing_dead_end_max_gap_um",
+            kind="float",
+            default=10.0,
+            help=(
+                "Join two dead ends that point at each other across a gap in "
+                "the segmentation up to this long: a vessel the mask broke. "
+                "The join may cross one stretch of background, never a third "
+                "vessel, and never runs beside a vessel already in the same "
+                "lumen. 0 turns it off. No effect without the segmented mask "
+                "or with bridge_require_mask_support off"
+            ),
+            section=_PIPELINE_STAGES,
+            unit="um",
+            minimum=0.0,
+            requires=("do_graph_building", "bridge_require_mask_support"),
+            advanced=True,
+        ),
+        Setting(
+            name="remove_short_loops_under_um",
+            kind="float",
+            default=200.0,
+            help=(
+                "Break every loop of the network up to this long round, taking out "
+                "the side nearest the vessel wall, whatever the segmentation says of "
+                "it: on Stack A nine in ten loops under 200 um closed inside one vessel "
+                "(55 of 60), and the in-lumen rule found none "
+                "of them. Costs about one real loop in twelve; the Short loops review "
+                "list is where a wrong side is put back. 0 leaves short loops to that "
+                "list. No effect without the segmented mask or with "
+                "bridge_require_mask_support off"
+            ),
+            section=_PIPELINE_STAGES,
+            unit="um",
+            minimum=0.0,
+            requires=("bridge_require_mask_support", "network_source=segmented_image"),
+            advanced=True,
+        ),
+        Setting(
+            name="lumen_cleanup_max_rounds",
+            kind="int",
+            default=12,
+            help=(
+                "The most rounds graph building's last clean-up runs (degree-2 merging, "
+                "edges off the mask, two edges in one lumen, loops inside one lumen, "
+                "short loops, doubled stretches and the stub prune, repeated until a "
+                "round changes nothing), each time it runs: at the end of graph building, "
+                "after centreline smoothing and after the thick-vessel split. Stack A settles "
+                "in 9 rounds; a lower limit is faster on a large stack but can leave pairs "
+                "and loops a later round would have taken out"
+            ),
+            section=_PIPELINE_STAGES,
+            minimum=1,
+            requires=("do_graph_building",),
+            advanced=True,
+        ),
+        Setting(
+            name="short_loop_keep_hole_over_um",
+            kind="float",
+            default=10.0,
+            help=(
+                "Leave a short loop to the Short loops review list instead of breaking it "
+                "when the tissue hole it runs round is wider than this: the median "
+                "background crossed by lines drawn across the loop, side to opposite side. "
+                "On Stack A loops round a hole over 10 um were real 29 times in 32, and loops "
+                "round a smaller one false 24 times in 28 (60 of the rule's breaks). "
+                "0 breaks every short loop. retrace_lost_skeleton "
+                "reads the same limit. No effect while remove_short_loops_under_um is 0 "
+                "and retrace_lost_skeleton is off"
+            ),
+            section=_PIPELINE_STAGES,
+            unit="um",
+            minimum=0.0,
+            requires=("bridge_require_mask_support", "network_source=segmented_image"),
+            advanced=True,
+        ),
+        Setting(
+            name="lumen_cleanup_rewire_pairs",
+            kind="bool",
+            default=True,
+            help=(
+                "Of two vessels drawn through one segmented vessel, take the one nearer the "
+                "wall out by cutting out only its stretch beside the other and joining what "
+                "is left of it to the other where the two part, rather than deleting it whole. "
+                "What lies beyond the doubled stretch was a vessel more often than not on "
+                "Stack A. On Stack A this kept 0.9 mm more centreline and 0.7 points more of the "
+                "mask covered, and left 9 more short loops, all round holes over 10 um, and 5 "
+                "more dead ends. Off deletes the second vessel whole, as graph building did "
+                "before. No effect without the segmented mask or with "
+                "bridge_require_mask_support off"
+            ),
+            section=_PIPELINE_STAGES,
+            requires=("do_graph_building", "bridge_require_mask_support"),
+            advanced=True,
+        ),
+        Setting(
+            name="lumen_cleanup_guard_rejoins",
+            kind="bool",
+            default=True,
+            help=(
+                "When the clean-up cuts a doubled stretch out of a vessel and joins what is "
+                "left to the vessel beside it, make no join that would close a loop inside "
+                "one segmented vessel; that part goes with the stretch instead. On Stack A this "
+                "took 73 um more of doubled centreline out and covered 0.9 points more of the "
+                "mask, and left 7 more short loops, all round holes of 10 um or more, and 3 "
+                "more dead ends. Off makes every such join, as graph building did before. The "
+                "rewire of lumen_cleanup_rewire_pairs always makes this test. No effect "
+                "without the segmented mask or with bridge_require_mask_support off"
+            ),
+            section=_PIPELINE_STAGES,
+            requires=("do_graph_building", "bridge_require_mask_support"),
+            advanced=True,
+        ),
+        Setting(
+            name="retrace_lost_skeleton",
+            kind="bool",
+            default=True,
+            help=(
+                "After the last clean-up, draw back along the skeleton a stretch the graph "
+                "lost, where the loop it closes with the graph runs round a tissue hole "
+                "wider than short_loop_keep_hole_over_um. A stretch is at least 20 um of "
+                "skeleton, at least half in the mask, mostly a separate tube from every vessel "
+                "kept, meeting the graph in two places; it is drawn between those two "
+                "places, and joined wherever else it meets the graph round a hole as wide, "
+                "never beside a vessel in the same lumen. On Stack A such stretches were "
+                "vessels 9 times in 9, and stretches closing a loop round a smaller hole were "
+                "not 17 times in 21; of the 21 it then drew, "
+                "Harvey kept 19. No effect while short_loop_keep_hole_over_um is 0"
+            ),
+            section=_PIPELINE_STAGES,
+            requires=("do_graph_building", "bridge_require_mask_support"),
+            advanced=True,
+        ),
+        Setting(
+            name="extend_dead_ends_to_faces",
+            kind="bool",
+            default=False,
+            help=(
+                "Draw a dead end that leaves the image but stops short of the face "
+                "(the segmented vessel runs on to it within four radii) on to the "
+                "face, so its open end sits where the vessel leaves the image. Off "
+                "until a marked grid calibrates it (PLAN_dead_ends.md, G2)"
+            ),
+            section=_PIPELINE_STAGES,
+            requires=("do_graph_building", "bridge_require_mask_support"),
+            advanced=True,
+        ),
+        Setting(
+            name="trace_on_dead_ends",
+            kind="bool",
+            default=False,
+            help=(
+                "From a dead end the segmented vessel runs on past, draw the "
+                "centreline on through the mask along its heading, up to 30 um: "
+                "joined to another vessel where it enters that vessel's lumen, "
+                "ended at an image face or where the mask ends. Never beside a "
+                "vessel in the same lumen, never closing a loop inside one. Off "
+                "until a marked grid calibrates it (PLAN_dead_ends.md, G1)"
+            ),
+            section=_PIPELINE_STAGES,
+            requires=("do_graph_building", "bridge_require_mask_support"),
+            advanced=True,
+        ),
+        Setting(
+            name="join_dead_ends_to_vessel_sides",
+            kind="bool",
+            default=False,
+            help=(
+                "Join a dead end pointing at another vessel's side, within "
+                "facing_dead_end_max_gap_um across one stretch of background, to "
+                "that vessel -- unless that vessel is one of its neighbours in the "
+                "network (one junction away or closer). Off until a marked grid "
+                "calibrates it (PLAN_dead_ends.md, G3)"
+            ),
+            section=_PIPELINE_STAGES,
+            requires=("do_graph_building", "bridge_require_mask_support"),
+            advanced=True,
+        ),
+        Setting(
+            name="stub_face_protection",
+            kind="choice",
+            default="threshold",
+            help=(
+                "Which short stubs the prune keeps at an image face. threshold: a "
+                "tip within its own pruning threshold of a face (as before). "
+                "leaves_image: only a dead end that leaves the image (it touches a "
+                "face, or the segmented vessel runs on to one), so a spur near a "
+                "face is judged like any other. leaves_image reads the segmented "
+                "mask: without it, or with bridge_require_mask_support off, the "
+                "prune keeps by threshold"
+            ),
+            section=_PIPELINE_STAGES,
+            choices=("threshold", "leaves_image"),
+            requires=("do_graph_building", "bridge_require_mask_support"),
+            advanced=True,
         ),
         Setting(
             name="cluster_collapse_distance",
@@ -756,6 +4113,93 @@ SCHEMA = Schema(
             requires=("do_graph_building",),
         ),
         Setting(
+            name="cluster_collapse_method",
+            kind="choice",
+            default="distance_only",
+            help=(
+                "distance_only collapses every node within cluster_collapse_distance "
+                "of another however far that chains -- the original behaviour. "
+                "direction_aware additionally refuses a merge that would turn the "
+                "collapsed node's incident edges into a cartwheel shape (see the "
+                "cartwheel hub guard below), leaving separate nodes where proximity "
+                "alone could not tell two nearby real junctions apart. persistence "
+                "cuts each local cluster at its own natural gap in single-linkage "
+                "merge distance (0-dimensional persistent homology) instead of one "
+                "global distance -- see graph.persistence_collapse"
+            ),
+            section=_PIPELINE_STAGES,
+            choices=("distance_only", "direction_aware", "persistence"),
+            requires=("do_graph_building",),
+            advanced=True,
+        ),
+        Setting(
+            name="cluster_collapse_max_radial_dispersion",
+            kind="float",
+            default=0.5,
+            help=(
+                "Only used by cluster_collapse_method=direction_aware: refuse a "
+                "merge whose combined incident edges would disperse to at most this "
+                "much (0 = spread evenly in every direction, 1 = all leave the same "
+                "way) -- the same reading as the cartwheel hub guard's own "
+                "threshold, kept separate so the two can be tuned independently"
+            ),
+            section=_PIPELINE_STAGES,
+            minimum=0.0,
+            maximum=1.0,
+            advanced=True,
+            requires=("do_graph_building", "cluster_collapse_method=direction_aware"),
+        ),
+        Setting(
+            name="cluster_collapse_persistence_search_multiple",
+            kind="float",
+            default=3.0,
+            help=(
+                "Only used by cluster_collapse_method=persistence: how many multiples "
+                "of cluster_collapse_distance to search for candidate pairs -- wider "
+                "than the ordinary collapse distance, so a genuine persistence gap has "
+                "room to appear on both sides of it. See graph.persistence_collapse"
+            ),
+            section=_PIPELINE_STAGES,
+            minimum=0.0,
+            advanced=True,
+            requires=("do_graph_building", "cluster_collapse_method=persistence"),
+        ),
+        Setting(
+            name="skeleton_graph_consistency_warn_below",
+            kind="float",
+            default=0.7,
+            help=(
+                "Log a warning instead of an info line when fewer than this fraction of "
+                "the skeleton's own voxels are still traced by the finished graph's "
+                "edges -- see graph.diagnostics.diagnose_skeleton_graph_consistency for "
+                "what that measures and why. Checked whether the graph was just built or "
+                "loaded from cache, not under use_memmap_loading, which skips the check"
+            ),
+            section=_PIPELINE_STAGES,
+            requires=("!use_memmap_loading", "network_source=segmented_image"),
+            minimum=0.0,
+            maximum=1.0,
+            advanced=True,
+        ),
+        Setting(
+            name="graph_mask_consistency_warn_below",
+            kind="float",
+            default=0.7,
+            help=(
+                "Log a warning instead of an info line when fewer than this fraction of "
+                "the segmented image's own voxels are within their own local radius of "
+                "the finished graph's edges -- see "
+                "graph.diagnostics.diagnose_graph_mask_consistency for what that measures "
+                "and why. Checked whether the graph was just built or loaded from cache, "
+                "not under use_memmap_loading, which skips the check"
+            ),
+            section=_PIPELINE_STAGES,
+            requires=("!use_memmap_loading", "network_source=segmented_image"),
+            minimum=0.0,
+            maximum=1.0,
+            advanced=True,
+        ),
+        Setting(
             name="save_step_artifacts",
             kind="bool",
             default=False,
@@ -766,6 +4210,7 @@ SCHEMA = Schema(
             ),
             section=_PIPELINE_STAGES,
             requires=("do_graph_building",),
+            advanced=True,
         ),
         Setting(
             name="skeleton_min_component_percent",
@@ -777,6 +4222,442 @@ SCHEMA = Schema(
             maximum=100.0,
             unit="percent",
             requires=("do_skeletonize",),
+        ),
+        Setting(
+            name="skeleton_bundle_scan_size",
+            kind="int",
+            default=9,
+            help=(
+                "Sliding-window size used to detect dense skeleton bundles and "
+                "collapse each into a hub with clean in/out paths"
+            ),
+            section=_PIPELINE_STAGES,
+            unit="voxels",
+            minimum=3,
+            requires=("do_skeletonize",),
+            advanced=True,
+        ),
+        Setting(
+            name="skeleton_bundle_density_fraction",
+            kind="float",
+            default=0.35,
+            help="Mark a window as a dense bundle when this fraction of its voxels are skeleton foreground",
+            section=_PIPELINE_STAGES,
+            minimum=0.0,
+            maximum=1.0,
+            requires=("do_skeletonize",),
+            advanced=True,
+        ),
+        Setting(
+            name="skeleton_bundle_max_connections_per_hub",
+            kind="int",
+            default=8,
+            help="Keep at most this many directional links when reconnecting paths to a bundle hub",
+            section=_PIPELINE_STAGES,
+            minimum=1,
+            requires=("do_skeletonize",),
+            advanced=True,
+        ),
+        Setting(
+            name="skeleton_bundle_hub_min_spacing",
+            kind="int",
+            default=4,
+            help=(
+                "Minimum spacing between bundle hub centres; 4 matches the "
+                "automatic half-window spacing used when scan size is 9"
+            ),
+            section=_PIPELINE_STAGES,
+            unit="voxels",
+            minimum=1,
+            requires=("do_skeletonize",),
+            advanced=True,
+        ),
+        Setting(
+            name="skeleton_mask_consistency_warn_below",
+            kind="float",
+            default=0.7,
+            help=(
+                "Log a warning instead of an info line when fewer than this fraction of "
+                "the segmented-image mask's own voxels sit within their own local radius "
+                "of the skeleton -- see preprocessing.skeleton_consistency for what that "
+                "measures and why. Checked whether the skeleton was just computed or "
+                "loaded from cache, so this is not gated on do_skeletonize. Not checked "
+                "under use_memmap_loading, which skips it for its whole-volume arrays"
+            ),
+            section=_PIPELINE_STAGES,
+            minimum=0.0,
+            maximum=1.0,
+            requires=("!use_memmap_loading",),
+            advanced=True,
+        ),
+        Setting(
+            name="missing_vessel_min_voxels",
+            kind="int",
+            default=2,
+            help=(
+                "A segmented-image connected component smaller than this many voxels is "
+                "treated as noise, not a genuine vessel, and excluded from both missing-"
+                "vessel checks below -- see "
+                "preprocessing.skeleton_consistency.diagnose_vessels_missing_from_skeleton "
+                "for why that floor matters on real, imperfectly segmented data. Counted "
+                "in voxels of the image as read: on a segmented_image_downsample grid, as "
+                "many as hold the same volume. Not read under use_memmap_loading, which "
+                "skips both checks"
+            ),
+            section=_PIPELINE_STAGES,
+            unit="voxels",
+            minimum=1,
+            requires=("!use_memmap_loading",),
+            advanced=True,
+        ),
+        Setting(
+            name="skeleton_missing_vessel_warn_below",
+            kind="float",
+            default=1.0,
+            help=(
+                "Log a warning instead of an info line when fewer than this fraction of "
+                "the segmented image's genuine vessels (see missing_vessel_min_voxels) "
+                "have any skeleton voxel at all -- the inverse of skeleton_mask_"
+                "consistency_warn_below's per-voxel coverage: this catches a whole "
+                "vessel dropped, not just imprecisely traced. See preprocessing."
+                "skeleton_consistency.diagnose_vessels_missing_from_skeleton. Checked "
+                "whether the skeleton was just computed or loaded from cache, so this is "
+                "not gated on do_skeletonize. Not checked under use_memmap_loading, which "
+                "skips it for its whole-volume arrays"
+            ),
+            section=_PIPELINE_STAGES,
+            minimum=0.0,
+            maximum=1.0,
+            requires=("!use_memmap_loading",),
+            advanced=True,
+        ),
+        Setting(
+            name="graph_missing_vessel_warn_below",
+            kind="float",
+            default=1.0,
+            help=(
+                "Log a warning instead of an info line when fewer than this fraction of "
+                "the segmented image's genuine vessels (see missing_vessel_min_voxels) "
+                "have any graph edge at all -- the inverse of graph_mask_consistency_"
+                "warn_below's per-voxel coverage: this catches a whole vessel a topology-"
+                "repair pass dropped, not just imprecisely traced. See graph.diagnostics."
+                "diagnose_vessels_missing_from_graph. Checked whether the graph was just "
+                "built or loaded from cache, not under use_memmap_loading, which skips the check"
+            ),
+            section=_PIPELINE_STAGES,
+            requires=("!use_memmap_loading", "network_source=segmented_image"),
+            minimum=0.0,
+            maximum=1.0,
+            advanced=True,
+        ),
+        Setting(
+            name="use_thick_vessel_skeletonisation",
+            kind="bool",
+            default=False,
+            help=(
+                "Give fat plasma-labelled vessels (inscribed radius above "
+                "skeleton_thick_vessel_min_radius_um, 6 um by default) a centreline tree of every"
+                " arm instead of Lee thinning; capillaries stay on Lee. use_memmap_loading covers"
+                " this path, with the same skeleton; for a thick component too large for memory "
+                "even so, skeleton_thick_vessel_large_stack_tree draws its tree with far less"
+            ),
+            section=_PIPELINE_STAGES,
+        ),
+        Setting(
+            name="skeleton_thick_vessel_min_radius_um",
+            kind="float",
+            default=6.0,
+            help=(
+                "Inscribed radius above which a region is treated as fat rather "
+                "than Lee-thinned"
+            ),
+            section=_PIPELINE_STAGES,
+            unit="um",
+            minimum=0.0,
+            requires=("use_thick_vessel_skeletonisation",),
+        ),
+        Setting(
+            name="skeleton_fill_mask_holes_before_thickness",
+            kind="bool",
+            default=True,
+            help=(
+                "Fill enclosed cavities in the binary mask before measuring "
+                "inscribed radius; a no-op on solid plasma-labelled lumens"
+            ),
+            section=_PIPELINE_STAGES,
+            requires=("use_thick_vessel_skeletonisation",),
+            advanced=True,
+        ),
+        Setting(
+            name="skeleton_thick_vessel_wall_absorption_um",
+            kind="float",
+            default=None,
+            help=(
+                "How far around the fat trunk's core its wall absorbs surface "
+                "roughness; also swallows this much of any real vessel fused "
+                "onto it. Leave unset for half the fat-region radius"
+            ),
+            section=_PIPELINE_STAGES,
+            unit="um",
+            minimum=0.0,
+            requires=("use_thick_vessel_skeletonisation",),
+            advanced=True,
+            placeholder="auto",
+        ),
+        Setting(
+            name="skeleton_thick_vessel_flake_filter_um",
+            kind="float",
+            default=None,
+            help=(
+                "How far a thin-vessel fragment must reach beyond the fat wall "
+                "to be kept instead of dropped as a Lee-thinning flake of the "
+                "wall's own surface. Leave unset for the automatic default; "
+                "lower it to stop losing short real vessels near a fat trunk, "
+                "at the cost of letting more wall-wrap flakes through"
+            ),
+            section=_PIPELINE_STAGES,
+            unit="um",
+            minimum=0.0,
+            requires=("use_thick_vessel_skeletonisation", "do_skeletonize"),
+            advanced=True,
+            placeholder="auto",
+        ),
+        Setting(
+            name="skeleton_thick_vessel_max_bridge_radius_multiple",
+            kind="float",
+            default=4.0,
+            help=(
+                "How far, as a multiple of the fat vessel's own local radius "
+                "at the candidate attachment point, a thin vessel arm may "
+                "bridge to reach the fat centreline. A thin vessel should "
+                "merge into a fat one near where it actually touches it; "
+                "without a cap the nearest-in-distance point on the ridge "
+                "can sit arbitrarily far along the fat trunk's own length. "
+                "An arm past this limit stays disconnected rather than "
+                "drawing an implausibly long bridge"
+            ),
+            section=_PIPELINE_STAGES,
+            minimum=0.0,
+            requires=("use_thick_vessel_skeletonisation", "do_skeletonize"),
+            advanced=True,
+        ),
+        Setting(
+            name="skeleton_thick_vessel_max_bridge_distance_um",
+            kind="float",
+            default=None,
+            help=(
+                "A fixed cap, in microns, on how far a thin vessel arm may "
+                "bridge to reach the fat centreline -- independent of local "
+                "radius, so the tighter of this and "
+                "skeleton_thick_vessel_max_bridge_radius_multiple applies. "
+                "Useful when the radius-based cap alone is too tight: an "
+                "arm's nearest attachment point sits right at the fat/thin "
+                "classification boundary, where local radius reads close to "
+                "its own minimum even for a trunk that is genuinely wide a "
+                "short distance further along the same ridge. Leave unset "
+                "to use the radius-based cap alone"
+            ),
+            section=_PIPELINE_STAGES,
+            unit="um",
+            minimum=0.0,
+            requires=("use_thick_vessel_skeletonisation", "do_skeletonize"),
+            advanced=True,
+            placeholder="auto",
+        ),
+        Setting(
+            name="skeleton_thick_vessel_bridge_radius_smoothing_um",
+            kind="float",
+            default=10.0,
+            help=(
+                "How far, in microns, to look around a candidate bridge "
+                "point when measuring the fat vessel's local radius, "
+                "taking the widest reading found rather than the single "
+                "point sampled. The ridge can pass through a transient "
+                "narrow waist between two wider lobes, or taper toward the "
+                "fat/thin threshold at its own tail end; without this, an "
+                "arm landing exactly there would see an unrepresentatively "
+                "small radius even though the trunk is genuinely wide "
+                "again a short distance further along the same ridge. 0 "
+                "uses the raw single-point reading"
+            ),
+            section=_PIPELINE_STAGES,
+            unit="um",
+            minimum=0.0,
+            requires=("use_thick_vessel_skeletonisation", "do_skeletonize"),
+            advanced=True,
+        ),
+        Setting(
+            name="skeleton_thick_vessel_large_stack_tree",
+            kind="bool",
+            default=False,
+            help=(
+                "Under the low-RAM option, draw the thick vessels' centreline "
+                "tree for a large stack: shortest paths found over the thick "
+                "region's voxels themselves (tens of bytes a voxel) instead "
+                "of a graph of every voxel (about 360), no cap on how many "
+                "arms one thick region gets (500 without it), and the "
+                "thin-arm join's last-resort search bounded to a box round "
+                "each arm, an arm with no path in it left unjoined and "
+                "logged. Use it when one thick region is a network crossing "
+                "the stack. A region of up to 4 million voxels gets the same "
+                "tree as without it, bar that cap; a larger one can take "
+                "another route of exactly the same cost, a voxel or more "
+                "aside. It aims arms as without it: a thick vessel under 0.4 "
+                "of its region's widest radius gets no arm either way"
+            ),
+            section=_PIPELINE_STAGES,
+            requires=("use_thick_vessel_skeletonisation", "use_memmap_loading"),
+            advanced=True,
+        ),
+        Setting(
+            name="thick_vessel_fill_centreline_gaps",
+            kind="bool",
+            default=True,
+            help=(
+                "Where the graph's own centreline of a thick vessel strays off "
+                "the centreline drawn through the thick region, or misses it, "
+                "for 3 um or more between two places it follows it, and the "
+                "graph has no way between those two places under 2.1 times as "
+                "long, draw the thick vessel's centreline there from the thick "
+                "region. Vessels reaching the thick vessel there can then be "
+                "bridged to it. Nothing of the graph's own is taken out"
+            ),
+            section=_PIPELINE_STAGES,
+            requires=("use_thick_vessel_skeletonisation", "network_source=segmented_image"),
+            advanced=True,
+        ),
+        Setting(
+            name="thick_vessel_extend_centreline_ends",
+            kind="bool",
+            default=True,
+            help=(
+                "Where the graph's own centreline of a thick vessel stops at a "
+                "dead end while the segmented vessel runs on, draw it on: along "
+                "the centreline drawn through the thick region where that runs "
+                "on, then through the segmentation, heading on within 60 "
+                "degrees, to the first vessel or dead end it reaches within "
+                "40 um. Where it reaches the image's edge first, the vessel "
+                "leaves the image there and nothing is drawn. On by default "
+                "since 2026-10-20 (right at 17 of 18 places on grid Y); not yet "
+                "checked on a second set of marked examples"
+            ),
+            section=_PIPELINE_STAGES,
+            requires=("use_thick_vessel_skeletonisation", "network_source=segmented_image"),
+            advanced=True,
+        ),
+        Setting(
+            name="thick_bridge_centreline_tolerance_um",
+            kind="float",
+            default=1.5,
+            help=(
+                "How near the centreline drawn through the thick-vessel region a "
+                "graph centreline must lie to be the thick vessel's own centreline, "
+                "where vessels opening into it are bridged to it: this, or 30% of "
+                "the thick vessel's lumen radius there, whichever is more. Graph "
+                "building moves centrelines by about a micron after skeletonisation "
+                "drew that one. The stretches it must run for stay 3 um at an "
+                "edge's end and 6 um within it. Not yet fitted on marked examples"
+            ),
+            section=_PIPELINE_STAGES,
+            unit="um",
+            minimum=0.0,
+            requires=("use_thick_vessel_skeletonisation", "network_source=segmented_image"),
+            advanced=True,
+        ),
+        # A purely additive, read-only QC check on the tree
+        # skeletonize_thickness_gated just built: off by default, and even on,
+        # it only logs a warning -- it never changes the skeleton. See
+        # preprocessing.thick_vessel_braid_guard for what it looks for and why.
+        Setting(
+            name="detect_thick_vessel_braiding",
+            kind="bool",
+            default=False,
+            help=(
+                "After thickness-gated skeletonisation, warn about any fat "
+                "vessel component whose tree still braids into a multi-strand "
+                "medial sheet instead of a single centreline. Diagnostic only: "
+                "never changes the skeleton"
+            ),
+            section=_PIPELINE_STAGES,
+            requires=("use_thick_vessel_skeletonisation", "do_skeletonize"),
+            advanced=True,
+        ),
+        Setting(
+            name="thick_vessel_braid_factor_limit",
+            kind="float",
+            default=2.0,
+            help=(
+                "Only warn about a fat vessel component whose skeleton has more "
+                "than this many voxels, on average, in each occupied slice "
+                "along its own long axis (1 is a single centreline)"
+            ),
+            section=_PIPELINE_STAGES,
+            minimum=0.0,
+            requires=("use_thick_vessel_skeletonisation", "detect_thick_vessel_braiding"),
+            advanced=True,
+        ),
+        Setting(
+            name="thick_vessel_braid_min_occupied_slices",
+            kind="int",
+            default=5,
+            help=(
+                "Only warn about a fat vessel component whose long axis has at "
+                "least this many occupied slices, so a short stub end does not "
+                "decide the average on its own"
+            ),
+            section=_PIPELINE_STAGES,
+            minimum=1,
+            requires=("use_thick_vessel_skeletonisation", "detect_thick_vessel_braiding"),
+            advanced=True,
+        ),
+        Setting(
+            name="skeletonize_tile_large_components",
+            kind="bool",
+            default=False,
+            help=(
+                "When a connected component is still too large to skeletonize "
+                "as one piece even after splitting the mask into connected "
+                "components, split it further into overlapping Z slabs "
+                "instead. Not provably exact like the per-component split "
+                "itself -- a generous skeletonize_tile_halo_um keeps results "
+                "indistinguishable from the monolithic computation for real "
+                "vessel data, but this is a heuristic margin, not a proof. Read only "
+                "while do_skeletonize makes the skeleton"
+            ),
+            section=_PIPELINE_STAGES,
+            requires=("use_memmap_loading", "do_skeletonize"),
+            advanced=True,
+        ),
+        Setting(
+            name="skeletonize_tile_max_voxels",
+            kind="int",
+            default=200_000_000,
+            help=(
+                "Largest single skeletonize() call this will make while "
+                "tiling -- roughly this many bytes of peak RAM for the "
+                "boolean slab, since skeletonize's own internal buffer is at "
+                "least this size regardless"
+            ),
+            section=_PIPELINE_STAGES,
+            minimum=1,
+            requires=("skeletonize_tile_large_components",),
+            advanced=True,
+        ),
+        Setting(
+            name="skeletonize_tile_halo_um",
+            kind="float",
+            default=30.0,
+            help=(
+                "Padding margin read from each slab's Z neighbours before "
+                "skeletonizing it, discarded before stitching -- should be "
+                "generously larger than the largest vessel radius in the "
+                "stack; too small risks a seam artefact where slabs join"
+            ),
+            section=_PIPELINE_STAGES,
+            unit="um",
+            minimum=0.0,
+            requires=("skeletonize_tile_large_components",),
+            advanced=True,
         ),
         Setting(
             name="smooth_centrelines",
@@ -793,10 +4674,14 @@ SCHEMA = Schema(
             name="centreline_smoothing_method",
             kind="choice",
             default="taubin",
-            help="How to smooth a centreline: taubin recovers true length, chaikin changes it least",
+            help=(
+                "How to smooth a centreline: taubin recovers true length; chaikin cuts corners "
+                "more gently, keeping closer to the raw centreline and shortening it least"
+            ),
             section=_PIPELINE_STAGES,
             choices=("taubin", "chaikin"),
             requires=("smooth_centrelines",),
+            advanced=True,
         ),
         Setting(
             name="centreline_smoothing_iterations",
@@ -810,6 +4695,7 @@ SCHEMA = Schema(
             minimum=0,
             maximum=50,
             requires=("smooth_centrelines",),
+            advanced=True,
         ),
         Setting(
             name="centreline_max_deviation",
@@ -817,37 +4703,140 @@ SCHEMA = Schema(
             default=1.0,
             help=(
                 "How far a smoothed centreline may sit from the skeleton before it "
-                "is blended back towards the original"
+                "is blended back towards the original. Widened per vessel to half "
+                "the voxel diagonal (a voxel staircase's own scale) and to half "
+                "the vessel's radius, when either is larger"
             ),
             section=_PIPELINE_STAGES,
             minimum=0.0,
             unit="um",
             requires=("smooth_centrelines",),
+            advanced=True,
+        ),
+        # ------------------------------------------------------------------
+        # Cartwheel hub guard
+        # ------------------------------------------------------------------
+        # A purely additive, read-only QC check: off by default, and even on,
+        # it only logs a warning after build_network -- it never changes the
+        # graph or any other stage's behaviour. See graph.cartwheel_guard for
+        # what it looks for and why.
+        Setting(
+            name="detect_cartwheel_hub_artifacts",
+            kind="bool",
+            default=False,
+            help=(
+                "After building the graph, warn about any node whose incident "
+                "edges radiate in too many directions to be a real vessel "
+                "junction -- a known side effect of collapsing nearby nodes "
+                "together. Diagnostic only: never changes the graph"
+            ),
+            section=_CARTWHEEL_GUARD,
+            requires=("network_source=segmented_image",),
+            advanced=True,
+        ),
+        # This and cartwheel_hub_tangent_length_um are read by the guard and by
+        # cluster_collapse_method=direction_aware alike. A `requires` holds all
+        # of its entries and can name only one of the two, so they name
+        # neither, only the segmented image both readers need: gated on the
+        # guard, the panel hid them from a direction-aware run.
+        Setting(
+            name="cartwheel_hub_min_degree",
+            kind="int",
+            default=6,
+            help=(
+                "Only warn about a node with at least this many incident edges; "
+                "cluster_collapse_method=direction_aware judges merges into such "
+                "nodes by the same count"
+            ),
+            section=_CARTWHEEL_GUARD,
+            requires=("network_source=segmented_image",),
+            minimum=2,
+            advanced=True,
+        ),
+        Setting(
+            name="cartwheel_hub_max_radial_dispersion",
+            kind="float",
+            default=0.5,
+            help=(
+                "Only warn about a node whose incident edges' outgoing "
+                "directions cancel out to at most this much (0 = spread evenly "
+                "in every direction, 1 = all leave the same way)"
+            ),
+            section=_CARTWHEEL_GUARD,
+            minimum=0.0,
+            maximum=1.0,
+            requires=("detect_cartwheel_hub_artifacts",),
+            advanced=True,
+        ),
+        Setting(
+            name="cartwheel_hub_tangent_length_um",
+            kind="float",
+            default=10.0,
+            help=(
+                "How far along each incident edge's own centreline to measure the "
+                "direction it leaves the node, for the guard and for "
+                "cluster_collapse_method=direction_aware alike"
+            ),
+            section=_CARTWHEEL_GUARD,
+            requires=("network_source=segmented_image",),
+            unit="um",
+            # A sample distance of exactly 0 always lands back on the node
+            # itself, giving a zero-length vector -- hub_spoke_directions
+            # would then find no usable direction on any edge, silently
+            # turning the guard into a no-op. Strictly positive.
+            minimum=0.1,
+            advanced=True,
         ),
         # ------------------------------------------------------------------
         # Statistics
         # ------------------------------------------------------------------
-        Setting(
-            name="statistics",
-            kind="bool",
-            default=False,
-            help="Compute and export the global vessel statistics",
-            section=_STATISTICS,
-        ),
+        # The napari Additional measurements tab hides gated Statistics rows until their parent
+        # toggles apply: cell-mask paths under ``measurement_3d_to_cell_mask``,
+        # and ``statistics_mode`` under ``statistics``.
         Setting(
             name="measurement_3d_to_cell_mask",
             kind="bool",
             default=False,
-            help="Measure 3D distances from the vessel network to a cell mask",
+            help=(
+                "Measure how far each object in a 3D object mask (e.g. a cell mask) "
+                "lies from the vessels: the gap between them, 0 where they touch or "
+                "overlap, and the vessel it is nearest to"
+            ),
             section=_STATISTICS,
+            # Lined up with the run's image; a synthetic network has none.
+            requires=("network_source=segmented_image",),
         ),
         Setting(
             name="cell_mask_path",
             kind="path",
             default=None,
-            help="Read this cell mask for the 3D distance measurement",
+            help="Read this cell mask, the input image's shape, for the 3D distance measurement",
             section=_STATISTICS,
-            requires=("measurement_3d_to_cell_mask",),
+            requires=("measurement_3d_to_cell_mask", "!use_pixel_classifier_cell_segmentation"),
+            must_exist=True,
+        ),
+        Setting(
+            name="use_pixel_classifier_cell_segmentation",
+            kind="bool",
+            default=False,
+            help=(
+                "Make the cell mask from the raw image with a classifier trained in HaemoLynx's "
+                "own training window, instead of reading cell_mask_path. Written into output_dir "
+                "as {raw image stem}_cells_segmented.tif; each blob it finds is one cell"
+            ),
+            section=_STATISTICS,
+            requires=("measurement_3d_to_cell_mask", "raw_image_path"),
+        ),
+        Setting(
+            name="pixel_classifier_cell_path",
+            kind="path",
+            default=None,
+            help=(
+                "Segment the cells with this classifier (.haemoclf), trained in the panel to tell "
+                "cells from background"
+            ),
+            section=_STATISTICS,
+            requires=("measurement_3d_to_cell_mask", "use_pixel_classifier_cell_segmentation"),
             must_exist=True,
         ),
         Setting(
@@ -857,15 +4846,26 @@ SCHEMA = Schema(
             help="Read this dataset from the cell mask when it is an H5 file",
             section=_STATISTICS,
             requires=("measurement_3d_to_cell_mask",),
+            advanced=True,
         ),
         Setting(
             name="measurement_3d_vessel_mask_path",
             kind="path",
             default=None,
-            help="Use this explicit vessel mask for the 3D distance measurement instead of the pipeline input",
+            help="Use this vessel mask for the 3D distance measurement instead of the run's segmented image",
             section=_STATISTICS,
-            requires=("measurement_3d_to_cell_mask",),
+            requires=("measurement_3d_to_cell_mask", "!use_pixel_classifier_3d_vessel_segmentation"),
+            # Optional: the placeholder lets it be unset (the run's own
+            # segmentation is measured to); one that is set must be there.
             must_exist=True,
+            placeholder="the run's segmented image",
+            advanced=True,
+            # The reference image only had its shape checked against the cell
+            # mask's, which must be the input image's anyway.
+            replaces={
+                "measurement_3d_reference_image_path": {},
+                "measurement_3d_reference_h5_dataset_name": {},
+            },
         ),
         Setting(
             name="measurement_3d_vessel_mask_h5_dataset_name",
@@ -874,36 +4874,1215 @@ SCHEMA = Schema(
             help="Read this dataset from the 3D-distance vessel mask when it is an H5 file",
             section=_STATISTICS,
             requires=("measurement_3d_to_cell_mask",),
+            advanced=True,
         ),
         Setting(
-            name="measurement_3d_reference_image_path",
+            name="use_pixel_classifier_3d_vessel_segmentation",
+            kind="bool",
+            default=False,
+            help=(
+                "Make the 3D distance measurement's vessel mask from the raw image with a "
+                "classifier trained in HaemoLynx's own training window, instead of reading "
+                "measurement_3d_vessel_mask_path or using the run's segmented image. Written "
+                "into output_dir as {raw image stem}_vessels_3d_segmented.tif"
+            ),
+            section=_STATISTICS,
+            requires=("measurement_3d_to_cell_mask", "raw_image_path"),
+            advanced=True,
+        ),
+        Setting(
+            name="pixel_classifier_3d_vessel_path",
             kind="path",
             default=None,
-            help="Take the vessel-volume raster shape from this reference image",
+            help=(
+                "Segment the vessels the 3D distances are measured to with this classifier "
+                "(.haemoclf), one trained to find vessels, or vessels with arterioles and venules"
+            ),
             section=_STATISTICS,
-            requires=("measurement_3d_to_cell_mask",),
+            requires=("measurement_3d_to_cell_mask", "use_pixel_classifier_3d_vessel_segmentation"),
+            must_exist=True,
+            advanced=True,
+        ),
+        Setting(
+            name="statistics",
+            kind="bool",
+            default=False,
+            help="Compute and export the global vessel statistics",
+            section=_STATISTICS,
+        ),
+        Setting(
+            name="statistics_basic",
+            kind="bool",
+            default=True,
+            help="Node/edge counts, total length, mean diameter and the other basic vessel statistics",
+            section=_STATISTICS,
+            requires=("statistics",),
+            advanced=True,
+        ),
+        Setting(
+            name="statistics_tortuosity",
+            kind="bool",
+            default=True,
+            help="How much each vessel's centreline deviates from a straight line",
+            section=_STATISTICS,
+            requires=("statistics",),
+            advanced=True,
+        ),
+        Setting(
+            name="statistics_branching",
+            kind="bool",
+            default=True,
+            help="The number of branch points: nodes where three or more vessels meet",
+            section=_STATISTICS,
+            requires=("statistics",),
+            advanced=True,
+        ),
+        Setting(
+            name="statistics_tree_asymmetry",
+            kind="bool",
+            default=True,
+            help="Asymmetry between sibling sub-tree sizes at each branch point",
+            section=_STATISTICS,
+            requires=("statistics",),
+            advanced=True,
+        ),
+        Setting(
+            name="statistics_fractal_dimension",
+            kind="bool",
+            default=True,
+            help="Fractal dimension of the network, from both node positions and centrelines",
+            section=_STATISTICS,
+            requires=("statistics",),
+            advanced=True,
+        ),
+        Setting(
+            name="statistics_vessel_density",
+            kind="bool",
+            default=True,
+            help="Vessel length and volume per unit of imaged tissue volume",
+            section=_STATISTICS,
+            requires=("statistics",),
+            advanced=True,
+        ),
+        Setting(
+            name="statistics_vessel_classes",
+            kind="bool",
+            default=True,
+            help=(
+                "The same measures for each vessel class -- large and small "
+                "arterioles, capillaries, small and large venules, or with global "
+                "vessel masks large vessels, small vessels and capillaries: count, "
+                "length, length/volume/surface density, diameter, tortuosity and, "
+                "once solved, flow, velocity, wall shear stress and pressure"
+            ),
+            section=_STATISTICS,
+            requires=("statistics",),
+            advanced=True,
+        ),
+        Setting(
+            name="statistics_murray_law",
+            kind="bool",
+            default=True,
+            help="How closely parent/daughter diameters at each junction follow Murray's cube law",
+            section=_STATISTICS,
+            requires=("statistics",),
+            advanced=True,
+        ),
+        Setting(
+            name="statistics_daughter_angles",
+            kind="bool",
+            default=True,
+            help="Branching angle between sibling daughter vessels at each junction",
+            section=_STATISTICS,
+            requires=("statistics",),
+            advanced=True,
+        ),
+        Setting(
+            name="statistics_intercapillary_distance",
+            kind="bool",
+            default=True,
+            help=(
+                "Typical spacing between neighbouring vessels, over every vessel "
+                "and, with haemodynamics, over the vessels carrying flow alone"
+            ),
+            section=_STATISTICS,
+            requires=("statistics",),
+            advanced=True,
+        ),
+        Setting(
+            name="statistics_junction_shape",
+            kind="bool",
+            default=True,
+            help=(
+                "The angles between the three vessels of each junction: the "
+                "smallest, the largest, the share with two vessels within 45 "
+                "degrees of each other, and how flat the junctions are"
+            ),
+            section=_STATISTICS,
+            requires=("statistics",),
+            advanced=True,
+        ),
+        Setting(
+            name="statistics_tissue_coverage",
+            kind="bool",
+            default=True,
+            help=(
+                "How far the tissue lies from a vessel: the share of the image "
+                "box within 20 um of a vessel and beyond 50 um, and the median "
+                "and 90th percentile distance"
+            ),
+            section=_STATISTICS,
+            requires=("statistics",),
+            advanced=True,
+        ),
+        Setting(
+            name="statistics_vessel_columns",
+            kind="bool",
+            default=True,
+            help=(
+                "Vessels running along the stack (z) axis: their share of the "
+                "network's length, how many per mm^2, and how evenly they are "
+                "spread across the image plane"
+            ),
+            section=_STATISTICS,
+            requires=("statistics",),
+            advanced=True,
+        ),
+        Setting(
+            name="statistics_dead_ends",
+            kind="bool",
+            default=True,
+            help=(
+                "Dead ends by kind (leaving the image, stopped short, broken, "
+                "artefact, blind, unknown, island), the interior ones per mm of "
+                "vessel and per mm^3 of tissue, their length, the share of the "
+                "network the image faces cut, and why vessels carry no flow"
+            ),
+            section=_STATISTICS,
+            requires=("statistics",),
+            advanced=True,
+        ),
+        Setting(
+            name="statistics_flow_face_margin_um",
+            kind="float",
+            default=0.0,
+            help=(
+                "Leave every vessel within this distance of an image face out of "
+                "the per-vessel flow statistics -- the vessel classes' flow rows, "
+                "flux heterogeneity and its red cells, and flow hierarchy -- as "
+                "though it carried no flow: every boundary condition put on the "
+                "vessels leaving the image (open_end_model) is least certain next "
+                "to the faces. 0 keeps every vessel"
+            ),
+            section=_STATISTICS,
+            unit="um",
+            minimum=0.0,
+            requires=("statistics",),
+            advanced=True,
+        ),
+        # The tissue's own volume, for vessel density: see
+        # haemolynx.statistics.tissue_volume. Its own toggle, independent of
+        # Statistics -- it writes its own CSV and surface either way, and
+        # vessel density reads it when Statistics runs too.
+        Setting(
+            name="measure_tissue_volume",
+            kind="bool",
+            default=False,
+            help=(
+                "Measure the tissue's volume and surface mesh from the raw image -- the "
+                "region whose background is brighter than the empty space around it -- "
+                "and divide vessel density by that volume instead of by the box the "
+                "network spans"
+            ),
+            section=_STATISTICS,
+            requires=("network_source=segmented_image",),
+        ),
+        Setting(
+            name="tissue_raw_tiff_path",
+            kind="path",
+            default=None,
+            help=(
+                "Find the tissue in this raw image, on the segmentation's own grid; "
+                "leave unset to use the raw image (raw_image_path)"
+            ),
+            section=_STATISTICS,
+            requires=("measure_tissue_volume",),
+            must_exist=True,
+            placeholder="the raw image",
+        ),
+        Setting(
+            name="tissue_raw_channel",
+            kind="int",
+            default=None,
+            help=(
+                "Which channel of a multi-channel raw image the tissue is found in, "
+                "counting from 0 (the panel lists them as Fiji names them: C1 is 0) -- "
+                "one where the tissue's own background shows; leave unset for a "
+                "single-channel file, or for raw_image_channel when the raw image is used"
+            ),
+            section=_STATISTICS,
+            minimum=0,
+            requires=("measure_tissue_volume",),
+            placeholder="single-channel file",
+        ),
+        Setting(
+            name="tissue_threshold_method",
+            kind="choice",
+            default="otsu",
+            # statistics.TISSUE_THRESHOLD_METHODS, written out so the schema
+            # imports no library code; test_tissue_volume pins the two together.
+            choices=("otsu", "li", "triangle", "manual"),
+            help=(
+                "How to tell tissue from empty space in the raw image, vessels left "
+                "out: an automatic split (otsu, li, triangle), after which the "
+                "surface sits halfway between the empty-space and tissue intensity "
+                "levels, where a blurred edge actually is -- or manual, an intensity "
+                "of your own"
+            ),
+            section=_STATISTICS,
+            requires=("measure_tissue_volume",),
+            advanced=True,
+        ),
+        Setting(
+            name="tissue_manual_threshold",
+            kind="float",
+            default=None,
+            help=(
+                "The raw intensity the tissue surface passes through: tissue above it, "
+                "empty space below"
+            ),
+            section=_STATISTICS,
+            requires=("measure_tissue_volume", "tissue_threshold_method=manual"),
+            advanced=True,
+        ),
+        Setting(
+            name="tissue_smoothing_sigma_um",
+            kind="float",
+            default=5.0,
+            help=(
+                "Smooth the raw image this much before finding the tissue's edge, "
+                "so noise and cell texture do not roughen it; convex tissue edges "
+                "round off by about this much"
+            ),
+            section=_STATISTICS,
+            minimum=0.0,
+            unit="um",
+            requires=("measure_tissue_volume",),
+            advanced=True,
+        ),
+        Setting(
+            name="tissue_working_voxel_size_um",
+            kind="float",
+            default=4.0,
+            help=(
+                "Average the raw image into blocks of about this size before finding "
+                "the tissue, which bounds the time and memory a large stack takes; "
+                "the surface still falls between blocks, not on them"
+            ),
+            section=_STATISTICS,
+            minimum=0.0,
+            unit="um",
+            requires=("measure_tissue_volume",),
+            advanced=True,
+        ),
+        Setting(
+            name="tissue_min_component_fraction",
+            kind="float",
+            default=0.01,
+            help=(
+                "Drop separate pieces of tissue smaller than this fraction of the "
+                "largest -- specks of debris or noise in the empty space"
+            ),
+            section=_STATISTICS,
+            minimum=0.0,
+            maximum=1.0,
+            unit="fraction",
+            requires=("measure_tissue_volume",),
+            advanced=True,
+        ),
+        Setting(
+            name="tissue_fill_holes",
+            kind="bool",
+            default=True,
+            help="Count dark cavities enclosed by tissue on every side as tissue",
+            section=_STATISTICS,
+            requires=("measure_tissue_volume",),
+            advanced=True,
+        ),
+        # ------------------------------------------------------------------
+        # Pericyte measurements: see haemolynx.haemodynamics.pericyte_measurements.
+        # Its own box on the Additional measurements tab. The profile's step
+        # and reach are read by the pericyte_measured_constriction
+        # perturbation too, so they warn of nothing while this is off.
+        # ------------------------------------------------------------------
+        Setting(
+            name="measure_pericytes",
+            kind="bool",
+            default=False,
+            help=(
+                "Measure around each pericyte of a pericyte mask, placed on the nearest "
+                "capillary as the pericyte perturbations place it: the vessel's diameter "
+                "along it, and how far it is from the vessel's nearest junction"
+            ),
+            section=_PERICYTE_MEASUREMENTS,
+            requires=("network_source=segmented_image",),
+        ),
+        Setting(
+            name="pericyte_measurement_mask_path",
+            kind="path",
+            default=None,
+            help=(
+                "Read the pericytes from this binary or labelled mask, the input image's "
+                "shape: each connected component is one pericyte"
+            ),
+            section=_PERICYTE_MEASUREMENTS,
+            requires=("measure_pericytes", "!use_pixel_classifier_pericyte_segmentation"),
             must_exist=True,
         ),
         Setting(
-            name="measurement_3d_reference_h5_dataset_name",
+            name="pericyte_measurement_mask_h5_dataset_name",
             kind="str",
             default=None,
-            help="Read this dataset from the 3D-distance reference image when it is an H5 file",
-            section=_STATISTICS,
-            requires=("measurement_3d_to_cell_mask",),
+            help="Read this dataset from the pericyte measurements' mask when it is an H5 file",
+            section=_PERICYTE_MEASUREMENTS,
+            requires=("measure_pericytes",),
+            advanced=True,
+        ),
+        Setting(
+            name="measure_pericyte_diameter_profiles",
+            kind="bool",
+            default=True,
+            help=(
+                "Read the segmentation's diameter at each pericyte's midpoint on its vessel "
+                "and at every step each way along it, as far as the reach or the vessel's "
+                "end, into a CSV per pericyte; and each branch's resistance as a uniform "
+                "tube and with the measured narrowing"
+            ),
+            section=_PERICYTE_MEASUREMENTS,
+            requires=("measure_pericytes",),
+        ),
+        Setting(
+            name="pericyte_profile_step_um",
+            kind="float",
+            default=2.0,
+            help=(
+                "Read the diameter every this far along the vessel from a pericyte's "
+                "midpoint; the measured-constriction perturbation reads it too"
+            ),
+            section=_PERICYTE_MEASUREMENTS,
+            minimum=0.1,
+            unit="um",
+            requires=("measure_pericytes", "measure_pericyte_diameter_profiles"),
+            always_effective=True,
+        ),
+        Setting(
+            name="pericyte_profile_reach_um",
+            kind="float",
+            default=50.0,
+            help=(
+                "Read the diameter this far along the vessel each way from a pericyte's "
+                "midpoint, stopping sooner where the vessel ends; the measured-constriction "
+                "perturbation reads it too"
+            ),
+            section=_PERICYTE_MEASUREMENTS,
+            minimum=0.0,
+            unit="um",
+            requires=("measure_pericytes", "measure_pericyte_diameter_profiles"),
+            always_effective=True,
+        ),
+        Setting(
+            name="pericyte_profile_reading",
+            kind="choice",
+            default="segmentation",
+            # pericyte_measurements.PROFILE_READINGS, written out so the
+            # schema imports no library code; test_pericyte_measurements pins them.
+            choices=("segmentation", "raw_image_fwhm"),
+            help=(
+                "Read the profile's diameters off the segmentation (each point's "
+                "cross-section) or off the raw image (raw_image_path: a FWHM across the "
+                "vessel at each point, fitted as the Diameters stage fits its samples, for a "
+                "lumen label such as dextran); the branch resistances and the "
+                "measured-constriction perturbation read them the same way"
+            ),
+            section=_PERICYTE_MEASUREMENTS,
+            requires=("measure_pericytes", "measure_pericyte_diameter_profiles"),
+            always_effective=True,
+        ),
+        Setting(
+            name="measure_pericyte_junction_distances",
+            kind="bool",
+            default=True,
+            help=(
+                "Measure how far each pericyte's midpoint on its vessel is from the "
+                "vessel's nearest junction, along the vessel and in a straight line"
+            ),
+            section=_PERICYTE_MEASUREMENTS,
+            requires=("measure_pericytes",),
+        ),
+        Setting(
+            name="pericyte_measurement_max_distance_um",
+            kind="float",
+            default=3.0,
+            help=(
+                "Measure a pericyte only when its centroid lies within this distance of "
+                "the nearest capillary's centreline"
+            ),
+            section=_PERICYTE_MEASUREMENTS,
+            minimum=0.0,
+            unit="um",
+            requires=("measure_pericytes",),
+            advanced=True,
+        ),
+        Setting(
+            name="pericyte_measurement_min_diameter_um",
+            kind="float",
+            default=5.0,
+            help=(
+                "Leave out mask components smaller than this equivalent diameter as too "
+                "small to be a pericyte"
+            ),
+            section=_PERICYTE_MEASUREMENTS,
+            minimum=0.0,
+            unit="um",
+            requires=("measure_pericytes",),
+            advanced=True,
+        ),
+        Setting(
+            name="pericyte_measurement_max_diameter_um",
+            kind="float",
+            default=12.0,
+            help=(
+                "Leave out mask components larger than this equivalent diameter as too "
+                "large to be a pericyte"
+            ),
+            section=_PERICYTE_MEASUREMENTS,
+            minimum=0.0,
+            unit="um",
+            requires=("measure_pericytes",),
+            advanced=True,
+        ),
+        # ------------------------------------------------------------------
+        # Connectivity/Network Analysis -- nests under `statistics`, then its
+        # own `statistics_network_analysis` toggle, exactly like "EDT mask
+        # diameter estimate" nests under FWHM then `use_edt_diameter_
+        # crosscheck`. Everything here is a graph-theoretic measure of how
+        # the network is connected/arranged (bridges, loops, degree
+        # correlation, shortest-path/centrality measures), as opposed to
+        # Statistics' own geometric/morphometric measures above.
+        # ------------------------------------------------------------------
+        Setting(
+            name="statistics_network_analysis",
+            kind="bool",
+            default=True,
+            help="Compute the connectivity/network-analysis measures below (bridges, loops, centrality, community structure)",
+            section=_NETWORK_ANALYSIS,
+            requires=("statistics",),
         ),
         Setting(
             name="statistics_mode",
             kind="choice",
             default="fast",
-            help="Compute either the fast subset of vessel statistics or the full set",
-            section=_STATISTICS,
+            help=(
+                "fast samples or caps the slower network analyses -- path efficiency, "
+                "betweenness, bottlenecks, occlusion impact, occlusion curves and loop hierarchy "
+                "-- reports communities as a count and sizes, and leaves out current flow's "
+                "Kirchhoff index; full computes them all exactly over the whole graph, which is "
+                "far slower on a large network. Every other measure is unaffected by this choice"
+            ),
+            section=_NETWORK_ANALYSIS,
             choices=("fast", "full"),
-            requires=("statistics",),
+            requires=("statistics", "statistics_network_analysis"),
+        ),
+        Setting(
+            name="statistics_network_robustness",
+            kind="bool",
+            default=True,
+            help="Bridge-edge and articulation-point counts -- how much of the network depends on a single connection -- and, when inlet/outlet boundaries are known, which of them are perfusion-critical",
+            section=_NETWORK_ANALYSIS,
+            requires=("statistics", "statistics_network_analysis"),
+            advanced=True,
+        ),
+        Setting(
+            name="statistics_bottlenecks",
+            kind="bool",
+            default=True,
+            help=(
+                "Find inlet-to-outlet bottlenecks: the minimum cut (fewest "
+                "vessels, or lowest conductance, whose occlusion separates "
+                "every inlet from every outlet) and each vessel's share of "
+                "the shortest inlet-to-outlet routes. Needs inlet and outlet "
+                "nodes; adds bottleneck_min_cut and bottleneck_route_share "
+                "as vessels-layer colour options"
+            ),
+            section=_NETWORK_ANALYSIS,
+            requires=("statistics", "statistics_network_analysis"),
+            advanced=True,
+        ),
+        Setting(
+            name="statistics_shunts",
+            kind="bool",
+            default=True,
+            help=(
+                "Find inlet-to-outlet shunts: vessels on a route much shorter "
+                "than the network's median inlet-to-outlet route, bypassing "
+                "the bulk of the bed. Needs inlet and outlet nodes; adds shunt "
+                "and shunt_route_ratio as vessels-layer colour options"
+            ),
+            section=_NETWORK_ANALYSIS,
+            requires=("statistics", "statistics_network_analysis"),
+            advanced=True,
+        ),
+        Setting(
+            name="statistics_route_weighting",
+            kind="choice",
+            default="length",
+            help=(
+                "Distance the bottleneck, shunt, territory and capillary-bed "
+                "routes are measured in: vessel count (topology), centreline length, or "
+                "hydraulic resistance (and conductance for the bottleneck "
+                "cut). Also sets the conductance model of current flow, the "
+                "occlusion analyses and algebraic connectivity: one per "
+                "vessel, 1/length, or the solved conductance. Resistance "
+                "needs haemodynamics and falls back to length without it"
+            ),
+            section=_NETWORK_ANALYSIS,
+            choices=("topology", "length", "resistance"),
+            requires=("statistics", "statistics_network_analysis"),
+            advanced=True,
+        ),
+        Setting(
+            name="statistics_shunt_max_route_fraction",
+            kind="float",
+            default=0.5,
+            help=(
+                "Flag a vessel as a shunt when its shortest inlet-to-outlet "
+                "route is at most this fraction of the median route"
+            ),
+            section=_NETWORK_ANALYSIS,
+            unit="fraction",
+            minimum=0.0,
+            maximum=1.0,
+            requires=("statistics", "statistics_network_analysis", "statistics_shunts"),
+            advanced=True,
+        ),
+        Setting(
+            name="statistics_occlusion_impact",
+            kind="bool",
+            default=False,
+            help=(
+                "Predict where a single blocked vessel matters most: for every "
+                "vessel, the fraction of inlet-to-outlet flow lost and the "
+                "length of other vessels starved of flow if it alone is "
+                "blocked, summarised for the whole network, by vessel type and "
+                "by branch order. One sparse solve per vessel: fast mode "
+                "evaluates the 500 vessels carrying the most flow power exactly "
+                "(~13 s on a 78k-vessel network) and leaves the rest 'not "
+                "evaluated'; full mode evaluates every vessel exactly (~25 min "
+                "there). Assumes fixed vessel conductances. Adds "
+                "occlusion_flow_loss and occlusion_hypoperfused_length_um as "
+                "vessels-layer colour options"
+            ),
+            section=_NETWORK_ANALYSIS,
+            requires=("statistics", "statistics_network_analysis"),
+            advanced=True,
+        ),
+        Setting(
+            name="statistics_occlusion_hypoperfusion_fraction",
+            kind="float",
+            default=0.5,
+            help=(
+                "Count another vessel as starved when its flow falls by at "
+                "least this fraction after the blockage"
+            ),
+            section=_NETWORK_ANALYSIS,
+            unit="fraction",
+            minimum=0.0,
+            maximum=1.0,
+            requires=("statistics", "statistics_network_analysis", "statistics_occlusion_impact"),
+            advanced=True,
+        ),
+        Setting(
+            name="statistics_occlusion_curves",
+            kind="bool",
+            default=False,
+            help=(
+                "Block vessels cumulatively (random, busiest-first, "
+                "narrowest-first) and track remaining flow and inlet-outlet "
+                "connectivity, with a robustness index per removal order. "
+                "Slower: one sparse factorisation per removal step, ~30 s on a "
+                "78k-vessel network in fast mode (5 steps, 3 random repeats) "
+                "and ~3.5 min in full mode (25 steps, 5 random repeats)"
+            ),
+            section=_NETWORK_ANALYSIS,
+            requires=("statistics", "statistics_network_analysis"),
+            advanced=True,
+        ),
+        Setting(
+            name="statistics_occlusion_curve_max_fraction",
+            kind="float",
+            default=0.5,
+            help="Keep blocking vessels until this fraction of them is blocked",
+            section=_NETWORK_ANALYSIS,
+            unit="fraction",
+            minimum=0.01,
+            maximum=1.0,
+            requires=("statistics", "statistics_network_analysis", "statistics_occlusion_curves"),
+            advanced=True,
+        ),
+        Setting(
+            name="statistics_current_flow",
+            kind="bool",
+            default=True,
+            help=(
+                "Each vessel's share of the inlet-to-outlet flow as Kirchhoff "
+                "splits it across parallel routes (current-flow betweenness), "
+                "the equivalent inlet-outlet resistance, and (full mode, small "
+                "networks) the Kirchhoff index; adds current_flow_share as a "
+                "vessels-layer colour option"
+            ),
+            section=_NETWORK_ANALYSIS,
+            requires=("statistics", "statistics_network_analysis"),
+            advanced=True,
+        ),
+        Setting(
+            name="statistics_perfusion_territories",
+            kind="bool",
+            default=True,
+            help=(
+                "Assign each vessel to its nearest inlet (arteriolar) and "
+                "outlet (venular) territory and flag watershed vessels on the "
+                "borders between territories; adds arteriolar_territory, "
+                "venular_territory, watershed and arteriolar_watershed_margin "
+                "as vessels-layer colour options"
+            ),
+            section=_NETWORK_ANALYSIS,
+            requires=("statistics", "statistics_network_analysis"),
+            advanced=True,
+        ),
+        Setting(
+            name="statistics_capillary_bed_joins",
+            kind="bool",
+            default=True,
+            help=(
+                "Split the capillaries into one bed per arteriolar feed (the "
+                "nodes the capillary B orders count from, nearest by the route "
+                "weighting) and find the lowest B order at which each bed meets "
+                "another; a bed that never does is censored (leaves the image, "
+                "drains to a venule, or ends blind). Reports the Kaplan-Meier "
+                "median join order, writes a per-bed CSV beside the statistics "
+                "CSV, and adds capillary_bed and bed_join_order as vessels-layer "
+                "colour options. Needs capillary B orders"
+            ),
+            section=_NETWORK_ANALYSIS,
+            requires=("statistics", "statistics_network_analysis"),
+            advanced=True,
+        ),
+        Setting(
+            name="statistics_capillary_path_orders",
+            kind="bool",
+            default=True,
+            help=(
+                "How many capillary branch orders lie between the arterioles "
+                "and the venules: for every capillary draining into a venule, "
+                "the fewest capillaries on a route to it from an arteriole (the "
+                "nodes the capillary B orders count from), through capillaries "
+                "alone, the shortest such route's length in microns, the "
+                "straight-line distance between its two ends and the length "
+                "over that distance. Reports the mean, median, SD and range "
+                "of each. Needs "
+                "arteriole or venule branch orders (an Art, Ven or Large tier)"
+            ),
+            section=_NETWORK_ANALYSIS,
+            requires=("statistics", "statistics_network_analysis"),
+            advanced=True,
+        ),
+        Setting(
+            name="statistics_transit_time",
+            kind="bool",
+            default=True,
+            help=(
+                "Blood transit time per vessel and the inlet-to-outlet "
+                "transit-time distribution, including capillary transit-time "
+                "heterogeneity (CTH). Needs haemodynamics and diameters; adds "
+                "transit_time_s and arrival_time_s as vessels-layer colour options"
+            ),
+            section=_NETWORK_ANALYSIS,
+            requires=("statistics", "statistics_network_analysis"),
+            advanced=True,
+        ),
+        Setting(
+            name="statistics_flux_heterogeneity",
+            kind="bool",
+            default=True,
+            help=(
+                "Flux heterogeneity: the coefficient of variation of flow and "
+                "of mean velocity over the vessels carrying flow, for the "
+                "capillaries and for every vessel, and how much of the network "
+                "carries flow (vessels, length and volume, with their share of "
+                "the whole), and the red cells predicted from the flow and the "
+                "discharge haematocrit -- tube haematocrit (Pries et al. 1990), "
+                "red-cell velocity, red-cell flux (cells/s) and spacing "
+                "(cells/mm), counted by red_cell_volume_fl. Needs haemodynamics; "
+                "adds vessel_velocity_um_s, tube_haematocrit, "
+                "red_cell_velocity_um_s, red_cell_flux_per_s and "
+                "red_cell_linear_density_per_mm as vessels-layer colour options"
+            ),
+            section=_NETWORK_ANALYSIS,
+            requires=("statistics", "statistics_network_analysis"),
+            advanced=True,
+        ),
+        Setting(
+            name="statistics_loop_hierarchy",
+            kind="bool",
+            default=True,
+            help=(
+                "Shortest loop through each vessel and the loop-length "
+                "distribution overall and by vessel type -- the scale at which "
+                "the network's redundancy sits; adds loop_length_um as a "
+                "vessels-layer colour option"
+            ),
+            section=_NETWORK_ANALYSIS,
+            requires=("statistics", "statistics_network_analysis"),
+            advanced=True,
+        ),
+        Setting(
+            name="statistics_strahler",
+            kind="bool",
+            default=True,
+            help=(
+                "Horton-Strahler orders of the arterial and venous trees and "
+                "Horton's bifurcation, length and diameter ratios; adds "
+                "strahler_order as a vessels-layer colour option"
+            ),
+            section=_NETWORK_ANALYSIS,
+            requires=("statistics", "statistics_network_analysis"),
+            advanced=True,
+        ),
+        Setting(
+            name="statistics_algebraic_connectivity",
+            kind="bool",
+            default=True,
+            help=(
+                "Algebraic connectivity (Fiedler value) of the weighted network "
+                "and its natural two-way split; adds fiedler_value and "
+                "fiedler_side as vessels-layer colour options"
+            ),
+            section=_NETWORK_ANALYSIS,
+            requires=("statistics", "statistics_network_analysis"),
+            advanced=True,
+        ),
+        Setting(
+            name="statistics_cyclomatic_number",
+            kind="bool",
+            default=True,
+            help="Independent loop (anastomosis) count -- 0 means every vessel is a single point of failure for everything downstream of it",
+            section=_NETWORK_ANALYSIS,
+            requires=("statistics", "statistics_network_analysis"),
+            advanced=True,
+        ),
+        Setting(
+            name="statistics_degree_assortativity",
+            kind="bool",
+            default=True,
+            help="Whether high-degree junctions connect to other high-degree junctions (vascular trees are normally disassortative)",
+            section=_NETWORK_ANALYSIS,
+            requires=("statistics", "statistics_network_analysis"),
+            advanced=True,
+        ),
+        Setting(
+            name="statistics_rich_club",
+            kind="bool",
+            default=True,
+            help="Whether the highest-degree vessels/junctions preferentially interconnect, forming their own backbone",
+            section=_NETWORK_ANALYSIS,
+            requires=("statistics", "statistics_network_analysis"),
+            advanced=True,
+        ),
+        Setting(
+            name="statistics_k_core",
+            kind="bool",
+            default=True,
+            help="How onion-layered (redundant core plus peripheral shell) vs. purely tree-like the network is",
+            section=_NETWORK_ANALYSIS,
+            requires=("statistics", "statistics_network_analysis"),
+            advanced=True,
+        ),
+        Setting(
+            name="statistics_flow_hierarchy",
+            kind="bool",
+            default=True,
+            help="Fraction of the solved flow's own directed edges that do not sit on a directed (recirculating) loop",
+            section=_NETWORK_ANALYSIS,
+            requires=("statistics", "statistics_network_analysis"),
+            advanced=True,
+        ),
+        Setting(
+            name="statistics_path_efficiency",
+            kind="bool",
+            default=True,
+            help="How close shortest network paths are to straight-line distance, sampled (fast) or exact (full) per statistics_mode",
+            section=_NETWORK_ANALYSIS,
+            requires=("statistics", "statistics_network_analysis"),
+            advanced=True,
+        ),
+        Setting(
+            name="statistics_community",
+            kind="bool",
+            default=True,
+            help=(
+                "Community/module detection over the network's topology: fast reports the "
+                "communities' count and sizes, with connected components standing in for them "
+                "above 1500 nodes; full lists every community's nodes (statistics_mode)"
+            ),
+            section=_NETWORK_ANALYSIS,
+            requires=("statistics", "statistics_network_analysis"),
+            advanced=True,
+        ),
+        Setting(
+            name="statistics_betweenness",
+            kind="bool",
+            default=True,
+            help="Betweenness centrality of each node, sampled (fast) or exact (full) per statistics_mode",
+            section=_NETWORK_ANALYSIS,
+            requires=("statistics", "statistics_network_analysis"),
+            advanced=True,
+        ),
+        # ------------------------------------------------------------------
+        # Vascular communities -- its own group on "8. Additional
+        # measurements", independent of Statistics: it writes a vessels-layer
+        # colouring, not a report. When the statistics report computes the
+        # same partition anyway, export_results computes it once and shares it
+        # (see pipeline.stages.shared_vascular_communities).
+        # ------------------------------------------------------------------
+        Setting(
+            name="compute_vascular_communities",
+            kind="bool",
+            default=False,
+            help=(
+                "Partition the network into vascular communities/domains by "
+                "modularity (Blinder et al.'s 'cortical angiome' style) and "
+                "add 'vascular_community' as a colour option in the vessels "
+                "layer's colour-by dropdown. Independent of Statistics; reuses "
+                "the statistics report's own partition when it computes the "
+                "same one"
+            ),
+            section=_VASCULAR_COMMUNITIES,
+        ),
+        Setting(
+            name="vascular_community_weighting",
+            kind="choice",
+            default="topology",
+            help=(
+                "What the vascular-community partition weighs each vessel "
+                "by: plain topology, or how strongly the vessel ties its two "
+                "ends -- its conductance (resistance), 1/length (length) or "
+                "|flow| (flow), parallel vessels' ties added -- as the "
+                "statistics report's weighted community counts do. Resistance "
+                "and flow are only meaningful once haemodynamics has run"
+            ),
+            section=_VASCULAR_COMMUNITIES,
+            choices=("topology", "resistance", "length", "flow"),
+            requires=("compute_vascular_communities",),
         ),
         # ------------------------------------------------------------------
         # Diameters and pericytes
         # ------------------------------------------------------------------
+        Setting(
+            name="viscosity_law",
+            kind="choice",
+            default="pries",
+            choices=["pries", "capillary_power_law", "constant"],
+            help=(
+                "Which apparent-viscosity law sets the resistances: pries "
+                "covers 3.3-1978 um in one expression and reads what each "
+                "diameter measures (segmentation_source, or the raw-image "
+                "measurement's own) -- in vitro (Pries et al. 1992) for a plasma "
+                "column, in vivo (Pries et al. 1994) wall to wall -- unless "
+                "pries_viscosity_form holds every vessel to one form; "
+                "capillary_power_law is the older law calibrated at 5 um with a "
+                "placeholder constant above 7 um, constant is plasma everywhere. "
+                "Resistances are not comparable across laws"
+            ),
+            section=_DIAMETERS_AND_PERICYTES,
+            requires=("run_haemodynamics",),
+        ),
+        Setting(
+            name="pries_viscosity_form",
+            kind="choice",
+            default="auto",
+            choices=["auto", "in_vivo_1994", "in_vivo_2005", "in_vitro_1992"],
+            help=(
+                "Which form of the pries law every vessel is computed by. auto "
+                "chooses per vessel from what its diameter measures: in vitro "
+                "(Pries et al. 1992) for a plasma column, in vivo (Pries et al. "
+                "1994) wall to wall. Any other value holds every vessel to that "
+                "form whatever its diameter measures: in_vivo_1994, in_vitro_1992, "
+                "or in_vivo_2005, Pries and Secomb's newer in vivo model -- the in "
+                "vitro law at the diameter an endothelial surface layer leaves "
+                "free, the layer depending on diameter and haematocrit -- which, "
+                "like 1994, reads a diameter as wall to wall. Resistances are not "
+                "comparable across forms"
+            ),
+            section=_DIAMETERS_AND_PERICYTES,
+            requires=("run_haemodynamics", "viscosity_law=pries"),
+            advanced=True,
+        ),
+        Setting(
+            name="haematocrit",
+            kind="float",
+            default=0.45,
+            help=(
+                "Discharge haematocrit the pries law is evaluated at (read by "
+                "no other law), and the haematocrit the flux heterogeneity "
+                "statistic predicts each vessel's red-cell flux, velocity and "
+                "tube haematocrit from, unless distributed_iterative below "
+                "gave the vessel its own"
+            ),
+            section=_DIAMETERS_AND_PERICYTES,
+            unit="fraction",
+            minimum=0.0,
+            maximum=0.99,
+            requires=("run_haemodynamics",),
+        ),
+        Setting(
+            name="red_cell_volume_fl",
+            kind="float",
+            default=DEFAULT_RED_CELL_VOLUME_FL,
+            help=(
+                "Mean red-cell volume (MCV) the red-cell flux and spacing are "
+                "counted with: cells per second is flow x discharge "
+                "haematocrit / this volume, cells per mm is tube haematocrit x "
+                "cross-section / it. Mouse 45-50, rat 55-60, human about 90. "
+                "Read by the flux heterogeneity statistic and the "
+                "capillary-block comparison; it moves no resistance or flow"
+            ),
+            section=_DIAMETERS_AND_PERICYTES,
+            unit="fL",
+            minimum=1.0,
+            requires=("run_haemodynamics",),
+        ),
+        Setting(
+            name="haematocrit_model",
+            kind="choice",
+            default="fixed",
+            choices=["fixed", "distributed_iterative"],
+            help=(
+                "Which haematocrit model a resistance is computed from. "
+                "fixed applies the haematocrit fraction above uniformly to "
+                "every edge. distributed_iterative instead computes local "
+                "discharge haematocrit per edge from Pries and Secomb's "
+                "bifurcation phase-separation law (parent/daughter "
+                "diameters and flow fraction, not bifurcation angle) -- "
+                "only changes a resistance when viscosity_law is pries, "
+                "the only law that reads haematocrit, but works with "
+                "either diameter basis, and iterates the flow solve to "
+                "convergence since haematocrit, viscosity, resistance and "
+                "the flow split all depend on each other, so a large "
+                "network costs more than one solve"
+            ),
+            section=_DIAMETERS_AND_PERICYTES,
+            requires=("run_haemodynamics",),
+        ),
+        Setting(
+            name="haematocrit_junction_rule",
+            kind="choice",
+            default="no_separation",
+            choices=["no_separation", "sequential_bifurcations", "split_junctions"],
+            help=(
+                "How red cells divide at a junction the phase-separation law "
+                "does not cover -- it is only defined for one vessel dividing "
+                "in two, not for three or more outflows, or two or more "
+                "inflows meeting two or more outflows. no_separation mixes "
+                "the inflows and gives every outflow that haematocrit "
+                "(Secomb's NetFlow dishem). sequential_bifurcations treats "
+                "the junction as a chain of bifurcations, the widest inflow "
+                "the first parent and the outflows split off largest flow "
+                "first (Secomb's dishem_generalized). split_junctions changes "
+                "the network before the model is built: every junction of "
+                "four or more vessels becomes bifurcations joined by short "
+                "connector vessels, as the Post processing tab's split does, "
+                "which adds their resistance to the network too"
+            ),
+            section=_DIAMETERS_AND_PERICYTES,
+            requires=("run_haemodynamics", "haematocrit_model=distributed_iterative"),
+        ),
+        Setting(
+            name="haematocrit_split_connector_length_um",
+            kind="float",
+            default=0.0,
+            help=(
+                "Length of each connector split_junctions adds. 0 makes each "
+                "junction's connectors as long as its vessels are wide (their "
+                "mean diameter, which is also the connector's diameter): a "
+                "four-way node is usually two bifurcations graph building "
+                "merged, about that far apart, and a fixed length would "
+                "re-plumb a capillary bed while falling inside an arteriole's "
+                "own junction. The Post processing tab's split defaults to 15"
+            ),
+            section=_DIAMETERS_AND_PERICYTES,
+            unit="um",
+            minimum=0.0,
+            requires=(
+                "run_haemodynamics",
+                "haematocrit_model=distributed_iterative",
+                "haematocrit_junction_rule=split_junctions",
+            ),
+            advanced=True,
+        ),
+        Setting(
+            name="haematocrit_distribution_max_iterations",
+            kind="int",
+            default=20,
+            help=(
+                "Give up on haematocrit distribution convergence after "
+                "this many flow re-solves. A daughter drawing a flow share "
+                "just above the plasma-skimming threshold swings between too "
+                "many red cells and too few on alternate passes; each pass's "
+                "step is damped (0.8 times smaller every five passes, as "
+                "Secomb's NetFlow does) so the swing dies out, and a strongly "
+                "asymmetric bifurcation (e.g. a 2.5x diameter ratio) settles "
+                "in about 10 iterations within the default tolerance below. At "
+                "least 2: the first pass has nothing to compare with"
+            ),
+            section=_DIAMETERS_AND_PERICYTES,
+            minimum=2,
+            # One pass could never converge; a config or run saying 1 runs 2.
+            value_aliases={1: 2},
+            requires=("run_haemodynamics", "haematocrit_model=distributed_iterative"),
+            advanced=True,
+        ),
+        Setting(
+            name="haematocrit_distribution_tolerance",
+            kind="float",
+            default=0.01,
+            help="Largest per-edge haematocrit change between iterations that counts as converged",
+            section=_DIAMETERS_AND_PERICYTES,
+            unit="fraction",
+            minimum=0.0,
+            requires=("run_haemodynamics", "haematocrit_model=distributed_iterative"),
+            advanced=True,
+        ),
+        # ------------------------------------------------------------------
+        # Network handling: done to the assigned network at the start of the
+        # haemodynamics stage, so a change here takes effect on "Run from this
+        # stage" from the Haemodynamics tab.
+        # ------------------------------------------------------------------
+        Setting(
+            name="boundary_handling",
+            kind="choice",
+            default="leave_unsolved",
+            help=(
+                "What happens, before the haemodynamic model is built, to each "
+                "vessel no inlet-to-outlet path runs along: every branch or tree "
+                "without both an inlet and an outlet, and every branch, tree or "
+                "loop that leaves a perfused vessel and reaches no outlet (a dead "
+                "end). No pressure difference drives a flow through one, so the "
+                "solve has no answer for it. A vessel leaving the image that "
+                "open_end_model may open counts as an inlet and an outlet, so the "
+                "vessels leading to one are on such a path. leave_unsolved keeps them, marked "
+                "unsolved: the viewer draws them light grey, leaves them out of "
+                "every flow-based colouring and names each vessel Solved or "
+                "Unsolved on hover. remove_disconnected deletes them, so only "
+                "vessels on some inlet-to-outlet path are kept, and joins the two "
+                "vessels left where a removed branch hung into one vessel, measured "
+                "afresh with the run's diameter methods, with branch orders assigned "
+                "again (a boundary node, a thick-vessel bridge and two vessels in "
+                "different vessel masks stay apart)"
+            ),
+            section=_NETWORK_HANDLING,
+            choices=("leave_unsolved", "remove_disconnected"),
+            advanced=True,
+            # Its first value used to be spelled "None", and removing was its
+            # own checkbox.
+            value_aliases={"None": "leave_unsolved"},
+            replaces={
+                "remove_disconnected_io_components_after_final_assignment": {
+                    True: "remove_disconnected"
+                },
+            },
+        ),
+        Setting(
+            name="open_end_model",
+            kind="choice",
+            default="estimated",
+            help=(
+                "The boundary condition on vessels that leave the image (dead ends "
+                "whose vessel runs out through an image face) and are not inlets or "
+                "outlets. closed: no blood leaves through them, so every vessel that "
+                "only leads to them carries no flow. terminal_resistance: each drains "
+                "to the outlet pressure through open_end_terminal_resistance_multiple "
+                "times its own vessel's resistance. outlet: each is held at the "
+                "outlet pressure (biased towards draining; for comparison). "
+                "estimated (the default): their pressures are chosen so the network's "
+                "pressures and wall shear stresses stay closest to target values (Fry "
+                "et al. 2012), the targets taken from the closed solve; open ends may "
+                "feed the network as well as drain it. Only open ends in a piece "
+                "of the network with an inlet or outlet are opened. Perturbations and "
+                "sweeps keep the baseline's conditions, and results under different "
+                "models are not comparable"
+            ),
+            section=_NETWORK_HANDLING,
+            choices=("closed", "terminal_resistance", "outlet", "estimated"),
+            requires=("run_haemodynamics",),
+            advanced=True,
+        ),
+        Setting(
+            name="open_end_terminal_resistance_multiple",
+            kind="float",
+            default=10.0,
+            help=(
+                "How many times its own vessel's resistance an open end drains "
+                "through, to the outlet pressure"
+            ),
+            section=_NETWORK_HANDLING,
+            minimum=0.0,
+            requires=("run_haemodynamics", "open_end_model=terminal_resistance"),
+            advanced=True,
+        ),
+        Setting(
+            name="open_end_estimate_shear_weight",
+            kind="float",
+            default=1.0,
+            help=(
+                "How much the wall shear stress target counts against the pressure "
+                "target when estimating the open ends' pressures, each term divided "
+                "by its own scale"
+            ),
+            section=_NETWORK_HANDLING,
+            minimum=0.0,
+            requires=("run_haemodynamics", "open_end_model=estimated"),
+            advanced=True,
+        ),
+        Setting(
+            name="open_end_estimate_pressure_target_pa",
+            kind="float",
+            default=None,
+            help=(
+                "The pressure the estimate keeps the network near. Leave unset for "
+                "the closed solve's mean pressure over the vessels it perfuses"
+            ),
+            section=_NETWORK_HANDLING,
+            unit="Pa",
+            minimum=0.0,
+            requires=("run_haemodynamics", "open_end_model=estimated"),
+            advanced=True,
+            placeholder="auto",
+        ),
+        Setting(
+            name="open_end_estimate_shear_target_pa",
+            kind="float",
+            default=None,
+            help=(
+                "The wall shear stress the estimate keeps each vessel near. Leave "
+                "unset for the closed solve's median over the vessels it perfuses"
+            ),
+            section=_NETWORK_HANDLING,
+            unit="Pa",
+            minimum=0.0,
+            requires=("run_haemodynamics", "open_end_model=estimated"),
+            advanced=True,
+            placeholder="auto",
+        ),
         Setting(
             name="all_diams_const",
             kind="bool",
@@ -912,18 +6091,111 @@ SCHEMA = Schema(
             section=_DIAMETERS_AND_PERICYTES,
         ),
         Setting(
+            name="manual_capillary_diameter_by_branch_order",
+            kind="mapping",
+            default={"B01": 6.2, "B02": 4.0, "B03": 5.0, "B04": 5.0},
+            help="Override capillary diameters per branch-order label, e.g. B01",
+            section=_DIAMETERS_AND_PERICYTES,
+            unit="um",
+            requires=("!all_diams_const",),
+        ),
+        Setting(
+            name="manual_arteriole_diameter_by_branch_order",
+            kind="mapping",
+            default={},
+            help=(
+                "Override arteriole diameters per branch-order label, e.g. Art1; an order not "
+                "listed takes the B01 capillary diameter"
+            ),
+            section=_DIAMETERS_AND_PERICYTES,
+            unit="um",
+            requires=("!all_diams_const",),
+        ),
+        Setting(
+            name="manual_venule_diameter_by_branch_order",
+            kind="mapping",
+            default={},
+            help=(
+                "Override venule diameters per branch-order label, e.g. Ven1; an order not listed"
+                " takes the B01 capillary diameter"
+            ),
+            section=_DIAMETERS_AND_PERICYTES,
+            unit="um",
+            requires=("!all_diams_const",),
+        ),
+        Setting(
+            name="manual_large_arteriole_diameter_by_branch_order",
+            kind="mapping",
+            default={},
+            help="Override large-arteriole diameters per branch-order label, e.g. Large_Art1",
+            section=_DIAMETERS_AND_PERICYTES,
+            unit="um",
+            requires=("!all_diams_const",),
+        ),
+        Setting(
+            name="manual_large_venule_diameter_by_branch_order",
+            kind="mapping",
+            default={},
+            help="Override large-venule diameters per branch-order label, e.g. Large_Ven1",
+            section=_DIAMETERS_AND_PERICYTES,
+            unit="um",
+            requires=("!all_diams_const",),
+        ),
+        Setting(
+            name="diameter_by_branch_order",
+            kind="mapping",
+            default=None,
+            help="Supply the full branch-order diameter lookup; leave unset to derive it from the manual diameter settings",
+            section=_DIAMETERS_AND_PERICYTES,
+            unit="um",
+            advanced=True,
+            requires=("!all_diams_const",),
+        ),
+        Setting(
             name="do_pericyte_construction",
             kind="bool",
             default=False,
-            help="Model pericyte constrictions when assigning Poiseuille resistances",
+            help=(
+                "Legacy flag kept for older configs and CLI; ignored by baseline "
+                "Haemodynamics and every perturbation merge (not shown as a "
+                "typed-entry control). Focal constrictions come only from "
+                "pericyte-typed perturbations via their strategy path"
+            ),
             section=_DIAMETERS_AND_PERICYTES,
             requires=("run_haemodynamics",),
+        ),
+        Setting(
+            name="constriction_length_um",
+            kind="float",
+            default=40.0,
+            help=(
+                "Axial length of each focal pericyte constriction/dilation "
+                "site along the vessel centreline"
+            ),
+            section=_DIAMETERS_AND_PERICYTES,
+            minimum=0.0,
+            unit="um",
+        ),
+        Setting(
+            name="constriction_spacing_um",
+            kind="float",
+            default=100.0,
+            help=(
+                "Centre-to-centre distance between regularly spaced pericyte "
+                "sites when not placing from a mask"
+            ),
+            section=_DIAMETERS_AND_PERICYTES,
+            minimum=0.0,
+            unit="um",
         ),
         Setting(
             name="use_pericyte_mask_constriction",
             kind="bool",
             default=False,
-            help="Place constrictions at pericyte centroids taken from a mask rather than at regular spacing",
+            help=(
+                "Place focal constrictions/dilations at pericyte centroids "
+                "from a mask instead of at regular spacing along vessels"
+            ),
             section=_DIAMETERS_AND_PERICYTES,
             requires=("run_haemodynamics",),
         ),
@@ -931,54 +6203,77 @@ SCHEMA = Schema(
             name="pericyte_mask_path",
             kind="path",
             default=None,
-            help="Read pericyte locations from this mask",
+            help=(
+                "Read pericyte centroids from this binary or labelled mask when mask-based "
+                "placement is on; it must then be set, with no fallback. The panel fills it from "
+                "a mask named for pericytes beside the input image"
+            ),
             section=_DIAMETERS_AND_PERICYTES,
-            requires=("use_pericyte_mask_constriction",),
+            requires=("use_pericyte_mask_constriction", "!use_pixel_classifier_pericyte_segmentation"),
             must_exist=True,
         ),
         Setting(
             name="pericyte_mask_h5_dataset_name",
             kind="str",
             default=None,
-            help="Read this dataset from the pericyte mask when it is an H5 file",
+            help=(
+                "H5 dataset name inside the pericyte mask file; ignored for "
+                "TIFF masks"
+            ),
             section=_DIAMETERS_AND_PERICYTES,
             requires=("use_pericyte_mask_constriction",),
+            advanced=True,
         ),
         Setting(
             name="pericyte_max_assignment_distance_um",
             kind="float",
             default=3.0,
-            help="Assign a pericyte centroid to a vessel edge only within this distance",
+            help=(
+                "Assign a pericyte centroid to the nearest vessel edge only "
+                "when they lie within this distance"
+            ),
             section=_DIAMETERS_AND_PERICYTES,
             minimum=0.0,
             unit="um",
             requires=("use_pericyte_mask_constriction",),
+            advanced=True,
         ),
         Setting(
             name="pericyte_min_diameter_um",
             kind="float",
             default=5.0,
-            help="Treat mask components below this diameter as too small to be a pericyte",
+            help=(
+                "Ignore mask components smaller than this equivalent diameter "
+                "as too small to be a pericyte"
+            ),
             section=_DIAMETERS_AND_PERICYTES,
             minimum=0.0,
             unit="um",
             requires=("use_pericyte_mask_constriction",),
+            advanced=True,
         ),
         Setting(
             name="pericyte_max_diameter_um",
             kind="float",
             default=12.0,
-            help="Treat mask components above this diameter as too large to be a pericyte",
+            help=(
+                "Ignore mask components larger than this equivalent diameter "
+                "as too large to be a pericyte"
+            ),
             section=_DIAMETERS_AND_PERICYTES,
             minimum=0.0,
             unit="um",
             requires=("use_pericyte_mask_constriction",),
+            advanced=True,
         ),
         Setting(
             name="use_probabilistic_pericyte_constriction",
             kind="bool",
             default=False,
-            help="Activate each candidate pericyte constriction at random rather than activating all of them",
+            help=(
+                "Activate each candidate pericyte site at random rather than "
+                "constricting/dilating every candidate"
+            ),
             section=_DIAMETERS_AND_PERICYTES,
             requires=("run_haemodynamics",),
         ),
@@ -986,7 +6281,10 @@ SCHEMA = Schema(
             name="pericyte_constriction_probability",
             kind="float",
             default=0.8,
-            help="Activate each candidate pericyte constriction with this probability",
+            help=(
+                "Fraction of candidate pericyte sites that activate when "
+                "probabilistic selection is on (0 = none, 1 = all)"
+            ),
             section=_DIAMETERS_AND_PERICYTES,
             unit="fraction",
             minimum=0.0,
@@ -1007,12 +6305,17 @@ SCHEMA = Schema(
             ),
             section=_DIAMETERS_AND_PERICYTES,
             requires=("use_probabilistic_pericyte_constriction",),
+            advanced=True,
         ),
         Setting(
             name="run_pericyte_resistance_comparison",
             kind="bool",
             default=False,
-            help="Run the baseline-versus-constricted pericyte resistance comparison and write its CSV",
+            help=(
+                "Legacy comparison-CSV flag; ignored by baseline assign_diameters "
+                "and perturbation merges (CLI / library apply() only). Use "
+                "Perturbations for pericyte tone"
+            ),
             section=_DIAMETERS_AND_PERICYTES,
             requires=("run_haemodynamics",),
         ),
@@ -1052,54 +6355,77 @@ SCHEMA = Schema(
             help="Build the diameter and constriction tables up to this branch-order index",
             section=_DIAMETERS_AND_PERICYTES,
             minimum=1,
+            advanced=True,
         ),
         Setting(
             name="default_diameter",
             kind="float",
             default=4.0,
-            help="Use this vessel diameter where no branch-order override applies",
+            help=(
+                "Use this vessel diameter where no branch-order override applies, for capillary "
+                "and large-vessel orders (every order with all_diams_const on); arteriole, venule"
+                " and unknown small vessel orders not listed take the B01 diameter instead"
+            ),
             section=_DIAMETERS_AND_PERICYTES,
             minimum=0.0,
             unit="um",
         ),
         Setting(
-            name="manual_capillary_diameter_by_branch_order",
-            kind="mapping",
-            default={"B01": 6.2, "B02": 4.0, "B03": 5.0, "B04": 5.0},
-            help="Override capillary diameters per branch-order label, e.g. B01",
+            name="diameter_class_median_min_edges",
+            kind="int",
+            default=3,
+            help=(
+                "Give a vessel no method measured the median measured diameter of this "
+                "run's vessels with the same branch-order label, when at least this many "
+                "of them were measured, before falling back to the branch-order table "
+                "(which has no entry for a large arteriole or venule, so it takes "
+                "default_diameter). 0 goes straight to the table"
+            ),
             section=_DIAMETERS_AND_PERICYTES,
-            unit="um",
+            minimum=0,
         ),
         Setting(
-            name="manual_arteriole_diameter_by_branch_order",
-            kind="mapping",
-            default={},
-            help="Override arteriole diameters per branch-order label, e.g. Art1",
+            name="junction_bridges",
+            kind="bool",
+            default=False,
+            help=(
+                "Once diameters are measured, at every junction no thick vessel is part of, cut "
+                "each vessel narrower than 0.8 of the widest vessel there as far along its "
+                "centreline as that vessel's radius, and make the stretch a zero-resistance "
+                "bridge: the part of it lying inside the wider vessel's lumen, which a centreline "
+                "running to the junction's middle counts as its length. Bridges get no branch "
+                "order and leave every vessel's order as it was, and the statistics leave them "
+                "out, as the thick vessels' bridges (graph.junction_bridges)"
+            ),
             section=_DIAMETERS_AND_PERICYTES,
-            unit="um",
+            requires=("run_haemodynamics", "network_source=segmented_image"),
         ),
         Setting(
-            name="manual_venule_diameter_by_branch_order",
-            kind="mapping",
-            default={},
-            help="Override venule diameters per branch-order label, e.g. Ven1",
+            name="pericyte_constriction_factor",
+            kind="float",
+            default=1.0,
+            help=(
+                "Global focal constriction/dilation factor for every branch "
+                "order (1.0 = no local change; <1 narrows, >1 widens at "
+                "pericyte sites). constriction_by_branch_order replaces this "
+                "for listed orders only — empty map means this global factor "
+                "alone"
+            ),
             section=_DIAMETERS_AND_PERICYTES,
-            unit="um",
-        ),
-        Setting(
-            name="diameter_by_branch_order",
-            kind="mapping",
-            default=None,
-            help="Supply the full branch-order diameter lookup; leave unset to derive it from the manual diameter settings",
-            section=_DIAMETERS_AND_PERICYTES,
-            unit="um",
-            advanced=True,
+            minimum=0.0,
+            requires=("run_haemodynamics",),
         ),
         Setting(
             name="constriction_by_branch_order",
             kind="mapping",
             default=None,
-            help="Supply the full branch-order constriction-factor lookup; leave unset to derive it from the manual diameter settings",
+            help=(
+                "Sparse per-order overrides of pericyte_constriction_factor "
+                "(<1 constricts, >1 dilates locally). Empty or unset makes no "
+                "change (global factor only). A listed order replaces the "
+                "global factor for that order alone (e.g. {B01: 1.0} with "
+                "global 0.8 leaves B01 unchanged)"
+            ),
             section=_DIAMETERS_AND_PERICYTES,
             advanced=True,
         ),
@@ -1107,31 +6433,44 @@ SCHEMA = Schema(
         # FWHM diameter measurement
         # ------------------------------------------------------------------
         Setting(
-            name="use_fwhm_edge_diameters",
+            name="measure_diameters_from_raw_image",
             kind="bool",
             default=False,
-            help="Measure per-edge diameters from the raw image by full-width-half-maximum fitting",
+            help=(
+                "Measure each vessel's diameter from the raw image (raw_image_path), by the "
+                "method its stain calls for (raw_image_stain): FWHM across a plasma label's "
+                "lumen, or the lumen inside the wall ring of an endothelial stain. A vessel it "
+                "cannot read falls back to the segmentation mask, then the table. Diameters read "
+                "from an endothelial stain run wall to wall, and their viscosity takes that form "
+                "of the law"
+            ),
             section=_FWHM,
-            requires=("run_haemodynamics",),
+            requires=("run_haemodynamics", "raw_image_path"),
         ),
         Setting(
-            name="fwhm_raw_tiff_path",
-            kind="path",
-            default=None,
-            help="Measure FWHM diameters from this raw single-channel image",
+            name="do_fwhm_measurement",
+            kind="bool",
+            default=True,
+            help=(
+                "Measure FWHM diameters from the raw image; turn off to keep "
+                "diameters already on the graph"
+            ),
             section=_FWHM,
-            requires=("use_fwhm_edge_diameters",),
-            must_exist=True,
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial",),
         ),
         Setting(
             name="fwhm_sample_spacing_along_edge_um",
             kind="float",
             default=2.0,
-            help="Sample a transverse profile every this far along the centerline",
+            help=(
+                "Sample a transverse profile every this far along the centerline. The raw-section "
+                "fit and the mask's own widths (the EDT cross-check, and the size convention "
+                "without haemodynamics) sample at it too; it needs only a segmented image"
+            ),
             section=_FWHM,
+            requires=("network_source=segmented_image",),
             minimum=0.0,
             unit="um",
-            requires=("use_fwhm_edge_diameters",),
         ),
         Setting(
             name="fwhm_transverse_profile_step_um",
@@ -1141,7 +6480,7 @@ SCHEMA = Schema(
             section=_FWHM,
             minimum=0.0,
             unit="um",
-            requires=("use_fwhm_edge_diameters",),
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial",),
             advanced=True,
         ),
         Setting(
@@ -1152,7 +6491,7 @@ SCHEMA = Schema(
             section=_FWHM,
             minimum=0.0,
             unit="um",
-            requires=("use_fwhm_edge_diameters",),
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial",),
             advanced=True,
         ),
         Setting(
@@ -1163,17 +6502,36 @@ SCHEMA = Schema(
             section=_FWHM,
             minimum=0.0,
             unit="um",
-            requires=("use_fwhm_edge_diameters",),
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial",),
+            advanced=True,
+        ),
+        Setting(
+            name="fwhm_diameter_guess_edge_attribute",
+            kind="str",
+            default="edt_diameter_um",
+            help="Seed each edge's own starting diameter guess from this graph attribute when present, instead of the one guess above for every edge",
+            section=_FWHM,
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial",),
             advanced=True,
         ),
         Setting(
             name="fwhm_min_total_extent_multiplier",
             kind="float",
             default=3.0,
-            help="Require the sampled profile to span at least this multiple of the fitted width",
+            help="Require the sampled profile to span at least this multiple of the fitted width, unless it runs into another vessel; shorter samples are dropped",
             section=_FWHM,
             minimum=0.0,
-            requires=("use_fwhm_edge_diameters",),
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial",),
+            advanced=True,
+        ),
+        Setting(
+            name="fwhm_max_transverse_widen_passes",
+            kind="int",
+            default=5,
+            help="Widen the transverse sampling window at most this many times while the fit keeps asking for more room",
+            section=_FWHM,
+            minimum=0,
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial",),
             advanced=True,
         ),
         Setting(
@@ -1182,7 +6540,7 @@ SCHEMA = Schema(
             default=0,
             help="Mark background voxels with this label in the rasterized branch label volume",
             section=_FWHM,
-            requires=("use_fwhm_edge_diameters",),
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial",),
             advanced=True,
         ),
         Setting(
@@ -1191,7 +6549,7 @@ SCHEMA = Schema(
             default=-1,
             help="Mark junction voxels with this label in the rasterized branch label volume",
             section=_FWHM,
-            requires=("use_fwhm_edge_diameters",),
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial",),
             advanced=True,
         ),
         Setting(
@@ -1200,7 +6558,27 @@ SCHEMA = Schema(
             default=False,
             help="Let a transverse profile pass through junction voxels while sampling",
             section=_FWHM,
-            requires=("use_fwhm_edge_diameters",),
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial",),
+            advanced=True,
+        ),
+        Setting(
+            name="fwhm_allow_crossing_other_edges",
+            kind="bool",
+            default=True,
+            help=(
+                "Let a transverse profile pass through another edge's own centerline "
+                "voxel instead of stopping there -- a single nearby centerline is a "
+                "poor proxy for 'this is a different vessel': a wide vessel split "
+                "into several nearby graph edges has its own other edges' "
+                "centerlines well inside its own true radius, which otherwise "
+                "truncates the profile long before the real background and "
+                "severely underestimates diameter. The intensity-based single-"
+                "vessel clip (clip_profile_to_single_vessel) is what actually "
+                "bounds the profile instead. Disable to restore the stricter, "
+                "topology-only stop"
+            ),
+            section=_FWHM,
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial",),
             advanced=True,
         ),
         Setting(
@@ -1210,7 +6588,7 @@ SCHEMA = Schema(
             help="Estimate the profile baseline from the profile wings or from a percentile",
             section=_FWHM,
             choices=("wings", "percentile"),
-            requires=("use_fwhm_edge_diameters",),
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial",),
             advanced=True,
         ),
         Setting(
@@ -1222,7 +6600,7 @@ SCHEMA = Schema(
             unit="fraction",
             minimum=0.0,
             maximum=1.0,
-            requires=("use_fwhm_edge_diameters",),
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial",),
             advanced=True,
         ),
         Setting(
@@ -1231,7 +6609,7 @@ SCHEMA = Schema(
             default=False,
             help="Hold the fitted baseline near the anchor estimate rather than letting it float",
             section=_FWHM,
-            requires=("use_fwhm_edge_diameters",),
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial",),
             advanced=True,
         ),
         Setting(
@@ -1243,7 +6621,7 @@ SCHEMA = Schema(
             unit="fraction",
             minimum=0.0,
             maximum=1.0,
-            requires=("use_fwhm_edge_diameters", "fwhm_constrain_fitted_baseline"),
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial", "fwhm_constrain_fitted_baseline"),
             advanced=True,
         ),
         Setting(
@@ -1252,7 +6630,7 @@ SCHEMA = Schema(
             default=True,
             help="Clip each profile to the central lobe so neighbouring branches do not bias the fit",
             section=_FWHM,
-            requires=("use_fwhm_edge_diameters",),
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial",),
             advanced=True,
         ),
         Setting(
@@ -1264,7 +6642,7 @@ SCHEMA = Schema(
             unit="fraction",
             minimum=0.0,
             maximum=1.0,
-            requires=("use_fwhm_edge_diameters", "fwhm_clip_profile_to_single_vessel"),
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial", "fwhm_clip_profile_to_single_vessel"),
             advanced=True,
         ),
         Setting(
@@ -1276,7 +6654,7 @@ SCHEMA = Schema(
             unit="fraction",
             minimum=0.0,
             maximum=1.0,
-            requires=("use_fwhm_edge_diameters", "fwhm_clip_profile_to_single_vessel"),
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial", "fwhm_clip_profile_to_single_vessel"),
             advanced=True,
         ),
         Setting(
@@ -1287,7 +6665,7 @@ SCHEMA = Schema(
             section=_FWHM,
             minimum=0.0,
             unit="um",
-            requires=("use_fwhm_edge_diameters",),
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial",),
             advanced=True,
         ),
         Setting(
@@ -1298,7 +6676,7 @@ SCHEMA = Schema(
             section=_FWHM,
             minimum=0.0,
             unit="um",
-            requires=("use_fwhm_edge_diameters",),
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial",),
             advanced=True,
         ),
         Setting(
@@ -1307,39 +6685,49 @@ SCHEMA = Schema(
             default=True,
             help="Require profile samples to stay within a local arc window of the same edge",
             section=_FWHM,
-            requires=("use_fwhm_edge_diameters",),
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial",),
             advanced=True,
         ),
         Setting(
             name="fwhm_same_edge_arc_window_um",
             kind="float",
             default=3.0,
-            help="Use this absolute arc window when checking same-edge locality",
+            help=(
+                "Use this absolute arc window when checking same-edge locality; leave it "
+                "unset (null; an empty box in the panel) to size each vessel's window by "
+                "fwhm_same_edge_arc_window_multiplier and fwhm_same_edge_arc_window_min_um"
+            ),
             section=_FWHM,
             minimum=0.0,
             unit="um",
-            requires=("use_fwhm_edge_diameters", "fwhm_enforce_same_edge_locality"),
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial", "fwhm_enforce_same_edge_locality"),
             advanced=True,
         ),
         Setting(
             name="fwhm_same_edge_arc_window_multiplier",
             kind="float",
             default=1.0,
-            help="Scale the same-edge arc window by this factor",
+            help=(
+                "Scale the same-edge arc window to this many times each vessel's width, "
+                "while fwhm_same_edge_arc_window_um is unset"
+            ),
             section=_FWHM,
             minimum=0.0,
-            requires=("use_fwhm_edge_diameters", "fwhm_enforce_same_edge_locality"),
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial", "fwhm_enforce_same_edge_locality"),
             advanced=True,
         ),
         Setting(
             name="fwhm_same_edge_arc_window_min_um",
             kind="float",
             default=1.0,
-            help="Never shrink the same-edge arc window below this size",
+            help=(
+                "Never shrink the same-edge arc window below this size, while "
+                "fwhm_same_edge_arc_window_um is unset"
+            ),
             section=_FWHM,
             minimum=0.0,
             unit="um",
-            requires=("use_fwhm_edge_diameters", "fwhm_enforce_same_edge_locality"),
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial", "fwhm_enforce_same_edge_locality"),
             advanced=True,
         ),
         Setting(
@@ -1348,7 +6736,7 @@ SCHEMA = Schema(
             default=True,
             help="Shorten the profile half-extent when a distant part of the same edge comes close",
             section=_FWHM,
-            requires=("use_fwhm_edge_diameters",),
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial",),
             advanced=True,
         ),
         Setting(
@@ -1360,7 +6748,7 @@ SCHEMA = Schema(
             minimum=0.0,
             unit="um",
             requires=(
-                "use_fwhm_edge_diameters",
+                "measure_diameters_from_raw_image", "raw_image_stain!=endothelial",
                 "fwhm_cap_half_extent_by_nonlocal_same_edge_distance",
             ),
             advanced=True,
@@ -1374,7 +6762,7 @@ SCHEMA = Schema(
             unit="fraction",
             minimum=0.0,
             requires=(
-                "use_fwhm_edge_diameters",
+                "measure_diameters_from_raw_image", "raw_image_stain!=endothelial",
                 "fwhm_cap_half_extent_by_nonlocal_same_edge_distance",
             ),
             advanced=True,
@@ -1385,7 +6773,7 @@ SCHEMA = Schema(
             default=True,
             help="Discard samples whose fitted centre drifts too far from the centerline position",
             section=_FWHM,
-            requires=("use_fwhm_edge_diameters",),
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial",),
             advanced=True,
         ),
         Setting(
@@ -1397,7 +6785,21 @@ SCHEMA = Schema(
             minimum=0.0,
             unit="um",
             requires=(
-                "use_fwhm_edge_diameters",
+                "measure_diameters_from_raw_image", "raw_image_stain!=endothelial",
+                "fwhm_reject_samples_with_center_offset",
+            ),
+            advanced=True,
+        ),
+        Setting(
+            name="fwhm_max_fit_center_offset_fraction_of_diameter",
+            kind="float",
+            default=0.3,
+            help="Also allow a fitted centre this fraction of the current diameter estimate away, whichever is looser",
+            section=_FWHM,
+            unit="fraction",
+            minimum=0.0,
+            requires=(
+                "measure_diameters_from_raw_image", "raw_image_stain!=endothelial",
                 "fwhm_reject_samples_with_center_offset",
             ),
             advanced=True,
@@ -1408,7 +6810,7 @@ SCHEMA = Schema(
             default=True,
             help="Discard samples whose transverse Gaussian fit quality is too low",
             section=_FWHM,
-            requires=("use_fwhm_edge_diameters",),
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial",),
             advanced=True,
         ),
         Setting(
@@ -1419,7 +6821,433 @@ SCHEMA = Schema(
             section=_FWHM,
             minimum=0.0,
             maximum=1.0,
-            requires=("use_fwhm_edge_diameters", "fwhm_reject_samples_with_low_fit_r2"),
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial", "fwhm_reject_samples_with_low_fit_r2"),
+            advanced=True,
+        ),
+        Setting(
+            name="fwhm_profile_model",
+            kind="choice",
+            default="blurred_lumen",
+            help=(
+                "Fit each transverse profile as a filled lumen seen through the microscope's "
+                "blur (its half-maximum width is the lumen width), or as a Gaussian, which "
+                "reads a wide plasma-filled vessel about 10% narrow"
+            ),
+            section=_FWHM,
+            choices=("blurred_lumen", "gaussian"),
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial",),
+            advanced=True,
+        ),
+        Setting(
+            name="fwhm_longitudinal_average_um",
+            kind="float",
+            default=4.0,
+            help=(
+                "Average each transverse profile over this length along the vessel before "
+                "fitting, so a dim, noisy channel is not fitted one noise spike at a time "
+                "(0 reads a single line)"
+            ),
+            section=_FWHM,
+            unit="um",
+            minimum=0.0,
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial",),
+        ),
+        Setting(
+            name="fwhm_stop_at_other_vessels_in_mask",
+            kind="bool",
+            default=True,
+            help=(
+                "End a transverse line where it enters a different vessel of the segmentation "
+                "(after crossing background), the one case the line may be shorter than the "
+                "required multiple of the width"
+            ),
+            section=_FWHM,
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial",),
+            advanced=True,
+        ),
+        Setting(
+            name="fwhm_min_diameter_pixels",
+            kind="float",
+            default=2.0,
+            help=(
+                "Reject a sample narrower than this many pixels: a width that small cannot "
+                "be resolved, and is almost always a fit to a single noise spike (0 disables)"
+            ),
+            section=_FWHM,
+            unit="voxels",
+            minimum=0.0,
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial",),
+            advanced=True,
+        ),
+        Setting(
+            name="fwhm_reject_samples_with_plateau_shape",
+            kind="bool",
+            # Off: a plasma-filled lumen *is* a plateau, so this discarded the
+            # best-measured samples of every wide vessel. For a saturated or
+            # probability-map input, where a flat top is a warning sign.
+            default=False,
+            help="Discard samples whose transverse profile looks like a flat plateau rather than a peak (a saturated detector or a probability map); plasma-filled lumens are plateaus, so leave off for those",
+            section=_FWHM,
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial",),
+            advanced=True,
+        ),
+        Setting(
+            name="fwhm_max_plateau_shape_ratio",
+            kind="float",
+            default=0.85,
+            help="Reject a sample once its 80%-height width is at least this fraction of its half-max width",
+            section=_FWHM,
+            unit="fraction",
+            minimum=0.0,
+            maximum=1.0,
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial", "fwhm_reject_samples_with_plateau_shape"),
+            advanced=True,
+        ),
+        Setting(
+            name="fwhm_transverse_sampling_mode",
+            kind="choice",
+            default="in_plane_yx",
+            help="Sample transverse profiles in the y-x slice plane, or perpendicular to the true 3D tangent",
+            section=_FWHM,
+            choices=("in_plane_yx", "true_3d_perpendicular"),
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial",),
+            advanced=True,
+        ),
+        Setting(
+            name="fwhm_warn_out_of_plane_tangent_fraction",
+            kind="float",
+            default=0.3,
+            help="Flag a sample whose tangent's out-of-plane component exceeds this fraction while sampling stays in-plane",
+            section=_FWHM,
+            unit="fraction",
+            minimum=0.0,
+            maximum=1.0,
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial",),
+            advanced=True,
+        ),
+        Setting(
+            name="fwhm_edge_diameter_aggregation",
+            kind="choice",
+            default="median",
+            help=(
+                "Collapse an edge's accepted per-sample diameters to one value by median or mean. "
+                "The raw-section fit and the mask's own widths collapse theirs by it too; it "
+                "needs only a segmented image"
+            ),
+            section=_FWHM,
+            requires=("network_source=segmented_image",),
+            choices=("median", "mean"),
+            advanced=True,
+        ),
+        Setting(
+            name="fwhm_min_accepted_samples",
+            kind="int",
+            default=2,
+            help=(
+                "Give an edge a FWHM width only when at least this many samples along it pass "
+                "every gate. On a speckled image a line can fit one bright speck cleanly; a speck "
+                "is one place, a lumen is all along the vessel. 1 accepts a single sample"
+            ),
+            section=_FWHM,
+            minimum=1,
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial",),
+        ),
+        Setting(
+            name="fwhm_decoy_check",
+            kind="bool",
+            default=True,
+            help=(
+                "After measuring, copy a sample of the measured vessels into vessel-free tissue "
+                "and measure them again: reports how often FWHM gives texture a width, and flags "
+                "every FWHM width in the range it reads there (see "
+                "fwhm_demote_flagged_edges for what a flag then does)"
+            ),
+            section=_FWHM,
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial", "do_fwhm_measurement"),
+            advanced=True,
+        ),
+        Setting(
+            name="fwhm_demote_flagged_edges",
+            kind="bool",
+            default=True,
+            help=(
+                "Do not model a vessel with an FWHM width the run's own checks flag -- "
+                "one in the decoy check's speck-width range, or one disagreeing with "
+                "the mask's own width past edt_fwhm_disagreement_warn_ratio -- but "
+                "go on to the next diameter source (raw section, mask, table). The "
+                "FWHM width stays on the vessel for review"
+            ),
+            section=_FWHM,
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial", "do_fwhm_measurement"),
+            advanced=True,
+        ),
+        Setting(
+            name="fwhm_fix_blur_to_image_psf",
+            kind="bool",
+            default=True,
+            help=(
+                "Hold each profile's blur at the image's own PSF -- the raw-section "
+                "PSF settings when set, else estimated from the image's wide "
+                "vessels, as the raw-section fallback does -- instead of fitting it "
+                "again in every profile. Falls back to per-profile fitting when too "
+                "few wide vessels show their blur"
+            ),
+            section=_FWHM,
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial", "do_fwhm_measurement"),
+            advanced=True,
+        ),
+        Setting(
+            name="fwhm_decoy_check_sample_size",
+            kind="int",
+            default=100,
+            help="How many measured vessels the decoy check copies",
+            section=_FWHM,
+            minimum=1,
+            requires=("fwhm_decoy_check",),
+            advanced=True,
+        ),
+        # Raw cross-section fallback: where FWHM fails, fit the raw image's
+        # whole cross-section (haemodynamics.raw_section) before falling back
+        # to the segmentation mask. Off by default -- on a textured image it
+        # reads the halo round a vessel; see that module's docstring.
+        Setting(
+            name="use_raw_section_fallback",
+            kind="bool",
+            default=False,
+            help=(
+                "Where FWHM fails, fit the raw image's whole cross-section of the vessel (a "
+                "blurred lumen, pooling every photon in the section) before falling back to the "
+                "segmentation mask. Measures wide and z-running vessels a line cannot; check it "
+                "against FWHM on your image first, since on a speckled one it reads the halo "
+                "round a vessel"
+            ),
+            section=_FWHM,
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial", "do_fwhm_measurement"),
+        ),
+        Setting(
+            name="raw_section_min_lumen_contrast",
+            kind="float",
+            default=3.0,
+            help=(
+                "Keep a cross-section's reading only when its fitted lumen stands this many "
+                "standard deviations of the section's texture above the background; a vessel "
+                "needs two such readings"
+            ),
+            section=_FWHM,
+            minimum=0.0,
+            requires=("use_raw_section_fallback",),
+            advanced=True,
+        ),
+        Setting(
+            name="raw_section_psf_sigma_xy_um",
+            kind="float",
+            default=None,
+            help=(
+                "The image's blur across the y-x plane, as a Gaussian sigma. Read only with "
+                "raw_section_psf_sigma_z_um set too: leave both unset, or set one alone, and both"
+                " are estimated from the image's own wide vessels. FWHM holds its blur at it "
+                "(fwhm_fix_blur_to_image_psf), and the raw-section fit fits with it"
+            ),
+            section=_FWHM,
+            unit="um",
+            minimum=0.0,
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial"),
+            advanced=True,
+            placeholder="estimate",
+        ),
+        Setting(
+            name="raw_section_psf_sigma_z_um",
+            kind="float",
+            default=None,
+            help=(
+                "The image's blur along z, as a Gaussian sigma. Read only with "
+                "raw_section_psf_sigma_xy_um set too: leave both unset, or set one alone, and "
+                "both are estimated from the image's own wide vessels. FWHM holds its blur at it "
+                "(fwhm_fix_blur_to_image_psf), and the raw-section fit fits with it"
+            ),
+            section=_FWHM,
+            unit="um",
+            minimum=0.0,
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial"),
+            advanced=True,
+            placeholder="estimate",
+        ),
+        # ------------------------------------------------------------------
+        # Endothelial diameter: the internal diameter inside an endothelial
+        # stain's wall, the run's alternative to FWHM
+        # (haemodynamics.endothelial).
+        # ------------------------------------------------------------------
+        Setting(
+            name="endothelial_min_ring_contrast",
+            kind="float",
+            default=4.0,
+            help=(
+                "Keep a section's reading only when its fitted wall stands this many times the "
+                "fit's own scatter above its lumen; a vessel needs two such readings"
+            ),
+            section=_ENDOTHELIAL,
+            minimum=0.0,
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=plasma_column",),
+            advanced=True,
+        ),
+        Setting(
+            name="endothelial_wall_thickness_um",
+            kind="float",
+            default=None,
+            help=(
+                "The stained wall's thickness. Leave unset to estimate it from the image's wide "
+                "vessels; across the image plane it trades against the blur, so set it when you "
+                "know it (from EM, say) -- an error here shifts every internal diameter by about as much"
+            ),
+            section=_ENDOTHELIAL,
+            unit="um",
+            minimum=0.0,
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=plasma_column",),
+            advanced=True,
+            placeholder="estimate",
+        ),
+        Setting(
+            name="endothelial_workers",
+            kind="int",
+            default=0,
+            help=(
+                "Processes to measure vessels in at once; 0 picks up to 8, leaving a core free. "
+                "The widths are the same however many"
+            ),
+            section=_ENDOTHELIAL,
+            minimum=0,
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=plasma_column",),
+            advanced=True,
+        ),
+        Setting(
+            name="endothelial_psf_sigma_xy_um",
+            kind="float",
+            default=None,
+            help=(
+                "The endothelial channel's blur across the y-x plane, as a Gaussian sigma. Read "
+                "only with endothelial_psf_sigma_z_um set too: leave both unset, or set one "
+                "alone, and both are estimated from the image's wide vessels"
+            ),
+            section=_ENDOTHELIAL,
+            unit="um",
+            minimum=0.0,
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=plasma_column",),
+            advanced=True,
+            placeholder="estimate",
+        ),
+        Setting(
+            name="endothelial_psf_sigma_z_um",
+            kind="float",
+            default=None,
+            help=(
+                "The endothelial channel's blur along z, as a Gaussian sigma. Read only with "
+                "endothelial_psf_sigma_xy_um set too: leave both unset, or set one alone, and "
+                "both are estimated from the image's wide vessels"
+            ),
+            section=_ENDOTHELIAL,
+            unit="um",
+            minimum=0.0,
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=plasma_column",),
+            advanced=True,
+            placeholder="estimate",
+        ),
+        # ------------------------------------------------------------------
+        # EDT mask diameter estimate: a segmentation-mask-based cross-check
+        # and fallback for FWHM, from the mask's own cross-section (or,
+        # edt_diameter_method, its inscribed radius).
+        # ------------------------------------------------------------------
+        Setting(
+            name="use_edt_diameter_crosscheck",
+            kind="bool",
+            # On (Harvey, 2026-11-04): FWHM then starts from each vessel's mask
+            # width, and the FWHM optimiser's trials with it. Off, they had
+            # none, and the search traded the planted vessels' accuracy for
+            # two of five decoys (docs/notes/diameters_and_haemodynamics.md).
+            default=True,
+            help="Estimate per-edge diameters from the segmentation mask (its cross-section, see edt_diameter_method), for fallback and cross-checking against the raw-image measurement (FWHM, or the endothelial wall fit)",
+            section=_EDT_DIAMETER,
+            # Seeding FWHM's own first-pass guess and flagging disagreement
+            # with FWHM do need FWHM on, but falling back for an edge FWHM
+            # never measured is exactly as real with FWHM off entirely --
+            # stamp_edge_diameters (haemodynamics.poiseuille) then uses the
+            # EDT estimate for every edge instead of just the ones FWHM
+            # failed on, which is a fully working diameter pipeline on its
+            # own, not a degenerate one. Only run_haemodynamics is required,
+            # and a segmentation to read (a synthetic network has none).
+            requires=("run_haemodynamics", "network_source=segmented_image"),
+            # The widths are read from the run's own segmented image (the
+            # Input tab's, or ilastik's output). A mask path of its own,
+            # carried over in a config from another dataset, named a file
+            # matching nothing the graph was built on.
+            replaces={"edt_mask_path": {}},
+        ),
+        Setting(
+            name="edt_diameter_prefer_over_table_on_fwhm_failure",
+            kind="bool",
+            default=True,
+            help="Use the EDT mask estimate instead of the branch-order table when FWHM measurement fails for an edge, or was never attempted",
+            section=_EDT_DIAMETER,
+            requires=("use_edt_diameter_crosscheck",),
+        ),
+        Setting(
+            name="edt_diameter_method",
+            kind="choice",
+            default="cross_section",
+            choices=("cross_section", "inscribed_radius"),
+            help=(
+                "How a width is read off the mask: cross_section is the area of the mask's "
+                "section normal to the centreline, as a circle's diameter (within ~3% on "
+                "synthetic vessels at any orientation); inscribed_radius is twice the EDT "
+                "radius at the centreline (30-40% wide on small axis-aligned vessels, up to "
+                "~30% narrow on oblique or flattened ones). Also how the size convention reads "
+                "the mask without haemodynamics; it needs only a segmented image"
+            ),
+            section=_EDT_DIAMETER,
+            requires=("network_source=segmented_image",),
+            advanced=True,
+        ),
+        Setting(
+            name="edt_min_resolvable_diameter_um",
+            kind="float",
+            default=2.0,
+            help=(
+                "Readings narrower than this are a strand of mask a voxel or so thick -- a vessel "
+                "the segmentation caught a sliver of -- not its width, and are left out; a vessel "
+                "with no other reading falls back to the branch-order table. About two voxels "
+                "across; 0 keeps every reading. The size convention's mask widths without "
+                "haemodynamics read it too; it needs only a segmented image"
+            ),
+            section=_EDT_DIAMETER,
+            requires=("network_source=segmented_image",),
+            minimum=0.0,
+            unit="um",
+            advanced=True,
+        ),
+        Setting(
+            name="edt_junction_proximity_exclusion_um",
+            kind="float",
+            default=10.0,
+            help=(
+                "Skip EDT sample positions within this distance of a branch endpoint. The "
+                "endothelial ring fit keeps clear of the same zones, and the size convention's "
+                "mask widths without haemodynamics read it too; it needs only a segmented image"
+            ),
+            section=_EDT_DIAMETER,
+            requires=("network_source=segmented_image",),
+            minimum=0.0,
+            unit="um",
+            advanced=True,
+        ),
+        Setting(
+            name="edt_fwhm_disagreement_warn_ratio",
+            kind="float",
+            default=1.5,
+            help="Flag an edge as low-confidence when its FWHM and EDT diameter estimates differ by at least this ratio",
+            section=_EDT_DIAMETER,
+            minimum=1.0,
+            # Unlike this section's other settings, comparing FWHM against
+            # EDT genuinely needs both measurements to exist.
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial", "use_edt_diameter_crosscheck"),
             advanced=True,
         ),
         Setting(
@@ -1429,6 +7257,506 @@ SCHEMA = Schema(
             help="Apply the custom edge-diameter assignment behaviour to these edge IDs",
             section=_DIAMETERS_AND_PERICYTES,
             advanced=True,
+        ),
+        # ------------------------------------------------------------------
+        # Perturbation runs
+        #
+        # What to re-solve the finished network for. The napari panel shows
+        # only `run_perturbations` / `perturbations` / `perturbation_output_dir`
+        # as ordinary rows; sweep ranges and pericyte/constriction knobs are
+        # options of a typed perturbation entry (see SETTINGS_FOR_TYPE), not
+        # always-on tab settings. `run_pericyte_dilation_sweep` and
+        # `sweep_output_dir` remain for the whole-brain example script, which
+        # still runs the combined dilation×pressure sweep as a post-step.
+        # A prerequisite can only be a bool, so whether a sweep runs is
+        # decided by a perturbation's type (or by the brain script's flag).
+        # ------------------------------------------------------------------
+        Setting(
+            name="run_perturbations",
+            kind="bool",
+            default=False,
+            help="Re-solve the finished network once per configured perturbation",
+            section=_PERTURBATION_RUNS,
+        ),
+        Setting(
+            name="perturbations",
+            kind="any",
+            default=[],
+            help=(
+                "Re-solve the network once for each of these, as a list of "
+                "{name, type, overrides} entries; each runs from the same "
+                "baseline rather than on top of the one before"
+            ),
+            section=_PERTURBATION_RUNS,
+        ),
+        Setting(
+            name="perturbation_output_dir",
+            kind="path",
+            default=None,
+            help=(
+                "Write each perturbation's CSVs into a '{name}_{type}' "
+                "subfolder here; leave unset to use the same folder as the "
+                "other output"
+            ),
+            section=_PERTURBATION_RUNS,
+            requires=("run_perturbations",),
+            advanced=True,
+        ),
+        Setting(
+            name="run_pericyte_dilation_sweep",
+            kind="bool",
+            default=False,
+            help=(
+                "After the pipeline, sweep pericyte constriction/dilation "
+                "against inlet pressure (whole-brain example script only; "
+                "prefer a pericyte_dilation_sweep perturbation in the panel)"
+            ),
+            section=_PERTURBATION_RUNS,
+        ),
+        Setting(
+            name="pericyte_dilation_min_percent",
+            kind="int",
+            default=1,
+            help=(
+                "Start the pericyte constriction/dilation sweep at this "
+                "percentage of every capillary's diameter (arterioles and "
+                "venules keep theirs; negative = constriction, positive = "
+                "dilation; scale = 1 + percent/100)"
+            ),
+            section=_PERTURBATION_RUNS,
+            unit="percent",
+            minimum=-99,
+            maximum=100,
+        ),
+        Setting(
+            name="pericyte_dilation_max_percent",
+            kind="int",
+            default=30,
+            help=(
+                "End the pericyte constriction/dilation sweep at this "
+                "percentage of every capillary's diameter (negative = "
+                "constriction, positive = dilation)"
+            ),
+            section=_PERTURBATION_RUNS,
+            unit="percent",
+            minimum=-99,
+            maximum=100,
+        ),
+        Setting(
+            name="pericyte_dilation_step_percent",
+            kind="int",
+            default=1,
+            help=(
+                "Step size along the pericyte constriction/dilation percent "
+                "axis (positive step; percent itself may be negative)"
+            ),
+            section=_PERTURBATION_RUNS,
+            unit="percent",
+            minimum=1,
+            maximum=100,
+        ),
+        Setting(
+            name="arteriole_diameter_change_percent",
+            kind="float",
+            default=0.0,
+            help=(
+                "Arteriole constriction/dilation: change every arteriole "
+                "branch's diameter by this percentage (positive = dilation, "
+                "negative = constriction; e.g. 10 widens by 10%, -20 narrows "
+                "by 20%); whole-branch scaling, not a focal pericyte site"
+            ),
+            section=_PERTURBATION_RUNS,
+            unit="percent",
+            # Scale = 1 + percent/100 must stay > 0.
+            minimum=-99.999,
+        ),
+        # A capillary block's options (see
+        # haemodynamics.capillary_block). Like every perturbation option they
+        # are revealed by the entry's type, not by a bool prerequisite.
+        Setting(
+            name="capillary_block_selection",
+            kind="choice",
+            default="branch_order_probability",
+            help=(
+                "How to choose the vessels to block: a fraction of the vessels "
+                "of some branch orders (branch_order_probability -- reads the "
+                "branch orders, probability and seed), or listed vessels "
+                "(vessel_ids -- reads the vessel IDs)"
+            ),
+            section=_PERTURBATION_RUNS,
+            choices=("branch_order_probability", "vessel_ids"),
+        ),
+        Setting(
+            name="capillary_block_branch_orders",
+            kind="any",
+            default=["BO2"],
+            help=(
+                "Block vessels from these branch orders, e.g. ['BO2'] or "
+                "['BO2', 'BO3']; a bare number means that capillary order "
+                "(2 is BO2). Read when blocking by branch order and probability"
+            ),
+            section=_PERTURBATION_RUNS,
+            requires=("capillary_block_selection=branch_order_probability",),
+        ),
+        Setting(
+            name="capillary_block_probability",
+            kind="float",
+            default=0.1,
+            help=(
+                "Fraction of the chosen branch orders' vessels to block, drawn "
+                "at random: exactly round(fraction x count) of them, so 0.1 of "
+                "50 vessels always blocks 5. Read when blocking by branch "
+                "order and probability"
+            ),
+            section=_PERTURBATION_RUNS,
+            unit="fraction",
+            minimum=0.0,
+            maximum=1.0,
+            requires=("capillary_block_selection=branch_order_probability",),
+        ),
+        Setting(
+            name="capillary_block_seed",
+            kind="int",
+            default=20240917,
+            help=(
+                "Draw the blocked vessels from this seed, so a run repeats; "
+                "another seed blocks a different set, and null draws a fresh "
+                "set every run. Read when blocking by branch order and probability"
+            ),
+            section=_PERTURBATION_RUNS,
+            advanced=True,
+            requires=("capillary_block_selection=branch_order_probability",),
+        ),
+        Setting(
+            name="capillary_block_replicates",
+            kind="int",
+            default=1,
+            help=(
+                "Draw the random block this many times -- from the seed, then the "
+                "seeds after it -- and report each comparison metric's mean, "
+                "standard deviation and 2.5-97.5% range over the draws, beside the "
+                "first draw's own results. One draw is one outcome: which vessels "
+                "a block happens to hit can matter as much as how many. Read when "
+                "blocking by branch order and probability"
+            ),
+            section=_PERTURBATION_RUNS,
+            minimum=1,
+            requires=("capillary_block_selection=branch_order_probability",),
+        ),
+        Setting(
+            name="capillary_block_vessel_ids",
+            kind="any",
+            default=[],
+            help=(
+                "Vessels to block, by the branchID shown when hovering a "
+                "vessel after the Solve stage (e.g. [12, 40]), or as "
+                "[u, v, key]. The panel writes each as [branchID, u, v, key], "
+                "so one listed on a network since built again is refused. "
+                "Read when blocking listed vessels"
+            ),
+            section=_PERTURBATION_RUNS,
+            requires=("capillary_block_selection=vessel_ids",),
+        ),
+        # A capillary block read from a mask (capillary_block_mask; see
+        # haemodynamics.capillary_block_mask): the blocks are blobs of a mask,
+        # and the occlusion is the capillary block's.
+        Setting(
+            name="capillary_block_mask_path",
+            kind="path",
+            default=None,
+            help=(
+                "Mask of the blocks: blobs on an otherwise empty volume, on the "
+                "segmented image's grid; each blob (connected component) is one "
+                "block, and blocks the vessel it lies in"
+            ),
+            section=_PERTURBATION_RUNS,
+            # Only a capillary_block_mask entry reads it, and preflight says so
+            # when one names none; set, it must be there.
+            must_exist=True,
+            requires=("!use_pixel_classifier_block_segmentation",),
+            placeholder="none (name it on the perturbation)",
+        ),
+        Setting(
+            name="capillary_block_mask_h5_dataset_name",
+            kind="str",
+            default=None,
+            help="H5 dataset name inside the capillary block mask file; ignored for TIFF masks",
+            section=_PERTURBATION_RUNS,
+            advanced=True,
+        ),
+        Setting(
+            name="capillary_block_mask_min_overlap_fraction",
+            kind="float",
+            default=0.5,
+            help=(
+                "A blob blocks a vessel when at least this fraction of its voxels "
+                "lie inside the segmented vessels (the run's segmented image); a "
+                "blob mostly outside them blocks nothing"
+            ),
+            section=_PERTURBATION_RUNS,
+            unit="fraction",
+            minimum=0.0,
+            maximum=1.0,
+        ),
+        Setting(
+            name="capillary_block_mask_vessels_per_block",
+            kind="choice",
+            default="largest_overlap",
+            help=(
+                "Which vessels a blob on the vessels blocks: the one vessel holding "
+                "most of its voxels (largest_overlap), or every vessel any of its "
+                "voxels lie in (every_overlapped_vessel) -- a blob at a junction "
+                "can lie in several. A voxel lies in the vessel whose centreline "
+                "is nearest, within that vessel's radius plus a voxel"
+            ),
+            section=_PERTURBATION_RUNS,
+            choices=("largest_overlap", "every_overlapped_vessel"),
+            advanced=True,
+        ),
+        Setting(
+            name="capillary_block_resistance_factor",
+            kind="float",
+            default=1e6,
+            help=(
+                "Multiply a blocked vessel's resistance by this -- near "
+                "infinite, so it carries about a millionth of its flow, but "
+                "still solvable where removing it would cut part of the "
+                "network off from every inlet and outlet"
+            ),
+            section=_PERTURBATION_RUNS,
+            minimum=1.0,
+            advanced=True,
+        ),
+        Setting(
+            name="capillary_block_hypoperfusion_fraction",
+            kind="float",
+            default=0.5,
+            help=(
+                "In the comparison with the baseline, count another vessel as "
+                "hypoperfused when its flow falls by at least this fraction"
+            ),
+            section=_PERTURBATION_RUNS,
+            unit="fraction",
+            minimum=0.0,
+            maximum=1.0,
+            advanced=True,
+        ),
+        Setting(
+            name="arteriole_dilation_min_percent",
+            kind="int",
+            default=0,
+            help=(
+                "Start the arteriole constriction/dilation sweep at this "
+                "percentage change (negative = constriction, positive = "
+                "dilation; whole-branch scale = 1 + percent/100)"
+            ),
+            section=_PERTURBATION_RUNS,
+            unit="percent",
+            minimum=-99,
+            maximum=100,
+        ),
+        Setting(
+            name="arteriole_dilation_max_percent",
+            kind="int",
+            default=30,
+            help=(
+                "End the arteriole constriction/dilation sweep at this "
+                "percentage change (negative = constriction, positive = "
+                "dilation)"
+            ),
+            section=_PERTURBATION_RUNS,
+            unit="percent",
+            minimum=-99,
+            maximum=100,
+        ),
+        Setting(
+            name="arteriole_dilation_step_percent",
+            kind="int",
+            default=1,
+            help=(
+                "Step size along the arteriole constriction/dilation percent "
+                "axis (positive step; percent itself may be negative)"
+            ),
+            section=_PERTURBATION_RUNS,
+            unit="percent",
+            minimum=1,
+            maximum=100,
+        ),
+        Setting(
+            name="capillary_dilation_min_percent",
+            kind="int",
+            default=0,
+            help=(
+                "Start the passive capillary constriction/dilation sweep at "
+                "this percentage change (whole capillary, not focal; "
+                "negative = constriction, positive = dilation; scale = 1 + "
+                "percent/100)"
+            ),
+            section=_PERTURBATION_RUNS,
+            unit="percent",
+            minimum=-99,
+            maximum=100,
+        ),
+        Setting(
+            name="capillary_dilation_max_percent",
+            kind="int",
+            default=30,
+            help=(
+                "End the passive capillary constriction/dilation sweep at "
+                "this percentage change (whole capillary, not focal; "
+                "negative = constriction, positive = dilation)"
+            ),
+            section=_PERTURBATION_RUNS,
+            unit="percent",
+            minimum=-99,
+            maximum=100,
+        ),
+        Setting(
+            name="capillary_dilation_step_percent",
+            kind="int",
+            default=1,
+            help=(
+                "Step size along the capillary constriction/dilation percent "
+                "axis (positive step; percent itself may be negative)"
+            ),
+            section=_PERTURBATION_RUNS,
+            unit="percent",
+            minimum=1,
+            maximum=100,
+        ),
+        Setting(
+            name="pericyte_geometry_dilation_percent",
+            kind="int",
+            default=0,
+            help=(
+                "Fixed constriction/dilation of every capillary for a "
+                "pericyte spacing or length sweep, arterioles and venules "
+                "keeping theirs (scale = 1 + percent/100; negative = "
+                "constriction, positive = dilation); pressure stays at "
+                "inlet_p_bc"
+            ),
+            section=_PERTURBATION_RUNS,
+            unit="percent",
+            minimum=-99,
+            maximum=100,
+        ),
+        Setting(
+            name="constriction_spacing_min_um",
+            kind="float",
+            default=50.0,
+            help=(
+                "Start the pericyte spacing sweep at this centre-to-centre "
+                "inter-site distance"
+            ),
+            section=_PERTURBATION_RUNS,
+            unit="um",
+            minimum=0.0,
+        ),
+        Setting(
+            name="constriction_spacing_max_um",
+            kind="float",
+            default=150.0,
+            help=(
+                "End the pericyte spacing sweep at this centre-to-centre "
+                "inter-site distance"
+            ),
+            section=_PERTURBATION_RUNS,
+            unit="um",
+            minimum=0.0,
+        ),
+        Setting(
+            name="constriction_spacing_step_um",
+            kind="float",
+            default=50.0,
+            help=(
+                "Step size along the pericyte spacing sweep (centre-to-centre "
+                "distance between sites)"
+            ),
+            section=_PERTURBATION_RUNS,
+            unit="um",
+            minimum=0.0,
+        ),
+        Setting(
+            name="constriction_length_min_um",
+            kind="float",
+            default=20.0,
+            help=(
+                "Start the pericyte length sweep at this axial constriction/"
+                "dilation site length"
+            ),
+            section=_PERTURBATION_RUNS,
+            unit="um",
+            minimum=0.0,
+        ),
+        Setting(
+            name="constriction_length_max_um",
+            kind="float",
+            default=60.0,
+            help=(
+                "End the pericyte length sweep at this axial constriction/"
+                "dilation site length"
+            ),
+            section=_PERTURBATION_RUNS,
+            unit="um",
+            minimum=0.0,
+        ),
+        Setting(
+            name="constriction_length_step_um",
+            kind="float",
+            default=20.0,
+            help=(
+                "Step size along the pericyte length sweep (axial site length "
+                "along the centreline)"
+            ),
+            section=_PERTURBATION_RUNS,
+            unit="um",
+            minimum=0.0,
+        ),
+        Setting(
+            name="inlet_pressure_min_pa",
+            kind="int",
+            default=4500,
+            help=(
+                "Start the inlet-pressure sweep at this absolute inlet "
+                "boundary pressure"
+            ),
+            section=_PERTURBATION_RUNS,
+            unit="Pa",
+            minimum=0,
+        ),
+        Setting(
+            name="inlet_pressure_max_pa",
+            kind="int",
+            default=6000,
+            help=(
+                "End the inlet-pressure sweep at this absolute inlet "
+                "boundary pressure"
+            ),
+            section=_PERTURBATION_RUNS,
+            unit="Pa",
+            minimum=0,
+        ),
+        Setting(
+            name="inlet_pressure_step_pa",
+            kind="int",
+            default=500,
+            help=(
+                "Step size along the inlet-pressure sweep (absolute inlet "
+                "boundary pressure)"
+            ),
+            section=_PERTURBATION_RUNS,
+            unit="Pa",
+            minimum=1,
+        ),
+        Setting(
+            name="sweep_output_dir",
+            kind="path",
+            default=f"{_OUTPUTS}/pericyte_dilation_sweep",
+            help=(
+                "Write the brain-script sweep CSV and curves here "
+                "(a pericyte_dilation_sweep perturbation writes beside itself)"
+            ),
+            section=_PERTURBATION_RUNS,
         ),
     ],
     title="Resistance network pipeline",

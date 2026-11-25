@@ -1,0 +1,796 @@
+"""Per-edge vessel diameter from the segmentation mask's own inscribed radius.
+
+A genuinely different technique from :mod:`haemolynx.haemodynamics.fwhm_diameter`'s
+FWHM fit: instead of fitting a Gaussian to a transverse intensity profile,
+this samples the mask's own Euclidean-distance-transform (EDT) inscribed
+radius (:func:`haemolynx.preprocessing.thick_vessels.inscribed_radius_map`,
+already used elsewhere to gate thick-vessel skeletonisation) at each point
+along an edge's centerline. Never overwrites FWHM's own
+``fwhm_diameter_um`` -- this writes the separate ``edt_diameter_um``, for use
+as either a mask-based fallback when FWHM measurement fails for a specific
+edge (a vessel-specific estimate, unlike the generic branch-order table), or
+a cross-check that flags a FWHM measurement as low-confidence when it
+disagrees strongly with the mask's own local radius (see
+``haemodynamics.poiseuille.stamp_edge_diameters``'s ``use_edt_fallback`` and
+the ``fwhm_edt_disagreement_ratio``/``fwhm_low_confidence_vs_edt`` attributes
+it stamps independently of that fallback).
+
+Reuses :mod:`haemolynx.haemodynamics.fwhm_diameter`'s own centerline-sampling
+helpers (``_arc_length_parameterize``, ``_interpolate_centerline``,
+``physical_points_to_continuous_indices``) and
+:func:`haemolynx.haemodynamics.fwhm_diameter._aggregate_edge_diameter` (the same
+median-by-default aggregation FWHM uses) rather than re-deriving either --
+one centerline sampler and one aggregation policy for both techniques.
+
+Two ways to read a width off the mask (*method*):
+
+``"cross_section"`` (default)
+    The area of the mask's own cross-section in the plane normal to the
+    centreline, as the diameter of the circle with that area -- the diameter
+    Poiseuille's ``d^4`` needs. The plane is read voxel by voxel (nearest
+    voxel) on a grid a quarter of a voxel fine, and only the piece of it
+    joined to the centreline counts. On synthetic vessels at 0.98 x 0.98 x 1 um
+    voxels it is within 3% on average from 2 to 8 um, at any orientation and
+    sub-voxel placement, for elliptical cross-sections (area-equivalent), and
+    with the centreline half a voxel off the axis.
+``"inscribed_radius"``
+    Twice the EDT inscribed radius at the centreline. Kept for comparison:
+    the EDT at a voxel centre is the distance to the nearest background
+    voxel's *centre*, half a voxel past the wall, so an axis-aligned 2-3 um
+    vessel reads 30-40% wide; an oblique one, a flattened one or a centreline
+    off the axis reads up to ~30% narrow (it is the largest *inscribed*
+    circle, not the section) -- a d^4 error of 0.3x to 3.7x in resistance.
+
+Where the plane's piece of mask is several vessels joined at necks -- two
+touching vessels, or a branch and the vessel it leaves -- only the lobe the
+centreline is in counts. A section that is still not closed within its
+plane, or is more than twice as wide as the inscribed radius there allows
+(the plane cutting a larger vessel's body near a junction), is not counted;
+an edge with no section left falls back to its inscribed radius
+(``edt_diameter_method`` records which was used). On a real 3,191-vessel
+network about three quarters of edges get a section; the rest are mostly
+short edges between close junctions.
+
+A raw EDT reading right at a branch point is a real, documented failure
+mode: it returns the *junction's own* larger inscribed sphere, not the
+branch's true radius (a real ~34% overestimate has been measured on short
+capillary segments this way -- a `d^4` error in the resistance it feeds).
+``branch_endpoint_exclusion_um`` guards against this the same way FWHM's own
+identically-named parameter does: skip sample positions too close (by
+centerline arc length) to an edge endpoint that is itself a bifurcation
+(graph degree > 1).
+
+Every edge is read at least :data:`SHORT_EDGE_MIN_READINGS` times where it is
+long enough to be: a short one is read at several closely spaced points
+rather than once at its midpoint, so one reading at a gap or a notch in the
+mask is outvoted by the median. Readings under
+:data:`MIN_RESOLVABLE_DIAMETER_UM` -- a strand of mask a voxel or so thick --
+are not widths and are left out; an edge with nothing else is left
+unmeasured, for the branch-order table. On a real network 86% of the 486
+vessels read under 2 um were short edges between junctions read once;
+several readings brought them to 358, and the rest run down a strand one or
+two voxels thick, beside a larger vessel that the plane beyond them cuts --
+which is also why the readings are not re-centred on the widest point
+nearby: from a centreline near its wall, that is the larger vessel.
+"""
+from __future__ import annotations
+
+from typing import Any, Literal, Sequence
+
+import numpy as np
+from scipy.ndimage import map_coordinates
+
+from haemolynx.preprocessing.bridge_mask_support import PackedMask
+from haemolynx.preprocessing.pointwise_distance import FeatureDistance
+from haemolynx.preprocessing.thick_vessels import inscribed_radius_map
+
+from .fwhm_diameter import (
+    _aggregate_edge_diameter,
+    _arc_length_parameterize,
+    _interpolate_centerline,
+    physical_points_to_continuous_indices,
+)
+from .poiseuille import edge_selection
+
+#: How far from its centreline (µm) a sample looks for its own vessel when the
+#: centreline itself lies outside the mask -- a smoothed or reconnected
+#: centreline can run a voxel or two off its segmentation, where the
+#: inscribed radius is 0 and the vessel would otherwise get no width at all.
+OFF_CENTRELINE_SEARCH_UM = 3.0
+
+#: The two ways to read a width off the mask (see the module docstring).
+EDT_DIAMETER_METHODS = ("cross_section", "inscribed_radius")
+
+#: Arc length (um) either side of a sample the centreline's direction is
+#: taken over, so a voxel-scale wiggle does not tilt the cross-section.
+TANGENT_HALF_WINDOW_UM = 2.0
+
+#: The finest the cross-section grid goes (a fraction of the smallest voxel
+#: side), and the most points it takes across, so a large vessel's plane
+#: stays a few tens of thousands of reads.
+_SECTION_STEP_FRACTION = 0.25
+_SECTION_MAX_POINTS_ACROSS = 161
+
+#: How far the plane reaches (um), as a multiple of the inscribed radius
+#: there plus two voxels. The inscribed radius under-reads a flattened or
+#: obliquely cut vessel, and a plane only three times it was too small for
+#: its own section on a third of a real network's samples; past five, more
+#: of what the plane gains is other vessels.
+SECTION_EXTENT_INSCRIBED_MULTIPLE = 5.0
+
+#: A merged section is split into lobes at its necks (a watershed on the
+#: in-plane distance to its outline), each lobe a peak at least this much
+#: (um) above the neck -- two touching vessels, or a branch and the vessel
+#: it leaves. Half a micron keeps one round or flattened section whole.
+SECTION_LOBE_MIN_PROMINENCE_UM = 0.5
+
+#: The widest a section's area-equivalent radius may be against the
+#: inscribed radius at the same point (plus half a voxel) and still be this
+#: vessel's own: 2 admits a 4:1 flattened section. Past it the plane is
+#: cutting something else too -- near a junction with a much larger vessel,
+#: that vessel's body, which the inscribed radius at the centreline does not
+#: see.
+SECTION_TO_INSCRIBED_MAX_RATIO = 2.0
+
+#: The fewest readings an edge is measured at. An edge whose junction zones
+#: (or a coarse sample spacing) leave it fewer is read instead at up to
+#: :data:`SHORT_EDGE_MAX_READINGS` points, :data:`SHORT_EDGE_MIN_READING_SPACING_UM`
+#: or more apart, across what is left between its junction zones -- or, when
+#: they leave nothing, across the half of the edge farthest from them. One
+#: reading at the midpoint was what 86% of a real network's sub-2 um vessels
+#: rested on.
+SHORT_EDGE_MIN_READINGS = 3
+SHORT_EDGE_MAX_READINGS = 5
+SHORT_EDGE_MIN_READING_SPACING_UM = 0.5
+
+#: The steepest a step of the off-centreline search's climb may point along
+#: the centreline (cosine of its angle to the tangent): it moves across the
+#: vessel to its middle, not along it into a wider junction.
+LATERAL_STEP_MAX_COS = 0.5
+
+#: The narrowest reading (um) taken as a width: at ~1 um voxels, a section
+#: two voxels across both ways (it reads ~2.3 um). A strand one voxel thick
+#: reads ~1.4 um and one 1 x 2 voxels ~1.8 um: the segmentation caught a
+#: sliver of the vessel, not how wide it is. On a real 3,191-vessel network,
+#: readings under 2 um were 11% of vessels and, as d^4 resistances, all but
+#: the whole network's summed L/d^4; a floor at 1.5 um still left 39% of it
+#: on the vessels between 1.5 and 2. Scale it with the voxel size.
+MIN_RESOLVABLE_DIAMETER_UM = 2.0
+
+#: Everything a measurement writes on an edge, cleared before it is measured
+#: again so a failed edge does not keep an earlier run's width.
+_EDGE_ATTRIBUTES = (
+    "edt_diameter_um",
+    "edt_diameter_samples_um",
+    "edt_diameter_method",
+    "edt_short_edge_readings",
+    "edt_off_centreline_samples",
+    "edt_unresolved_samples",
+    "edt_unresolved_diameter_um",
+)
+
+__all__ = [
+    "EDT_DIAMETER_METHODS",
+    "MIN_RESOLVABLE_DIAMETER_UM",
+    "mask_diameters_at_points",
+    "measure_edge_diameters_from_binary_mask",
+]
+
+
+def mask_diameters_at_points(
+    binary_mask: np.ndarray,
+    voxel_size_zyx: tuple[float, float, float],
+    groups: Sequence[tuple[np.ndarray, np.ndarray]],
+    *,
+    workers: int = 1,
+    memmap_directory=None,
+) -> list[tuple[np.ndarray, list[str]]]:
+    """The mask's width at points of its own choosing rather than an edge's
+    regular samples: *groups* is ``(points_um, tangents)`` pairs, physical
+    ``(z, y, x)`` microns on centrelines running along *tangents*, and each
+    point is read as :func:`measure_edge_diameters_from_binary_mask` reads a
+    sample -- the area-equivalent diameter of its cross-section, else twice
+    the inscribed radius (a point just off its own mask looking for it within
+    :data:`OFF_CENTRELINE_SEARCH_UM`).
+
+    Returns, per group, the diameters (NaN where neither reads) and each
+    point's ``"cross_section"``, ``"inscribed_radius"`` or ``""``. Nothing is
+    dropped as unresolved: the caller decides what a reading under
+    :data:`MIN_RESOLVABLE_DIAMETER_UM` means. The sections are read in
+    *workers* processes as the edges' are (one group a task), with the same
+    answers however many."""
+    from . import sections as sections_module  # it imports this module
+
+    packed = PackedMask.from_mask(binary_mask) if isinstance(binary_mask, np.memmap) else None
+    sample_radius = _pointwise_radius_sampler(binary_mask, voxel_size_zyx, packed=packed)
+    if sample_radius is None:
+        radius_map = inscribed_radius_map(np.asarray(binary_mask, dtype=bool), voxel_size_zyx)
+
+        def sample_radius(idx: np.ndarray) -> np.ndarray:
+            return map_coordinates(radius_map, idx.T, order=1, mode="constant", cval=0.0)
+
+    spacing = tuple(float(x) for x in voxel_size_zyx)
+    shape = tuple(int(n) for n in binary_mask.shape)
+    readable: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
+    payloads: list[tuple] = []
+    for points_um, tangents in groups:
+        points = np.asarray(points_um, dtype=float).reshape(-1, 3)
+        directions = np.asarray(tangents, dtype=float).reshape(-1, 3)
+        radii = np.zeros(len(points))
+        if len(points):
+            idx = physical_points_to_continuous_indices(points, voxel_size_zyx)
+            radii = np.asarray(sample_radius(idx), dtype=float)
+            off_mask = ~(np.isfinite(radii) & (radii > 0))
+            if np.any(off_mask):
+                radii[off_mask] = _nearby_radius(
+                    sample_radius, idx[off_mask], voxel_size_zyx, OFF_CENTRELINE_SEARCH_UM,
+                    directions[off_mask],
+                )
+        found = np.isfinite(radii) & (radii > 0)
+        readable.append((radii, found, np.flatnonzero(found)))
+        payloads.append((points[found], directions[found], radii[found], spacing, shape))
+
+    in_workers = int(workers) > 1 and len(payloads) >= sections_module.MIN_EDGES_FOR_WORKERS
+    if in_workers and packed is None:
+        packed = PackedMask.from_mask(binary_mask)
+    if _single_plane(binary_mask):
+        # No section across a vessel in a 2D image (see
+        # measure_edge_diameters_from_binary_mask): the inscribed radius reads it.
+        section_readings = [[float("nan")] * len(payload[0]) for payload in payloads]
+    else:
+        section_readings = sections_module.run_edge_tasks(
+            _edge_sections, payloads, volume=packed.bits if packed is not None else binary_mask,
+            workers=int(workers), memmap_directory=memmap_directory,
+        )
+
+    results: list[tuple[np.ndarray, list[str]]] = []
+    for (radii, found, rows), sections in zip(readable, section_readings):
+        diameters = np.full(len(radii), np.nan)
+        methods = [""] * len(radii)
+        for row, section in zip(rows, sections):
+            if np.isfinite(section) and section > 0:
+                diameters[row], methods[row] = float(section), "cross_section"
+            else:
+                diameters[row], methods[row] = 2.0 * float(radii[row]), "inscribed_radius"
+        results.append((diameters, methods))
+    return results
+
+
+def measure_edge_diameters_from_binary_mask(
+    G: Any,
+    *,
+    binary_mask: np.ndarray,
+    voxel_size_zyx: tuple[float, float, float],
+    sample_spacing_along_edge_um: float,
+    branch_endpoint_exclusion_um: float = 0.0,
+    aggregation: Literal["median", "mean"] = "median",
+    use_memmap: bool = False,
+    method: Literal["cross_section", "inscribed_radius"] = "cross_section",
+    min_resolvable_diameter_um: float = MIN_RESOLVABLE_DIAMETER_UM,
+    edges: Any = None,
+    workers: int = 1,
+    memmap_directory=None,
+) -> dict[str, Any]:
+    """Measure per-edge diameters (µm) from *binary_mask*.
+
+    With *method* ``"cross_section"`` (default) the diameter at each
+    centerline sample is that of the circle with the area of the mask's own
+    cross-section there; with ``"inscribed_radius"`` it is ``2 * radius``,
+    *radius* being the mask's EDT inscribed radius at that point, trilinearly
+    interpolated the same way
+    :func:`haemolynx.haemodynamics.fwhm_diameter.measure_edge_diameters_fwhm_from_raw_tiff`
+    samples its own intensity volume. See the module docstring for how
+    they compare.
+
+    Parameters
+    ----------
+    G :
+        MultiGraph with a ``voxels`` edge attribute (physical coordinates,
+        same axis order as *binary_mask*).
+    binary_mask :
+        The segmented vessel mask this edge's centerline was built from.
+    voxel_size_zyx :
+        Spacing per array axis (same tuple passed to graph building).
+    sample_spacing_along_edge_um :
+        Distance along the edge centerline between samples.
+    branch_endpoint_exclusion_um :
+        Distance (µm) excluded from sampling near edge endpoints that are
+        bifurcation nodes (graph degree > 1) -- guards against the raw EDT
+        reading a junction's own larger inscribed sphere as if it were this
+        branch's own radius.
+    aggregation :
+        How to collapse one edge's accepted per-sample diameters into one
+        value -- ``median`` (default) or ``mean``. Shares
+        :func:`haemolynx.haemodynamics.fwhm_diameter._aggregate_edge_diameter`
+        with the FWHM path, so both techniques resolve outliers the same way.
+    use_memmap :
+        The low-RAM option. Instead of transforming the whole mask, reads the
+        inscribed radius only at the voxels each sample's interpolation
+        touches (see :mod:`haemolynx.preprocessing.pointwise_distance`), and
+        never converts *binary_mask* to a whole-volume boolean copy. Same
+        diameters, bar a last-bit difference where two background voxels are
+        exactly equidistant under a non-representable voxel spacing. It, or
+        a memmapped *binary_mask*, also has the mask read voxel by voxel from
+        a packed copy in RAM (``preprocessing.PackedMask``, an eighth of its
+        bytes): the same answers.
+    min_resolvable_diameter_um :
+        Readings narrower than this (see :data:`MIN_RESOLVABLE_DIAMETER_UM`)
+        are left out of the edge's median; an edge with none left is skipped
+        as ``below_resolvable_diameter``, with the median it would have had in
+        ``edt_unresolved_diameter_um``. 0 keeps every reading.
+    edges :
+        Measure only these ``(u, v, key)`` edges (either way round); every
+        other edge keeps what it has. ``None`` (default) measures them all.
+    workers :
+        Processes the edges' cross-sections are read in (see
+        :func:`~haemolynx.haemodynamics.sections.run_edge_tasks`: only with
+        enough edges to repay starting them), sharing the mask as packed
+        bits written under *memmap_directory*. The widths are the same
+        however many.
+
+    Returns
+    -------
+    A summary shaped like
+    :func:`haemolynx.haemodynamics.fwhm_diameter.measure_edge_diameters_fwhm_from_raw_tiff`'s
+    own: ``edges_measured``, ``edges_skipped`` (list of
+    ``(u, v, key, reason)``), ``per_edge``.
+    """
+    from . import sections as sections_module  # it imports this module
+
+    if sample_spacing_along_edge_um <= 0:
+        raise ValueError("sample_spacing_along_edge_um must be positive.")
+    if min_resolvable_diameter_um < 0:
+        raise ValueError("min_resolvable_diameter_um must not be negative.")
+    min_resolvable = float(min_resolvable_diameter_um)
+    if method not in EDT_DIAMETER_METHODS:
+        raise ValueError(f"method must be one of {EDT_DIAMETER_METHODS}; got {method!r}.")
+    if _single_plane(binary_mask):
+        # A 2D image has no section across a vessel: the plane normal to it
+        # is a line one voxel deep, whose area-equivalent circle reads a 10 um
+        # vessel 3.6 um. The in-plane inscribed radius is its half-width.
+        method = "inscribed_radius"
+
+    # The inscribed radius only at the voxels the samples read: the same
+    # values as transforming the whole mask, and on a real 287 x 512 x 512
+    # stack 89 s -> 32 s for 300 edges, 298 s -> 263 s for all 3,191.
+    # A disk-backed mask is read as bits from RAM (an eighth of its bytes):
+    # every sample's section plane and radius read it voxel by voxel, which
+    # on a memmap is a page of the disk at random once it is out of cache.
+    packed = (
+        PackedMask.from_mask(binary_mask) if use_memmap or isinstance(binary_mask, np.memmap) else None
+    )
+    sample_radius = _pointwise_radius_sampler(binary_mask, voxel_size_zyx, packed=packed)
+    if sample_radius is None:
+        mask = np.asarray(binary_mask, dtype=bool)
+        radius_map = inscribed_radius_map(mask, voxel_size_zyx)
+
+        def sample_radius(idx: np.ndarray) -> np.ndarray:
+            return map_coordinates(radius_map, idx.T, order=1, mode="constant", cval=0.0)
+
+    branch_excl = max(0.0, float(branch_endpoint_exclusion_um))
+
+    summary: dict[str, Any] = {
+        "edges_measured": 0,
+        "edges_skipped": [],
+        "per_edge": [],
+    }
+
+    # Each edge in turn: a skip reason, or its inscribed radii and, for the
+    # cross-section method, the payload its sections are read from. The
+    # sections are most of the time (95% of Stack A's 150 s in one process),
+    # so they go to worker processes; the edges are then finished in this
+    # order, so the summary is the same however many there were.
+    pending: list[tuple] = []
+    payloads: list[tuple] = []
+    chosen = edge_selection(edges)
+    for u, v, key, data in G.edges(keys=True, data=True):
+        if chosen is not None and (frozenset((u, v)), key) not in chosen:
+            continue
+        vox = data.get("voxels")
+        if not vox or len(vox) < 2:
+            pending.append((u, v, key, "no_voxels"))
+            continue
+
+        poly = np.asarray(vox, dtype=float)
+        s, total_len = _arc_length_parameterize(poly)
+        if total_len <= 0:
+            pending.append((u, v, key, "zero_length"))
+            continue
+
+        for stale in _EDGE_ATTRIBUTES:
+            data.pop(stale, None)
+        sample_targets, short = edge_sample_targets(
+            total_len,
+            sample_spacing_along_edge_um,
+            branch_excl,
+            start_is_branch=int(G.degree(u)) > 1,
+            end_is_branch=int(G.degree(v)) > 1,
+        )
+        sample_points = _interpolate_centerline(poly, s, sample_targets)
+        if short:
+            data["edt_short_edge_readings"] = len(sample_targets)
+
+        tangents = _centreline_tangents(poly, s, total_len, sample_targets)
+        idx = physical_points_to_continuous_indices(sample_points, voxel_size_zyx)
+        values = np.asarray(sample_radius(idx), dtype=float)
+        off_mask = ~(np.isfinite(values) & (values > 0))
+        if np.any(off_mask):
+            values[off_mask] = _nearby_radius(
+                sample_radius, idx[off_mask], voxel_size_zyx, OFF_CENTRELINE_SEARCH_UM,
+                tangents[off_mask],
+            )
+            data["edt_off_centreline_samples"] = int(np.count_nonzero(off_mask))
+        radii = [float(value) for value in values if np.isfinite(value) and value > 0]
+        if not radii:
+            pending.append((u, v, key, "edt_failed"))
+            continue
+        section_index = None
+        if method == "cross_section":
+            section_index = len(payloads)
+            payloads.append((
+                np.asarray(sample_points, dtype=float), tangents,
+                np.where(np.isfinite(values), values, 0.0),
+                tuple(float(x) for x in voxel_size_zyx), tuple(int(n) for n in binary_mask.shape),
+            ))
+        pending.append((u, v, key, (data, radii, section_index)))
+
+    # Workers read the mask from its packed bits, an eighth of its bytes.
+    in_workers = int(workers) > 1 and len(payloads) >= sections_module.MIN_EDGES_FOR_WORKERS
+    if in_workers and packed is None:
+        packed = PackedMask.from_mask(binary_mask)
+    section_volume = packed.bits if packed is not None else binary_mask
+    section_readings = sections_module.run_edge_tasks(
+        _edge_sections, payloads, volume=section_volume, workers=int(workers),
+        memmap_directory=memmap_directory,
+    )
+
+    for u, v, key, outcome in pending:
+        if isinstance(outcome, str):
+            summary["edges_skipped"].append((u, v, key, outcome))
+            continue
+        data, radii, section_index = outcome
+        diameters = [2.0 * radius for radius in radii]
+        used = "inscribed_radius"
+        if section_index is not None:
+            closed = [d for d in section_readings[section_index] if np.isfinite(d) and d > 0]
+            if closed:
+                diameters = closed
+                used = "cross_section"
+        resolved = [d for d in diameters if d >= min_resolvable]
+        if not resolved:
+            # A strand of mask a voxel or so thick: a real vessel the
+            # segmentation caught only a sliver of, whose width the mask
+            # cannot give. Left unmeasured, so the edge falls back to the
+            # branch-order table, rather than a d^4 resistance hundreds of
+            # times its neighbours'.
+            data["edt_unresolved_diameter_um"] = _aggregate_edge_diameter(diameters, aggregation)
+            summary["edges_skipped"].append((u, v, key, "below_resolvable_diameter"))
+            continue
+        if len(resolved) < len(diameters):
+            data["edt_unresolved_samples"] = len(diameters) - len(resolved)
+        diameters = resolved
+        d_final = _aggregate_edge_diameter(diameters, aggregation)
+        data["edt_diameter_um"] = d_final
+        data["edt_diameter_samples_um"] = diameters
+        data["edt_diameter_method"] = used
+        summary["edges_measured"] += 1
+        summary["per_edge"].append(
+            {
+                "edge": (u, v, key),
+                "edt_diameter_um": d_final,
+                "n_samples": len(diameters),
+                "method": used,
+            }
+        )
+
+    return summary
+
+
+def _single_plane(mask) -> bool:
+    """Whether *mask* is a 2D image read as a single plane, ``(1, y, x)``."""
+    return len(getattr(mask, "shape", ())) == 3 and int(mask.shape[0]) == 1
+
+
+def _edge_sections(volume: np.ndarray, payload: tuple) -> list[float]:
+    """One edge's :func:`_cross_section_diameter` readings. *volume* is the
+    mask, or its packed bits (one-dimensional), which the payload's shape
+    turns back into a ``PackedMask`` -- a module-level function, so worker
+    processes can run it (see
+    :func:`~haemolynx.haemodynamics.sections.run_edge_tasks`)."""
+    points, tangents, guide_radii, voxel_size_zyx, shape = payload
+    mask = PackedMask(volume, shape) if volume.ndim == 1 else volume
+    return [
+        _cross_section_diameter(mask, point, tangent, voxel_size_zyx, guide_radius_um=float(radius))
+        for point, tangent, radius in zip(points, tangents, guide_radii)
+    ]
+
+
+def _centreline_tangents(poly: np.ndarray, s: np.ndarray, total: float, at: np.ndarray) -> np.ndarray:
+    """Unit direction of the centreline at arc lengths *at*, over a short window."""
+    ahead = _interpolate_centerline(poly, s, np.clip(at + TANGENT_HALF_WINDOW_UM, 0.0, total))
+    behind = _interpolate_centerline(poly, s, np.clip(at - TANGENT_HALF_WINDOW_UM, 0.0, total))
+    tangents = np.asarray(ahead, dtype=float) - np.asarray(behind, dtype=float)
+    norms = np.linalg.norm(tangents, axis=1, keepdims=True)
+    return tangents / np.where(norms > 0, norms, 1.0)
+
+
+def _nearest_mask_values(mask: np.ndarray | PackedMask, idx: np.ndarray) -> np.ndarray:
+    """Whether the voxel nearest each continuous index is foreground; False
+    outside the volume. Reads only those voxels, so a memmap stays on disk;
+    *mask* may be a ``PackedMask`` of it."""
+    nearest = np.rint(np.asarray(idx, dtype=float)).astype(np.intp)
+    shape = np.asarray(mask.shape)
+    inside = np.all((nearest >= 0) & (nearest < shape), axis=1)
+    values = np.zeros(len(nearest), dtype=bool)
+    if np.any(inside):
+        within = nearest[inside]
+        if isinstance(mask, PackedMask):
+            values[inside] = mask.contains(within)
+        else:
+            values[inside] = np.asarray(mask[within[:, 0], within[:, 1], within[:, 2]]) != 0
+    return values
+
+
+def _cross_section_diameter(
+    mask: np.ndarray,
+    point_um: np.ndarray,
+    tangent: np.ndarray,
+    voxel_size_zyx,
+    *,
+    guide_radius_um: float,
+) -> float:
+    """Diameter of the circle with the area of *mask*'s section through
+    *point_um* normal to *tangent*; NaN where there is no closed section.
+
+    The plane is read voxel by voxel (nearest voxel) on a grid a quarter of a
+    voxel fine -- no interpolation or smoothing, which erodes a two-voxel
+    vessel. Only the piece joined to the point counts (or, for a point just
+    off its own mask, the piece nearest it within
+    :data:`OFF_CENTRELINE_SEARCH_UM`), and of that piece only the lobe the
+    point is in, where it has more than one (see
+    :data:`SECTION_LOBE_MIN_PROMINENCE_UM`). A lobe touching the edge of the
+    plane is not a closed section -- another vessel runs into it, or the
+    vessel is wider than the plane (see
+    :data:`SECTION_EXTENT_INSCRIBED_MULTIPLE`) -- so it gives NaN rather than
+    an area that is partly something else. So does a closed one much wider
+    than the inscribed radius there allows (see
+    :data:`SECTION_TO_INSCRIBED_MAX_RATIO`).
+    """
+    from scipy.ndimage import distance_transform_edt, label
+    from skimage.morphology import h_maxima
+    from skimage.segmentation import watershed
+
+    spacing = np.asarray(voxel_size_zyx, dtype=float)
+    tangent = np.asarray(tangent, dtype=float)
+    reference = np.array([0.0, 0.0, 1.0]) if abs(tangent[2]) < 0.9 else np.array([1.0, 0.0, 0.0])
+    across = np.cross(tangent, reference)
+    across /= np.linalg.norm(across)
+    other = np.cross(tangent, across)
+    extent = max(
+        4.0,
+        SECTION_EXTENT_INSCRIBED_MULTIPLE * max(guide_radius_um, float(spacing.min()))
+        + 2.0 * float(spacing.max()),
+    )
+    step = max(
+        _SECTION_STEP_FRACTION * float(spacing.min()),
+        2.0 * extent / (_SECTION_MAX_POINTS_ACROSS - 1),
+    )
+    offsets = np.arange(-extent, extent + 0.5 * step, step)
+    plane = (
+        np.asarray(point_um, dtype=float)
+        + offsets[:, None, None] * across
+        + offsets[None, :, None] * other
+    )
+    idx = physical_points_to_continuous_indices(plane.reshape(-1, 3), voxel_size_zyx)
+    inside = _nearest_mask_values(mask, idx).reshape(len(offsets), len(offsets))
+    pieces, count = label(inside)
+    if count == 0:
+        return float("nan")
+    centre = len(offsets) // 2
+    anchor = (centre, centre)
+    piece = pieces[anchor]
+    if piece == 0:
+        rows, cols = np.nonzero(inside)
+        gap = np.hypot(rows - centre, cols - centre) * step
+        nearest = int(np.argmin(gap))
+        if gap[nearest] > OFF_CENTRELINE_SEARCH_UM:
+            return float("nan")
+        anchor = (rows[nearest], cols[nearest])
+        piece = pieces[anchor]
+    section = pieces == piece
+    depth = distance_transform_edt(section) * step
+    peaks, n_peaks = label(h_maxima(depth, SECTION_LOBE_MIN_PROMINENCE_UM))
+    if n_peaks > 1:
+        lobes = watershed(-depth, peaks, mask=section)
+        section = lobes == lobes[anchor]
+    if section[0, :].any() or section[-1, :].any() or section[:, 0].any() or section[:, -1].any():
+        return float("nan")
+    area = float(np.count_nonzero(section)) * step * step
+    radius = float(np.sqrt(area / np.pi))
+    if guide_radius_um > 0 and radius > SECTION_TO_INSCRIBED_MAX_RATIO * (
+        guide_radius_um + 0.5 * float(spacing.max())
+    ):
+        return float("nan")
+    return 2.0 * radius
+
+
+def edge_sample_targets(
+    total_len: float,
+    spacing_um: float,
+    branch_exclusion_um: float,
+    *,
+    start_is_branch: bool,
+    end_is_branch: bool,
+) -> tuple[np.ndarray, bool]:
+    """Arc lengths to read an edge at, and whether they are a short edge's.
+
+    Every *spacing_um* along the edge, leaving out *branch_exclusion_um* at
+    an end that is a junction. An edge shorter than its junction zones used
+    to be excluded whole (238 of 3191 edges on a real run, left to the
+    branch-order table), then read once at its midpoint, with nothing to
+    outvote a reading at a gap or notch in the mask: 86% of a real network's
+    vessels read under 2 um were such edges. One left with fewer than
+    :data:`SHORT_EDGE_MIN_READINGS` is read at :func:`_short_edge_targets`
+    instead, and the second value is True.
+    """
+    n_samples = max(1, int(np.floor(total_len / spacing_um)) + 1)
+    targets = np.linspace(0.0, total_len, n_samples)
+    exclusion = max(0.0, float(branch_exclusion_um))
+    keep = np.ones(n_samples, dtype=bool)
+    if exclusion > 0.0:
+        if start_is_branch:
+            keep &= targets >= exclusion
+        if end_is_branch:
+            keep &= (total_len - targets) >= exclusion
+    targets = targets[keep]
+    if len(targets) >= SHORT_EDGE_MIN_READINGS:
+        return targets, False
+    return _short_edge_targets(
+        total_len,
+        start=exclusion if start_is_branch else 0.0,
+        end=total_len - exclusion if end_is_branch else total_len,
+        start_is_branch=start_is_branch,
+        end_is_branch=end_is_branch,
+    ), True
+
+
+def _short_edge_targets(
+    total: float, *, start: float, end: float, start_is_branch: bool, end_is_branch: bool
+) -> np.ndarray:
+    """Arc lengths to read an edge at when its regular samples are too few:
+    up to :data:`SHORT_EDGE_MAX_READINGS`, at least
+    :data:`SHORT_EDGE_MIN_READING_SPACING_UM` apart, evenly across
+    ``[start, end]`` -- what its junction zones leave. When they leave
+    nothing, across the half of the edge farthest from its junctions: the
+    middle half between two, the outer half of a dead end."""
+    if end < start:
+        centre = 0.5 * total
+        if start_is_branch != end_is_branch:
+            centre = 0.75 * total if start_is_branch else 0.25 * total
+        start, end = centre - 0.25 * total, centre + 0.25 * total
+    count = int(np.clip(
+        np.floor((end - start) / SHORT_EDGE_MIN_READING_SPACING_UM) + 1, 1, SHORT_EDGE_MAX_READINGS
+    ))
+    if count == 1:
+        return np.array([0.5 * (start + end)])
+    return np.linspace(start, end, count)
+
+
+def _nearby_radius(
+    sample_radius, idx: np.ndarray, voxel_size_zyx, search_um: float, tangents: np.ndarray
+) -> np.ndarray:
+    """For each point (continuous voxel indices) whose own inscribed radius is
+    0, the inscribed radius of the vessel it was meant to run down: the
+    nearest vessel voxel within *search_um*, then uphill on the radius to the
+    vessel's own middle. Still 0 when no vessel is that close.
+
+    Uphill, not just the largest radius in reach: from a centreline a voxel
+    outside the wall, the best point within reach is near the far side of
+    the wall, where the radius is small -- a 6um vessel read 4.5um that way.
+    The climb goes across the vessel -- only steps within 60 degrees of the
+    plane normal to the point's *tangent* (see :data:`LATERAL_STEP_MAX_COS`)
+    -- to the first local maximum, the vessel's medial axis; along the vessel
+    it could climb into a larger junction. Capped at twice the search
+    distance in steps.
+
+    Only for points off the mask: climbing from every point, onto the
+    medial axis of whatever is widest nearby, read a real network's small
+    vessels as the larger vessels beside them -- a vessel's own parent lies
+    in its normal plane at a junction -- with tubes drawn at those widths
+    1.17x the mask's volume.
+    """
+    spacing = np.asarray(voxel_size_zyx, dtype=float)
+    reach = np.maximum(1, np.ceil(float(search_um) / spacing).astype(int))
+    grid = np.stack(
+        np.meshgrid(*(np.arange(-r, r + 1) for r in reach), indexing="ij"), axis=-1
+    ).reshape(-1, 3)
+    distance = np.linalg.norm(grid * spacing, axis=1)
+    inside = distance <= float(search_um) + 1e-9
+    grid, distance = grid[inside], distance[inside]
+    points = np.asarray(idx, dtype=float).reshape(-1, 3)
+    candidates = (points[:, None, :] + grid[None, :, :]).reshape(-1, 3)
+    radii = np.asarray(sample_radius(candidates), dtype=float).reshape(len(points), len(grid))
+    radii[~np.isfinite(radii)] = 0.0
+    # The nearest vessel voxel in reach: smallest distance among those inside.
+    nearest = np.where(radii > 0, distance[None, :], np.inf).argmin(axis=1)
+    found = radii[np.arange(len(points)), nearest] > 0
+    position = points + grid[nearest]
+    radius = np.where(found, radii[np.arange(len(points)), nearest], 0.0)
+
+    step_grid = np.stack(
+        np.meshgrid(*(np.arange(-1, 2),) * 3, indexing="ij"), axis=-1
+    ).reshape(-1, 3)
+    step_grid = step_grid[np.any(step_grid != 0, axis=1)]
+    step_um = step_grid * spacing
+    step_um /= np.linalg.norm(step_um, axis=1, keepdims=True)
+    lateral = np.abs(np.asarray(tangents, dtype=float).reshape(-1, 3) @ step_um.T) < LATERAL_STEP_MAX_COS
+    max_steps = int(np.ceil(2.0 * float(search_um) / float(np.min(spacing))))
+    climbing = found.copy()
+    for _step in range(max_steps):
+        if not np.any(climbing):
+            break
+        rows = np.flatnonzero(climbing)
+        neighbours = (position[rows, None, :] + step_grid[None, :, :]).reshape(-1, 3)
+        around = np.asarray(sample_radius(neighbours), dtype=float).reshape(len(rows), len(step_grid))
+        around[~np.isfinite(around) | ~lateral[rows]] = 0.0
+        best = around.argmax(axis=1)
+        better = around[np.arange(len(rows)), best] > radius[rows] + 1e-9
+        moved = rows[better]
+        position[moved] = position[moved] + step_grid[best[better]]
+        radius[moved] = around[np.arange(len(rows)), best][better]
+        climbing[rows[~better]] = False
+    return radius
+
+
+def _pointwise_radius_sampler(binary_mask: np.ndarray, voxel_size_zyx, *, packed: PackedMask | None = None):
+    """``map_coordinates(inscribed_radius_map(mask), idx.T, order=1,
+    mode="constant")`` without the map, or ``None`` when the mask is all
+    foreground (where scipy's transform is not a distance, so only the
+    whole-volume call reproduces it).
+
+    Each point is interpolated over the 2x2x2 box of voxels it reads, clipped
+    to the volume the same way the whole map is, so scipy's own interpolation
+    runs on the same values with the same edge handling. *packed*, the mask
+    as bits, is read in place of it voxel by voxel.
+    """
+    shape = np.asarray(binary_mask.shape)
+    if not np.any(binary_mask):
+        return lambda idx: np.zeros(len(idx), dtype=np.float64)
+    distances = FeatureDistance(
+        binary_mask, feature_value=False, sampling=tuple(float(v) for v in voxel_size_zyx),
+        packed=packed,
+    )
+    if not distances.has_surface:
+        return None
+
+    def sample(idx: np.ndarray) -> np.ndarray:
+        idx = np.asarray(idx, dtype=float).reshape(-1, 3)
+        base = np.floor(idx).astype(np.intp)
+        lo = np.clip(base, 0, shape - 1)
+        hi = np.clip(base + 1, 0, shape - 1)
+        corners = np.stack(
+            [np.stack([np.where(bits[d], hi[:, d], lo[:, d]) for d in range(3)], axis=1)
+             for bits in np.ndindex(2, 2, 2)],
+            axis=1,
+        ).reshape(-1, 3)
+        unique, inverse = np.unique(corners, axis=0, return_inverse=True)
+        corner_radius = distances.at(unique)[inverse.reshape(-1)].reshape(len(idx), 2, 2, 2)
+        values = np.empty(len(idx), dtype=np.float64)
+        sizes = hi - lo + 1
+        local = (idx - lo).T
+        # One interpolation per clipped box shape (at most eight), not one per
+        # point: the boxes are stacked along a leading axis that every point
+        # samples exactly on its own index, so each keeps the box -- and the
+        # edge handling -- a call of its own would have given it.
+        for size in np.unique(sizes, axis=0):
+            rows = np.flatnonzero(np.all(sizes == size, axis=1))
+            boxes = np.ascontiguousarray(
+                corner_radius[rows, : size[0], : size[1], : size[2]]
+            )
+            coordinates = np.vstack([np.arange(len(rows), dtype=float), local[:, rows]])
+            values[rows] = map_coordinates(
+                boxes, coordinates, order=1, mode="constant", cval=0.0
+            )
+        return values
+
+    return sample

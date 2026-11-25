@@ -1,0 +1,904 @@
+"""Type-locked cylinder continuity helpers for small-vessel masks."""
+from __future__ import annotations
+
+from typing import Any
+import time
+
+import numpy as np
+from scipy.ndimage import binary_dilation, distance_transform_edt
+from scipy.spatial import cKDTree
+
+_GPU_EDT_AVAILABLE: bool | None = None
+_GPU_CP: Any = None
+_GPU_NDIMAGE: Any = None
+
+
+def _init_gpu_edt_backend() -> bool:
+    global _GPU_EDT_AVAILABLE, _GPU_CP, _GPU_NDIMAGE
+    if _GPU_EDT_AVAILABLE is not None:
+        return bool(_GPU_EDT_AVAILABLE)
+    try:
+        import cupy as cp  # type: ignore
+        from cupyx.scipy import ndimage as cpx_ndimage  # type: ignore
+
+        _GPU_CP = cp
+        _GPU_NDIMAGE = cpx_ndimage
+        _GPU_EDT_AVAILABLE = True
+    except Exception:
+        _GPU_CP = None
+        _GPU_NDIMAGE = None
+        _GPU_EDT_AVAILABLE = False
+    return bool(_GPU_EDT_AVAILABLE)
+
+
+def _edt(
+    mask: np.ndarray,
+    *,
+    sampling_zyx: tuple[float, float, float],
+    use_gpu_acceleration: bool,
+) -> np.ndarray:
+    if not bool(use_gpu_acceleration):
+        return distance_transform_edt(mask, sampling=sampling_zyx)
+    if not _init_gpu_edt_backend():
+        return distance_transform_edt(mask, sampling=sampling_zyx)
+    try:
+        cp = _GPU_CP
+        cpx_ndimage = _GPU_NDIMAGE
+        gpu_mask = cp.asarray(mask)
+        gpu_result = cpx_ndimage.distance_transform_edt(gpu_mask, sampling=sampling_zyx)
+        return cp.asnumpy(gpu_result)
+    except Exception:
+        return distance_transform_edt(mask, sampling=sampling_zyx)
+
+
+def _Union(a: np.ndarray, b: np.ndarray | None):
+    """``a | b``, read where asked rather than made (``MaskUnion``)."""
+    from haemolynx.preprocessing.memmap_support import MaskUnion
+
+    return MaskUnion(a, b)
+
+
+class _DistanceAt:
+    """``distance_transform_edt(input, sampling)`` read at chosen voxels
+    (``reader[z, y, x]``, index arrays, as the array is read), without the
+    volume: the low-RAM option's stand-in for continuity's four transforms.
+
+    The features (the zeros of *input*) are where *volume* (an array, or a
+    :class:`_Union` read in place) equals *feature_value*. Measured to the
+    features' surface a tile at a time
+    (``preprocessing.pointwise_distance.FeatureDistance(by_block=True)``);
+    with no feature at all, scipy reads every voxel as that far from one at
+    index (-1, 0, 0), and so does this; with nothing but features, 0.
+    """
+
+    def __init__(self, volume, *, feature_value: bool, sampling, memmap_directory=None):
+        from haemolynx.preprocessing.memmap_support import slab_step
+        from haemolynx.preprocessing.pointwise_distance import FeatureDistance
+
+        self.sampling = tuple(float(v) for v in sampling)
+        self.distance = FeatureDistance(
+            volume, feature_value=feature_value, sampling=self.sampling, by_block=True
+        )
+        self.no_features = False
+        if not self.distance.has_surface:
+            step = slab_step(volume.shape)
+            first = np.asarray(volume[0:step], dtype=bool)
+            self.no_features = bool(first.reshape(-1)[0]) != bool(feature_value) if first.size else True
+
+    def __getitem__(self, index) -> np.ndarray:
+        from haemolynx.preprocessing.blockwise_edt import displacement_distances
+
+        voxels = np.column_stack([np.asarray(i, dtype=np.intp).reshape(-1) for i in index])
+        if self.distance.has_surface:
+            return self.distance.at(voxels)
+        if not self.no_features:
+            return np.zeros(len(voxels))
+        displacement = np.column_stack([-1 - voxels[:, 0], -voxels[:, 1], -voxels[:, 2]])
+        return displacement_distances(displacement, self.sampling)
+
+
+def _mask_bounds(mask) -> tuple[np.ndarray, np.ndarray] | None:
+    """``(mins, maxs + 1)`` of *mask*'s True voxels, as ``np.argwhere`` of it
+    gives them, read a slab of planes at a time with no list of its voxels;
+    None for an empty mask."""
+    from haemolynx.preprocessing.memmap_support import slab_step
+
+    step = slab_step(mask.shape)
+    lo = hi = None
+    for z0 in range(0, mask.shape[0], step):
+        slab = np.asarray(mask[z0:z0 + step], dtype=bool)
+        if not slab.any():
+            continue
+        planes = np.flatnonzero(slab.any(axis=(1, 2)))
+        rows = np.flatnonzero(slab.any(axis=(0, 2)))
+        columns = np.flatnonzero(slab.any(axis=(0, 1)))
+        here_lo = np.array([z0 + planes[0], rows[0], columns[0]])
+        here_hi = np.array([z0 + planes[-1] + 1, rows[-1] + 1, columns[-1] + 1])
+        lo = here_lo if lo is None else np.minimum(lo, here_lo)
+        hi = here_hi if hi is None else np.maximum(hi, here_hi)
+    return None if lo is None else (lo, hi)
+
+
+def _copy_mask(mask, *, low_memory: bool, memmap_directory=None) -> np.ndarray:
+    """A copy of *mask* to draw bridges into: on disk under *low_memory*."""
+    if not low_memory:
+        return np.array(mask, dtype=bool)
+    from haemolynx.preprocessing.memmap_support import combine_by_slab
+
+    return combine_by_slab(lambda m: m.astype(bool), mask, directory=memmap_directory)
+
+
+def _voxel_size_zyx_to_sampling_zyx(
+    voxel_size_zyx: tuple[float, float, float],
+) -> tuple[float, float, float]:
+    """Return EDT sampling in array axis order (z, y, x)."""
+    return (
+        float(voxel_size_zyx[0]),
+        float(voxel_size_zyx[1]),
+        float(voxel_size_zyx[2]),
+    )
+
+
+def _line_indices_zyx(start_zyx: np.ndarray, end_zyx: np.ndarray) -> np.ndarray:
+    delta = end_zyx.astype(float) - start_zyx.astype(float)
+    step_count = int(max(2, np.ceil(np.linalg.norm(delta)) + 1))
+    t = np.linspace(0.0, 1.0, step_count, dtype=float)
+    points = np.rint(
+        start_zyx.reshape(1, 3) * (1.0 - t.reshape(-1, 1))
+        + end_zyx.reshape(1, 3) * t.reshape(-1, 1)
+    ).astype(int)
+    return np.unique(points, axis=0)
+
+
+def _clip_indices_to_shape(indices_zyx: np.ndarray, shape: tuple[int, int, int]) -> np.ndarray:
+    if indices_zyx.size == 0:
+        return indices_zyx
+    valid = np.all(indices_zyx >= 0, axis=1) & (
+        indices_zyx[:, 0] < int(shape[0])
+    ) & (indices_zyx[:, 1] < int(shape[1])) & (indices_zyx[:, 2] < int(shape[2]))
+    return indices_zyx[valid]
+
+
+def _connected_components(mask: np.ndarray):
+    """``(labels, count)``: *mask*'s components labelled a slab of planes at a time and held at their voxels
+    (``preprocessing.slab_labels.ForegroundLabels``), not in a label volume
+    (8 bytes a voxel once a stack has 2**31 voxels)."""
+    from haemolynx.preprocessing.slab_labels import ForegroundLabels
+
+    labels = ForegroundLabels(mask.astype(bool, copy=False), np.ones((3, 3, 3), dtype=bool))
+    return labels, int(labels.count)
+
+
+def _component_descriptors(
+    mask: np.ndarray,
+    edt_inside: np.ndarray | None = None,
+    *,
+    sampling_zyx: tuple[float, float, float],
+    labeled=None,
+    count: int | None = None,
+) -> dict[int, dict[str, Any]]:
+    """Describe each component of *mask* for the cylinder-bridge gates.
+
+    The principal axis, linearity and choice of endpoints are measured in
+    microns: in voxel indices every direction on an anisotropic stack tilts
+    towards the finely sampled axes. ``principal_axis_zyx`` is a unit vector
+    in microns; ``coords_zyx``, ``centroid_zyx`` and ``endpoints_zyx`` stay
+    voxel indices.
+    """
+    if labeled is None or count is None:
+        labeled, count = _connected_components(mask)
+    descriptors: dict[int, dict[str, Any]] = {}
+    if int(count) <= 0:
+        return descriptors
+    spacing = np.asarray(sampling_zyx, dtype=float).reshape(1, 3)
+    if isinstance(labeled, np.ndarray):
+        from haemolynx.preprocessing.slab_labels import ForegroundLabels
+
+        labeled = ForegroundLabels(labeled > 0, np.ones((3, 3, 3), dtype=bool))
+    for component_id in range(1, int(count) + 1):
+        # Its voxels in C order, as np.argwhere of its box lists them, and
+        # laid out as that does: the covariance below rounds by the layout.
+        coords = labeled.component_coords(component_id)
+        if coords.size == 0:
+            continue
+        centroid = np.mean(coords.astype(float), axis=0)
+        points_um = coords.astype(float) * spacing
+        if coords.shape[0] >= 3:
+            cov = np.cov(points_um.T)
+            eigvals, eigvecs = np.linalg.eigh(cov)
+            order = np.argsort(eigvals)[::-1]
+            eigvals = eigvals[order]
+            eigvecs = eigvecs[:, order]
+            principal_axis = eigvecs[:, 0]
+            linearity = float((eigvals[0] - eigvals[1]) / max(1e-9, float(eigvals[0])))
+        else:
+            principal_axis = np.asarray([1.0, 0.0, 0.0], dtype=float)
+            linearity = 0.0
+        projections = points_um @ principal_axis.reshape(3, 1)
+        min_idx = int(np.argmin(projections[:, 0]))
+        max_idx = int(np.argmax(projections[:, 0]))
+        end_a = coords[min_idx].astype(int)
+        end_b = coords[max_idx].astype(int)
+        if edt_inside is not None:
+            radii = edt_inside[
+                coords[:, 0],
+                coords[:, 1],
+                coords[:, 2],
+            ]
+            median_radius = float(np.median(radii)) if radii.size else 0.0
+        else:
+            median_radius = 0.0
+        descriptors[component_id] = {
+            "component_id": int(component_id),
+            "coords_zyx": coords,
+            "centroid_zyx": centroid,
+            "principal_axis_zyx": principal_axis / max(1e-9, np.linalg.norm(principal_axis)),
+            "linearity": float(linearity),
+            "endpoints_zyx": (end_a, end_b),
+            "median_radius_microns": float(median_radius),
+            "size_voxels": int(coords.shape[0]),
+        }
+    return descriptors
+
+
+def _bbox_from_masks_and_points(
+    *,
+    shape_zyx: tuple[int, int, int],
+    masks: list[np.ndarray],
+    points_zyx: np.ndarray | None,
+    margin_vox_zyx: tuple[int, int, int],
+) -> tuple[slice, slice, slice]:
+    mins = np.asarray([shape_zyx[0], shape_zyx[1], shape_zyx[2]], dtype=int)
+    maxs = np.asarray([0, 0, 0], dtype=int)
+    found = False
+    for mask in masks:
+        bounds = _mask_bounds(mask)
+        if bounds is None:
+            continue
+        found = True
+        mins = np.minimum(mins, bounds[0].astype(int))
+        maxs = np.maximum(maxs, bounds[1].astype(int))
+    if points_zyx is not None and points_zyx.size > 0:
+        pts = np.asarray(points_zyx, dtype=int)
+        found = True
+        mins = np.minimum(mins, pts.min(axis=0).astype(int))
+        maxs = np.maximum(maxs, pts.max(axis=0).astype(int) + 1)
+    if not found:
+        return (
+            slice(0, int(shape_zyx[0])),
+            slice(0, int(shape_zyx[1])),
+            slice(0, int(shape_zyx[2])),
+        )
+
+    margin = np.asarray(margin_vox_zyx, dtype=int)
+    mins = np.maximum(np.asarray([0, 0, 0], dtype=int), mins - margin)
+    maxs = np.minimum(np.asarray(shape_zyx, dtype=int), maxs + margin)
+    return (
+        slice(int(mins[0]), int(maxs[0])),
+        slice(int(mins[1]), int(maxs[1])),
+        slice(int(mins[2]), int(maxs[2])),
+    )
+
+
+def _global_to_local_indices_zyx(
+    indices_zyx: np.ndarray,
+    bbox_zyx: tuple[slice, slice, slice] | None,
+) -> np.ndarray:
+    if bbox_zyx is None:
+        return np.asarray(indices_zyx, dtype=int)
+    z_slice, y_slice, x_slice = bbox_zyx
+    indices = np.asarray(indices_zyx, dtype=int)
+    out = indices.copy()
+    out[:, 0] = out[:, 0] - int(z_slice.start)
+    out[:, 1] = out[:, 1] - int(y_slice.start)
+    out[:, 2] = out[:, 2] - int(x_slice.start)
+    return out
+
+
+def _axis_angle_deg(axis_a: np.ndarray, axis_b: np.ndarray) -> float:
+    na = axis_a / max(1e-9, np.linalg.norm(axis_a))
+    nb = axis_b / max(1e-9, np.linalg.norm(axis_b))
+    cosine = float(np.clip(np.abs(np.dot(na, nb)), 0.0, 1.0))
+    return float(np.degrees(np.arccos(cosine)))
+
+
+def _bridge_mask_from_line(
+    line_zyx: np.ndarray,
+    shape: tuple[int, int, int],
+    *,
+    radius_voxels: int,
+    sampling_zyx: tuple[float, float, float] | None = None,
+) -> np.ndarray:
+    """The voxels within *radius_voxels* voxels of the finest axis of a line,
+    on every axis the same physical half-width (a box, as iterating the
+    26-neighbour cube gives on cube voxels): iterated in voxels, a bridge was
+    four times fatter along a 2 um z than in-plane."""
+    bridge = np.zeros(shape, dtype=bool)
+    boxed = _bridge_box_from_line(line_zyx, shape, radius_voxels=radius_voxels, sampling_zyx=sampling_zyx)
+    if boxed is not None:
+        box, local = boxed
+        bridge[box] = local
+    return bridge
+
+
+def _bridge_box_from_line(
+    line_zyx: np.ndarray,
+    shape: tuple[int, int, int],
+    *,
+    radius_voxels: int,
+    sampling_zyx: tuple[float, float, float] | None = None,
+) -> tuple[tuple[slice, slice, slice], np.ndarray] | None:
+    """:func:`_bridge_mask_from_line` as ``(box, local)``, its voxels within
+    their own box: the line's box grown by the dilation's reach holds every
+    voxel the dilation sets, and the dilation reads nothing past it. None
+    for a line wholly outside the volume."""
+    if line_zyx.size == 0:
+        return None
+    line_zyx = _clip_indices_to_shape(line_zyx, shape)
+    if line_zyx.size == 0:
+        return None
+    spacing = np.ones(3) if sampling_zyx is None else np.asarray(sampling_zyx, dtype=float)
+    reach = (
+        [int(np.rint(int(radius_voxels) * float(spacing.min()) / float(s))) for s in spacing]
+        if int(radius_voxels) > 0
+        else [0, 0, 0]
+    )
+    lo = np.maximum(line_zyx.min(axis=0) - reach, 0)
+    hi = np.minimum(line_zyx.max(axis=0) + 1 + np.asarray(reach), np.asarray(shape))
+    local = np.zeros(tuple(int(b - a) for a, b in zip(lo, hi)), dtype=bool)
+    inside = line_zyx - lo
+    local[inside[:, 0], inside[:, 1], inside[:, 2]] = True
+    if int(radius_voxels) > 0:
+        local = binary_dilation(local, structure=np.ones([2 * r + 1 for r in reach], dtype=bool))
+    return tuple(slice(int(a), int(b)) for a, b in zip(lo, hi)), local
+
+
+def _min_endpoint_distance_microns(
+    source: dict[str, Any],
+    target: dict[str, Any],
+    *,
+    sampling_zyx: tuple[float, float, float],
+) -> float:
+    source_endpoints = source["endpoints_zyx"]
+    target_endpoints = target["endpoints_zyx"]
+    spacing = np.asarray(sampling_zyx, dtype=float).reshape(1, 3)
+    min_dist = np.inf
+    for s_ep in source_endpoints:
+        s = np.asarray(s_ep, dtype=float)
+        for t_ep in target_endpoints:
+            t = np.asarray(t_ep, dtype=float)
+            d = float(np.linalg.norm((t - s).reshape(1, 3) * spacing))
+            if d < min_dist:
+                min_dist = d
+    return float(min_dist)
+
+
+def _attempt_cylinder_bridge(
+    source: dict[str, Any],
+    target: dict[str, Any],
+    *,
+    shape: tuple[int, int, int],
+    dist_to_same_type_microns: np.ndarray,
+    dist_to_opposite_type_microns: np.ndarray,
+    sampling_zyx: tuple[float, float, float],
+    max_bridge_distance_microns: float,
+    corridor_max_distance_microns: float,
+    opposite_exclusion_distance_microns: float,
+    min_cylindricality: float,
+    max_axis_angle_degrees: float,
+    min_facing_cosine: float,
+    max_radius_ratio: float,
+    enforce_cylinder_only: bool,
+    roi_bbox_zyx: tuple[slice, slice, slice] | None = None,
+) -> tuple[bool, tuple[tuple[slice, slice, slice], np.ndarray] | None, str]:
+    """Whether to bridge *source* to *target*, the bridge as ``(box,
+    local)`` (:func:`_bridge_box_from_line`) or None, and why. A rejection
+    used to come with a volume of zeros."""
+    if enforce_cylinder_only:
+        if float(source["linearity"]) < float(min_cylindricality):
+            return False, None, "source_not_cylindrical"
+        if float(target["linearity"]) < float(min_cylindricality):
+            return False, None, "target_not_cylindrical"
+
+    source_endpoints = [np.asarray(end, dtype=int) for end in source["endpoints_zyx"]]
+    target_endpoints = [np.asarray(end, dtype=int) for end in target["endpoints_zyx"]]
+    best_pair = None
+    best_distance = np.inf
+    spacing = np.asarray(sampling_zyx, dtype=float).reshape(1, 3)
+    for i in (0, 1):
+        for j in (0, 1):
+            p0, p1 = source_endpoints[i], target_endpoints[j]
+            dist_microns = float(np.linalg.norm((p1 - p0).astype(float) * spacing))
+            if dist_microns < best_distance:
+                best_distance = dist_microns
+                best_pair = (i, j)
+    if best_pair is None:
+        return False, None, "no_endpoint_pair"
+    p0_best, p1_best = source_endpoints[best_pair[0]], target_endpoints[best_pair[1]]
+    if best_distance > float(max_bridge_distance_microns):
+        return False, None, "bridge_too_long"
+
+    if enforce_cylinder_only:
+        # In microns, like the principal axes it is compared with.
+        v = (p1_best - p0_best).astype(float) * spacing[0]
+        v_norm = float(np.linalg.norm(v))
+        if v_norm <= 1e-9:
+            return False, None, "degenerate_endpoint_vector"
+        v_hat = v / v_norm
+        def facing(piece, ends, end, toward):
+            """The cosine between *toward* (the bridge leaving the piece) and
+            the piece's axis pointing out of it at *end*: oriented by its
+            ends, not by the bridge, or a bridge leaving a piece's far end
+            and running back along its side faced the way it went."""
+            axis = np.asarray(piece["principal_axis_zyx"], dtype=float)
+            along = float(np.dot(axis, (ends[end] - ends[1 - end]).astype(float) * spacing[0]))
+            if along == 0.0:  # its ends one point: no way out to tell
+                return abs(float(np.dot(axis, toward)))
+            return float(np.dot(axis if along > 0.0 else -axis, toward))
+
+        source_facing = facing(source, source_endpoints, best_pair[0], v_hat)
+        target_facing = facing(target, target_endpoints, best_pair[1], -v_hat)
+        facing_threshold = float(min_facing_cosine)
+        if source_facing < facing_threshold or target_facing < facing_threshold:
+            return False, None, "endpoint_facing_mismatch"
+
+        angle = _axis_angle_deg(
+            np.asarray(source["principal_axis_zyx"], dtype=float),
+            np.asarray(target["principal_axis_zyx"], dtype=float),
+        )
+        if angle > float(max_axis_angle_degrees):
+            return False, None, "axis_mismatch"
+        src_r = max(1e-6, float(source["median_radius_microns"]))
+        tgt_r = max(1e-6, float(target["median_radius_microns"]))
+        ratio = max(src_r, tgt_r) / min(src_r, tgt_r)
+        if ratio > float(max_radius_ratio):
+            return False, None, "radius_ratio_mismatch"
+
+    line_zyx = _line_indices_zyx(p0_best, p1_best)
+    line_zyx = _clip_indices_to_shape(line_zyx, shape)
+    if line_zyx.size == 0:
+        return False, None, "empty_line"
+
+    line_local_zyx = _global_to_local_indices_zyx(line_zyx, roi_bbox_zyx)
+    same_d = dist_to_same_type_microns[
+        line_local_zyx[:, 0],
+        line_local_zyx[:, 1],
+        line_local_zyx[:, 2],
+    ]
+    opposite_d = dist_to_opposite_type_microns[
+        line_local_zyx[:, 0],
+        line_local_zyx[:, 1],
+        line_local_zyx[:, 2],
+    ]
+    if np.any(opposite_d < float(opposite_exclusion_distance_microns)):
+        return False, None, "cross_type_exclusion"
+    if np.any(same_d > float(corridor_max_distance_microns)):
+        return False, None, "outside_same_type_corridor"
+
+    voxel_scale = min(float(v) for v in sampling_zyx)
+    avg_radius_microns = 0.5 * (
+        float(source["median_radius_microns"]) + float(target["median_radius_microns"])
+    )
+    bridge_radius_voxels = int(max(0, np.rint(avg_radius_microns / max(1e-9, voxel_scale))))
+    bridge_radius_voxels = int(min(bridge_radius_voxels, 3))
+    bridge = _bridge_box_from_line(
+        line_zyx,
+        shape,
+        radius_voxels=bridge_radius_voxels,
+        sampling_zyx=sampling_zyx,
+    )
+    return True, bridge, "bridged"
+
+
+def _enforce_type_locked_continuity_for_small_mask(
+    *,
+    small_mask: np.ndarray,
+    large_mask: np.ndarray | None,
+    opposite_mask: np.ndarray,
+    voxel_size_zyx: tuple[float, float, float],
+    allow_small_to_large: bool,
+    allow_small_to_small: bool,
+    enforce_cylinder_only: bool,
+    min_cylindricality: float,
+    max_axis_angle_degrees: float,
+    min_facing_cosine: float,
+    max_radius_ratio: float,
+    max_bridge_distance_microns: float,
+    corridor_max_distance_microns: float,
+    opposite_exclusion_distance_microns: float,
+    use_gpu_acceleration: bool = False,
+    low_memory: bool = False,
+    memmap_directory=None,
+) -> tuple[np.ndarray, dict[str, Any]]:
+    """No distance transform of a volume: each is read at the voxels the
+    gates ask about (:class:`_DistanceAt`), which was also four times faster
+    in RAM, with the same masks -- unless *use_gpu_acceleration* finds a GPU,
+    which makes the whole transforms there. *low_memory* (the low-RAM
+    option): *opposite_mask* may be a :class:`_Union`, and the mask returned
+    is on disk in *memmap_directory*."""
+    total_start_s = time.perf_counter()
+    small_binary = small_mask.astype(bool, copy=False)
+    sampling_zyx = _voxel_size_zyx_to_sampling_zyx(voxel_size_zyx)
+    whole_transforms = bool(use_gpu_acceleration) and not low_memory and _init_gpu_edt_backend()
+    if low_memory:
+        has_large = large_mask is not None and _mask_bounds(large_mask) is not None
+        large_binary = (
+            np.broadcast_to(np.False_, small_binary.shape)
+            if large_mask is None
+            else large_mask.astype(bool, copy=False)
+        )
+        opposite_binary = opposite_mask
+    else:
+        large_binary = (
+            np.zeros_like(small_binary, dtype=bool)
+            if large_mask is None
+            else large_mask.astype(bool, copy=False)
+        )
+        has_large = bool(np.any(large_binary))
+        opposite_binary = opposite_mask.astype(bool, copy=False)
+
+    def inside_distance(mask):
+        if whole_transforms:
+            return _edt(mask, sampling_zyx=sampling_zyx, use_gpu_acceleration=True)
+        return _DistanceAt(mask, feature_value=False, sampling=sampling_zyx)
+    edt_inside_small = inside_distance(small_binary)
+    small_desc = _component_descriptors(
+        small_binary, edt_inside_small, sampling_zyx=sampling_zyx
+    )
+    if not small_desc:
+        return _copy_mask(small_binary, low_memory=low_memory, memmap_directory=memmap_directory), {
+            "attempted_bridges": 0,
+            "accepted_bridges": 0,
+            "rejected_reasons": {},
+        }
+    large_desc: dict[int, dict[str, Any]] = {}
+    if allow_small_to_large and has_large:
+        edt_inside_large = inside_distance(large_binary)
+        large_desc = _component_descriptors(
+            large_binary, edt_inside_large, sampling_zyx=sampling_zyx
+        )
+
+    updated_small = _copy_mask(small_binary, low_memory=low_memory, memmap_directory=memmap_directory)
+    source_candidates: dict[int, list[dict[str, Any]]] = {}
+    spacing = np.asarray(sampling_zyx, dtype=float).reshape(1, 3)
+    reach = float(max_bridge_distance_microns)
+
+    def end_index(descriptors: dict[int, dict[str, Any]]) -> tuple[cKDTree | None, list[int]]:
+        """Every component's two ends (microns) in a tree, and whose each is."""
+        ids = sorted(descriptors)
+        if not ids:
+            return None, []
+        ends = [np.asarray(end, dtype=float) for cid in ids for end in descriptors[cid]["endpoints_zyx"]]
+        return cKDTree(np.asarray(ends) * spacing), [cid for cid in ids for _end in (0, 1)]
+
+    # Candidates by the gap between ends, which is what a bridge spans and
+    # max_bridge_distance_microns limits; by centroid, two pieces longer
+    # than about the bridge length were never joined however small the gap.
+    large_tree, large_owners = end_index(large_desc) if allow_small_to_large else (None, [])
+    small_tree, small_owners = end_index(small_desc) if allow_small_to_small else (None, [])
+    source_build_start_s = time.perf_counter()
+    source_ids = sorted(small_desc.keys())
+    for source_id in source_ids:
+        source = small_desc[source_id]
+        source_ends = np.asarray(source["endpoints_zyx"], dtype=float) * spacing
+        # Keyed by pool too: the large and small components are numbered apart.
+        found: dict[tuple[str, int], dict[str, Any]] = {}
+        for pool, tree, owners, descriptors in (
+            ("large", large_tree, large_owners, large_desc),
+            ("small", small_tree, small_owners, small_desc),
+        ):
+            if tree is None:
+                continue
+            for near in tree.query_ball_point(source_ends, r=reach):
+                for index in near:
+                    cid = int(owners[int(index)])
+                    if pool == "small" and (
+                        cid == int(source_id)
+                        or int(descriptors[cid]["size_voxels"]) < int(source["size_voxels"])
+                    ):
+                        continue
+                    found[(pool, cid)] = descriptors[cid]
+        if not found:
+            continue
+        # Nearest end to end first, in microns: the first target accepted wins.
+        candidate_targets = [
+            found[key]
+            for key in sorted(
+                found,
+                key=lambda key: (
+                    _min_endpoint_distance_microns(source, found[key], sampling_zyx=sampling_zyx),
+                    key,
+                ),
+            )
+        ]
+
+        # Skip if source small component already touches any large component.
+        if allow_small_to_large and has_large:
+            src_vox = source["coords_zyx"]
+            # In a large component: in the large mask -- no labels needed.
+            if np.any(
+                large_binary[src_vox[:, 0], src_vox[:, 1], src_vox[:, 2]]
+            ):
+                continue
+        source_candidates[int(source_id)] = candidate_targets
+
+    candidate_build_elapsed_s = time.perf_counter() - source_build_start_s
+    if not source_candidates:
+        return updated_small, {
+            "attempted_bridges": 0,
+            "accepted_bridges": 0,
+            "rejected_reasons": {},
+            "prefiltered_out_count": 0,
+            "candidate_build_elapsed_s": float(candidate_build_elapsed_s),
+            "distance_setup_elapsed_s": 0.0,
+            "bridge_loop_elapsed_s": 0.0,
+            "total_elapsed_s": float(time.perf_counter() - total_start_s),
+            "roi_shape_zyx": (0, 0, 0),
+        }
+
+    # Compute expensive distance volumes only on candidate ROI.
+    distance_setup_start_s = time.perf_counter()
+    candidate_points: list[np.ndarray] = []
+    for source_id in source_ids:
+        if int(source_id) not in source_candidates:
+            continue
+        src = small_desc[int(source_id)]
+        src_a, src_b = src["endpoints_zyx"]
+        candidate_points.append(np.asarray(src_a, dtype=int))
+        candidate_points.append(np.asarray(src_b, dtype=int))
+        for tgt in source_candidates[int(source_id)]:
+            tgt_a, tgt_b = tgt["endpoints_zyx"]
+            candidate_points.append(np.asarray(tgt_a, dtype=int))
+            candidate_points.append(np.asarray(tgt_b, dtype=int))
+    points_arr = (
+        np.asarray(candidate_points, dtype=int)
+        if candidate_points
+        else np.empty((0, 3), dtype=int)
+    )
+    max_margin_microns = max(
+        float(max_bridge_distance_microns),
+        float(corridor_max_distance_microns),
+        float(opposite_exclusion_distance_microns),
+    )
+    margin_zyx = (
+        int(np.ceil(max_margin_microns / max(1e-9, float(sampling_zyx[0])))),
+        int(np.ceil(max_margin_microns / max(1e-9, float(sampling_zyx[1])))),
+        int(np.ceil(max_margin_microns / max(1e-9, float(sampling_zyx[2])))),
+    )
+    roi_bbox_zyx = _bbox_from_masks_and_points(
+        shape_zyx=small_binary.shape,
+        masks=[small_binary, large_binary],
+        points_zyx=points_arr,
+        margin_vox_zyx=margin_zyx,
+    )
+    z_slice, y_slice, x_slice = roi_bbox_zyx
+    roi_shape_zyx = (
+        int(z_slice.stop) - int(z_slice.start),
+        int(y_slice.stop) - int(y_slice.start),
+        int(x_slice.stop) - int(x_slice.start),
+    )
+    if not whole_transforms:
+        # Read at each bridge line's voxels; the features, as the transforms
+        # of the box below see them, are the mask voxels inside the box.
+        same_type = _Union(small_binary[roi_bbox_zyx], None if large_mask is None else large_binary[roi_bbox_zyx])
+        dist_to_same_type = _DistanceAt(same_type, feature_value=True, sampling=sampling_zyx)
+        from haemolynx.preprocessing.memmap_support import MaskUnion
+
+        opposite_in_box = (
+            MaskUnion(*(mask[roi_bbox_zyx] for mask in opposite_binary.masks))
+            if isinstance(opposite_binary, MaskUnion)
+            else opposite_binary[roi_bbox_zyx]
+        )
+        dist_to_opposite_type = _DistanceAt(opposite_in_box, feature_value=True, sampling=sampling_zyx)
+    else:
+        dist_to_same_type = _edt(
+            ~(small_binary | large_binary)[z_slice, y_slice, x_slice],
+            sampling_zyx=sampling_zyx,
+            use_gpu_acceleration=True,
+        )
+        dist_to_opposite_type = _edt(
+            ~opposite_binary[z_slice, y_slice, x_slice],
+            sampling_zyx=sampling_zyx,
+            use_gpu_acceleration=True,
+        )
+    distance_setup_elapsed_s = time.perf_counter() - distance_setup_start_s
+    attempted = 0
+    accepted = 0
+    rejected_reasons: dict[str, int] = {}
+    prefiltered_out_count = 0
+    bridge_loop_start_s = time.perf_counter()
+    for source_id in source_ids:
+        if int(source_id) not in source_candidates:
+            continue
+        source = small_desc[source_id]
+        for target in source_candidates[int(source_id)]:
+            # Cheap endpoint-distance prefilter; axis/facing/radius checks run in
+            # `_attempt_cylinder_bridge` so rejection reasons match actual gates.
+            endpoint_dist = _min_endpoint_distance_microns(
+                source,
+                target,
+                sampling_zyx=sampling_zyx,
+            )
+            if endpoint_dist > float(max_bridge_distance_microns):
+                prefiltered_out_count += 1
+                rejected_reasons["bridge_too_long"] = int(
+                    rejected_reasons.get("bridge_too_long", 0) + 1
+                )
+                continue
+
+            attempted += 1
+            ok, bridge, reason = _attempt_cylinder_bridge(
+                source,
+                target,
+                shape=small_binary.shape,
+                dist_to_same_type_microns=dist_to_same_type,
+                dist_to_opposite_type_microns=dist_to_opposite_type,
+                sampling_zyx=sampling_zyx,
+                max_bridge_distance_microns=float(max_bridge_distance_microns),
+                corridor_max_distance_microns=float(corridor_max_distance_microns),
+                opposite_exclusion_distance_microns=float(opposite_exclusion_distance_microns),
+                min_cylindricality=float(min_cylindricality),
+                max_axis_angle_degrees=float(max_axis_angle_degrees),
+                min_facing_cosine=float(min_facing_cosine),
+                max_radius_ratio=float(max_radius_ratio),
+                enforce_cylinder_only=bool(enforce_cylinder_only),
+                roi_bbox_zyx=roi_bbox_zyx,
+            )
+            if not ok:
+                rejected_reasons[reason] = int(rejected_reasons.get(reason, 0) + 1)
+                continue
+            if bridge is not None:
+                box, local = bridge
+                updated_small[box] |= local
+            accepted += 1
+            break
+    bridge_loop_elapsed_s = time.perf_counter() - bridge_loop_start_s
+
+    return updated_small, {
+        "attempted_bridges": int(attempted),
+        "accepted_bridges": int(accepted),
+        "rejected_reasons": rejected_reasons,
+        "prefiltered_out_count": int(prefiltered_out_count),
+        "candidate_build_elapsed_s": float(candidate_build_elapsed_s),
+        "distance_setup_elapsed_s": float(distance_setup_elapsed_s),
+        "bridge_loop_elapsed_s": float(bridge_loop_elapsed_s),
+        "total_elapsed_s": float(time.perf_counter() - total_start_s),
+        "roi_shape_zyx": roi_shape_zyx,
+    }
+
+
+def enforce_small_vessel_mask_continuity(
+    *,
+    small_arteriole_mask: np.ndarray,
+    small_venule_mask: np.ndarray,
+    large_arteriole_mask: np.ndarray | None,
+    large_venule_mask: np.ndarray | None,
+    voxel_size_zyx: tuple[float, float, float],
+    enable_continuity: bool = True,
+    allow_small_to_large: bool = True,
+    allow_small_to_small: bool = True,
+    enforce_cylinder_only: bool = True,
+    min_cylindricality: float = 0.45,
+    max_axis_angle_degrees: float = 45.0,
+    min_facing_cosine: float = 0.82,
+    max_radius_ratio: float = 3.0,
+    max_bridge_distance_microns: float = 35.0,
+    corridor_max_distance_microns: float = 12.0,
+    opposite_exclusion_distance_microns: float = 3.0,
+    use_gpu_acceleration: bool = False,
+    low_memory: bool = False,
+    memmap_directory=None,
+) -> dict[str, Any]:
+    """Bridge same-type small-vessel mask gaps with type-locked cylinder links.
+
+    Allowed connections are strictly:
+    - small venule -> large venule
+    - small venule -> small venule
+    - small arteriole -> large arteriole
+    - small arteriole -> small arteriole
+
+    No distance transform of a volume and no volume per bridge tried: the
+    distances are read at the voxels the gates ask about and a bridge is
+    drawn in its own box (a GPU, under *use_gpu_acceleration*, makes the
+    whole transforms instead). *low_memory* (the low-RAM option) makes no
+    union of masks either -- the other type's masks are read together where
+    asked -- and the masks returned are on disk in *memmap_directory*. The
+    same masks.
+    """
+    art_small = small_arteriole_mask.astype(bool, copy=False)
+    ven_small = small_venule_mask.astype(bool, copy=False)
+    if art_small.shape != ven_small.shape:
+        raise ValueError(
+            "small_arteriole_mask and small_venule_mask must share a shape. "
+            f"Got {art_small.shape} and {ven_small.shape}."
+        )
+    if large_arteriole_mask is not None and large_arteriole_mask.shape != art_small.shape:
+        raise ValueError(
+            "large_arteriole_mask shape must match small masks. "
+            f"Got {large_arteriole_mask.shape} and {art_small.shape}."
+        )
+    if large_venule_mask is not None and large_venule_mask.shape != ven_small.shape:
+        raise ValueError(
+            "large_venule_mask shape must match small masks. "
+            f"Got {large_venule_mask.shape} and {ven_small.shape}."
+        )
+    if not enable_continuity:
+        return {
+            "small_arteriole_mask": _copy_mask(art_small, low_memory=low_memory, memmap_directory=memmap_directory),
+            "small_venule_mask": _copy_mask(ven_small, low_memory=low_memory, memmap_directory=memmap_directory),
+            "stats": {
+                "continuity_enabled": False,
+                "arteriole": {"attempted_bridges": 0, "accepted_bridges": 0, "rejected_reasons": {}},
+                "venule": {"attempted_bridges": 0, "accepted_bridges": 0, "rejected_reasons": {}},
+            },
+        }
+
+    def other_type(small, large):
+        if low_memory:
+            return _Union(small, None if large is None else large)
+        return small | (
+            np.zeros_like(small, dtype=bool) if large is None else large.astype(bool, copy=False)
+        )
+
+    low_ram = dict(low_memory=low_memory, memmap_directory=memmap_directory)
+    updated_ven, ven_stats = _enforce_type_locked_continuity_for_small_mask(
+        small_mask=ven_small,
+        large_mask=large_venule_mask,
+        opposite_mask=other_type(art_small, large_arteriole_mask),
+        voxel_size_zyx=voxel_size_zyx,
+        allow_small_to_large=allow_small_to_large,
+        allow_small_to_small=allow_small_to_small,
+        enforce_cylinder_only=enforce_cylinder_only,
+        min_cylindricality=min_cylindricality,
+        max_axis_angle_degrees=max_axis_angle_degrees,
+        min_facing_cosine=min_facing_cosine,
+        max_radius_ratio=max_radius_ratio,
+        max_bridge_distance_microns=max_bridge_distance_microns,
+        corridor_max_distance_microns=corridor_max_distance_microns,
+        opposite_exclusion_distance_microns=opposite_exclusion_distance_microns,
+        use_gpu_acceleration=bool(use_gpu_acceleration),
+        **low_ram,
+    )
+    updated_art, art_stats = _enforce_type_locked_continuity_for_small_mask(
+        small_mask=art_small,
+        large_mask=large_arteriole_mask,
+        opposite_mask=other_type(updated_ven, large_venule_mask),
+        voxel_size_zyx=voxel_size_zyx,
+        allow_small_to_large=allow_small_to_large,
+        allow_small_to_small=allow_small_to_small,
+        enforce_cylinder_only=enforce_cylinder_only,
+        min_cylindricality=min_cylindricality,
+        max_axis_angle_degrees=max_axis_angle_degrees,
+        min_facing_cosine=min_facing_cosine,
+        max_radius_ratio=max_radius_ratio,
+        max_bridge_distance_microns=max_bridge_distance_microns,
+        corridor_max_distance_microns=corridor_max_distance_microns,
+        opposite_exclusion_distance_microns=opposite_exclusion_distance_microns,
+        use_gpu_acceleration=bool(use_gpu_acceleration),
+        **low_ram,
+    )
+    # Keep strict type separation after bridging.
+    if low_memory:
+        # venule & ~(arteriole & venule) is venule & ~arteriole, written into
+        # the venule mask (its own copy) a slab at a time.
+        from haemolynx.preprocessing.memmap_support import slab_step
+
+        step = slab_step(updated_ven.shape)
+        for z0 in range(0, updated_ven.shape[0], step):
+            updated_ven[z0:z0 + step] = np.asarray(updated_ven[z0:z0 + step]) & ~np.asarray(
+                updated_art[z0:z0 + step]
+            )
+    else:
+        overlap = updated_art & updated_ven
+        if np.any(overlap):
+            updated_ven = updated_ven & (~overlap)
+
+    return {
+        "small_arteriole_mask": updated_art.astype(bool, copy=False),
+        "small_venule_mask": updated_ven.astype(bool, copy=False),
+        "stats": {
+            "continuity_enabled": True,
+            "arteriole": art_stats,
+            "venule": ven_stats,
+        },
+    }

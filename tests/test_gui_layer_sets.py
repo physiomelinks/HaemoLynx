@@ -1,0 +1,228 @@
+"""Swapping the network the viewer shows: the baseline, or one perturbation.
+
+Pure decisions, no napari: which layers make up a network, what the menu
+lists, and what each layer's visibility becomes on a swap.
+"""
+from __future__ import annotations
+
+import pytest
+
+from haemolynx.gui.layer_sets import (
+    BASELINE,
+    BASELINE_LABEL,
+    SCALE_BAR_CELL,
+    VIEW_TOGGLE_CELLS,
+    VIEW_TOGGLES,
+    carried_roles,
+    layer_set,
+    layer_set_choices,
+    role_visibility,
+    set_layer_names,
+    toggle_layer_name,
+    toggle_states,
+    visibility_for,
+)
+from haemolynx.gui.results import (
+    BOUNDARY_NODES,
+    FLOW_DIRECTION,
+    IMAGE,
+    NODES,
+    PERICYTES,
+    SKELETON,
+    VESSEL_TUBES,
+    VESSELS,
+    perturbation_flow_direction_layer_name,
+    perturbation_layer_names,
+    perturbation_pericyte_layer_name,
+)
+from haemolynx.gui.vessel_tubes import vessel_tubes_layer_name
+
+A_VESSELS, A_NODES = perturbation_layer_names("dilate")
+A_FLOW = perturbation_flow_direction_layer_name("dilate")
+A_PERICYTES = perturbation_pericyte_layer_name("dilate")
+A_TUBES = vessel_tubes_layer_name(A_VESSELS)
+B_VESSELS, B_NODES = perturbation_layer_names("block")
+B_PERICYTES = perturbation_pericyte_layer_name("block")
+
+
+def test_the_baseline_is_the_run_s_own_vessels_nodes_arrows_and_pericytes():
+    assert layer_set(BASELINE) == {
+        "vessels": VESSELS, "nodes": NODES, "flow direction": FLOW_DIRECTION,
+        "pericytes": PERICYTES,
+    }
+    assert set_layer_names(BASELINE)[-1] == VESSEL_TUBES
+
+
+def test_a_perturbation_s_set_is_the_layers_named_after_it():
+    assert layer_set("dilate") == {
+        "vessels": A_VESSELS, "nodes": A_NODES, "flow direction": A_FLOW,
+        "pericytes": A_PERICYTES,
+    }
+    assert A_TUBES in set_layer_names("dilate")
+
+
+def test_the_menu_lists_the_baseline_first_then_each_perturbation_once():
+    assert layer_set_choices(["dilate", "block", "dilate"]) == [
+        (BASELINE_LABEL, BASELINE),
+        ("dilate", "dilate"),
+        ("block", "block"),
+    ]
+
+
+def test_a_perturbation_called_baseline_is_still_its_own_entry():
+    choices = layer_set_choices(["Baseline"])
+    assert choices == [(BASELINE_LABEL, None), ("Baseline", "Baseline")]
+    assert layer_set("Baseline")["vessels"] != VESSELS
+
+
+def test_vessels_count_as_on_when_drawn_as_tubes():
+    visible = {VESSELS: False, VESSEL_TUBES: True, NODES: True}
+    assert role_visibility(BASELINE, visible) == {"vessels": True, "nodes": True}
+
+
+def test_only_the_kinds_of_layer_a_network_has_are_reported():
+    assert role_visibility("dilate", {A_VESSELS: False}) == {"vessels": False}
+    assert role_visibility("dilate", {}) == {}
+
+
+def test_showing_a_perturbation_hides_every_other_network_tubes_and_all():
+    present = [VESSELS, VESSEL_TUBES, NODES, FLOW_DIRECTION,
+               A_VESSELS, A_NODES, A_FLOW, B_VESSELS, B_NODES]
+
+    result = visibility_for("dilate", [BASELINE, "dilate", "block"],
+                            {"nodes": True, "flow direction": False}, present)
+
+    assert result == {
+        VESSELS: False, VESSEL_TUBES: False, NODES: False, FLOW_DIRECTION: False,
+        B_VESSELS: False, B_NODES: False,
+        A_VESSELS: True, A_NODES: True, A_FLOW: False,
+    }
+
+
+def test_the_shown_network_s_tubes_are_left_to_the_drawing_mode():
+    """Tubes or lines is the Tubes/Lines control's call, not the swap's."""
+    result = visibility_for("dilate", ["dilate"], {}, [A_VESSELS, A_TUBES])
+    assert A_TUBES not in result
+    assert result[A_VESSELS] is True
+
+
+def test_a_kind_with_no_carried_answer_keeps_its_own_visibility():
+    result = visibility_for(BASELINE, ["dilate"], {}, [VESSELS, NODES, A_NODES])
+    assert result == {VESSELS: True, A_NODES: False}
+
+
+def test_the_baseline_is_hidden_even_when_not_listed():
+    result = visibility_for("dilate", ["dilate"], {}, [VESSELS, A_VESSELS])
+    assert result == {VESSELS: False, A_VESSELS: True}
+
+
+def test_layers_not_in_the_viewer_are_not_mentioned():
+    assert visibility_for("dilate", ["dilate", "block"], {"nodes": True}, []) == {}
+
+
+def test_showing_a_perturbation_shows_its_own_pericytes_and_no_one_else_s():
+    present = [VESSELS, PERICYTES, A_VESSELS, A_PERICYTES, B_VESSELS, B_PERICYTES]
+
+    result = visibility_for("dilate", [BASELINE, "dilate", "block"],
+                            {"pericytes": True}, present)
+
+    assert result == {
+        VESSELS: False, PERICYTES: False, B_VESSELS: False, B_PERICYTES: False,
+        A_VESSELS: True, A_PERICYTES: True,
+    }
+
+
+def test_the_network_being_left_says_which_kinds_are_on():
+    roles = carried_roles(
+        incoming={"nodes": False, "pericytes": False},
+        outgoing={"nodes": True, "pericytes": False},
+        remembered={"nodes": False, "pericytes": True},
+    )
+    assert roles == {"nodes": True, "pericytes": False}
+
+
+def test_a_kind_the_network_left_has_none_of_is_remembered_from_before():
+    """Pericytes on in one perturbation stay on in the next, past a baseline
+    that has no pericytes layer to carry the answer."""
+    roles = carried_roles(
+        incoming={"vessels": False, "pericytes": False},
+        outgoing={"vessels": True},
+        remembered={"pericytes": True},
+    )
+    assert roles == {"vessels": True, "pericytes": True}
+
+
+def test_the_incoming_network_answers_only_for_a_kind_nothing_else_mentions():
+    assert carried_roles({"pericytes": True}, {}, {}) == {"pericytes": True}
+
+
+# --- the view panel's "Show" checkboxes -------------------------------------
+
+
+def test_the_show_boxes_are_arrows_nodes_terminal_nodes_skeleton_and_image_in_that_order():
+    assert [role for role, _label in VIEW_TOGGLES] == [
+        "flow direction", "nodes", "terminal nodes", "skeleton", "segmented image",
+    ]
+    assert [label for _role, label in VIEW_TOGGLES] == [
+        "Flow arrows", "Nodes", "Terminal nodes", "Skeleton", "Segmentation",
+    ]
+
+
+def test_every_show_box_has_a_cell_of_its_own_and_the_segmented_image_sits_under_the_skeleton():
+    assert list(VIEW_TOGGLE_CELLS) == [role for role, _label in VIEW_TOGGLES]
+    assert len(set(VIEW_TOGGLE_CELLS.values())) == len(VIEW_TOGGLE_CELLS)
+    row, column = VIEW_TOGGLE_CELLS["skeleton"]
+    assert VIEW_TOGGLE_CELLS["segmented image"] == (row + 1, column)
+
+
+def test_the_scale_bar_fills_the_cell_left_of_the_segmented_image():
+    row, column = VIEW_TOGGLE_CELLS["segmented image"]
+    assert SCALE_BAR_CELL == (row, column - 1)
+    assert SCALE_BAR_CELL not in VIEW_TOGGLE_CELLS.values()
+    # Every cell of the two columns, down to the last row, holds a box.
+    cells = set(VIEW_TOGGLE_CELLS.values()) | {SCALE_BAR_CELL}
+    last_row = max(r for r, _c in cells)
+    assert cells == {(r, c) for r in range(last_row + 1) for c in (0, 1)}
+
+
+def test_arrows_and_nodes_boxes_follow_the_network_shown():
+    assert toggle_layer_name("flow direction", BASELINE) == FLOW_DIRECTION
+    assert toggle_layer_name("nodes", BASELINE) == NODES
+    assert toggle_layer_name("flow direction", "dilate") == A_FLOW
+    assert toggle_layer_name("nodes", "dilate") == A_NODES
+
+
+def test_terminal_nodes_skeleton_and_image_are_the_run_s_own_layers_whatever_is_shown():
+    for key in (BASELINE, "dilate"):
+        assert toggle_layer_name("terminal nodes", key) == BOUNDARY_NODES
+        assert toggle_layer_name("skeleton", key) == SKELETON
+        assert toggle_layer_name("segmented image", key) == IMAGE
+
+
+def test_an_unknown_toggle_is_refused():
+    with pytest.raises(KeyError):
+        toggle_layer_name("vessels", BASELINE)
+
+
+def test_a_box_is_ticked_as_its_layer_is_and_none_without_the_layer():
+    visible = {NODES: False, SKELETON: True, VESSELS: True, IMAGE: False}
+    assert toggle_states(BASELINE, visible) == {
+        "flow direction": None,
+        "nodes": False,
+        "terminal nodes": None,
+        "skeleton": True,
+        "segmented image": False,
+    }
+
+
+def test_the_boxes_read_the_shown_perturbation_s_layers_not_the_baseline_s():
+    visible = {
+        NODES: True, FLOW_DIRECTION: True, A_NODES: False, BOUNDARY_NODES: True,
+        IMAGE: True,
+    }
+    states = toggle_states("dilate", visible)
+    assert states["nodes"] is False
+    assert states["flow direction"] is None
+    assert states["terminal nodes"] is True
+    assert states["skeleton"] is None
+    assert states["segmented image"] is True

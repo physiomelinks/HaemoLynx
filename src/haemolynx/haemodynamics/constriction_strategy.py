@@ -16,17 +16,17 @@ still intercepts every call site.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 import networkx as nx
 import numpy as np
 
-from haemolynx.io.axis_order import CANONICAL_AXIS_ORDER
+from haemolynx.io.axis_order import CANONICAL_AXIS_ORDER, axis_order_for_run
 
-from .constriction import resolve_generator
 from . import pericyte_mask as pericyte_mask_strategy
 from . import probability as probability_strategy
 from .poiseuille import PoiseuilleModel
+from .viscosity import run_diameter_basis, run_viscosity_law
 
 #: Result keys, one per strategy, so a run summary says which model produced it.
 PERICYTE_MASK_STRATEGY = "pericyte_mask"
@@ -50,6 +50,126 @@ def uniform_constriction_factors(
     }
 
 
+def constriction_factor_for_order(
+    branch_order: str,
+    constriction_factor_by_branch_order: Mapping[str, float] | None,
+    *,
+    default_factor: float = 1.0,
+) -> float:
+    """Effective constriction factor for one branch order.
+
+    A key present in *constriction_factor_by_branch_order* **replaces**
+    *default_factor* for that order only (not multiplied). Orders absent from
+    the map keep *default_factor* (``1.0`` = no narrowing; ``0.8`` = 20%
+    narrower at focal sites).
+    """
+    order = str(branch_order)
+    if (
+        constriction_factor_by_branch_order is not None
+        and order in constriction_factor_by_branch_order
+    ):
+        return float(constriction_factor_by_branch_order[order])
+    return float(default_factor)
+
+
+def resolve_constriction_factor_table(
+    diameter_by_branch_order: Mapping[Any, Any],
+    constriction_factor_by_branch_order: Mapping[str, float] | None,
+    *,
+    default_factor: float = 1.0,
+) -> dict[str, float]:
+    """Complete per-order factor table: map entries replace *default_factor*."""
+    return {
+        str(branch_order): constriction_factor_for_order(
+            str(branch_order),
+            constriction_factor_by_branch_order,
+            default_factor=default_factor,
+        )
+        for branch_order in diameter_by_branch_order
+    }
+
+
+def constriction_strategy_kwargs(
+    settings: Mapping[str, Any],
+    *,
+    diameter_by_branch_order: Mapping[str, float],
+    constriction_length: float | None = None,
+    constriction_spacing: float | None = None,
+    pericyte_mask_placed: pericyte_mask_strategy.PlacedPericyteMask | None = None,
+) -> dict[str, Any]:
+    """Every :func:`set_resistances_for_constriction_strategy` argument a
+    perturbation takes from its merged *settings* -- one place, so a pericyte
+    diameter change and every pericyte sweep configure the strategy alike.
+
+    *constriction_length*/*constriction_spacing* override the settings' own
+    values for a geometry sweep's grid point. *pericyte_mask_placed* is the
+    mask :func:`placed_pericyte_mask` read and placed once for the whole
+    perturbation.
+    """
+    probability = settings.get("pericyte_constriction_probability")
+    factor = settings.get("pericyte_constriction_factor")
+    return dict(
+        diameter_by_branch_order=dict(diameter_by_branch_order),
+        constriction_factor_by_branch_order=settings.get("constriction_by_branch_order"),
+        use_pericyte_mask_constriction=bool(settings.get("use_pericyte_mask_constriction", False)),
+        use_probabilistic_constriction=bool(
+            settings.get("use_probabilistic_pericyte_constriction", False)
+        ),
+        prefer_edge_fwhm_baseline=bool(settings.get("measure_diameters_from_raw_image", False)),
+        constriction_length=float(
+            settings.get("constriction_length_um", 40.0)
+            if constriction_length is None
+            else constriction_length
+        ),
+        constriction_spacing=float(
+            settings.get("constriction_spacing_um", 100.0)
+            if constriction_spacing is None
+            else constriction_spacing
+        ),
+        viscosity_law=run_viscosity_law(settings),
+        haematocrit=float(settings.get("haematocrit", 0.45)),
+        diameter_basis=run_diameter_basis(settings),
+        constriction_probability=1.0 if probability is None else float(probability),
+        default_constriction_factor=1.0 if factor is None else float(factor),
+        pericyte_mask_path=settings.get("pericyte_mask_path"),
+        pericyte_mask_h5_dataset_name=settings.get("pericyte_mask_h5_dataset_name"),
+        max_assignment_distance_um=settings.get("pericyte_max_assignment_distance_um", 3.0),
+        min_pericyte_diameter_um=settings.get("pericyte_min_diameter_um", 5.0),
+        max_pericyte_diameter_um=settings.get("pericyte_max_diameter_um", 12.0),
+        axis_order=axis_order_for_run(settings),
+        seed=settings.get("pericyte_constriction_seed"),
+        voxel_size_override_xyz=settings.get("voxel_size_override_xyz"),
+        voxel_size_policy=settings.get("voxel_size_policy", "auto"),
+        pericyte_mask_placed=pericyte_mask_placed,
+    )
+
+
+def placed_pericyte_mask(
+    graph: nx.MultiGraph, settings: Mapping[str, Any]
+) -> pericyte_mask_strategy.PlacedPericyteMask | None:
+    """The pericyte mask *settings* constrict from, read and placed on
+    *graph* once (:func:`~haemolynx.haemodynamics.pericyte_mask.place_pericyte_mask`)
+    with the arguments :func:`constriction_strategy_kwargs` gives the
+    strategy, and on disk under the low-RAM option (``use_memmap_loading``);
+    None when the settings take no mask."""
+    arguments = constriction_strategy_kwargs(settings, diameter_by_branch_order={})
+    if not arguments["use_pericyte_mask_constriction"] or arguments["pericyte_mask_path"] in (None, ""):
+        return None
+    return pericyte_mask_strategy.place_pericyte_mask(
+        graph,
+        arguments["pericyte_mask_path"],
+        h5_dataset_name=arguments["pericyte_mask_h5_dataset_name"],
+        axis_order=arguments["axis_order"],
+        voxel_size_override_xyz=arguments["voxel_size_override_xyz"],
+        voxel_size_policy=arguments["voxel_size_policy"],
+        max_assignment_distance_um=arguments["max_assignment_distance_um"],
+        min_pericyte_diameter_um=arguments["min_pericyte_diameter_um"],
+        max_pericyte_diameter_um=arguments["max_pericyte_diameter_um"],
+        use_memmap=bool(settings.get("use_memmap_loading")),
+        memmap_directory=settings.get("memmap_directory"),
+    )
+
+
 def set_resistances_for_constriction_strategy(
     graph: nx.MultiGraph,
     *,
@@ -60,7 +180,11 @@ def set_resistances_for_constriction_strategy(
     prefer_edge_fwhm_baseline: bool,
     constriction_length: float,
     constriction_spacing: float,
+    viscosity_law: str = "pries",
+    haematocrit: float = 0.45,
+    diameter_basis: str = "plasma_column",
     constriction_probability: float = 1.0,
+    default_constriction_factor: float = 1.0,
     pericyte_mask_path: str | Path | None = None,
     pericyte_mask_h5_dataset_name: str | None = None,
     active_pericyte_indices: list[int] | None = None,
@@ -71,6 +195,9 @@ def set_resistances_for_constriction_strategy(
     axis_order: str = CANONICAL_AXIS_ORDER,
     rng: np.random.Generator | None = None,
     seed: int | None = None,
+    voxel_size_override_xyz=None,
+    voxel_size_policy: str = "auto",
+    pericyte_mask_placed: pericyte_mask_strategy.PlacedPericyteMask | None = None,
 ) -> tuple[nx.MultiGraph, str, dict[str, Any]]:
     """Apply one constriction strategy to ``graph``.
 
@@ -79,7 +206,36 @@ def set_resistances_for_constriction_strategy(
 
     Both randomised strategies draw their cohort from ``rng`` when given, else
     from a generator built on ``seed``, so a run repeats for a given seed.
+
+    All three strategies read ``viscosity_law``, ``haematocrit`` and
+    ``diameter_basis``: the choice of law changes every resistance, and it must
+    not depend on which strategy placed the constrictions.
+
+    *default_constriction_factor* (settings: ``pericyte_constriction_factor``)
+    applies to every branch order; keys in *constriction_factor_by_branch_order*
+    replace that base for the listed orders only.
+
+    *pericyte_mask_placed* is the mask already read and placed on this
+    network (:func:`placed_pericyte_mask`); the mask strategy reads it from
+    disk without one.
     """
+    # Every order on the graph, not only the table's: a vessel past
+    # max_branch_order still has its own diameter, and it takes the default
+    # factor like any order the map does not name -- rather than failing the
+    # whole strategy ("No constriction factor for branch_order 'B59'").
+    orders = dict.fromkeys(diameter_by_branch_order)
+    orders.update(
+        dict.fromkeys(
+            str(data["branch_order"])
+            for _u, _v, data in graph.edges(data=True)
+            if data.get("branch_order") is not None
+        )
+    )
+    factors = resolve_constriction_factor_table(
+        orders,
+        constriction_factor_by_branch_order,
+        default_factor=float(default_constriction_factor),
+    )
     if use_pericyte_mask_constriction:
         if pericyte_mask_path is None:
             raise ValueError(
@@ -88,7 +244,7 @@ def set_resistances_for_constriction_strategy(
         graph, results = pericyte_mask_strategy.set_poiseuille_resistances_with_pericyte_mask(
             graph,
             diameter_by_branch_order=diameter_by_branch_order,
-            constriction_factor_by_branch_order=constriction_factor_by_branch_order,
+            constriction_factor_by_branch_order=factors,
             pericyte_mask_path=pericyte_mask_path,
             pericyte_mask_h5_dataset_name=pericyte_mask_h5_dataset_name,
             prefer_edge_fwhm_baseline=prefer_edge_fwhm_baseline,
@@ -99,9 +255,15 @@ def set_resistances_for_constriction_strategy(
             max_assignment_distance_um=max_assignment_distance_um,
             min_pericyte_diameter_um=min_pericyte_diameter_um,
             max_pericyte_diameter_um=max_pericyte_diameter_um,
+            viscosity_law=viscosity_law,
+            haematocrit=float(haematocrit),
+            diameter_basis=diameter_basis,
             axis_order=axis_order,
             rng=rng,
             seed=seed,
+            voxel_size_override_xyz=voxel_size_override_xyz,
+            voxel_size_policy=voxel_size_policy,
+            placed=pericyte_mask_placed,
         )
         return graph, PERICYTE_MASK_STRATEGY, results
 
@@ -111,12 +273,15 @@ def set_resistances_for_constriction_strategy(
             .set_poiseuille_resistances_with_probabilistic_periodic_constrictions(
                 graph,
                 diameter_by_branch_order=diameter_by_branch_order,
-                constriction_factor_by_branch_order=constriction_factor_by_branch_order,
+                constriction_factor_by_branch_order=factors,
                 prefer_edge_fwhm_baseline=prefer_edge_fwhm_baseline,
                 constriction_length=float(constriction_length),
                 constriction_spacing=float(constriction_spacing),
                 constriction_probability=float(constriction_probability),
                 active_center_indices_by_edge=active_center_indices_by_edge,
+                viscosity_law=viscosity_law,
+                haematocrit=float(haematocrit),
+                diameter_basis=diameter_basis,
                 rng=rng,
                 seed=seed,
             )
@@ -126,26 +291,21 @@ def set_resistances_for_constriction_strategy(
     poiseuille_model = PoiseuilleModel(
         constriction_length=float(constriction_length),
         constriction_spacing=float(constriction_spacing),
+        viscosity_law=viscosity_law,
+        haematocrit=float(haematocrit),
+        diameter_basis=diameter_basis,
     )
-    if prefer_edge_fwhm_baseline:
-        graph, results = poiseuille_model.set_poiseuille_resistances_with_constrictions(
-            graph,
-            diameter_by_branch_order,
-            prefer_edge_fwhm_baseline=True,
-            constriction_factor_by_branch_order=constriction_factor_by_branch_order,
-        )
-        return graph, PERIODIC_CONSTRICTION_STRATEGY, results
-
-    factors = constriction_factor_by_branch_order or {}
-    constricted_diameters = {
-        branch_order: {
-            "d1": float(diameter),
-            "d2": float(diameter) * float(factors.get(branch_order, 1.0)),
-        }
-        for branch_order, diameter in diameter_by_branch_order.items()
-    }
+    # The scalar table and the per-order factors, with or without FWHM
+    # diameters: each edge starts from its own diameter, as the baseline did,
+    # and every order on the graph has a factor -- an explicit {d1, d2} table
+    # built from the table's own orders had no entry for one past
+    # max_branch_order. Only an edge with no stamped diameter differs: with
+    # FWHM on it falls back to its FWHM fit, as the baseline does.
     graph, results = poiseuille_model.set_poiseuille_resistances_with_constrictions(
         graph,
-        constricted_diameters,
+        diameter_by_branch_order,
+        prefer_edge_fwhm_baseline=True,
+        constriction_factor_by_branch_order=factors,
+        fwhm_fallback=prefer_edge_fwhm_baseline,
     )
     return graph, PERIODIC_CONSTRICTION_STRATEGY, results

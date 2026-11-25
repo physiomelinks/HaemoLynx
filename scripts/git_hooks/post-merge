@@ -1,0 +1,6 @@
+#!/bin/sh
+# HaemoLynx: local-only files
+#
+# After a merging pull: post-checkout's restore, from the commit before the
+# merge (ORIG_HEAD).
+exec sh "$(dirname "$0")/post-checkout" "$(git rev-parse -q --verify ORIG_HEAD)" HEAD 1

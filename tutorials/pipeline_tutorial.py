@@ -205,7 +205,7 @@ if CONFIG_PATH is None or not CONFIG_PATH.exists():
 
 TUTORIAL_OVERRIDES = {
     # Where everything is written.
-    "vtk_output_prefix": OUTPUT_DIR / "tutorial",
+    "output_dir": OUTPUT_DIR,
     "plot_dir": PLOT_DIR,
     # Meaning of each input array axis. Volumes load as canonical (z, y, x), so
     # this selects which axis is z -- the one projections look through.
@@ -281,7 +281,8 @@ print(f"Inline stage plots enabled: {SHOW_STAGE_PLOTS and in_jupyter()}")
 # 
 # 1. Set `RAW_IMAGE_PATH` to your raw TIFF.
 # 2. Set `ILASTIK_CLASSIFIER_PATH` to your `.ilp` file.
-# 3. Set `RUN_STAGE_0_ILASTIK = True` and run the cell.
+# 3. Set `ilastik_vessel_label` to the name of your vessel label in the project (`Label 1` above), or its number. The export numbers the labels, and which is the vessel cannot be told from the numbers; preflight lists the project's labels if this is wrong.
+# 4. Set `RUN_STAGE_0_ILASTIK = True` and run the cell.
 # 
 # Output is written to `SEGMENTED_OUTPUT_PATH`. Then enable **your mask in Stage 1** (`USE_CUSTOM_SEGMENTED_IMAGE = True`) and run Stages 1–6.
 # 
@@ -303,8 +304,9 @@ if RUN_STAGE_0_ILASTIK:
     TUTORIAL_OVERRIDES.update(
         {
             "use_ilastik_segmentation": True,
-            "ilastik_unsegmented_image_path": Path("/path/to/your/raw_microscopy.tif"),
+            "raw_image_path": Path("/path/to/your/raw_microscopy.tif"),
             "ilastik_classifier_path": Path("/path/to/your_pixel_classifier.ilp"),
+            "ilastik_vessel_label": "Label 1",  # the vessel label's name in the project, or its number
             "ilastik_executable": os.environ.get("ILASTIK_EXECUTABLE", "ilastik"),
             "ilastik_output_dir": OUTPUT_DIR / "segmentation",
         }
@@ -362,9 +364,9 @@ def build_synthetic_vessel_volume(path: Path) -> Path:
             volume[z0:z1, y0:y1, x0:x1] = 255
 
     # Points are (z, y, x). The tree runs along y because the boxes below take
-    # the inlet from the first 20% of y and the outlet from the last 20%: the
-    # trunk starts inside the inlet band and every free end lands in the outlet
-    # band.
+    # the inlet from the first 40% of y and the outlet from the remaining 60%:
+    # the trunk starts inside the inlet band and every free end lands in the
+    # outlet band.
     draw((32, 5, 32), (32, 30, 32))          # trunk
     draw((32, 30, 32), (32, 50, 14))         # two branches...
     draw((32, 30, 32), (32, 50, 50))
@@ -397,11 +399,6 @@ if INPUT_TIFF is not None:
 # for each branch order.
 settings = resolve_settings(schema=SCHEMA, config_path=CONFIG_PATH, overrides=TUTORIAL_OVERRIDES)
 
-# The pre-run checks the examples run for you: every path a stage will need,
-# checked before any work starts.
-report = preflight(settings, SCHEMA)
-assert report.ok, "settings are not runnable; see the checklist above"
-
 
 # In[ ]:
 
@@ -416,19 +413,28 @@ print(f"Array-axis spacing (z, y, x): {volume.voxel_size_zyx}")
 print(f"Skeleton voxels: {int(volume.skeleton.sum())}")
 
 # The inlet and outlet boxes are in physical (z, y, x) MICRONS, not voxel
-# indices, so they are built from the volume's own extent. Inlet: the first 20%
-# along y. Outlet: the last 20%.
+# indices, so they are built from the volume's own extent. Inlet: the first 40%
+# along y. Outlet: the remaining 60%. The cropped nerve fixture's connected
+# component sits in the low-y part of the image, so a last-20% outlet band
+# misses it and the flow solve has no conductive path between the two roles.
 extent_zyx = [
     (dimension - 1) * spacing
     for dimension, spacing in zip(volume.image.shape[:3], volume.voxel_size_zyx)
 ]
-y_band = 0.2 * extent_zyx[1]
-settings["inlet_node_volumes"] = [((0.0, 0.0, 0.0), (extent_zyx[0], y_band, extent_zyx[2]))]
+y_split = 0.4 * extent_zyx[1]
+settings["inlet_node_volumes"] = [((0.0, 0.0, 0.0), (extent_zyx[0], y_split, extent_zyx[2]))]
 settings["outlet_node_volumes"] = [
-    ((0.0, extent_zyx[1] - y_band, 0.0), (extent_zyx[0], extent_zyx[1], extent_zyx[2]))
+    ((0.0, y_split, 0.0), (extent_zyx[0], extent_zyx[1], extent_zyx[2]))
 ]
 print(f"Inlet box (um):  {settings['inlet_node_volumes'][0]}")
 print(f"Outlet box (um): {settings['outlet_node_volumes'][0]}")
+
+# The pre-run checks the examples run for you: every path a stage will need,
+# checked before the graph is built. They run here, not before Stage 1,
+# because the boxes above are the volume's own extent, and the checks refuse
+# a box method with no boxes.
+report = preflight(settings, SCHEMA)
+assert report.ok, "settings are not runnable; see the checklist above"
 
 # Both are written by skeletonise(): the skeleton as loaded, and after the
 # cleaning pass that bridges gaps and drops the smallest components.
@@ -441,7 +447,7 @@ show_stage_plots(
 
 # ## Stage 2: `build_network()`
 # 
-# Turns the skeleton into an `nx.MultiGraph` and repairs its topology in eleven
+# Turns the skeleton into an `nx.MultiGraph` and repairs its topology in thirteen
 # steps — stitching loops, reconnecting broken segments, collapsing clusters of
 # nearby junctions, pruning stubs, and merging away degree-2 nodes so one vessel
 # is one edge rather than a chain of them. It also loads any large/small vessel
@@ -507,7 +513,7 @@ assert boundaries.inlet_nodes and boundaries.outlet_nodes, (
 # `assign_diameters()` walks out from the inlets to give every edge a
 # **branch order**, then uses that order as the key into the diameter table
 # (`diameter_by_branch_order`, derived from the settings). With
-# `use_fwhm_edge_diameters` on it measures each vessel from the raw image instead
+# `measure_diameters_from_raw_image` on it measures each vessel from the raw image instead
 # and the table is only a fallback.
 # 
 # `build_haemodynamic_model()` turns diameter and length into a **resistance** for
@@ -597,10 +603,10 @@ show_stage_plots(
 # 
 # After the cell above finishes, open the exported `.vtp` files in [ParaView](https://www.paraview.org/) or similar VTK software (e.g. napari with a VTK plugin, [3D Slicer](https://www.slicer.org/)):
 # 
-# - ``stem`_tutorial_vessels.vtp` — vessel centreline geometry and attributes
+# - `{image stem}_vessels.vtp` — vessel centreline geometry and attributes
 # - the vessels file also carries **flow** scalars once the solve has run
-# - ``stem`_tutorial_nodes.vtp` — graph nodes
-# - ``stem`_tutorial_pericytes.vtp` — pericyte points (if present)
+# - `{image stem}_nodes.vtp` — graph nodes
+# - `{image stem}_pericytes.vtp` — pericyte points (if present)
 # 
 # In ParaView: **File → Open**, select the `.vtp` files, click **Apply**, then colour by array names such as `flow` or `branch_order`.
 

@@ -6,6 +6,7 @@ from pathlib import Path
 
 import networkx as nx
 import numpy as np
+import pytest
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -103,6 +104,7 @@ def _run_synthetic_sweep(
     *,
     min_dilation_percent: int,
     max_dilation_percent: int,
+    **extra_settings,
 ) -> dict:
     """Run a reduced sweep and return its results and output paths."""
     (
@@ -129,6 +131,7 @@ def _run_synthetic_sweep(
         "inlet_pressure_min_pa": 4500,
         "inlet_pressure_max_pa": 6000,
         "inlet_pressure_step_pa": 500,
+        **extra_settings,
     }
     sweep = run_pericyte_dilation_pressure_sweep(
         G,
@@ -182,6 +185,279 @@ def test_dilation_sweep_on_synthetic_network(tmp_path: Path):
     )
 
 
+def test_arteriole_dilation_sweep_scales_only_arterioles(tmp_path: Path):
+    """Whole-branch arteriole percent sweep leaves capillaries untouched."""
+    from haemolynx.haemodynamics.pericyte_sweep import (
+        run_arteriole_dilation_pressure_sweep,
+    )
+
+    G, inlet_nodes, outlet_nodes, _a, _v, diameters = _build_synthetic_network()
+    baseline_caps = [
+        float(data["fwhm_diameter_um"])
+        for _u, _v, data in G.edges(data=True)
+        if data["branch_order"] == "B01"
+    ]
+    settings = {
+        "diameter_by_branch_order": diameters,
+        "outlet_p_bc": 1000.0,
+        "inlet_p_bc": 4500.0,
+        "measure_diameters_from_raw_image": True,
+        "viscosity_law": "constant",
+        "haematocrit": 0.45,
+        "diameter_basis": "plasma_column",
+        "arteriole_dilation_min_percent": 0,
+        "arteriole_dilation_max_percent": 20,
+        "arteriole_dilation_step_percent": 20,
+        "constriction_length_um": 40.0,
+        "constriction_spacing_um": 100.0,
+    }
+    sweep = run_arteriole_dilation_pressure_sweep(
+        G,
+        settings,
+        inlet_nodes=inlet_nodes,
+        outlet_nodes=outlet_nodes,
+        output_dir=tmp_path,
+        sweep_dilation=True,
+        sweep_pressure=False,
+    )
+    assert Path(sweep["csv_path"]).name == "arteriole_dilation_sweep.csv"
+    assert len(sweep["results"]) == 2  # 0% and 20%
+    # Baseline graph unchanged; capillaries still match.
+    after_caps = [
+        float(data["fwhm_diameter_um"])
+        for _u, _v, data in G.edges(data=True)
+        if data["branch_order"] == "B01"
+    ]
+    assert after_caps == baseline_caps
+    # Wider arterioles lower network resistance.
+    by_percent = {int(r["dilation_percent"]): r for r in sweep["results"]}
+    assert by_percent[20]["equivalent_resistance"] < by_percent[0]["equivalent_resistance"]
+
+
+def test_pressure_and_arteriole_sweep_varies_both_axes(tmp_path: Path):
+    from haemolynx.haemodynamics.pericyte_sweep import (
+        run_arteriole_dilation_pressure_sweep,
+    )
+
+    G, inlet_nodes, outlet_nodes, _a, _v, diameters = _build_synthetic_network()
+    settings = {
+        "diameter_by_branch_order": diameters,
+        "outlet_p_bc": 1000.0,
+        "measure_diameters_from_raw_image": True,
+        "viscosity_law": "constant",
+        "haematocrit": 0.45,
+        "diameter_basis": "plasma_column",
+        "arteriole_dilation_min_percent": 0,
+        "arteriole_dilation_max_percent": 10,
+        "arteriole_dilation_step_percent": 10,
+        "inlet_pressure_min_pa": 4500,
+        "inlet_pressure_max_pa": 5000,
+        "inlet_pressure_step_pa": 500,
+        "constriction_length_um": 40.0,
+        "constriction_spacing_um": 100.0,
+    }
+    sweep = run_arteriole_dilation_pressure_sweep(
+        G,
+        settings,
+        inlet_nodes=inlet_nodes,
+        outlet_nodes=outlet_nodes,
+        output_dir=tmp_path,
+        sweep_dilation=True,
+        sweep_pressure=True,
+    )
+    assert Path(sweep["csv_path"]).name == "arteriole_dilation_pressure_sweep.csv"
+    assert len(sweep["results"]) == 4  # 2 dilations x 2 pressures
+    percents = {int(r["dilation_percent"]) for r in sweep["results"]}
+    pressures = {int(r["inlet_pressure_pa"]) for r in sweep["results"]}
+    assert percents == {0, 10}
+    assert pressures == {4500, 5000}
+
+
+# --- solve_pressure_and_boundary_flow shares resistance.py's reachability --
+#
+# This solver used to compute pressures for *every* non-boundary node, so a
+# component the boundary conditions cannot reach forced np.linalg.solve to
+# raise on the zero row it creates, and the whole-system np.linalg.lstsq
+# fallback then degraded every node's pressure, not just the disconnected
+# ones. It now shares haemodynamics.resistance's reachability restriction,
+# mirroring that module's own pinned tests (test_hemodynamics.py).
+
+from haemolynx.haemodynamics.pericyte_sweep import solve_pressure_and_boundary_flow
+from haemolynx.haemodynamics.resistance import build_conductance_matrix_from_graph
+
+_SI_CONDUCTANCE = 1e-16  # m^3/(Pa.s), the real magnitude for a capillary
+
+
+def _disconnected_network() -> nx.MultiGraph:
+    """A conductive diamond carrying both boundary conditions, plus a
+
+    conductive component no boundary condition reaches -- same shape as
+    test_hemodynamics.py's own fixture for the equivalent resistance.py test.
+    """
+    G = nx.MultiGraph()
+    G.add_edge(0, 1, conductance=2.0 * _SI_CONDUCTANCE)
+    G.add_edge(1, 3, conductance=1.0 * _SI_CONDUCTANCE)
+    G.add_edge(0, 2, conductance=1.0 * _SI_CONDUCTANCE)
+    G.add_edge(2, 3, conductance=3.0 * _SI_CONDUCTANCE)
+    # A conductive component with no path to any boundary node.
+    G.add_edge(6, 7, conductance=2.0 * _SI_CONDUCTANCE)
+    G.add_edge(7, 8, conductance=1.0 * _SI_CONDUCTANCE)
+    return G
+
+
+def _solve(G, **overrides):
+    conductance, node_list = build_conductance_matrix_from_graph(G)
+    kwargs = {
+        "inlet_p_bc": 1000.0,
+        "outlet_p_bc": 500.0,
+        "inlet_nodes": [0],
+        "outlet_nodes": [3],
+        **overrides,
+    }
+    return solve_pressure_and_boundary_flow(conductance, node_list, **kwargs)
+
+
+def test_pericyte_sweep_solve_does_not_fall_back_to_lstsq_for_a_disconnected_part(
+    monkeypatch,
+):
+    """The old whole-system lstsq fallback must not fire for a network that is
+
+    merely disconnected; only what the boundary conditions reach is solved.
+    """
+
+    def _no_lstsq(*args, **kwargs):
+        raise AssertionError("np.linalg.lstsq must not be needed here")
+
+    monkeypatch.setattr(np.linalg, "lstsq", _no_lstsq)
+    _solve(_disconnected_network())
+
+
+def test_pericyte_sweep_solve_gives_an_unreached_component_zero_pressure():
+    flow = _solve(_disconnected_network())
+    _, node_list = build_conductance_matrix_from_graph(_disconnected_network())
+    idx = {n: i for i, n in enumerate(node_list)}
+    for node in (6, 7, 8):
+        assert flow["pressure"][idx[node]] == 0.0
+
+
+def test_pericyte_sweep_solve_raises_for_a_disconnected_inlet_and_outlet():
+    G = nx.MultiGraph()
+    G.add_edge(0, 1, conductance=_SI_CONDUCTANCE)
+    G.add_edge(2, 3, conductance=_SI_CONDUCTANCE)
+    with pytest.raises(ValueError, match="not connected by conductance-carrying edges"):
+        _solve(G, inlet_nodes=[0], outlet_nodes=[3])
+
+
+
+def test_a_sweep_solves_each_dilation_once_whatever_the_pressures(tmp_path, monkeypatch):
+    """Regression: flow is linear in the pressure drop, yet every inlet
+    pressure repeated the whole solve -- here 2 dilations x 4 pressures cost 8
+    solves where 2 do."""
+    import haemolynx.haemodynamics.pericyte_sweep as sweep_module
+
+    solves = []
+    real = sweep_module.calc_laplacian_from_conductance_matrix
+
+    def counted(conductance):
+        solves.append(1)
+        return real(conductance)
+
+    monkeypatch.setattr(sweep_module, "calc_laplacian_from_conductance_matrix", counted)
+    sweep = _run_synthetic_sweep(tmp_path, min_dilation_percent=1, max_dilation_percent=2)
+
+    assert len(sweep["results"]) == 8
+    assert len(solves) == 2
+
+
+@pytest.mark.parametrize("inlet_p, outlet_p", [(1000.0, 500.0), (300.0, 500.0), (7000.0, 0.0)])
+def test_scaling_one_unit_solve_matches_a_fresh_solve_at_each_pressure(inlet_p, outlet_p):
+    from haemolynx.haemodynamics.pericyte_sweep import unit_pressure_solve
+    from haemolynx.haemodynamics.resistance import solve_flow_from_conductance_matrix
+
+    G = _disconnected_network()
+    conductance, node_list = build_conductance_matrix_from_graph(G)
+    boundaries = {"inlet_nodes": [0], "outlet_nodes": [3]}
+    unit = unit_pressure_solve(conductance, node_list, **boundaries)
+
+    scaled = unit.at(inlet_p, outlet_p)
+    fresh = solve_flow_from_conductance_matrix(
+        conductance, node_list, inlet_p_bc=inlet_p, outlet_p_bc=outlet_p, **boundaries
+    )
+
+    np.testing.assert_allclose(scaled["pressure"], fresh["pressure"], rtol=1e-12, atol=1e-9)
+    inlet = node_list.index(0)
+    fresh_inflow = float(np.sum(conductance[inlet] * (fresh["pressure"][inlet] - fresh["pressure"])))
+    assert scaled["total_inlet_flow"] == pytest.approx(fresh_inflow, rel=1e-12)
+    assert scaled["total_outlet_flow"] == pytest.approx(-fresh_inflow, rel=1e-9)
+    assert scaled["equivalent_resistance"] == pytest.approx(
+        (inlet_p - outlet_p) / fresh_inflow, rel=1e-12
+    )
+
+
+def test_equal_boundary_pressures_carry_no_flow_even_with_the_ends_apart():
+    """As before: an inlet and outlet at one pressure need no path between
+    them; there is simply no flow."""
+    G = nx.MultiGraph()
+    G.add_edge(0, 1, conductance=_SI_CONDUCTANCE)
+    G.add_edge(2, 3, conductance=_SI_CONDUCTANCE)
+
+    solved = _solve(G, inlet_nodes=[0], outlet_nodes=[3], inlet_p_bc=500.0, outlet_p_bc=500.0)
+
+    assert solved["total_inlet_flow"] == 0.0
+    assert solved["equivalent_resistance"] == np.inf
+
+
+def test_a_sparse_unit_solve_matches_the_dense_one():
+    import scipy.sparse as sp
+
+    from haemolynx.haemodynamics.pericyte_sweep import unit_pressure_solve
+
+    G = _disconnected_network()
+    G.add_edge(3, 4, conductance=0.5 * _SI_CONDUCTANCE)  # a second outlet beyond the first
+    boundaries = {"inlet_nodes": [0], "outlet_nodes": [3, 4]}
+    dense_matrix, node_list = build_conductance_matrix_from_graph(G)
+    sparse_matrix, _ = build_conductance_matrix_from_graph(G, solver="sparse")
+    assert sp.issparse(sparse_matrix)
+
+    dense = unit_pressure_solve(dense_matrix, node_list, **boundaries)
+    sparse = unit_pressure_solve(sparse_matrix, node_list, **boundaries)
+
+    np.testing.assert_allclose(sparse.pressure, dense.pressure, rtol=1e-12, atol=1e-15)
+    np.testing.assert_array_equal(sparse.reached, dense.reached)
+    assert sparse.inlet_flow == pytest.approx(dense.inlet_flow, rel=1e-12)
+    assert sparse.outlet_flow == pytest.approx(dense.outlet_flow, rel=1e-12)
+    assert sparse.connected is dense.connected is True
+
+
+def test_a_sweep_on_the_sparse_solver_gives_the_dense_curves(tmp_path: Path, monkeypatch):
+    import scipy.sparse as sp
+
+    import haemolynx.haemodynamics.pericyte_sweep as sweep_module
+
+    kinds = []
+    real = sweep_module.unit_pressure_solve
+
+    def recording(conductance, *args, **kwargs):
+        kinds.append(sp.issparse(conductance))
+        return real(conductance, *args, **kwargs)
+
+    monkeypatch.setattr(sweep_module, "unit_pressure_solve", recording)
+    dense = _run_synthetic_sweep(
+        tmp_path / "dense", min_dilation_percent=1, max_dilation_percent=2
+    )
+    assert kinds == [False, False]
+    kinds.clear()
+    sparse = _run_synthetic_sweep(
+        tmp_path / "sparse", min_dilation_percent=1, max_dilation_percent=2,
+        haemodynamics_solver="sparse",
+    )
+    assert kinds == [True, True]
+    assert len(sparse["results"]) == len(dense["results"]) == 8
+    for sparse_row, dense_row in zip(sparse["results"], dense["results"]):
+        for column in ("total_inlet_flow", "equivalent_resistance"):
+            assert sparse_row[column] == pytest.approx(dense_row[column], rel=1e-10)
+
+
 if __name__ == "__main__":
     demo_output_dir = REPO_ROOT / "examples" / "outputs" / "synthetic_dilation_sweep"
     demo_output_dir.mkdir(parents=True, exist_ok=True)
@@ -198,3 +474,34 @@ if __name__ == "__main__":
     print(f"CSV: {sweep['csv_path']}")
     print(f"Resistance plot: {sweep['plot_outputs']['equivalent_resistance_plot_path']}")
     print(f"Flow plot: {sweep['plot_outputs']['total_inlet_flow_plot_path']}")
+
+
+def test_an_inverted_or_stepless_sweep_range_is_refused_by_name():
+    from haemolynx.haemodynamics.pericyte_sweep import inclusive_int_range
+
+    keys = ("a_min", "a_max", "a_step")
+    assert inclusive_int_range({"a_min": 0, "a_max": 10, "a_step": 5}, *keys) == (0, 5, 10)
+    with pytest.raises(ValueError, match="a_max"):
+        inclusive_int_range({"a_min": 10, "a_max": 0, "a_step": 5}, *keys)
+    with pytest.raises(ValueError, match="a_step"):
+        inclusive_int_range({"a_min": 0, "a_max": 10, "a_step": 0}, *keys)
+
+
+@pytest.mark.parametrize("axis", ["arteriole", "capillary"])
+def test_a_whole_branch_sweep_with_max_below_min_raises_instead_of_writing_nothing(
+    axis,
+):
+    from haemolynx.haemodynamics.capillary import _capillary_dilation_percents
+    from haemolynx.haemodynamics.pericyte_sweep import _arteriole_dilation_percents
+
+    percents = {
+        "arteriole": _arteriole_dilation_percents,
+        "capillary": _capillary_dilation_percents,
+    }[axis]
+    settings = {
+        f"{axis}_dilation_min_percent": 10,
+        f"{axis}_dilation_max_percent": -10,
+        f"{axis}_dilation_step_percent": 5,
+    }
+    with pytest.raises(ValueError, match=f"{axis}_dilation_max_percent"):
+        percents(settings, sweep=True)

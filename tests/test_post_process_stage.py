@@ -1,0 +1,2078 @@
+"""The Post processing stage: a hand-edited network brought in line with the run.
+
+The stage sits between Haemodynamics and Perturbations, so the network is
+edited solved. The panel's Post processing tab edits it
+(``haemolynx.graph.post_processing``), each edit marking what it touched;
+`post_process` then does to those vessels what the stages before Haemodynamics
+did to every vessel -- a length, a branch order, a diameter by the run's own
+methods, and a zero-resistance bridge where one opens into a thick vessel --
+and `solve_post_processed` solves the haemodynamics again on the result. An
+unedited network passes through exactly as it was, and is not solved again.
+
+The graphs are test_diameter_assignment's straight Art1-B01-B01-Ven1 chain,
+driven through the real Diameters, Haemodynamics and Post processing stages.
+"""
+from __future__ import annotations
+
+import copy
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+
+import networkx as nx
+import numpy as np
+import pytest
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+SRC_DIR = REPO_ROOT / "src"
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
+
+from haemolynx import graph as graph_module  # noqa: E402
+from haemolynx.graph import (  # noqa: E402
+    IS_ZERO_RESISTANCE,
+    add_vessel_between,
+    calculate_path_length,
+    delete_vessels,
+    has_pending_edits,
+    mark_edited,
+    set_vessel_diameter,
+)
+from haemolynx.graph.post_processing import APPLIED, EDITED  # noqa: E402
+from haemolynx.pipeline import stages  # noqa: E402
+from haemolynx.pipeline.progress import STAGES  # noqa: E402
+from haemolynx.pipeline.stages import (  # noqa: E402
+    PipelineResume,
+    assign_diameters,
+    build_haemodynamic_model,
+    post_process,
+    run_pipeline_stages,
+)
+
+from test_diameter_assignment import (  # noqa: E402
+    BRANCH_ORDERS,
+    EDGE_LENGTH_UM,
+    SCHEMA,
+    _boundaries,
+    _settings,
+    _vessel_network,
+)
+
+LAST = len(BRANCH_ORDERS)  # the chain's outlet
+
+
+def _diameters_run(tmp_path, graph=None, **settings):
+    """The chain through the real Diameters stage: settings, network, boundaries, model."""
+    run_settings = _settings(tmp_path, **settings)
+    network = _vessel_network(tmp_path, graph=graph)
+    boundaries = _boundaries()
+    model = assign_diameters(run_settings, network, boundaries, SCHEMA)
+    return run_settings, network, boundaries, model
+
+
+def _table_diameter(run_settings, order) -> float:
+    """What the run's own branch-order table gives *order*."""
+    from haemolynx.haemodynamics.poiseuille import table_diameter_for_order
+
+    config = stages._haemodynamics_apply_config(run_settings, SCHEMA, voxel_size_zyx=(1.0, 1.0, 1.0))
+    return float(table_diameter_for_order(config.diameter("diameter_by_branch_order"), order))
+
+
+def _pendant(G, from_node=2, *, diameter_um=None):
+    """A vessel drawn by hand from *from_node* to a new node 50 um off the chain."""
+    start = np.asarray(G.nodes[from_node]["pos"], dtype=float)
+    end = start + np.asarray([50.0, 0.0, 0.0])
+    new = max(G.nodes) + 1
+    G.add_node(new, pos=end)
+    middle = start + np.asarray([25.0, 10.0, 0.0])
+    edge = add_vessel_between(G, from_node, new, [start, middle, end], diameter_um=diameter_um)
+    return edge, new
+
+
+# --- the stage is part of the run -------------------------------------------
+
+
+def test_post_processing_is_the_stage_between_haemodynamics_and_perturbations():
+    calls = [stage.call for stage in STAGES if stage.call]
+    at = calls.index("post_process")
+    assert calls[at - 1] == "solve"
+    assert calls[at + 1] == "run_perturbations"
+    assert stages.STAGE_CALLS == tuple(calls)
+    titles = [stage.title for stage in STAGES]
+    assert titles.index("6. Haemodynamics") < titles.index("7. Post processing")
+
+
+# --- an unedited network ----------------------------------------------------
+
+
+def test_an_unedited_network_passes_through_untouched(tmp_path, monkeypatch):
+    run_settings, network, boundaries, model = _diameters_run(tmp_path)
+    graph_before = model.graph
+    attributes_before = copy.deepcopy(
+        {(u, v, k): dict(d) for u, v, k, d in graph_before.edges(keys=True, data=True)}
+    )
+
+    def refuse(*_args, **_kwargs):
+        raise AssertionError("an unedited network must not be measured again")
+
+    monkeypatch.setattr(stages, "assign_edge_diameters", refuse)
+    monkeypatch.setattr(stages, "_assign_branch_orders", refuse)
+    out = post_process(run_settings, model, boundaries, SCHEMA, network=network)
+
+    assert out is model and out.graph is graph_before
+    assert {
+        (u, v, k): dict(d) for u, v, k, d in out.graph.edges(keys=True, data=True)
+    } == attributes_before
+    assert APPLIED not in out.graph.graph
+
+
+def test_an_unedited_pass_changes_no_resistance(tmp_path):
+    """Pausing and continuing without an edit models the same network as not pausing."""
+    run_settings, network, boundaries, model = _diameters_run(tmp_path)
+    straight = copy.deepcopy(model)
+    through = post_process(run_settings, model, boundaries, SCHEMA, network=network)
+
+    left = build_haemodynamic_model(run_settings, straight, SCHEMA).graph
+    right = build_haemodynamic_model(run_settings, through, SCHEMA).graph
+    for u, v, k, data in left.edges(keys=True, data=True):
+        assert right.edges[u, v, k]["resistance"] == pytest.approx(data["resistance"])
+
+
+# --- a vessel drawn by hand -----------------------------------------------------
+
+
+def test_a_vessel_drawn_by_hand_gets_a_length_a_branch_order_and_a_table_diameter(tmp_path):
+    run_settings, network, boundaries, model = _diameters_run(tmp_path)
+    (u, v, k), _new = _pendant(model.graph)
+    model.graph.edges[u, v, k]["length"] = 1.0  # stale on purpose
+    assert "branch_order" not in model.graph.edges[u, v, k]
+
+    out = post_process(run_settings, model, boundaries, SCHEMA, network=network)
+
+    data = out.graph.edges[u, v, k]
+    assert data["length"] == pytest.approx(calculate_path_length(data["voxels"]))
+    assert data["branch_order"], "the new vessel has a branch order"
+    assert data["diameter_source"] == "table"
+    assert data["diameter_um"] == pytest.approx(
+        _table_diameter(run_settings, data["branch_order"])
+    )
+    assert not has_pending_edits(out.graph)
+    assert EDITED not in data
+    assert out.graph.graph[APPLIED] is True
+
+
+def test_the_diameter_an_edit_gave_stays_as_a_provisional_override(tmp_path):
+    """No method measured it: the neighbours' mean beats the branch-order table."""
+    run_settings, network, boundaries, model = _diameters_run(tmp_path)
+    (u, v, k), _new = _pendant(model.graph, diameter_um=11.0)
+
+    out = post_process(run_settings, model, boundaries, SCHEMA, network=network)
+
+    data = out.graph.edges[u, v, k]
+    assert data["diameter_source"] == "override"
+    assert data["diameter_um"] == pytest.approx(11.0)
+
+
+def test_a_measurement_replaces_the_provisional_diameter(tmp_path, monkeypatch):
+    run_settings, network, boundaries, model = _diameters_run(
+        tmp_path, use_edt_diameter_crosscheck=True,
+        edt_diameter_prefer_over_table_on_fwhm_failure=True,
+    )
+    (u, v, k), _new = _pendant(model.graph, diameter_um=11.0)
+    measured: list = []
+
+    def fake_edt(G, _config, *, mask_volume=None, edges=None):
+        measured.append(sorted(tuple(sorted(e[:2])) for e in edges))
+        for a, b, key in edges:
+            G.edges[a, b, key]["edt_diameter_um"] = 7.5
+        return {"edges_measured": len(edges), "edges_skipped": []}
+
+    monkeypatch.setattr("haemolynx.haemodynamics.apply._measure_edt_diameters", fake_edt)
+    out = post_process(run_settings, model, boundaries, SCHEMA, network=network)
+
+    data = out.graph.edges[u, v, k]
+    assert measured == [[tuple(sorted((u, v)))]], "only the edited vessel is measured"
+    assert data["diameter_source"] == "edt_mask"
+    assert data["diameter_um"] == pytest.approx(7.5)
+    # Every other vessel keeps what Diameters gave it.
+    for a, b, key, other in out.graph.edges(keys=True, data=True):
+        if (a, b, key) != (u, v, k):
+            assert other["diameter_source"] == "table"
+
+
+def test_a_measurement_carried_over_from_a_cut_vessel_is_measured_again(tmp_path):
+    """A half keeps the whole vessel's diameter only as a provisional one."""
+    run_settings, network, boundaries, model = _diameters_run(tmp_path)
+    G = model.graph
+    data = G.edges[1, 2, 0]
+    data["fwhm_diameter_um"] = 33.0  # as if FWHM had measured the whole vessel
+    data["fwhm_status"] = "measured"
+    node = graph_module.split_vessel_at(G, (1, 2, 0), (0.0, 0.0, 1.5 * EDGE_LENGTH_UM))
+
+    out = post_process(run_settings, model, boundaries, SCHEMA, network=network)
+
+    for half in ((1, node), (node, 2)):
+        (key,) = out.graph[half[0]][half[1]]
+        half_data = out.graph.edges[half[0], half[1], key]
+        assert "fwhm_diameter_um" not in half_data and "fwhm_status" not in half_data
+        assert half_data["diameter_source"] == "override"
+        assert half_data["diameter_um"] == pytest.approx(_table_diameter(run_settings, "B01"))
+        assert half_data["length"] == pytest.approx(EDGE_LENGTH_UM / 2)
+
+
+def test_a_merge_a_deletion_leaves_is_measured_as_one_vessel(tmp_path):
+    run_settings, network, boundaries, model = _diameters_run(tmp_path)
+    (u, v, k), new = _pendant(model.graph)
+    post_process(run_settings, model, boundaries, SCHEMA, network=network)
+
+    # Deleting the pendant leaves node 2 a pass-through: 1-2 and 2-3 merge.
+    delete_vessels(model.graph, [(u, v, k)], protected={0, LAST})
+    assert not model.graph.has_node(2) and model.graph.has_edge(1, 3)
+    out = post_process(run_settings, model, boundaries, SCHEMA, network=network)
+
+    (key,) = out.graph[1][3]
+    merged = out.graph.edges[1, 3, key]
+    assert merged["length"] == pytest.approx(2 * EDGE_LENGTH_UM)
+    assert merged["branch_order"]
+    assert merged["diameter_um"] > 0
+
+
+def test_a_deletion_alone_restamps_table_diameters_from_the_new_orders(tmp_path):
+    """Nothing to measure, but a branch order an edit moved must move its diameter."""
+    run_settings, network, boundaries, model = _diameters_run(tmp_path)
+    G = model.graph
+    right_order = G.edges[1, 2, 0]["branch_order"]
+    G.edges[1, 2, 0]["branch_order"] = "Ven9"  # stale, as a changed topology leaves it
+    G.edges[1, 2, 0]["diameter_um"] = 99.0
+    mark_edited(G)  # a deletion elsewhere: pending, no vessel marked
+
+    out = post_process(run_settings, model, boundaries, SCHEMA, network=network)
+
+    assert out.graph.edges[1, 2, 0]["branch_order"] == right_order
+    assert out.graph.edges[1, 2, 0]["diameter_um"] == pytest.approx(
+        _table_diameter(run_settings, right_order)
+    )
+
+
+def test_a_piece_an_edit_cuts_off_from_the_inlets_loses_its_branch_orders(tmp_path):
+    """Regression: assign_branch_orders left a vessel no inlet reaches as it
+    was -- with no order in a fresh build, but after a hand edit with the
+    order it had. A vessel drawn on from the chain's pendant end carries its
+    order (n1 is no junction, so both are B02); delete the pendant and the
+    drawn vessel hangs from nothing, yet it kept its order and the diameter
+    the table gives it. Now it has no order, as a vessel built cut off has
+    none. The stamp has no table entry for a vessel with no order, so the
+    diameter it had stays, counted as unset."""
+    run_settings, network, boundaries, model = _diameters_run(tmp_path)
+    G = model.graph
+    (u, v, k), n1 = _pendant(G)
+    n2 = n1 + 1
+    G.add_node(n2, pos=np.asarray(G.nodes[n1]["pos"], dtype=float) + np.asarray([50.0, 0.0, 0.0]))
+    cut_off = add_vessel_between(G, n1, n2)
+    post_process(run_settings, model, boundaries, SCHEMA, network=network)
+    assert [G.edges[u, v, k]["branch_order"], G.edges[cut_off]["branch_order"]] == ["B02", "B02"]
+    diameter_before = G.edges[cut_off]["diameter_um"]
+    delete_vessels(G, [(u, v, k)], protected=_protected(run_settings))
+    assert G.degree(n1) == 1 and G.has_edge(*cut_off)
+
+    out = post_process(run_settings, model, boundaries, SCHEMA, network=network)
+
+    data = out.graph.edges[cut_off]
+    assert "branch_order" not in data
+    assert data["diameter_um"] == diameter_before
+    assert out.results["post_process"]["diameters"]["unset"] == 1
+    # The rest of the chain is counted from the inlet as before.
+    assert all(
+        "branch_order" in edge_data
+        for a, b, edge_data in out.graph.edges(data=True)
+        if n1 not in (a, b)
+    )
+
+
+# --- boundary nodes ---------------------------------------------------------
+
+
+def test_boundary_nodes_an_edit_removed_leave_the_lists(tmp_path):
+    run_settings, network, boundaries, model = _diameters_run(tmp_path)
+    G = model.graph
+    G.add_edge(0, 10, voxels=[(0.0, 0.0, 0.0), (0.0, 50.0, 0.0)], length=50.0)
+    G.nodes[10]["pos"] = np.asarray([0.0, 50.0, 0.0])
+    boundaries.inlet_nodes.append(10)
+    boundaries.resistance_node_pair = (10, LAST)
+    run_settings["inlet_nodes"] = list(boundaries.inlet_nodes)
+    G.remove_node(10)  # as a prune would
+    mark_edited(G)
+
+    post_process(run_settings, model, boundaries, SCHEMA, network=network)
+
+    assert boundaries.inlet_nodes == [0]
+    assert run_settings["inlet_nodes"] == [0]
+    assert boundaries.resistance_node_pair == (0, LAST)
+
+
+def test_an_edit_that_removes_every_inlet_is_refused(tmp_path):
+    run_settings, network, boundaries, model = _diameters_run(tmp_path)
+    G = model.graph
+    G.remove_node(0)
+    mark_edited(G)
+
+    with pytest.raises(ValueError, match="every inlet or every outlet"):
+        post_process(run_settings, model, boundaries, SCHEMA, network=network)
+
+
+# --- thick-vessel bridges ---------------------------------------------------
+
+#: The thick vessel, 4 um in radius round y = z = 5, runs from x = THICK_FROM_UM
+#: on through the end of a 1-um grid.
+THICK_FROM_UM = 30.0
+THICK_RADIUS_UM = 4.0
+
+
+def _thick_network(*, along_axis: bool = False):
+    """A thick vessel's centreline 2-3 (x 40..55), and a thin vessel 0-1 the
+    hand-drawn vessel 1-2 joins to it: from the side (along y, 1 at y = 15),
+    or *along_axis*, carrying on from the thick vessel's end (x 0..20)."""
+    G = nx.MultiGraph()
+    if along_axis:
+        positions = {0: (5.0, 5.0, 0.0), 1: (5.0, 5.0, 20.0), 2: (5.0, 5.0, 40.0), 3: (5.0, 5.0, 55.0)}
+    else:
+        positions = {0: (5.0, 25.0, 40.0), 1: (5.0, 15.0, 40.0), 2: (5.0, 5.0, 40.0), 3: (5.0, 5.0, 55.0)}
+    for node, pos in positions.items():
+        G.add_node(node, pos=np.asarray(pos))
+    for a, b in ((0, 1), (2, 3), (1, 2)):
+        voxels = [positions[a], positions[b]]
+        if (a, b) == (1, 2):
+            continue  # the vessel drawn by hand, below
+        G.add_edge(a, b, voxels=voxels, length=calculate_path_length(voxels), branch_order="B01")
+    return G
+
+
+def _thick_mask():
+    z, y, _x = np.indices((11, 11, 60))
+    mask = (z - 5) ** 2 + (y - 5) ** 2 <= THICK_RADIUS_UM ** 2
+    mask[:, :, : int(THICK_FROM_UM)] = False
+    return mask
+
+
+def _thick_run(tmp_path, *, volume_mask=True, along_axis=False, **settings):
+    options = {
+        "use_thick_vessel_skeletonisation": True,
+        "inlet_nodes": [0],
+        "outlet_nodes": [3],
+        "arteriole_boundary_nodes": [0],
+        "venule_boundary_nodes": [3],
+        **settings,
+    }
+    run_settings = _settings(tmp_path, **options)
+    G = _thick_network(along_axis=along_axis)
+    network = _vessel_network(tmp_path, graph=G)
+    network.volume.thick_vessel_mask = _thick_mask() if volume_mask else None
+    boundaries = SimpleNamespace(
+        inlet_nodes=[0], outlet_nodes=[3], arteriole_boundary_nodes=[0],
+        venule_boundary_nodes=[3], large_arteriole_boundary_nodes=[],
+        large_venule_boundary_nodes=[], resistance_node_pair=(0, 3), graph=G,
+    )
+    model = stages.HaemodynamicModel(graph=G)
+    edge = add_vessel_between(G, 1, 2)
+    return run_settings, network, boundaries, model, edge
+
+
+def _pieces_between(G, a, b):
+    """The chain of edges the vessel drawn from *a* to *b* became, in order."""
+    path = nx.shortest_path(G, a, b)
+    pieces = []
+    for x, y in zip(path[:-1], path[1:]):
+        (key,) = G[x][y]
+        pieces.append((x, y, G.edges[x, y, key]))
+    return pieces
+
+
+def test_a_vessel_drawn_into_a_thick_vessel_becomes_a_bridge_inside_it(tmp_path):
+    run_settings, network, boundaries, model, _edge = _thick_run(tmp_path)
+
+    out = post_process(run_settings, model, boundaries, SCHEMA, network=network)
+
+    # The drawn vessel up to the thick vessel's boundary, and one bridge from
+    # there to the thick vessel's centreline.
+    pieces = _pieces_between(out.graph, 1, 2)
+    assert len(pieces) == 2
+    (_a, joint, outside), (_j, _b, bridge) = pieces
+    assert not outside.get(IS_ZERO_RESISTANCE)
+    assert bridge.get(IS_ZERO_RESISTANCE)
+    joint_y = float(out.graph.nodes[joint]["pos"][1])
+    assert abs(joint_y - (5.0 + THICK_RADIUS_UM)) <= 1.0
+    assert bridge["length"] <= THICK_RADIUS_UM + 1.0
+    assert outside["length"] + bridge["length"] == pytest.approx(10.0)
+    assert outside["branch_order"] and outside["diameter_um"] > 0
+    assert EDITED not in outside
+    # A bridge is no vessel of any order, and is not measured.
+    assert "branch_order" not in bridge
+    assert bridge["diameter_source"] == "bridge" and bridge["diameter_um"] > 0
+    assert EDITED not in bridge
+    # The thick vessel's own centreline, entirely inside, is no bridge.
+    (key,) = out.graph[2][3]
+    assert not out.graph.edges[2, 3, key].get(IS_ZERO_RESISTANCE)
+    assert out.graph is model.graph is boundaries.graph is network.graph
+
+
+def test_a_gap_in_the_thick_centreline_beside_an_edit_is_drawn_and_measured(tmp_path):
+    """The tree fill in post-processing marks what it draws edited, so the
+    stage measures it with the run's own methods as it does a vessel drawn
+    by hand: it used to be left to the branch-order table's diameter."""
+    from haemolynx.graph.thick_vessel_junctions import FROM_TREE
+
+    run_settings, network, boundaries, model, _edge = _thick_run(tmp_path)
+    G = model.graph
+    # The graph's thick centreline broken from x = 44 to 50.
+    G.remove_edge(2, 3)
+    G.add_node(4, pos=np.asarray((5.0, 5.0, 44.0)))
+    G.add_node(5, pos=np.asarray((5.0, 5.0, 50.0)))
+    for a, b in ((2, 4), (5, 3)):
+        voxels = [tuple(G.nodes[a]["pos"]), tuple(G.nodes[b]["pos"])]
+        G.add_edge(a, b, voxels=voxels, length=calculate_path_length(voxels), branch_order="B01")
+
+    out = post_process(run_settings, model, boundaries, SCHEMA, network=network)
+
+    drawn = [d for *_e, d in out.graph.edges(data=True) if d.get(FROM_TREE)]
+    assert drawn and sum(d["length"] for d in drawn) == pytest.approx(6.0, abs=1.5)
+    # Measured with the drawn vessel's own two pieces: up to the wall, and its bridge.
+    assert out.results["post_process"]["edited_vessels"] == 2 + len(drawn)
+
+
+def test_a_vessel_drawn_on_along_a_thick_vessels_line_from_its_end_is_bridged(tmp_path):
+    """Bridged like any vessel opening into the thick one, from where it
+    leaves the thick region to where it meets the thick vessel's tree. From
+    2026-10-13 such a vessel was the thick vessel tapering and stayed vessel
+    all the way; Harvey's grid P (2026-10-25) marked 3 of 4 tapers as vessels
+    to bridge, and the rule went."""
+    run_settings, network, boundaries, model, _edge = _thick_run(tmp_path, along_axis=True)
+
+    out = post_process(run_settings, model, boundaries, SCHEMA, network=network)
+
+    pieces = _pieces_between(out.graph, 1, 2)
+    (bridge,) = [(a, b, d) for a, b, d in pieces if d.get(IS_ZERO_RESISTANCE)]
+    a, b, d = bridge
+    xs = sorted(float(out.graph.nodes[n]["pos"][2]) for n in (a, b))
+    assert xs[0] <= THICK_FROM_UM, "it starts at the thick region's edge, outside the vessel"
+    assert THICK_FROM_UM < xs[1] <= THICK_FROM_UM + THICK_RADIUS_UM, "and ends on its tree, inside it"
+    assert d["length"] <= THICK_RADIUS_UM + 1.0
+    assert sum(d["length"] for *_e, d in pieces) == pytest.approx(20.0)
+
+
+def test_the_bridge_gets_the_negligible_resistance_graph_building_bridges_get(tmp_path):
+    run_settings, network, boundaries, model, _edge = _thick_run(tmp_path)
+    out = post_process(run_settings, model, boundaries, SCHEMA, network=network)
+
+    solved = build_haemodynamic_model(run_settings, out, SCHEMA).graph
+
+    from haemolynx.haemodynamics.apply import ZERO_RESISTANCE_FRACTION
+
+    real = [d["resistance"] for *_e, d in solved.edges(data=True) if not d.get(IS_ZERO_RESISTANCE)]
+    bridges = [d["resistance"] for *_e, d in solved.edges(data=True) if d.get(IS_ZERO_RESISTANCE)]
+    assert bridges == [pytest.approx(min(real) * ZERO_RESISTANCE_FRACTION)]
+
+
+def test_the_thick_region_comes_from_the_resume_when_the_volume_has_none(tmp_path, monkeypatch):
+    run_settings, network, boundaries, model, _edge = _thick_run(tmp_path, volume_mask=False)
+    monkeypatch.setattr(
+        stages, "thick_vessel_mask_from_image",
+        lambda *_a, **_k: pytest.fail("the resume's region should have been used"),
+    )
+
+    out = post_process(
+        run_settings, model, boundaries, SCHEMA, network=network, thick_vessel_mask=_thick_mask()
+    )
+
+    assert sum(bool(d.get(IS_ZERO_RESISTANCE)) for *_e, d in _pieces_between(out.graph, 1, 2)) == 1
+
+
+def test_without_a_region_to_hand_it_is_found_again_in_the_segmentation(tmp_path, monkeypatch):
+    run_settings, network, boundaries, model, _edge = _thick_run(tmp_path, volume_mask=False)
+    asked: list = []
+
+    def found_again(settings, image, voxel_size_xyz, crop, *, cache, downsample=None):
+        asked.append((image is network.volume.image, tuple(voxel_size_xyz), crop, downsample))
+        return _thick_mask()
+
+    monkeypatch.setattr(stages, "thick_vessel_mask_from_image", found_again)
+    out = post_process(run_settings, model, boundaries, SCHEMA, network=network)
+
+    # The image was neither cropped nor downsampled on import, so the vessel
+    # masks are not either.
+    assert asked == [(True, (1.0, 1.0, 1.0), None, None)]
+    assert sum(bool(d.get(IS_ZERO_RESISTANCE)) for *_e, d in _pieces_between(out.graph, 1, 2)) == 1
+
+
+def _blind_stub_run(tmp_path):
+    """A thick vessel 2-4-3 (radius 4 round y = z = 10, from x = 30) fed by
+    0-1-2, and a vessel drawn by hand from its node 4 to a blind tip 7, 7 um
+    off its centreline: 3 um outside the thick vessel, short enough that the
+    split takes it out with its bridge, as graph building takes such a stub.
+    The tip is made an outlet on the Terminal nodes list."""
+    z, y, _x = np.indices((21, 31, 60))
+    mask = (z - 10) ** 2 + (y - 10) ** 2 <= THICK_RADIUS_UM ** 2
+    mask[:, :, : int(THICK_FROM_UM)] = False
+    positions = {
+        0: (10.0, 30.0, 40.0), 1: (10.0, 20.0, 40.0), 2: (10.0, 10.0, 40.0),
+        4: (10.0, 10.0, 48.0), 3: (10.0, 10.0, 59.0), 7: (10.0, 17.0, 48.0),
+    }
+    G = nx.MultiGraph()
+    for node, pos in positions.items():
+        G.add_node(node, pos=np.asarray(pos))
+    for a, b in ((0, 1), (1, 2), (2, 4), (4, 3)):
+        voxels = [positions[a], positions[b]]
+        G.add_edge(a, b, voxels=voxels, length=calculate_path_length(voxels), branch_order="B01")
+    run_settings = _settings(
+        tmp_path, use_thick_vessel_skeletonisation=True, inlet_nodes=[0], outlet_nodes=[3],
+        arteriole_boundary_nodes=[0], venule_boundary_nodes=[3],
+    )
+    network = _vessel_network(tmp_path, graph=G)
+    network.volume.thick_vessel_mask = mask
+    boundaries = SimpleNamespace(
+        inlet_nodes=[0], outlet_nodes=[3], arteriole_boundary_nodes=[0],
+        venule_boundary_nodes=[3], large_arteriole_boundary_nodes=[],
+        large_venule_boundary_nodes=[], resistance_node_pair=(0, 3), graph=G,
+    )
+    add_vessel_between(G, 4, 7)
+    graph_module.set_terminal_role(G, {"inlet": [0], "outlet": [3]}, 7, "outlet")
+    return run_settings, network, boundaries, stages.HaemodynamicModel(graph=G)
+
+
+def test_a_boundary_node_the_split_takes_out_leaves_the_lists(tmp_path):
+    """The lists are trimmed after the split, not before it: they kept the
+    stub's tip, and the re-solve refused the outlet missing from the network."""
+    run_settings, network, boundaries, model = _blind_stub_run(tmp_path)
+
+    out = post_process(run_settings, model, boundaries, SCHEMA, network=network)
+
+    assert 7 not in out.graph and 4 not in out.graph, "the stub and the node it hung from went"
+    assert boundaries.outlet_nodes == [3]
+    assert run_settings["outlet_nodes"] == [3]
+    assert out.results["post_process"]["boundary_nodes"]["outlet_nodes"] == [3]
+    solved = stages.solve_post_processed(run_settings, out, boundaries, SCHEMA, network=network)
+    assert all(data.get(graph_module.FLOW_SOLVED) for *_e, data in solved.graph.edges(data=True))
+
+
+def test_a_split_that_takes_out_the_only_outlet_is_refused(tmp_path):
+    run_settings, network, boundaries, model = _blind_stub_run(tmp_path)
+    graph_module.set_terminal_role(model.graph, {"inlet": [0], "outlet": [3, 7]}, 3, None)
+
+    with pytest.raises(ValueError, match="every inlet or every outlet"):
+        post_process(run_settings, model, boundaries, SCHEMA, network=network)
+
+
+def test_no_bridge_without_thickness_gated_skeletonisation(tmp_path, monkeypatch):
+    run_settings, network, boundaries, model, _edge = _thick_run(
+        tmp_path, use_thick_vessel_skeletonisation=False
+    )
+    monkeypatch.setattr(
+        stages, "thick_vessel_mask_from_image",
+        lambda *_a, **_k: pytest.fail("no thick region is looked for when the option is off"),
+    )
+
+    out = post_process(run_settings, model, boundaries, SCHEMA, network=network)
+
+    (piece,) = _pieces_between(out.graph, 1, 2)
+    assert not piece[2].get(IS_ZERO_RESISTANCE)
+
+
+# --- pausing and picking the run up again -----------------------------------
+
+
+def _stub_early_stages(monkeypatch, tmp_path):
+    """Segment to Boundaries return the chain; Perturbations and Export do nothing."""
+    network = _vessel_network(tmp_path)
+
+    monkeypatch.setattr(stages, "segment", lambda *a, **k: SimpleNamespace(image_path=None))
+    monkeypatch.setattr(stages, "skeletonise", lambda *a, **k: network.volume)
+    monkeypatch.setattr(stages, "build_network", lambda *a, **k: network)
+
+    def boundaries_for(settings, net):
+        found = _boundaries()
+        found.graph = net.graph
+        return found
+
+    monkeypatch.setattr(stages, "assign_boundaries", boundaries_for)
+    monkeypatch.setattr(stages, "run_perturbations", lambda *a, **k: stages.PerturbationRun())
+    monkeypatch.setattr(stages, "export_results", lambda *a, **k: None)
+    return network
+
+
+def _resume_from_post_processing(graph) -> PipelineResume:
+    """What the panel's Continue / Regenerate hands the run: *graph*, the chain's boundaries."""
+    return PipelineResume(
+        start_from="post_process",
+        graph=graph,
+        inlet_nodes=(0,),
+        outlet_nodes=(LAST,),
+        arteriole_boundary_nodes=(0,),
+        venule_boundary_nodes=(LAST,),
+        resistance_node_pair=(0, LAST),
+    )
+
+
+def _shortcut(G):
+    """A vessel drawn by hand from node 1 straight to node 3, beside the chain."""
+    a, b = np.asarray(G.nodes[1]["pos"]), np.asarray(G.nodes[3]["pos"])
+    return add_vessel_between(G, 1, 3, [a, (a + b) / 2 + [30.0, 0.0, 0.0], b])
+
+
+def test_a_run_pauses_after_haemodynamics_with_the_network_solved(tmp_path, monkeypatch):
+    """The pause comes after the solve, so the network is edited with its flows."""
+    _stub_early_stages(monkeypatch, tmp_path)
+    ran: list[str] = []
+    paused = run_pipeline_stages(
+        _settings(tmp_path),
+        SCHEMA,
+        on_stage_output=lambda stage, _output: ran.append(stage),
+        stop_after="solve",
+    )
+
+    assert ran == [
+        "segment", "skeletonise", "build_network", "assign_boundaries",
+        "assign_diameters", "build_haemodynamic_model", "solve",
+    ]
+    for *_e, data in paused.edges(data=True):
+        assert np.isfinite(data["resistance"]) and abs(data["flow_signed"]) > 0
+    assert all("pressure" in data for _n, data in paused.nodes(data=True))
+
+
+def test_a_run_paused_after_haemodynamics_and_continued_solves_as_one_run(tmp_path, monkeypatch):
+    options = {}
+    _stub_early_stages(monkeypatch, tmp_path / "straight")
+    straight = run_pipeline_stages(_settings(tmp_path / "straight", **options), SCHEMA)
+
+    _stub_early_stages(monkeypatch, tmp_path / "paused")
+    paused = run_pipeline_stages(
+        _settings(tmp_path / "paused", **options), SCHEMA, stop_after="solve"
+    )
+    continued = run_pipeline_stages(
+        _settings(tmp_path / "paused", **options),
+        SCHEMA,
+        start_from="post_process",
+        resume=_resume_from_post_processing(copy.deepcopy(paused)),
+    )
+
+    for node, data in straight.nodes(data=True):
+        assert continued.nodes[node]["pressure"] == pytest.approx(data["pressure"])
+    for u, v, k, data in straight.edges(keys=True, data=True):
+        assert continued.edges[u, v, k]["resistance"] == pytest.approx(data["resistance"])
+        assert continued.edges[u, v, k]["flow_signed"] == pytest.approx(data["flow_signed"])
+
+
+def test_a_resumed_network_drops_the_statistics_it_carried(tmp_path, monkeypatch):
+    """Regenerate starts from the network on screen, which carries what the
+    last export measured -- of the network before the edit. The run drops it,
+    so one paused before its export returns no statistics rather than old ones."""
+    _stub_early_stages(monkeypatch, tmp_path)
+    paused = run_pipeline_stages(_settings(tmp_path), SCHEMA, stop_after="solve")
+    paused.graph[stages.STATISTICS_REPORT] = {
+        "mode": "fast", "csv": None, "sections": {"basic": {"Total Nodes": 99}}
+    }
+
+    resumed = run_pipeline_stages(
+        _settings(tmp_path),
+        SCHEMA,
+        start_from="post_process",
+        resume=_resume_from_post_processing(paused),
+        stop_after="post_process",
+    )
+
+    assert stages.STATISTICS_REPORT not in resumed.graph
+
+
+def test_an_unedited_network_is_not_solved_again(tmp_path, monkeypatch):
+    """Continue without an edit keeps the solve, including what the CSV needs.
+
+    Post processing is after the solve, so Continue does not solve again, and
+    neither does Regenerate when nothing was edited. The two resistances and
+    the haematocrit-distribution report have to travel with the graph: they
+    used to exist only on the Solution, and the statistics CSV then lost its
+    Haemodynamics section.
+    """
+    import pickle
+
+    run_settings = _settings(tmp_path, haematocrit_model="distributed_iterative")
+    _stub_early_stages(monkeypatch, tmp_path)
+    paused_out: dict = {}
+    paused = run_pipeline_stages(
+        run_settings, SCHEMA, stop_after="solve", on_stage_output=paused_out.__setitem__
+    )
+    solved = paused_out["solve"]
+    assert solved.equivalent_resistance is not None
+    assert solved.network_resistance is not None
+    assert solved.statistics["haematocrit_distribution"]
+
+    def refuse(*_args, **_kwargs):
+        raise AssertionError("an unedited network must not be solved again")
+
+    monkeypatch.setattr(stages, "solve", refuse)
+    monkeypatch.setattr(stages, "build_haemodynamic_model", refuse)
+    outputs: dict = {}
+    # The panel's checkpoint is a pickle of the graph, not a live Solution.
+    run_pipeline_stages(
+        run_settings,
+        SCHEMA,
+        start_from="post_process",
+        resume=_resume_from_post_processing(pickle.loads(pickle.dumps(paused))),
+        on_stage_output=outputs.__setitem__,
+    )
+
+    continued = outputs["post_process"]
+    assert continued.post_processed is None
+    assert continued.equivalent_resistance == pytest.approx(solved.equivalent_resistance)
+    assert continued.network_resistance == pytest.approx(solved.network_resistance)
+    assert continued.equivalent_resistance_nodes == solved.equivalent_resistance_nodes
+    assert (
+        continued.statistics["haematocrit_distribution"]
+        == solved.statistics["haematocrit_distribution"]
+    )
+    assert "Haemodynamics" in stages.resistance_statistics(continued)
+
+
+def test_a_vessel_drawn_while_paused_is_solved_with_the_rest(tmp_path, monkeypatch):
+    """Regenerating reruns Haemodynamics on the edited network, so the new
+    vessel carries a resistance and a flow, and the chain it bypasses carries
+    less than it did before the edit."""
+    options = {}
+    _stub_early_stages(monkeypatch, tmp_path)
+    paused = run_pipeline_stages(_settings(tmp_path, **options), SCHEMA, stop_after="solve")
+    edited = copy.deepcopy(paused)
+    edge = _shortcut(edited)
+    bypassed_before = abs(paused.edges[1, 2, 0]["flow_signed"])
+
+    outputs: dict = {}
+    solved = run_pipeline_stages(
+        _settings(tmp_path, **options),
+        SCHEMA,
+        start_from="post_process",
+        resume=_resume_from_post_processing(edited),
+        on_stage_output=outputs.__setitem__,
+    )
+
+    data = solved.edges[edge]
+    assert data["branch_order"] and data["diameter_um"] > 0
+    assert np.isfinite(data["resistance"]) and data["resistance"] > 0
+    assert abs(data["flow_signed"]) > 0, "blood takes the new vessel too"
+    assert abs(solved.edges[1, 2, 0]["flow_signed"]) < bypassed_before
+    # What the stage hands the viewer is the solve it ran again.
+    solution = outputs["post_process"]
+    assert solution.graph is solved
+    assert solution.post_processed["edited_vessels"] == 1
+    assert len(solution.pressure) == solved.number_of_nodes()
+
+
+def test_perturbations_and_the_export_get_the_solve_run_again(tmp_path, monkeypatch):
+    _stub_early_stages(monkeypatch, tmp_path)
+    paused = run_pipeline_stages(_settings(tmp_path), SCHEMA, stop_after="solve")
+    edited = copy.deepcopy(paused)
+    edge = _shortcut(edited)
+    handed: dict = {}
+
+    def perturb(settings, model, *_args, **_kwargs):
+        handed["perturbed"] = model.graph
+        return stages.PerturbationRun()
+
+    monkeypatch.setattr(stages, "run_perturbations", perturb)
+    monkeypatch.setattr(
+        stages, "export_results",
+        lambda settings, network, model, solution: handed.update(exported=solution),
+    )
+
+    run_pipeline_stages(
+        _settings(tmp_path),
+        SCHEMA,
+        start_from="post_process",
+        resume=_resume_from_post_processing(edited),
+    )
+
+    assert abs(handed["perturbed"].edges[edge]["flow_signed"]) > 0
+    assert handed["exported"].graph is handed["perturbed"]
+    assert handed["exported"].post_processed["edited_vessels"] == 1
+
+
+def test_solve_post_processed_runs_the_network_handling_on_the_edited_network(
+    tmp_path, monkeypatch
+):
+    """The Haemodynamics tab's "Network handling" applies to the edited network too."""
+    run_settings, network, boundaries, model = _diameters_run(tmp_path)
+    (u, v, k), _new = _pendant(model.graph)
+    model = post_process(run_settings, model, boundaries, SCHEMA, network=network)
+    handled: list = []
+    real = stages.apply_network_handling
+
+    def spy(settings, handed_model, *args, **kwargs):
+        handled.append(handed_model.graph.has_edge(u, v, k))
+        return real(settings, handed_model, *args, **kwargs)
+
+    monkeypatch.setattr(stages, "apply_network_handling", spy)
+    solution = stages.solve_post_processed(
+        run_settings, model, boundaries, SCHEMA, network=network
+    )
+
+    assert handled == [True]
+    assert np.isfinite(solution.graph.edges[u, v, k]["resistance"])
+    assert solution.post_processed == model.results["post_process"]
+
+
+# --- a resumed run keeps the Large_Art/Large_Ven hand-off nodes ----------------------
+
+
+def test_a_resume_hands_the_large_vessel_hand_off_nodes_on(tmp_path):
+    """Regression: only assign_boundaries finds them, so a run resumed past it --
+    which assigns branch orders again -- used to lose the Large tier."""
+    run_settings = _settings(tmp_path)
+    run_settings["large_arteriole_boundary_nodes"][:] = []
+    run_settings["large_venule_boundary_nodes"][:] = []
+    resume = PipelineResume(
+        start_from="post_process",
+        inlet_nodes=(0,),
+        outlet_nodes=(LAST,),
+        large_arteriole_boundary_nodes=(1,),
+        large_venule_boundary_nodes=(3,),
+    )
+
+    stages._fill_boundary_settings(run_settings, resume)
+    boundaries = stages._boundaries_from_resume(resume, _vessel_network(tmp_path))
+
+    assert run_settings["large_arteriole_boundary_nodes"] == [1]
+    assert run_settings["large_venule_boundary_nodes"] == [3]
+    assert boundaries.large_arteriole_boundary_nodes == [1]
+    assert boundaries.large_venule_boundary_nodes == [3]
+
+
+# --- a vessel drawn in a large vessel mask is tagged as lying in it ----------------
+
+
+def _large_tier_run(tmp_path, *, gap_at_z=25.0):
+    """test_branch_order_hierarchy's branching large-vessel network through the
+    real Boundaries and Diameters stages, its large arteriole broken at
+    *gap_at_z*: the trunk a0-a1-a2 reaches the inlet, the piece beyond it
+    (m-a3) is a fragment lying in the arteriole mask, joined to nothing --
+    the Stack A large-mask vessels the Large tier missed. Returns settings,
+    network, boundaries, model and the node ids."""
+    from test_branch_order_hierarchy import _branching_large_vessel_network, _large_tier_settings
+
+    network, ids = _branching_large_vessel_network()
+    G = network.graph
+    a2, a3 = ids["a2"], ids["a3"]
+    G.remove_edge(a2, a3)
+    ids["m"] = max(G.nodes) + 1
+    m_pos = (gap_at_z, 4.0, 5.0)
+    G.add_node(ids["m"], pos=m_pos)
+    G.add_edge(ids["m"], a3, voxels=[m_pos, G.nodes[a3]["pos"]],
+               length=float(G.nodes[a3]["pos"][0] - gap_at_z))
+    run_settings = _large_tier_settings(tmp_path)
+    run_settings["run_haemodynamics"] = False
+    boundaries = stages.assign_boundaries(run_settings, network)
+    model = assign_diameters(run_settings, network, boundaries, SCHEMA)
+    return run_settings, network, boundaries, model, ids
+
+
+def _large_tags(G) -> dict[tuple, str | None]:
+    return {
+        (u, v, k): data.get(graph_module.LARGE_MASK_VESSEL_TYPE)
+        for u, v, k, data in G.edges(keys=True, data=True)
+    }
+
+
+def test_a_vessel_drawn_along_the_large_arteriole_stays_large_art(tmp_path):
+    """Regression: a vessel drawn by hand carried no large-mask tag, and the
+    Large tier is the tagged vessels joined to the inlet through tagged
+    vessels -- so a vessel drawn to close a gap in the large arteriole was
+    not Large_Art, nor was the trunk it joined back on."""
+    run_settings, network, boundaries, model, ids = _large_tier_run(tmp_path)
+    G = model.graph
+    assert run_settings["inlet_nodes"] == [ids["a0"]]
+    assert G.edges[ids["m"], ids["a3"], 0].get("branch_order") is None  # the fragment
+    drawn = add_vessel_between(G, ids["a2"], ids["m"])
+
+    out = post_process(run_settings, model, boundaries, SCHEMA, network=network)
+
+    G = out.graph
+    assert G.edges[ids["a1"], ids["a2"], 0]["branch_order"] == "Large_Art2"
+    # m is no junction: the drawn vessel and m-a3 are one vessel.
+    assert G.edges[drawn].get("branch_order") == "Large_Art3"
+    assert G.edges[ids["m"], ids["a3"], 0].get("branch_order") == "Large_Art3"
+    assert G.edges[drawn][graph_module.LARGE_MASK_VESSEL_TYPE] == "arteriole"
+
+
+def test_a_vessel_drawn_under_covered_between_two_large_vessels_takes_their_tag(tmp_path):
+    """The Boundaries stage's own rule, gap-filling included: a vessel only a
+    third in the arteriole mask, between two vessels lying in it, takes the
+    tag (GAP_FILL_FRACTION_OF_THRESHOLD of the 0.5 overlap threshold)."""
+    run_settings, network, boundaries, model, ids = _large_tier_run(tmp_path)
+    G = model.graph
+    a2, m = ids["a2"], ids["m"]
+    start, end = np.asarray(G.nodes[a2]["pos"]), np.asarray(G.nodes[m]["pos"])
+    drawn = add_vessel_between(G, a2, m, [start, (start + end) / 2 + [0.0, 0.0, 8.0], end])
+
+    out = post_process(run_settings, model, boundaries, SCHEMA, network=network)
+
+    assert out.graph.edges[drawn][graph_module.LARGE_MASK_VESSEL_TYPE] == "arteriole"
+    assert out.graph.edges[drawn]["branch_order"] == "Large_Art3"
+
+
+def test_an_edited_vessel_outside_the_large_masks_loses_the_tag_and_no_other_vessel_changes(
+    tmp_path,
+):
+    """A split copies its parent's attributes and a merge takes its first
+    vessel's, so an edited vessel can carry a large-mask tag it does not lie
+    in: it is judged again, and every vessel not edited keeps the tag the
+    Boundaries stage gave it."""
+    run_settings, network, boundaries, model, ids = _large_tier_run(tmp_path)
+    G = model.graph
+    start = np.asarray(G.nodes[ids["a2"]]["pos"], dtype=float)
+    new = max(G.nodes) + 1
+    G.add_node(new, pos=start + [6.0, 0.0, 11.0])
+    drawn = add_vessel_between(G, ids["a2"], new)
+    G.edges[drawn][graph_module.LARGE_MASK_VESSEL_TYPE] = "arteriole"  # as a split copies it
+    before = {edge: tag for edge, tag in _large_tags(G).items() if edge != drawn}
+    assert set(before.values()) == {"arteriole", "venule", None}
+
+    out = post_process(run_settings, model, boundaries, SCHEMA, network=network)
+
+    assert graph_module.LARGE_MASK_VESSEL_TYPE not in out.graph.edges[drawn]
+    assert not out.graph.edges[drawn]["branch_order"].startswith("Large_")
+    after = _large_tags(out.graph)
+    assert {edge: after[edge] for edge in before} == before
+
+
+def test_without_the_large_masks_the_edited_vessels_keep_their_tags_and_it_says_so(
+    tmp_path, caplog
+):
+    run_settings, network, boundaries, model, ids = _large_tier_run(tmp_path)
+    split_piece = (ids["a1"], ids["a2"], 0)
+    mark_edited(model.graph, [split_piece])
+    boundaries.large_arteriole_mask = boundaries.large_venule_mask = None
+
+    with caplog.at_level("WARNING", logger="haemolynx.pipeline.stages"):
+        out = post_process(run_settings, model, boundaries, SCHEMA, network=network)
+
+    assert out.graph.edges[split_piece][graph_module.LARGE_MASK_VESSEL_TYPE] == "arteriole"
+    assert out.graph.edges[split_piece]["branch_order"] == "Large_Art2"
+    assert "no large vessel masks to read" in caplog.text
+
+
+# --- the small-mask arteriole/venule boundary nodes follow the edits ---------------
+
+
+def _small_boundary_run(tmp_path, *, side_arteriole=False, **overrides):
+    """test_branching_large_vessel_network through the real Boundaries and
+    Diameters stages, with a second small arteriole's mask beside the large
+    arteriole at z = 25: a node p on the trunk there, and a capillary from f,
+    across the mask from p (x = 14), into the bed at c. With
+    *side_arteriole* the vessel p-f lies in the network when Boundaries
+    runs, so p and f are arteriole boundary nodes; without it, it is the
+    vessel a hand edit draws. Returns settings, network, boundaries, model
+    and the node ids."""
+    from test_branch_order_hierarchy import (
+        _branching_large_vessel_network,
+        _large_tier_settings,
+        _segment,
+    )
+
+    network, ids = _branching_large_vessel_network()
+    G = network.graph
+    G.remove_edge(ids["a2"], ids["a3"])
+    ids["p"], ids["f"] = max(G.nodes) + 1, max(G.nodes) + 2
+    G.add_node(ids["p"], pos=(25.0, 4.0, 5.0))
+    G.add_node(ids["f"], pos=(25.0, 4.0, 14.0))
+    vessels = [("a2", "p"), ("p", "a3"), ("f", "c")] + ([("p", "f")] if side_arteriole else [])
+    for a, b in vessels:
+        start, end = G.nodes[ids[a]]["pos"], G.nodes[ids[b]]["pos"]
+        G.add_edge(ids[a], ids[b], voxels=_segment(start, end),
+                   length=float(np.linalg.norm(np.subtract(end, start))))
+    network.small_arteriole_mask[24:27, 3:6, 8:14] = True
+    run_settings = _large_tier_settings(tmp_path)
+    run_settings["run_haemodynamics"] = False
+    run_settings.update(overrides)
+    boundaries = stages.assign_boundaries(run_settings, network)
+    model = assign_diameters(run_settings, network, boundaries, SCHEMA)
+    return run_settings, network, boundaries, model, ids
+
+
+def _boundary_lists(run_settings, boundaries, ids) -> dict[str, list[str]]:
+    """The arteriole and venule boundary lists by node name, checking the
+    settings' lists (which branch orders are read from) say the same."""
+    name = {node: label for label, node in ids.items()}
+    lists = {}
+    for key in ("arteriole_boundary_nodes", "venule_boundary_nodes"):
+        assert list(run_settings[key]) == list(getattr(boundaries, key))
+        lists[key] = [name[node] for node in getattr(boundaries, key)]
+    return lists
+
+
+def _protected(run_settings) -> list:
+    """The nodes the panel will not let a deletion strand or merge away."""
+    return [
+        *run_settings["inlet_nodes"], *run_settings["outlet_nodes"],
+        *run_settings["arteriole_boundary_nodes"], *run_settings["venule_boundary_nodes"],
+    ]
+
+
+def test_a_side_arteriole_drawn_through_the_small_mask_ends_at_arteriole_boundary_nodes(
+    tmp_path,
+):
+    """Regression: post_process only kept the boundary lists to the nodes
+    still in the graph, so a vessel drawn from the large arteriole through a
+    small arteriole's mask into the bed had no boundary node at its far end
+    -- it came out a capillary, and the bed beyond it was counted from
+    elsewhere. Now its ends are judged as the Boundaries stage judged every
+    vessel's: it lies in the mask, so f, where it meets the capillary, and
+    p, where it leaves the large arteriole, are arteriole boundary nodes, as
+    a1 and s1 are for the small arteriole Boundaries found."""
+    run_settings, network, boundaries, model, ids = _small_boundary_run(tmp_path)
+    before = _boundary_lists(run_settings, boundaries, ids)
+    assert before == {
+        "arteriole_boundary_nodes": ["a1", "s1"],
+        "venule_boundary_nodes": ["v1", "w1"],
+    }
+    drawn = add_vessel_between(model.graph, ids["p"], ids["f"])
+
+    out = post_process(run_settings, model, boundaries, SCHEMA, network=network)
+
+    G = out.graph
+    assert G.edges[drawn][graph_module.SMALL_MASK_VESSEL_TYPE] == "arteriole"
+    assert _boundary_lists(run_settings, boundaries, ids) == {
+        "arteriole_boundary_nodes": ["a1", "s1", "p", "f"],  # the others where they were
+        "venule_boundary_nodes": ["v1", "w1"],
+    }
+    assert G.edges[drawn]["branch_order"] == "Art1"
+    assert G.edges[ids["f"], ids["c"], 0]["branch_order"] == "B01"
+    assert G.edges[ids["a2"], ids["p"], 0]["branch_order"] == "Large_Art3"
+    assert G.edges[ids["a1"], ids["s1"], 0]["branch_order"] == "Art1"
+    assert out.results["post_process"]["boundary_nodes"]["arteriole_boundary_nodes"] == [
+        ids["a1"], ids["s1"], ids["p"], ids["f"],
+    ]
+
+
+def test_deleting_a_small_arteriole_drops_the_boundary_nodes_at_its_ends(tmp_path):
+    """A deletion leaves no vessel to mark edited, but the nodes it took a
+    vessel from are judged again: with p-f gone, p is a node on the large
+    arteriole and f a capillary's, neither where a small arteriole meets
+    the rest. The small arteriole Boundaries found elsewhere keeps its."""
+    run_settings, network, boundaries, model, ids = _small_boundary_run(
+        tmp_path, side_arteriole=True
+    )
+    assert sorted(_boundary_lists(run_settings, boundaries, ids)["arteriole_boundary_nodes"]) == [
+        "a1", "f", "p", "s1",
+    ]
+    assert model.graph.edges[ids["f"], ids["c"], 0]["branch_order"] == "B01"
+    delete_vessels(model.graph, [(ids["p"], ids["f"], 0)], protected=_protected(run_settings))
+
+    out = post_process(run_settings, model, boundaries, SCHEMA, network=network)
+
+    assert sorted(_boundary_lists(run_settings, boundaries, ids)["arteriole_boundary_nodes"]) == [
+        "a1", "s1",
+    ]
+    assert _boundary_lists(run_settings, boundaries, ids)["venule_boundary_nodes"] == ["v1", "w1"]
+    assert out.graph.edges[ids["f"], ids["c"], 0]["branch_order"] == "B02"
+
+
+def _hand_off_lists(run_settings, boundaries, ids) -> dict[str, list[str]]:
+    """The Large_Art/Large_Ven hand-off lists by node name, sorted, checking
+    the settings' lists say the same as the boundaries'."""
+    name = {node: label for label, node in ids.items()}
+    lists = {}
+    for key in ("large_arteriole_boundary_nodes", "large_venule_boundary_nodes"):
+        assert list(run_settings[key]) == list(getattr(boundaries, key))
+        lists[key] = sorted(name[node] for node in getattr(boundaries, key))
+    return lists
+
+
+def _hand_offs_of_the_tier(G, run_settings) -> dict[str, list]:
+    """Where a vessel outside each Large tier leaves it: what the orders use."""
+    from haemolynx.graph.branch_order import _hand_off_nodes, _large_vessel_tier
+
+    return {
+        "large_arteriole_boundary_nodes": sorted(
+            _hand_off_nodes(G, _large_vessel_tier(G, run_settings["inlet_nodes"], "arteriole"))
+        ),
+        "large_venule_boundary_nodes": sorted(
+            _hand_off_nodes(G, _large_vessel_tier(G, run_settings["outlet_nodes"], "venule"))
+        ),
+    }
+
+
+def test_a_vessel_drawn_off_the_large_arteriole_makes_its_node_a_hand_off_node(tmp_path):
+    """Regression: the Large_Art/Large_Ven hand-off lists were only trimmed
+    to the nodes still in the graph, never judged again, so with p-f drawn
+    the settings still said [a1, a2] while the tier's hand-offs -- where a
+    vessel outside it leaves it -- were a1, p and a2, and the checkpoint
+    recorded the stale list. The orders were right (the list only says
+    whether the tier is tried), but the checkpoint and the synthetic
+    template's boundary counts read it. The touched nodes are judged by the
+    Boundaries stage's rule on the large-mask tags: p, with a vessel not in
+    the large mask leaving it, is added; the venule list, untouched, stays."""
+    run_settings, network, boundaries, model, ids = _small_boundary_run(tmp_path)
+    before = {
+        "large_arteriole_boundary_nodes": ["a1", "a2"],
+        "large_venule_boundary_nodes": ["v1", "v2"],
+    }
+    assert _hand_off_lists(run_settings, boundaries, ids) == before
+    # The rule, on every node, is the one the Boundaries stage's lists came from.
+    from_tags = graph_module.boundary_nodes_from_mask_tags(
+        model.graph, attribute=graph_module.LARGE_MASK_VESSEL_TYPE
+    )
+    assert sorted(from_tags["arteriole"]) == sorted(run_settings["large_arteriole_boundary_nodes"])
+    assert sorted(from_tags["venule"]) == sorted(run_settings["large_venule_boundary_nodes"])
+    drawn = add_vessel_between(model.graph, ids["p"], ids["f"])
+
+    out = post_process(run_settings, model, boundaries, SCHEMA, network=network)
+
+    G = out.graph
+    assert graph_module.LARGE_MASK_VESSEL_TYPE not in G.edges[drawn]
+    assert _hand_off_lists(run_settings, boundaries, ids) == {
+        "large_arteriole_boundary_nodes": ["a1", "a2", "p"],
+        "large_venule_boundary_nodes": ["v1", "v2"],
+    }
+    assert {
+        key: sorted(nodes) for key, nodes in _hand_offs_of_the_tier(G, run_settings).items()
+    } == {key: sorted(run_settings[key]) for key in before}
+    recorded = out.results["post_process"]["boundary_nodes"]
+    assert sorted(recorded["large_arteriole_boundary_nodes"]) == sorted(
+        [ids["a1"], ids["a2"], ids["p"]]
+    )
+    assert G.edges[ids["a2"], ids["p"], 0]["branch_order"] == "Large_Art3"
+    assert G.edges[drawn]["branch_order"] == "Art1"
+
+
+def test_deleting_the_vessel_leaving_the_large_arteriole_at_a_hand_off_drops_it(tmp_path):
+    """With p-f gone, p is a node on the large arteriole with no vessel
+    leaving it: dropped from the Large_Art hand-off list, as it would not
+    have been chosen by a run on this network; a1 and a2, untouched, stay."""
+    run_settings, network, boundaries, model, ids = _small_boundary_run(
+        tmp_path, side_arteriole=True
+    )
+    assert _hand_off_lists(run_settings, boundaries, ids)["large_arteriole_boundary_nodes"] == [
+        "a1", "a2", "p",
+    ]
+    delete_vessels(model.graph, [(ids["p"], ids["f"], 0)], protected=_protected(run_settings))
+
+    out = post_process(run_settings, model, boundaries, SCHEMA, network=network)
+
+    assert _hand_off_lists(run_settings, boundaries, ids) == {
+        "large_arteriole_boundary_nodes": ["a1", "a2"],
+        "large_venule_boundary_nodes": ["v1", "v2"],
+    }
+    assert sorted(out.results["post_process"]["boundary_nodes"]["large_arteriole_boundary_nodes"]) == sorted(
+        [ids["a1"], ids["a2"]]
+    )
+    # With nothing leaving it, p is no junction: a2-p-a3 is one vessel.
+    assert out.graph.edges[ids["p"], ids["a3"], 0]["branch_order"] == "Large_Art3"
+
+
+def test_an_edit_never_leaves_a_hand_off_list_empty(tmp_path, caplog):
+    """Deleting every vessel that leaves the large arteriole leaves it no
+    hand-off node (a2, left a pass-through, is merged away, so the list is
+    first trimmed to a1 and p). The list only says whether the Large_Art tier
+    is tried, and emptying it would end the tier while the trunk still lies
+    in the mask: it is kept as it was, and it says so."""
+    run_settings, network, boundaries, model, ids = _small_boundary_run(
+        tmp_path, side_arteriole=True
+    )
+    delete_vessels(
+        model.graph,
+        [(ids["a1"], ids["s1"], 0), (ids["p"], ids["f"], 0), (ids["a2"], ids["c"], 0)],
+        protected=_protected(run_settings),
+    )
+    assert ids["a2"] not in model.graph
+
+    with caplog.at_level("WARNING", logger="haemolynx.pipeline.stages"):
+        out = post_process(run_settings, model, boundaries, SCHEMA, network=network)
+
+    assert _hand_off_lists(run_settings, boundaries, ids)["large_arteriole_boundary_nodes"] == [
+        "a1", "p",
+    ]
+    assert "leave no Large_Art hand-off node" in caplog.text
+    # With nothing leaving it, the trunk is one vessel from the inlet: a1 and
+    # p are no junctions.
+    assert out.graph.edges[ids["a0"], ids["a1"], 0]["branch_order"] == "Large_Art1"
+    assert out.graph.edges[ids["p"], ids["a3"], 0]["branch_order"] == "Large_Art1"
+
+
+def test_boundary_nodes_the_edits_do_not_touch_stay_as_they_are(tmp_path):
+    """Only the nodes an edit touched are judged again. A boundary node the
+    masks' rule would not give -- here one the hop-distance fallback could
+    have added beside an outlet the masks miss -- stays where it is when
+    the edits are elsewhere, and so does every list's order."""
+    run_settings, network, boundaries, model, ids = _small_boundary_run(tmp_path)
+    boundaries.venule_boundary_nodes.append(ids["v3"])
+    assert run_settings["venule_boundary_nodes"] is boundaries.venule_boundary_nodes
+    add_vessel_between(model.graph, ids["p"], ids["f"])
+
+    post_process(run_settings, model, boundaries, SCHEMA, network=network)
+
+    assert _boundary_lists(run_settings, boundaries, ids)["venule_boundary_nodes"] == [
+        "v1", "w1", "v3",
+    ]
+
+
+def test_an_edit_never_leaves_a_boundary_list_empty(tmp_path, caplog):
+    """Deleting the network's only small arteriole would leave no arteriole
+    boundary node, and with none the branch orders stop being hierarchical
+    (or a strict run fails): the list is kept as it was, and it says so."""
+    run_settings, network, boundaries, model, ids = _small_boundary_run(tmp_path)
+    delete_vessels(model.graph, [(ids["a1"], ids["s1"], 0)], protected=_protected(run_settings))
+
+    with caplog.at_level("WARNING", logger="haemolynx.pipeline.stages"):
+        out = post_process(run_settings, model, boundaries, SCHEMA, network=network)
+
+    assert _boundary_lists(run_settings, boundaries, ids)["arteriole_boundary_nodes"] == [
+        "a1", "s1",
+    ]
+    assert "leave no arteriole boundary node" in caplog.text
+    assert out.graph.edges[ids["w1"], ids["v1"], 0]["branch_order"] == "Ven1"
+
+
+@pytest.mark.parametrize("fallback", [True, False])
+def test_a_vessel_drawn_from_an_inlet_the_masks_miss_gets_the_fallback_boundary_node(
+    tmp_path, fallback
+):
+    """With no Large tier the inlets' own vessels lie in no small mask, so
+    the hop-distance fallback makes the node a vessel from each an arteriole
+    boundary node -- the Boundaries stage put p there, a vessel from the
+    inlet a3 (a1, a vessel from a0, is the small arteriole's already). A
+    vessel drawn from a0, clear of every mask, ends where the fallback,
+    placed on the edited network, says: at c, one vessel from the inlet, so
+    it is Art1 and stops there. With the fallback off nothing marks its end."""
+    run_settings, network, boundaries, model, ids = _small_boundary_run(
+        tmp_path,
+        assign_large_vessel_branch_orders=False,
+        small_vessel_boundary_fallback_to_hop_distance=fallback,
+    )
+    before = _boundary_lists(run_settings, boundaries, ids)["arteriole_boundary_nodes"]
+    assert sorted(run_settings["inlet_nodes"]) == sorted([ids["a0"], ids["a3"]])
+    assert before == (["a1", "s1", "p"] if fallback else ["a1", "s1"])
+    a0, c = model.graph.nodes[ids["a0"]]["pos"], model.graph.nodes[ids["c"]]["pos"]
+    drawn = add_vessel_between(model.graph, ids["a0"], ids["c"], [a0, (0.0, 4.0, 15.0), c])
+
+    out = post_process(run_settings, model, boundaries, SCHEMA, network=network)
+
+    arterioles = _boundary_lists(run_settings, boundaries, ids)["arteriole_boundary_nodes"]
+    assert graph_module.SMALL_MASK_VESSEL_TYPE not in out.graph.edges[drawn]
+    if fallback:
+        assert arterioles == [*before, "c"]
+        assert out.graph.edges[drawn]["branch_order"] == "Art1"
+    else:
+        assert arterioles == before
+
+
+def test_without_the_small_masks_the_boundary_nodes_stay_and_it_says_so(tmp_path, caplog):
+    """A run resumed from a checkpoint saved before the small masks were
+    carried has none to judge an edited vessel by."""
+    run_settings, network, boundaries, model, ids = _small_boundary_run(tmp_path)
+    boundaries.small_arteriole_mask = boundaries.small_venule_mask = None
+    add_vessel_between(model.graph, ids["p"], ids["f"])
+
+    with caplog.at_level("WARNING", logger="haemolynx.pipeline.stages"):
+        post_process(run_settings, model, boundaries, SCHEMA, network=network)
+
+    assert _boundary_lists(run_settings, boundaries, ids)["arteriole_boundary_nodes"] == [
+        "a1", "s1",
+    ]
+    assert "no small vessel masks to read" in caplog.text
+
+
+def test_a_network_without_small_mask_tags_keeps_its_boundary_nodes_and_says_so(
+    tmp_path, caplog
+):
+    """A graph whose Boundaries stage ran before the tags were written: the
+    vessels beside an edit cannot be read, so nothing is judged from them --
+    every touched node would read as off the masks and be dropped."""
+    run_settings, network, boundaries, model, ids = _small_boundary_run(tmp_path)
+    for *_, data in model.graph.edges(keys=True, data=True):
+        data.pop(graph_module.SMALL_MASK_VESSEL_TYPE, None)
+    drawn = add_vessel_between(model.graph, ids["p"], ids["f"])  # in the mask
+
+    with caplog.at_level("WARNING", logger="haemolynx.pipeline.stages"):
+        post_process(run_settings, model, boundaries, SCHEMA, network=network)
+
+    assert _boundary_lists(run_settings, boundaries, ids)["arteriole_boundary_nodes"] == [
+        "a1", "s1",
+    ]
+    assert graph_module.SMALL_MASK_VESSEL_TYPE not in model.graph.edges[drawn]
+    assert "no vessel carries the small-mask tag" in caplog.text
+
+
+def test_the_boundaries_stage_tags_the_vessels_its_boundary_nodes_come_from(tmp_path):
+    """The tags are the labelling the boundary nodes were read from: read
+    back by the same rule, they give the same nodes. A run whose boundary
+    nodes do not come from the small masks clears any a resumed graph kept."""
+    run_settings, network, boundaries, model, ids = _small_boundary_run(
+        tmp_path, side_arteriole=True, small_vessel_boundary_fallback_to_hop_distance=False
+    )
+    G = model.graph
+    tags = {
+        frozenset((u, v)): data[graph_module.SMALL_MASK_VESSEL_TYPE]
+        for u, v, data in G.edges(data=True)
+        if graph_module.SMALL_MASK_VESSEL_TYPE in data
+    }
+    assert tags == {
+        frozenset((ids["a1"], ids["s1"])): "arteriole",
+        frozenset((ids["p"], ids["f"])): "arteriole",
+        frozenset((ids["w1"], ids["v1"])): "venule",
+    }
+    from_tags = graph_module.boundary_nodes_from_small_mask_tags(G)
+    assert sorted(from_tags["arteriole"]) == sorted(run_settings["arteriole_boundary_nodes"])
+    assert sorted(from_tags["venule"]) == sorted(run_settings["venule_boundary_nodes"])
+
+    run_settings["use_small_vessel_masks_for_boundary_assignment"] = False
+    stages.assign_boundaries(run_settings, network)
+    assert network.graph is G
+    assert not any(graph_module.SMALL_MASK_VESSEL_TYPE in data for *_, data in G.edges(data=True))
+
+
+@pytest.mark.parametrize("dilation_um", [0.0, 6.0])
+def test_tagging_every_vessel_gives_the_boundaries_stage_labelling(tmp_path, dilation_um):
+    """tag_edges_in_small_vessel_masks is the Boundaries stage's own rule --
+    the threshold, the dilation steps, the gap fill: handed every vessel of
+    an untagged graph, it tags them as the Boundaries stage labelled them."""
+    run_settings, network, boundaries, model, ids = _small_boundary_run(
+        tmp_path, side_arteriole=True, small_vessel_mask_dilation_microns=dilation_um
+    )
+    G = model.graph
+    expected = {
+        (u, v, k): data.pop(graph_module.SMALL_MASK_VESSEL_TYPE, None)
+        for u, v, k, data in G.edges(keys=True, data=True)
+    }
+    assert sum(tag is not None for tag in expected.values()) >= 3
+
+    counts = graph_module.tag_edges_in_small_vessel_masks(
+        G,
+        boundaries.small_arteriole_mask,
+        boundaries.small_venule_mask,
+        list(expected),
+        voxel_size_zyx=(1.0, 1.0, 1.0),
+        minimum_overlap_fraction=run_settings["small_vessel_mask_min_overlap_fraction"],
+        max_dilation_microns=dilation_um,
+    )
+
+    got = {
+        (u, v, k): data.get(graph_module.SMALL_MASK_VESSEL_TYPE)
+        for u, v, k, data in G.edges(keys=True, data=True)
+    }
+    assert got == expected
+    assert counts["arteriole_edge_count"] == sum(tag == "arteriole" for tag in expected.values())
+
+
+# --- a drawn vessel read against the segmentation ---------------------------
+
+
+def _segmentation_along(G, shape, radius_vox=1, *, wide=(), wide_radius_vox=3):
+    """A mask of *shape* with a tube of *radius_vox* (Chebyshev) round every
+    vessel's path (walked every half micron: a straight vessel is stored as
+    its two ends) -- *wide_radius_vox* round the vessels in *wide* -- on
+    the fixture's 1 um grid."""
+    from haemolynx.preprocessing.bridge_mask_support import _densify
+
+    mask = np.zeros(shape, dtype=bool)
+    for u, v, data in G.edges(data=True):
+        r = wide_radius_vox if (u, v) in wide or (v, u) in wide else radius_vox
+        for point in _densify(np.asarray(data["voxels"], dtype=float), 0.5):
+            z, y, x = (int(round(c)) for c in point)
+            mask[
+                max(z - r, 0): z + r + 1, max(y - r, 0): y + r + 1, max(x - r, 0): x + r + 1
+            ] = True
+    return mask
+
+
+def _drawn_records(out):
+    return out.results["post_process"]["drawn_vessels"]
+
+
+def test_a_vessel_drawn_through_the_segmentation_is_recorded_as_all_in_it(tmp_path):
+    """The reader graph building judges its bridges with, applied to each
+    vessel a hand edit drew: p-f lies along the small arteriole's mask, so
+    all of it is in the segmentation, no background is crossed, and no
+    other centreline runs beside it in its lumen."""
+    run_settings, network, boundaries, model, ids = _small_boundary_run(tmp_path)
+    drawn = add_vessel_between(model.graph, ids["p"], ids["f"])
+    network.volume.image = _segmentation_along(model.graph, network.volume.image.shape)
+
+    out = post_process(run_settings, model, boundaries, SCHEMA, network=network)
+
+    data = out.graph.edges[drawn]
+    assert data[graph_module.DRAWN_MASK_FRACTION] == pytest.approx(1.0)
+    assert data[graph_module.DRAWN_BACKGROUND_RUN_UM] == pytest.approx(0.0)
+    assert data[graph_module.DRAWN_BESIDE_VESSEL] is False
+    (record,) = _drawn_records(out)
+    assert record == {
+        "edge": drawn, "length_um": pytest.approx(9.0), "mask_fraction": pytest.approx(1.0),
+        "background_run_um": pytest.approx(0.0), "beside_vessel": False,
+        "within_bridge_gate": True,
+    }
+    assert "drawn_vessels" in out.results["post_process"]
+    # The halves and tags the edit also touched are not vessels anybody drew.
+    for edge, other in out.graph.edges.items():
+        if edge != drawn:
+            assert graph_module.DRAWN_MASK_FRACTION not in other
+
+
+def test_a_vessel_drawn_across_background_records_the_run_and_is_kept(tmp_path, caplog):
+    """p-f drawn where the segmentation shows no vessel between the large
+    arteriole's tube and the capillary's: 6 um of background in one run,
+    a third of it in the mask, which graph building's bridge gate would
+    have refused -- recorded and said, and the vessel kept as drawn."""
+    run_settings, network, boundaries, model, ids = _small_boundary_run(tmp_path)
+    network.volume.image = _segmentation_along(model.graph, network.volume.image.shape)
+    drawn = add_vessel_between(model.graph, ids["p"], ids["f"])
+
+    with caplog.at_level("INFO", logger="haemolynx.pipeline.stages"):
+        out = post_process(run_settings, model, boundaries, SCHEMA, network=network)
+
+    data = out.graph.edges[drawn]
+    assert out.graph.has_edge(*drawn) and data["branch_order"]
+    assert 0.25 < data[graph_module.DRAWN_MASK_FRACTION] < 0.45
+    assert data[graph_module.DRAWN_BACKGROUND_RUN_UM] == pytest.approx(6.0, abs=1.0)
+    assert data[graph_module.DRAWN_BESIDE_VESSEL] is False
+    (record,) = _drawn_records(out)
+    assert record["edge"] == drawn and record["within_bridge_gate"] is False
+    assert "1 partly off it" in caplog.text
+    assert "of background in one run at most" in caplog.text
+
+
+def test_a_vessel_drawn_beside_a_vessel_in_its_lumen_says_so(tmp_path):
+    """A second strand drawn 2 um off the large arteriole's centreline,
+    inside its 7-voxel-wide tube from a1 to a3: all in the segmentation,
+    and beside a vessel the network already has."""
+    run_settings, network, boundaries, model, ids = _small_boundary_run(tmp_path)
+    G = model.graph
+    a1, a3 = G.nodes[ids["a1"]]["pos"], G.nodes[ids["a3"]]["pos"]
+    network.volume.image = _segmentation_along(
+        G, network.volume.image.shape,
+        wide=((ids["a1"], ids["a2"]), (ids["a2"], ids["p"]), (ids["p"], ids["a3"])),
+    )
+    path = [a1, (a1[0] + 1.0, 4.0, 7.0), (a3[0] - 1.0, 4.0, 7.0), a3]
+    drawn = add_vessel_between(G, ids["a1"], ids["a3"], path)
+
+    out = post_process(run_settings, model, boundaries, SCHEMA, network=network)
+
+    data = out.graph.edges[drawn]
+    assert data[graph_module.DRAWN_MASK_FRACTION] == pytest.approx(1.0)
+    assert data[graph_module.DRAWN_BESIDE_VESSEL] is True
+    (record,) = _drawn_records(out)
+    assert record["beside_vessel"] is True and record["within_bridge_gate"] is True
+    # The strand it runs beside is not marked: it is the vessel the run built.
+    assert graph_module.DRAWN_BESIDE_VESSEL not in out.graph.edges[ids["a2"], ids["p"], 0]
+
+
+def test_without_a_segmentation_no_drawn_vessel_is_read(tmp_path):
+    """A synthetic run has no mask: the attributes are not written and the
+    summary has no list, rather than a vessel read against nothing."""
+    run_settings, network, boundaries, model, ids = _small_boundary_run(tmp_path)
+    drawn = add_vessel_between(model.graph, ids["p"], ids["f"])
+    network.volume.image = None
+
+    out = post_process(run_settings, model, boundaries, SCHEMA, network=network)
+
+    assert graph_module.DRAWN_MASK_FRACTION not in out.graph.edges[drawn]
+    assert "drawn_vessels" not in out.results["post_process"]
+
+
+def test_a_resume_hands_the_small_masks_the_labelling_read_on(tmp_path):
+    """The panel's Regenerate on the Post processing tab resumes the run:
+    its boundaries come from the resume, which carries the small masks as
+    the Boundaries stage's labelling read them, never the network's own."""
+    _settings, network, *_ = _small_boundary_run(tmp_path)
+    cleaned = np.zeros_like(network.small_arteriole_mask)
+    resume = PipelineResume(
+        start_from="post_process",
+        graph=network.graph,
+        small_arteriole_mask=cleaned,
+        small_venule_mask=cleaned,
+    )
+
+    boundaries = stages._boundaries_from_resume(resume, network)
+
+    assert boundaries.small_arteriole_mask is cleaned
+    assert boundaries.small_venule_mask is cleaned
+    without = stages._boundaries_from_resume(PipelineResume(start_from="post_process"), network)
+    assert without.small_arteriole_mask is None
+
+
+def test_a_diameter_set_by_hand_survives_post_processing_and_moves_the_resistance(tmp_path, monkeypatch):
+    """Set diameter on the review lists: the vessel is not measured again --
+    a measurement would replace the hand value -- and its resistance follows
+    the new width when the haemodynamics is built again."""
+    run_settings, network, boundaries, model = _diameters_run(
+        tmp_path, use_edt_diameter_crosscheck=True,
+        edt_diameter_prefer_over_table_on_fwhm_failure=True,
+    )
+    model = build_haemodynamic_model(run_settings, model, SCHEMA)
+    G = model.graph
+    u, v, k = next(iter(G.edges(keys=True)))
+    G.edges[u, v, k]["edt_diameter_um"] = 7.5  # a measurement it could fall back on
+    before = G.edges[u, v, k]["resistance"]
+    width = 2.0 * G.edges[u, v, k]["diameter_um"]
+    measured: list = []
+    monkeypatch.setattr(
+        "haemolynx.haemodynamics.apply._measure_edt_diameters",
+        lambda G, _config, *, mask_volume=None, edges=None: measured.append(edges) or {},
+    )
+
+    set_vessel_diameter(G, [(u, v, k)], width)
+    out = post_process(run_settings, model, boundaries, SCHEMA, network=network)
+
+    data = out.graph.edges[u, v, k]
+    assert measured == []
+    assert data["diameter_source"] == "override"
+    assert data["diameter_um"] == pytest.approx(width)
+    out = build_haemodynamic_model(run_settings, out, SCHEMA)
+    assert out.graph.edges[u, v, k]["resistance"] < before / 8.0
+
+
+def test_the_region_found_again_is_kept_for_the_next_post_process(tmp_path, monkeypatch):
+    """Finding the region in the segmentation is minutes on a real stack, so
+    the one found is kept beside the run's skeleton (thick_vessel_region_cache)
+    and a later post_process on the same segmentation reads it back."""
+    run_settings, network, boundaries, model, _edge = _thick_run(tmp_path, volume_mask=False)
+    real = stages.preprocessing.thick_vessel_region
+    found = []
+
+    def spy(*args, **kwargs):
+        found.append(1)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(stages.preprocessing, "thick_vessel_region", spy)
+    post_process(run_settings, model, boundaries, SCHEMA, network=network)
+    assert found == [1]
+    cache = stages.thick_vessel_region_cache(run_settings, network.volume.output_dir)
+    assert cache.sidecar.exists()
+
+    again = _thick_run(tmp_path, volume_mask=False)
+    post_process(again[0], again[3], again[2], SCHEMA, network=again[1])
+    assert found == [1]
+
+
+# --- the dead ends the edits leave ----------------------------------------------
+
+#: The segmented chain for the dead-end tests: 1-um voxels, (z, y, x).
+TUBE_SHAPE = (20, 40, 81)
+TUBE_RADIUS_UM = 2.5
+#: Where the chain runs: along x at (z, y) = (10, 10), its nodes 20 um apart.
+TUBE_AXIS = (10.0, 10.0)
+
+
+def _tube_chain_run(tmp_path, *, branches=(), tubes=(), **settings):
+    """The chain through the real Diameters stage, with a segmentation to
+    judge its dead ends by: the chain's five nodes 20 um apart along x at
+    (z, y) = (10, 10), in a tube of radius 2.5 um running out through both x
+    faces, as graph building left it (the image extent recorded on the
+    graph). *branches* are more vessels of the network, each a (start, end)
+    in microns with a tube along it; *tubes* are tubes alone -- the vessels
+    the network missed, which a hand draws. Returns settings, network,
+    boundaries, model and the node id at each branch end."""
+    from lumen_artefact_fixtures import capsule
+
+    G = nx.MultiGraph()
+    xs = [20.0 * node for node in range(len(BRANCH_ORDERS) + 1)]
+    for node, x in enumerate(xs):
+        G.add_node(node, pos=np.asarray([*TUBE_AXIS, x]))
+    for node, order in enumerate(BRANCH_ORDERS):
+        G.add_edge(
+            node, node + 1, key=0, branch_order=order, length=xs[node + 1] - xs[node],
+            voxels=[[*TUBE_AXIS, float(x)] for x in range(int(xs[node]), int(xs[node + 1]) + 1)],
+        )
+    mask = capsule(np.zeros(TUBE_SHAPE, dtype=bool), (*TUBE_AXIS, -5), (*TUBE_AXIS, 86), TUBE_RADIUS_UM)
+    ids: dict[tuple, int] = {tuple(G.nodes[node]["pos"]): node for node in G.nodes}
+    for start, end in branches:
+        start, end = tuple(float(c) for c in start), tuple(float(c) for c in end)
+        for point in (start, end):
+            if point not in ids:
+                ids[point] = max(G.nodes) + 1
+                G.add_node(ids[point], pos=np.asarray(point))
+        G.add_edge(ids[start], ids[end], voxels=[start, end], length=float(np.linalg.norm(np.subtract(end, start))))
+        capsule(mask, start, end, TUBE_RADIUS_UM)
+    for start, end in tubes:
+        capsule(mask, start, end, TUBE_RADIUS_UM)
+    graph_module.dead_ends.record_image_extent(G, TUBE_SHAPE, (1.0, 1.0, 1.0))
+    volume = stages.SkeletonisedVolume(
+        image=mask.astype(np.uint8), skeleton=mask.copy(), voxel_size_xyz=(1.0, 1.0, 1.0),
+        voxel_size_zyx=(1.0, 1.0, 1.0), output_dir=tmp_path / "out",
+    )
+    run_settings = _settings(tmp_path, **settings)
+    network = stages.VesselNetwork(graph=G, volume=volume)
+    boundaries = _boundaries()
+    model = assign_diameters(run_settings, network, boundaries, SCHEMA)
+    return run_settings, network, boundaries, model, ids
+
+
+def _draw_to(G, from_node, end):
+    """A vessel drawn by hand from *from_node* straight to a new node at *end*."""
+    new = max(G.nodes) + 1
+    G.add_node(new, pos=np.asarray(end, dtype=float))
+    return add_vessel_between(G, from_node, new), new
+
+
+def test_a_vessel_drawn_to_where_the_segmented_vessel_leaves_the_image_is_an_open_end(tmp_path):
+    """Regression: post_process classified no dead end, so the end of a vessel
+    drawn by hand carried no kind, and the solve's open-end boundary read it
+    by its distance to the faces alone. Drawn to 7 um short of the y face
+    with the tube running on through it, that rule said it stops inside the
+    image. Judged against the segmentation as graph building judges every
+    dead end, it leaves the image, by the classifier."""
+    de = graph_module.dead_ends
+    tube = ((*TUBE_AXIS, 40.0), (10.0, 45.0, 40.0))
+    run_settings, network, boundaries, model, _ids = _tube_chain_run(tmp_path, tubes=[tube])
+    G = model.graph
+    _drawn, tip = _draw_to(G, 2, (10.0, 33.0, 40.0))
+    assert not de.node_leaves_image(G, tip), "by distance alone it does not"
+
+    out = post_process(run_settings, model, boundaries, SCHEMA, network=network)
+
+    assert out.graph.nodes[tip][de.DEAD_END_KIND] == de.LEAVES_IMAGE
+    assert out.graph.nodes[tip][de.DEAD_END_KIND_SOURCE] == de.SOURCE_CLASSIFIER
+    assert de.node_leaves_image(out.graph, tip)
+    assert out.results["post_process"]["dead_ends"][de.LEAVES_IMAGE] == 1
+
+
+def test_a_vessel_drawn_to_inside_the_segmented_vessel_stops_short_of_it(tmp_path):
+    """The tube runs 8 um on past the drawn end and stops well short of the
+    face: the classifier says the graph stops short of the vessel, and that
+    is what the node carries -- not an open end."""
+    de = graph_module.dead_ends
+    tube = ((*TUBE_AXIS, 40.0), (10.0, 33.0, 40.0))
+    run_settings, network, boundaries, model, _ids = _tube_chain_run(tmp_path, tubes=[tube])
+    _drawn, tip = _draw_to(model.graph, 2, (10.0, 25.0, 40.0))
+
+    out = post_process(run_settings, model, boundaries, SCHEMA, network=network)
+
+    assert out.graph.nodes[tip][de.DEAD_END_KIND] == de.STOPS_SHORT
+    assert not de.node_leaves_image(out.graph, tip)
+    assert out.results["post_process"]["dead_ends"][de.STOPS_SHORT] == 1
+
+
+def test_a_dead_end_a_deletion_leaves_is_judged_too(tmp_path):
+    """A deletion marks no vessel edited, but the node it took a vessel from
+    is touched: with s-t deleted, s is a dead end inside the tube, which
+    runs on past it -- stops short, not leaving the image."""
+    de = graph_module.dead_ends
+    s, t = (10.0, 25.0, 40.0), (10.0, 33.0, 40.0)
+    run_settings, network, boundaries, model, ids = _tube_chain_run(
+        tmp_path, branches=[((*TUBE_AXIS, 40.0), s), (s, t)], tubes=[(s, (10.0, 36.0, 40.0))]
+    )
+    G = model.graph
+    assert de.DEAD_END_KIND not in G.nodes[ids[s]]
+    delete_vessels(G, [(ids[s], ids[t], 0)], protected=_protected(run_settings))
+    assert G.degree(ids[s]) == 1 and ids[t] not in G
+
+    out = post_process(run_settings, model, boundaries, SCHEMA, network=network)
+
+    assert out.graph.nodes[ids[s]][de.DEAD_END_KIND] == de.STOPS_SHORT
+    assert out.results["post_process"]["dead_ends"][de.STOPS_SHORT] == 1
+    assert de.open_end_nodes(out.graph) == [0, LAST]
+
+
+def test_a_node_a_vessel_is_drawn_from_loses_the_classifiers_mark_but_keeps_a_persons(tmp_path):
+    """The inlet, marked by the classifier as leaving the image, and the
+    outlet, marked blind by a person in the review: a vessel drawn on from
+    each makes it a junction. The classifier's mark would be stale, so it
+    goes; the person's stays -- an edit can be undone, and nothing reads
+    the mark while the node is no dead end."""
+    de = graph_module.dead_ends
+    run_settings, network, boundaries, model, _ids = _tube_chain_run(tmp_path)
+    G = model.graph
+    G.nodes[0][de.DEAD_END_KIND] = de.LEAVES_IMAGE
+    G.nodes[0][de.DEAD_END_KIND_SOURCE] = de.SOURCE_CLASSIFIER
+    de.set_dead_end_kind(G, LAST, de.BLIND)
+    _draw_to(G, 0, (10.0, 25.0, 0.0))
+    _draw_to(G, LAST, (10.0, 25.0, 80.0))
+    assert G.degree(0) == 2 and G.degree(LAST) == 2
+
+    out = post_process(run_settings, model, boundaries, SCHEMA, network=network)
+
+    assert de.DEAD_END_KIND not in out.graph.nodes[0]
+    assert de.DEAD_END_KIND_SOURCE not in out.graph.nodes[0]
+    assert out.graph.nodes[LAST][de.DEAD_END_KIND] == de.BLIND
+    assert out.graph.nodes[LAST][de.DEAD_END_KIND_SOURCE] == de.SOURCE_REVIEW
+    assert not de.node_leaves_image(out.graph, 0)
+
+
+def test_without_a_network_the_dead_ends_are_left_as_they_are(tmp_path):
+    """A post-processing run with no network has no segmentation to judge
+    by: the drawn end carries no kind, and is read by the distance rule."""
+    de = graph_module.dead_ends
+    run_settings, _network, boundaries, model, _ids = _tube_chain_run(tmp_path)
+    _drawn, tip = _draw_to(model.graph, 2, (10.0, 33.0, 40.0))
+
+    out = post_process(run_settings, model, boundaries, SCHEMA)
+
+    assert de.DEAD_END_KIND not in out.graph.nodes[tip]
+    assert "dead_ends" not in out.results["post_process"]
+
+
+@pytest.mark.parametrize("low_ram", [False, True])
+def test_the_edits_readers_share_one_binarised_segmentation_and_one_support(tmp_path, monkeypatch, low_ram):
+    """The drawn vessels, the edited vessels' thick-vessel bridges and the
+    dead ends at the edits each binarised the whole segmentation in RAM and
+    made a support of their own: one of each now, on disk under low-RAM,
+    and the same network either way."""
+    import importlib
+
+    bridge_mask_support = importlib.import_module("haemolynx.preprocessing.bridge_mask_support")
+
+    plain_settings, plain_network, plain_boundaries, plain_model, _ = _thick_run(tmp_path / "plain")
+    plain_network.volume.image = _thick_mask().astype(np.uint8) * 255
+    expected = post_process(plain_settings, plain_model, plain_boundaries, SCHEMA, network=plain_network)
+
+    run_settings, network, boundaries, model, _edge = _thick_run(
+        tmp_path / "low", use_memmap_loading=low_ram, memmap_directory=tmp_path if low_ram else None,
+    )
+    network.volume.image = _thick_mask().astype(np.uint8) * 255
+    binarised, supports = [], []
+    real_binary = stages._to_binary_volume_for_skeletonization
+    real_support = bridge_mask_support.MaskSupport.__init__
+
+    def counting_binary(image, **kwargs):
+        binarised.append(kwargs.get("use_memmap", False))
+        return real_binary(image, **kwargs)
+
+    def counting_support(self, mask, *args, **kwargs):
+        supports.append((id(mask), kwargs.get("low_memory", False)))
+        real_support(self, mask, *args, **kwargs)
+
+    monkeypatch.setattr(stages, "_to_binary_volume_for_skeletonization", counting_binary)
+    monkeypatch.setattr(bridge_mask_support.MaskSupport, "__init__", counting_support)
+    out = post_process(run_settings, model, boundaries, SCHEMA, network=network)
+
+    assert binarised == [low_ram]
+    # Every support (the readers' one, and the split's with its own limits)
+    # reads the one binarised segmentation.
+    assert supports and len({mask for mask, _low in supports}) == 1
+    assert {low for _mask, low in supports} == {low_ram}
+    assert sorted(out.graph.nodes) == sorted(expected.graph.nodes)
+    assert sorted((min(u, v), max(u, v)) for u, v in out.graph.edges()) == sorted(
+        (min(u, v), max(u, v)) for u, v in expected.graph.edges()
+    )
+
+
+def test_the_tabs_review_lists_read_the_segmentation_post_processing_keeps(tmp_path):
+    """The tab's lists binarised the segmentation and built a support of
+    their own beside the one post processing keeps on the volume: two
+    copies of one image. Both are now one."""
+    run_settings, network, boundaries, model, _edge = _thick_run(tmp_path)
+    network.volume.image = _thick_mask().astype(np.uint8) * 255
+
+    shared = stages.post_process_segmentation_support(run_settings, network.volume)
+    assert shared is not None
+    post_process(run_settings, model, boundaries, SCHEMA, network=network)
+
+    kept = network.volume.post_process_segmentation
+    assert kept.support() is shared, "post processing read it through the same support"
+    assert stages.post_process_segmentation_support(run_settings, network.volume) is shared
+    assert stages.post_process_segmentation_support({}, network.volume) is None, "no bridge settings"
+    assert stages.post_process_segmentation_support(run_settings, None) is None
+    network.volume.image = None
+    assert stages.post_process_segmentation_support(run_settings, network.volume) is None
+
+
+def test_the_next_regenerate_reads_the_segmentation_it_was_read_as_last(tmp_path, monkeypatch):
+    """Every Regenerate binarised the image and built the support's surface
+    tree again (Stack A: about 5 of 6 s). A Regenerate is handed the run's
+    volume again, which keeps them, until the image or a setting that shapes
+    them changes."""
+    run_settings, network, boundaries, model, _edge = _thick_run(tmp_path)
+    network.volume.image = _thick_mask().astype(np.uint8) * 255
+    binarised = []
+    real_binary = stages._to_binary_volume_for_skeletonization
+    monkeypatch.setattr(
+        stages, "_to_binary_volume_for_skeletonization",
+        lambda image, **kwargs: binarised.append(id(image)) or real_binary(image, **kwargs),
+    )
+
+    def regenerate(**changed):
+        settings = {**run_settings, **changed}
+        G = model.graph
+        tip = max(G.nodes) + 1
+        G.add_node(tip, pos=np.asarray((5.0, 5.0, 2.0)))
+        add_vessel_between(G, 0, tip)
+        post_process(settings, model, boundaries, SCHEMA, network=network)
+        return network.volume.post_process_segmentation
+
+    first = regenerate()
+    tree = first.support()._distance
+    assert binarised and tree is not None
+    second = regenerate()
+    assert second is first and len(binarised) == 1
+    assert second.support()._distance is tree, "the surface tree is not built again"
+
+    wider = regenerate(bridge_max_background_gap_um=float(run_settings["bridge_max_background_gap_um"]) + 1.0)
+    assert wider is not first and len(binarised) == 2
+    network.volume.image = network.volume.image.copy()
+    again = regenerate(bridge_max_background_gap_um=float(run_settings["bridge_max_background_gap_um"]) + 1.0)
+    assert again is not wider and len(binarised) == 3
+    # The volume a checkpoint stores for the next resume is a copy of it
+    # (dataclasses.replace), which shares the reader.
+    assert stages.replace(network.volume).post_process_segmentation is again
+
+
+# --- inlets and outlets set by hand (the Terminal nodes list) -----------------
+
+from haemolynx.graph import set_terminal_role  # noqa: E402
+from haemolynx.graph.post_processing import BOUNDARY_ROLES  # noqa: E402
+
+
+def _chain_roles():
+    return {"inlet": (0,), "outlet": (LAST,), "arteriole_boundary": (0,), "venule_boundary": (LAST,)}
+
+
+def test_an_outlet_set_by_hand_replaces_the_runs_lists_and_the_resistance_pair(tmp_path):
+    run_settings, network, boundaries, model = _diameters_run(tmp_path)
+    G = model.graph
+    set_terminal_role(G, _chain_roles(), 2, "outlet")
+    set_terminal_role(G, _chain_roles(), LAST, None)
+
+    out = post_process(run_settings, model, boundaries, SCHEMA, network=network)
+
+    assert boundaries.outlet_nodes == [2] and run_settings["outlet_nodes"] == [2]
+    assert boundaries.inlet_nodes == [0] and run_settings["inlet_nodes"] == [0]
+    assert boundaries.resistance_node_pair == (0, 2)
+    assert out.results["post_process"]["boundary_nodes"]["outlet_nodes"] == [2]
+    assert out.results["post_process"]["edited_vessels"] == 0
+    # The lists are taken once: the marks are cleared with the others.
+    assert BOUNDARY_ROLES not in out.graph.graph
+    assert not has_pending_edits(out.graph)
+
+
+def test_the_lists_handed_on_are_the_resolves_not_post_processings(tmp_path):
+    """An inlet made by hand on a piece with no outlet: the re-solve's
+    network handling (remove_disconnected) removes the piece and the inlet.
+    post_process recorded the lists before that, and the checkpoint handed
+    the removed inlet to the next resume, whose solve then refused it."""
+    run_settings, network, boundaries, model = _diameters_run(
+        tmp_path, boundary_handling="remove_disconnected", run_haemodynamics=True
+    )
+    G = model.graph
+    a, b = max(G.nodes) + 1, max(G.nodes) + 2
+    G.add_node(a, pos=np.asarray((0.0, 80.0, 0.0)))
+    G.add_node(b, pos=np.asarray((0.0, 80.0, 30.0)))
+    add_vessel_between(G, a, b)
+    set_terminal_role(G, _chain_roles(), a, "inlet")
+
+    model = post_process(run_settings, model, boundaries, SCHEMA, network=network)
+    assert a in model.results["post_process"]["boundary_nodes"]["inlet_nodes"]
+    solution = stages.solve_post_processed(run_settings, model, boundaries, SCHEMA, network=network)
+
+    assert a not in solution.graph
+    handed_on = solution.post_processed["boundary_nodes"]
+    assert handed_on["inlet_nodes"] == boundaries.inlet_nodes == [0]
+    assert all(node in solution.graph for nodes in handed_on.values() for node in nodes)
+
+
+def test_a_dead_end_marked_as_leaving_the_image_is_opened_by_the_resolve(tmp_path, monkeypatch):
+    """A person's mark that a dead end leaves the image is the boundary
+    condition the solve puts on it: closed before the mark, the end drains
+    blood after the re-solve the mark now makes Continue run."""
+    from haemolynx.graph import FLOW_STATE
+    from haemolynx.graph import dead_ends as de
+    from haemolynx.graph.post_processing import mark_dead_end_kind
+
+    network = _stub_early_stages(monkeypatch, tmp_path)
+    G = network.graph
+    tip = LAST + 1
+    start = np.asarray(G.nodes[2]["pos"], dtype=float)
+    end = start + np.asarray([0.0, 300.0, 0.0])
+    G.add_node(tip, pos=end)
+    G.add_edge(2, tip, voxels=[start.tolist(), end.tolist()], length=300.0)
+    paused = run_pipeline_stages(_settings(tmp_path, open_end_model="outlet"), SCHEMA, stop_after="solve")
+    (key,) = paused[2][tip]
+    assert paused.edges[2, tip, key][FLOW_STATE] == "blind_end"
+    assert tip not in de.open_end_nodes(paused)
+    edited = copy.deepcopy(paused)
+    assert mark_dead_end_kind(edited, tip, de.LEAVES_IMAGE)
+
+    solved = run_pipeline_stages(
+        _settings(tmp_path, open_end_model="outlet"), SCHEMA,
+        start_from="post_process", resume=_resume_from_post_processing(edited),
+    )
+
+    data = solved.edges[2, tip, key]
+    assert data[FLOW_STATE] == "solved" and data["flow_abs"] > 0
+    assert tip in de.open_end_nodes(solved)
+    assert solved.nodes[tip][de.DEAD_END_KIND_SOURCE] == de.SOURCE_REVIEW
+
+
+def test_the_network_is_solved_between_the_inlets_and_outlets_set_by_hand(tmp_path, monkeypatch):
+    """Making the chain's middle node an outlet holds it at the outlet
+    pressure: blood leaves there, and the vessels beyond it, between two
+    outlets, carry none."""
+    _stub_early_stages(monkeypatch, tmp_path)
+    paused = run_pipeline_stages(_settings(tmp_path), SCHEMA, stop_after="solve")
+    edited = copy.deepcopy(paused)
+    set_terminal_role(edited, _chain_roles(), 2, "outlet")
+    assert abs(paused.edges[2, 3, 0]["flow_signed"]) > 0
+
+    run_settings = _settings(tmp_path)
+    solved = run_pipeline_stages(
+        run_settings,
+        SCHEMA,
+        start_from="post_process",
+        resume=_resume_from_post_processing(edited),
+    )
+
+    assert solved.nodes[2]["pressure"] == pytest.approx(float(run_settings["outlet_p_bc"]))
+    assert abs(solved.edges[0, 1, 0]["flow_signed"]) > 0
+    assert solved.edges[2, 3, 0]["flow_abs"] == pytest.approx(0.0, abs=1e-12 * solved.edges[0, 1, 0]["flow_abs"])
+    assert sorted(run_settings["outlet_nodes"]) == [2, LAST]
+
+
+# --- the two-point resistance's nodes chosen by hand (Two-point resistance nodes) ---
+
+from haemolynx.graph import set_resistance_node  # noqa: E402
+from haemolynx.graph.post_processing import RESISTANCE_NODE_PAIR  # noqa: E402
+
+
+def test_the_two_point_nodes_chosen_by_hand_replace_the_first_inlet_and_outlet(tmp_path):
+    run_settings, network, boundaries, model = _diameters_run(tmp_path)
+    set_resistance_node(model.graph, boundaries.resistance_node_pair, 2, "end")
+
+    out = post_process(run_settings, model, boundaries, SCHEMA, network=network)
+
+    assert boundaries.resistance_node_pair == (0, 2)
+    assert boundaries.inlet_nodes == [0] and boundaries.outlet_nodes == [LAST], "no role changes with it"
+    assert out.graph.graph[RESISTANCE_NODE_PAIR] == (0, 2), "kept for every later regenerate"
+    assert not has_pending_edits(out.graph)
+
+
+def test_a_chosen_two_point_node_an_edit_took_out_is_forgotten(tmp_path, caplog):
+    run_settings, network, boundaries, model = _diameters_run(tmp_path)
+    G = model.graph
+    edge, tip = _pendant(G)
+    set_resistance_node(G, boundaries.resistance_node_pair, tip, "end")
+    delete_vessels(G, [edge], protected=frozenset({0, LAST}))
+    assert tip not in G
+
+    with caplog.at_level("WARNING", logger=stages.logger.name):
+        out = post_process(run_settings, model, boundaries, SCHEMA, network=network)
+
+    assert boundaries.resistance_node_pair == (0, LAST)
+    assert RESISTANCE_NODE_PAIR not in out.graph.graph
+    assert any("no longer all in the network" in record.message for record in caplog.records)
+
+
+def test_the_two_point_resistance_is_solved_between_the_nodes_chosen_and_stays_there(tmp_path, monkeypatch):
+    """In the chain, the resistance between two of its nodes is the vessels'
+    between them in series; a later regenerate, which resumes with the first
+    inlet and outlet as the panel's checkpoints carry them, keeps the pair."""
+    _stub_early_stages(monkeypatch, tmp_path)
+    paused_out: dict = {}
+    paused = run_pipeline_stages(
+        _settings(tmp_path), SCHEMA, stop_after="solve", on_stage_output=paused_out.__setitem__
+    )
+    assert paused_out["solve"].equivalent_resistance_nodes == (0, LAST)
+    edited = copy.deepcopy(paused)
+    set_resistance_node(edited, (0, LAST), 2, "end")
+
+    outputs: dict = {}
+    solved = run_pipeline_stages(
+        _settings(tmp_path), SCHEMA, start_from="post_process",
+        resume=_resume_from_post_processing(edited), on_stage_output=outputs.__setitem__,
+    )
+
+    solution = outputs["post_process"]
+    assert solution.equivalent_resistance_nodes == (0, 2)
+    series = solved.edges[0, 1, 0]["resistance"] + solved.edges[1, 2, 0]["resistance"]
+    assert solution.equivalent_resistance == pytest.approx(series, rel=1e-6)
+    assert stages.resistance_statistics(solution)["Haemodynamics"]["Two-Point Resistance Nodes"] == "0 -> 2"
+    assert stages.solved_resistance_node_pair(solved) == (0, 2)
+
+    again = copy.deepcopy(solved)
+    set_vessel_diameter(again, [(2, 3, 0)], 4.0)
+    outputs = {}
+    run_pipeline_stages(
+        _settings(tmp_path), SCHEMA, start_from="post_process",
+        resume=_resume_from_post_processing(again), on_stage_output=outputs.__setitem__,
+    )
+    assert outputs["post_process"].equivalent_resistance_nodes == (0, 2)
+
+
+# --- bridges made and taken away by hand ---------------------------------------------
+
+
+def test_a_bridge_made_by_hand_gets_no_order_and_no_resistance_and_its_vessel_is_measured_again(tmp_path):
+    """The rest of the vessel cut keeps its order and is re-measured, and its
+    resistance falls with its length; the bridge is no vessel of any order."""
+    from haemolynx.graph import BRIDGE_SET_BY_HAND, bridge_vessel_side
+    from haemolynx.haemodynamics.apply import ZERO_RESISTANCE_FRACTION
+
+    run_settings, network, boundaries, model = _diameters_run(tmp_path)
+    before = build_haemodynamic_model(run_settings, copy.deepcopy(model), SCHEMA).graph
+    order = model.graph.edges[1, 2, 0]["branch_order"]
+    bridge = bridge_vessel_side(
+        model.graph, (1, 2, 0), (0.0, 0.0, 1.75 * EDGE_LENGTH_UM), (0.0, 0.0, 1.9 * EDGE_LENGTH_UM),
+    )
+    (new,) = set(bridge[:2]) - {2}
+
+    out = post_process(run_settings, model, boundaries, SCHEMA, network=network)
+
+    G = out.graph
+    data = G.edges[bridge]
+    assert data[IS_ZERO_RESISTANCE] and data[BRIDGE_SET_BY_HAND] is True
+    assert "branch_order" not in data and data["diameter_source"] == "bridge"
+    assert data["length"] == pytest.approx(EDGE_LENGTH_UM / 4)
+    (key,) = G[1][new]
+    rest = G.edges[1, new, key]
+    assert rest["branch_order"] == order and rest["length"] == pytest.approx(0.75 * EDGE_LENGTH_UM)
+    assert rest["diameter_um"] == pytest.approx(before.edges[1, 2, 0]["diameter_um"])
+    assert not has_pending_edits(G)
+
+    solved = build_haemodynamic_model(run_settings, out, SCHEMA).graph
+    assert solved.edges[1, new, key]["resistance"] == pytest.approx(0.75 * before.edges[1, 2, 0]["resistance"])
+    real = [d["resistance"] for *_e, d in solved.edges(data=True) if not d.get(IS_ZERO_RESISTANCE)]
+    assert solved.edges[bridge]["resistance"] == pytest.approx(min(real) * ZERO_RESISTANCE_FRACTION)
+
+
+def test_a_bridge_made_a_vessel_by_hand_is_never_bridged_again(tmp_path):
+    """Regression: the edited vessel used to be cut into a bridge inside the
+    thick vessel again at the next regenerate, undoing the person's edit."""
+    from haemolynx.graph import BRIDGE_SET_BY_HAND, unbridge_vessel
+
+    run_settings, network, boundaries, model, _edge = _thick_run(tmp_path)
+    post_process(run_settings, model, boundaries, SCHEMA, network=network)
+    (bridge,) = [(u, v, k) for u, v, k, d in model.graph.edges(keys=True, data=True) if d.get(IS_ZERO_RESISTANCE)]
+
+    vessel = unbridge_vessel(model.graph, bridge, protected={0, 3})
+    out = post_process(run_settings, model, boundaries, SCHEMA, network=network)
+
+    G = out.graph
+    assert not any(d.get(IS_ZERO_RESISTANCE) for *_e, d in G.edges(data=True))
+    (piece,) = _pieces_between(G, 1, 2)
+    assert piece[2] is G.edges[vessel] and set(vessel[:2]) == {1, 2}
+    data = G.edges[vessel]
+    assert data[BRIDGE_SET_BY_HAND] is False, "kept for every later regenerate"
+    assert data["length"] == pytest.approx(10.0)
+    assert data["branch_order"] and data["diameter_um"] > 0 and data["diameter_source"] != "bridge"
+
+    solved = build_haemodynamic_model(run_settings, out, SCHEMA).graph
+    resistances = [d["resistance"] for *_e, d in solved.edges(data=True)]
+    assert solved.edges[vessel]["resistance"] >= 0.01 * max(resistances), "a vessel's own resistance"
+
+
+def test_a_regenerate_after_a_bridge_made_by_hand_solves_the_flow_through_it(tmp_path, monkeypatch):
+    from haemolynx.graph import bridge_vessel_side
+
+    _stub_early_stages(monkeypatch, tmp_path)
+    before: dict = {}
+    paused = run_pipeline_stages(_settings(tmp_path), SCHEMA, stop_after="solve", on_stage_output=before.__setitem__)
+    edited = copy.deepcopy(paused)
+    bridge = bridge_vessel_side(
+        edited, (1, 2, 0), (0.0, 0.0, 1.5 * EDGE_LENGTH_UM), (0.0, 0.0, 1.9 * EDGE_LENGTH_UM),
+    )
+
+    outputs: dict = {}
+    solved = run_pipeline_stages(
+        _settings(tmp_path), SCHEMA, start_from="post_process",
+        resume=_resume_from_post_processing(edited), on_stage_output=outputs.__setitem__,
+    )
+
+    # One chain: the bridge carries what every vessel of it carries.
+    flows = [abs(d["flow_signed"]) for *_e, d in solved.edges(data=True)]
+    assert abs(solved.edges[bridge]["flow_signed"]) == pytest.approx(max(flows))
+    assert min(flows) == pytest.approx(max(flows))
+    assert "branch_order" not in solved.edges[bridge]
+    assert all(d.get("branch_order") for *_e, d in solved.edges(data=True) if not d.get(IS_ZERO_RESISTANCE))
+    # Half a capillary's resistance is gone from the chain.
+    assert outputs["post_process"].network_resistance < before["solve"].network_resistance
+    assert outputs["post_process"].post_processed["edited_vessels"] == 1

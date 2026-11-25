@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 import tifffile
 
+from haemolynx.io import file_axis_spacing_from_xyz
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PIPELINE_PATH = REPO_ROOT / "examples" / "resistance_network_pipeline.py"
@@ -34,11 +35,10 @@ def _load_pipeline_module():
 def _run_pipeline(pipeline, *, input_path, plot_dir, output_dir, image_axis_order):
     plot_dir.mkdir(parents=True, exist_ok=True)
     output_dir.mkdir(parents=True, exist_ok=True)
-    vtk_prefix = output_dir / "axis_order_network"
     pipeline.image_to_model_pipeline(
         input_path=input_path,
         plot_dir=plot_dir,
-        vtk_output_prefix=vtk_prefix,
+        output_dir=output_dir,
         image_axis_order=image_axis_order,
         verbose_logging=False,
         do_skeletonize=True,
@@ -69,13 +69,20 @@ def _run_pipeline(pipeline, *, input_path, plot_dir, output_dir, image_axis_orde
         return pickle.load(fh)
 
 
-def _write_anisotropic_tiff(volume: np.ndarray, path: Path) -> None:
+def _write_anisotropic_tiff(volume: np.ndarray, path: Path, axis_order: str = "zyx") -> None:
+    """Write *volume*, stored in *axis_order*, with VOXEL_SIZE_XYZ in its tags.
+
+    The tags describe the file's own axes (pages, height, width), so a stack
+    stored (x, y, z) carries the x spacing as its page spacing -- what the
+    loader reads them as (``io.voxel_size_xyz_from_file_axes``).
+    """
+    page, height, width = file_axis_spacing_from_xyz(VOXEL_SIZE_XYZ, axis_order)
     tifffile.imwrite(
         str(path),
         volume,
         imagej=True,
-        resolution=(1.0 / VOXEL_SIZE_XYZ[0], 1.0 / VOXEL_SIZE_XYZ[1]),
-        metadata={"spacing": VOXEL_SIZE_XYZ[2], "unit": "um"},
+        resolution=(1.0 / width, 1.0 / height),
+        metadata={"spacing": page, "unit": "um"},
     )
 
 
@@ -122,24 +129,34 @@ def test_pipeline_axis_order_transposed_input_matches_canonical_run(tmp_path):
     canonical_tiff = tmp_path / "canonical.tif"
     transposed_tiff = tmp_path / "transposed.tif"
     _write_anisotropic_tiff(volume, canonical_tiff)
-    # Same data stored as (x, y, z) instead of (z, y, x).
-    _write_anisotropic_tiff(np.transpose(volume, (2, 1, 0)), transposed_tiff)
+    # Same data and voxels stored as (x, y, z) instead of (z, y, x).
+    _write_anisotropic_tiff(np.transpose(volume, (2, 1, 0)), transposed_tiff, "xyz")
 
     pipeline = _load_pipeline_module()
+    canonical_output = TESTS_DIR / "outputs" / "axis_order_canonical"
+    transposed_output = TESTS_DIR / "outputs" / "axis_order_transposed"
     canonical_graph = _run_pipeline(
         pipeline,
         input_path=canonical_tiff,
         plot_dir=TESTS_DIR / "plots" / "plots_axis_order_canonical",
-        output_dir=TESTS_DIR / "outputs" / "axis_order_canonical",
+        output_dir=canonical_output,
         image_axis_order="zyx",
     )
     transposed_graph = _run_pipeline(
         pipeline,
         input_path=transposed_tiff,
         plot_dir=TESTS_DIR / "plots" / "plots_axis_order_transposed",
-        output_dir=TESTS_DIR / "outputs" / "axis_order_transposed",
+        output_dir=transposed_output,
         image_axis_order="xyz",
     )
+
+    # Both runs must read the same physical voxel; if they do not, every
+    # geometric comparison below fails for that reason alone.
+    for output_dir, stem in ((canonical_output, "canonical"), (transposed_output, "transposed")):
+        voxel_meta = json.loads((output_dir / f"{stem}_voxel_size.json").read_text())
+        assert tuple(voxel_meta["voxel_size"]) == pytest.approx(VOXEL_SIZE_XYZ)
+    assert transposed_graph.graph["voxel_size"] == pytest.approx((2.0, 0.5, 0.4))
+    assert canonical_graph.graph["voxel_size"] == pytest.approx((2.0, 0.5, 0.4))
 
     assert transposed_graph.number_of_nodes() == canonical_graph.number_of_nodes()
     assert transposed_graph.number_of_edges() == canonical_graph.number_of_edges()
@@ -160,4 +177,64 @@ def test_pipeline_axis_order_transposed_input_matches_canonical_run(tmp_path):
         sorted_positions(canonical_graph),
         rtol=1e-9,
         atol=1e-9,
+    )
+
+
+def _write_labelled_h5(volume: np.ndarray, path: Path, axis_order: str) -> None:
+    """Write the (z, y, x) *volume* stored in *axis_order*, its axistags naming
+    each axis as ilastik's do, with VOXEL_SIZE_XYZ as one element_size_um per
+    dataset axis."""
+    h5py = pytest.importorskip("h5py")
+    stored = np.transpose(volume, ["zyx".index(axis) for axis in axis_order])
+    with h5py.File(path, "w") as handle:
+        dataset = handle.create_dataset("data", data=stored)
+        dataset.attrs["axistags"] = json.dumps(
+            {"axes": [{"key": key, "typeFlags": 2, "resolution": 0, "description": ""}
+                      for key in axis_order]}
+        )
+        dataset.attrs["element_size_um"] = file_axis_spacing_from_xyz(VOXEL_SIZE_XYZ, axis_order)
+
+
+@pytest.mark.integration
+@pytest.mark.slow
+def test_pipeline_auto_axis_order_reads_an_hdf5_by_its_axistags(tmp_path):
+    """image_axis_order="auto" on an HDF5 stored (x, y, z), whose axistags say
+    so, reproduces the canonical file's model with nothing chosen by hand."""
+    pytest.importorskip("skan")
+
+    volume = tifffile.imread(str(FIXTURE_TIFF))
+    canonical_h5 = tmp_path / "auto_canonical.h5"
+    labelled_h5 = tmp_path / "auto_labelled_xyz.h5"
+    _write_labelled_h5(volume, canonical_h5, "zyx")
+    _write_labelled_h5(volume, labelled_h5, "xyz")
+
+    pipeline = _load_pipeline_module()
+    graphs = {}
+    for path, order in ((canonical_h5, "zyx"), (labelled_h5, "auto")):
+        graphs[order] = _run_pipeline(
+            pipeline,
+            input_path=path,
+            plot_dir=tmp_path / f"plots_{path.stem}",
+            output_dir=tmp_path / path.stem,
+            image_axis_order=order,
+        )
+        voxel_meta = json.loads((tmp_path / path.stem / f"{path.stem}_voxel_size.json").read_text())
+        assert tuple(voxel_meta["voxel_size"]) == pytest.approx(VOXEL_SIZE_XYZ)
+    canonical_graph, auto_graph = graphs["zyx"], graphs["auto"]
+
+    assert auto_graph.graph["voxel_size"] == pytest.approx((2.0, 0.5, 0.4))
+    assert auto_graph.number_of_nodes() == canonical_graph.number_of_nodes()
+    assert auto_graph.number_of_edges() == canonical_graph.number_of_edges() > 0
+
+    def total_length(graph):
+        return sum(float(d["length"]) for _, _, d in graph.edges(data=True))
+
+    assert total_length(auto_graph) == pytest.approx(total_length(canonical_graph), rel=1e-9)
+
+    def sorted_positions(graph):
+        pos = np.array([data["pos"] for _, data in graph.nodes(data=True)])
+        return pos[np.lexsort(pos.T[::-1])]
+
+    np.testing.assert_allclose(
+        sorted_positions(auto_graph), sorted_positions(canonical_graph), rtol=1e-9, atol=1e-9
     )

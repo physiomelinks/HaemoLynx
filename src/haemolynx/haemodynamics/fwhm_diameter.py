@@ -1,0 +1,2284 @@
+"""Automated vessel diameter estimation from raw TIFF intensity (transverse profiles).
+
+At each sample along an edge, intensity along the perpendicular line is fit with a Gaussian
+plus baseline; vessel size is reported as the Gaussian **FWHM**,
+``2 * sqrt(2 ln 2) * σ`` (micrometers). By default the baseline seed uses **outer wings**
+of the profile (see ``robust_baseline_from_profile_wings``) to reduce bias from a
+neighbour-induced shoulder on one side.
+
+Branch identity for clipping comes from an in-memory label volume rasterized from the graph
+(see ``build_graph_branch_label_volume``). Transverse extent follows the configured minimum
+relative to the current FWHM estimate unless truncated at another edge or volume bounds.
+
+Transverse profiles are sampled **in the physical y–x plane only** (no displacement along
+stack axis ``z`` / index 0), so diameter rays follow in-plane directions when voxel spacing
+is anisotropic with coarser ``z``.
+"""
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any, Iterable, Literal, Mapping, Sequence
+
+import numpy as np
+import networkx as nx
+import tifffile
+from scipy.ndimage import map_coordinates
+from scipy.optimize import brentq, curve_fit
+from scipy.special import erf
+
+from haemolynx.io.axis_order import (
+    CANONICAL_AXIS_ORDER,
+    apply_axis_order,
+    axis_order_for_file,
+    normalize_axis_order,
+)
+from haemolynx.preprocessing.memmap_support import release_memmap_array
+
+from .poiseuille import edge_selection
+
+# FWHM of a Gaussian with standard deviation sigma (not 2*sigma^2 in the exponent).
+_GAUSSIAN_FWHM_FROM_SIGMA = 2.0 * np.sqrt(2.0 * np.log(2.0))
+
+
+def load_single_channel_tiff_volume(
+    path: str | Path,
+    *,
+    axis_order: str = CANONICAL_AXIS_ORDER,
+    use_memmap: bool = False,
+    memmap_directory: str | Path | None = None,
+    channel: int | None = None,
+) -> np.ndarray:
+    """Load a 3D TIFF as float32 in canonical ``(z, y, x)`` order.
+
+    Single channel / single signal expected -- or, with *channel*, that one
+    channel (counting from 0) of a multi-channel stack such as an ImageJ
+    composite (see :func:`_read_tiff_channel`). *axis_order* may be
+    ``"auto"`` (:func:`haemolynx.io.axis_order.axis_order_for_file`).
+
+    *use_memmap* (the low-RAM option) decompresses, reorders and converts to
+    float32 into disk-backed arrays in *memmap_directory*; the returned
+    memmap is always a new file, the caller's to release with
+    ``release_memmap_array``. Same voxels either way.
+    """
+    path = Path(path)
+    if not path.exists():
+        raise FileNotFoundError(f"TIFF not found: {path}")
+    axis_order = axis_order_for_file(axis_order, path)
+    if channel is not None:
+        vol = _read_tiff_channel(path, int(channel))
+        # A 2D channel comes back as one plane, (1, y, x) -- its singleton
+        # axes squeezed away, only a 2D one is -- and is reordered no more
+        # than a 2D single-channel file or the segmented image is: an xyz
+        # order would stand it on its side, off the mask's grid.
+        if vol.shape[0] != 1:
+            vol = apply_axis_order(vol, axis_order)
+        if not use_memmap:
+            return np.asarray(vol, dtype=np.float32)
+        from haemolynx.preprocessing.memmap_support import map_by_slab, new_memmap_array
+
+        out = new_memmap_array(vol.shape, np.float32, directory=memmap_directory)
+        map_by_slab(vol, lambda slab: slab.astype(np.float32), out)
+        return out
+    if use_memmap:
+        from haemolynx.io.load import load_3d_tif_with_voxel_size
+
+        vol, *_ = load_3d_tif_with_voxel_size(
+            str(path),
+            axis_order=axis_order,
+            allow_2d=True,
+            use_memmap=True,
+            memmap_directory=memmap_directory,
+        )
+        # A transposed volume is a memmap of ours; the untransposed one is
+        # tifffile's own temporary, which tifffile deletes itself.
+        ours = vol.ndim == 3 and normalize_axis_order(axis_order) != CANONICAL_AXIS_ORDER
+        if vol.ndim == 2:
+            vol = vol[np.newaxis, ...]
+        if vol.ndim != 3:
+            raise ValueError(
+                f"Expected 2D slice stack or 3D volume, got shape {vol.shape} for {path}"
+            )
+        # Always a fresh float32 file, so the caller owns what it is handed.
+        from haemolynx.preprocessing.memmap_support import map_by_slab, new_memmap_array
+
+        out = new_memmap_array(vol.shape, np.float32, directory=memmap_directory)
+        map_by_slab(vol, lambda slab: slab.astype(np.float32), out)
+        if ours:
+            release_memmap_array(vol)
+        return out
+    vol = tifffile.imread(str(path))
+    if vol.ndim == 2:
+        vol = vol[np.newaxis, ...]
+    else:
+        vol = apply_axis_order(vol, axis_order)
+    if vol.ndim != 3:
+        raise ValueError(
+            f"Expected 2D slice stack or 3D volume, got shape {vol.shape} for {path}"
+        )
+    return np.asarray(vol, dtype=np.float32)
+
+
+def _read_tiff_channel(path: Path, channel: int) -> np.ndarray:
+    """One channel of a multi-channel TIFF as a 3D volume in its stored axis
+    order (``(z, y, x)`` for an ImageJ hyperstack), reading only that
+    channel's pages. A stack with no channel axis is its own channel 0."""
+    from haemolynx.io.channels import tiff_channel_axis
+
+    with tifffile.TiffFile(str(path)) as tif:
+        series = tif.series[0]
+        axes = series.axes.upper()
+        shape = series.shape
+        channel_axis = tiff_channel_axis(
+            axes, shape, tif.imagej_metadata, tif.ome_metadata if tif.is_ome else None
+        )
+        if channel_axis is None:
+            if channel != 0:
+                raise ValueError(
+                    f"{path.name} has no channel axis (axes {axes}); channel {channel} "
+                    "does not exist. Leave the channel unset for a single-channel file."
+                )
+            volume = series.asarray()
+        else:
+            count = shape[channel_axis]
+            if not 0 <= channel < count:
+                raise ValueError(
+                    f"{path.name} has {count} channels (0-{count - 1}); channel {channel} "
+                    "does not exist."
+                )
+            if axes.endswith("YX") and len(series.pages) == int(np.prod(shape[:-2])):
+                # One page per plane: read only this channel's.
+                leading = [n for n in shape[:-2]]
+                grid = np.indices(leading).reshape(len(leading), -1)
+                pick = grid[channel_axis] == channel
+                pages = np.ravel_multi_index(grid[:, pick], leading)
+                volume = tifffile.imread(str(path), key=pages.tolist(), series=0)
+                kept = [n for i, n in enumerate(leading) if i != channel_axis]
+                volume = volume.reshape(kept + list(shape[-2:]))
+            else:
+                volume = np.take(series.asarray(), channel, axis=channel_axis)
+            axes = axes.replace("C", "")
+    volume = np.squeeze(volume)
+    if volume.ndim == 2:
+        volume = volume[np.newaxis, ...]
+    if volume.ndim != 3:
+        raise ValueError(
+            f"Expected a 3D volume in channel {channel} of {path.name}, got shape {volume.shape}"
+        )
+    return volume
+
+
+def _spacing_vec(voxel_size_zyx: tuple[float, float, float]) -> np.ndarray:
+    s = np.asarray(voxel_size_zyx, dtype=float).ravel()
+    if s.size != 3:
+        raise ValueError("voxel_size_zyx must have length 3")
+    return s
+
+
+def physical_points_to_continuous_indices(
+    points_phys: np.ndarray,
+    voxel_size_zyx: tuple[float, float, float],
+) -> np.ndarray:
+    """Convert physical (axis0, axis1, axis2) coordinates to continuous voxel indices.
+
+    Uses the same element-wise scaling as graph construction:
+    ``phys[i] = index[i] * voxel_size_zyx[i]``.
+    """
+    pts = np.asarray(points_phys, dtype=float)
+    if pts.ndim == 1:
+        pts = pts.reshape(1, 3)
+    spacing = _spacing_vec(voxel_size_zyx)
+    if np.any(spacing <= 0):
+        raise ValueError("voxel_size_zyx components must be positive.")
+    return pts / spacing
+
+
+def _gram_schmidt_perpendicular(tangent: np.ndarray) -> np.ndarray:
+    """Unit vector perpendicular to ``tangent`` in full 3D.
+
+    For an axisymmetric vessel, any direction genuinely perpendicular to the
+    real 3D tangent gives the same diameter -- which reference axis
+    Gram-Schmidt happens to pick (the one least parallel to *tangent*)
+    doesn't matter for correctness, only that the result is perpendicular to
+    the *actual* tangent rather than to its y-x projection. This is the
+    ``transverse_sampling_mode="true_3d_perpendicular"`` direction (see
+    :func:`_transverse_unit_for_mode`); the default
+    ``"in_plane_yx"`` mode uses ``_transverse_unit_in_physical_yx_plane``
+    instead, whose ray is perpendicular only to the tangent's projection --
+    correct for a vessel running within one slice, foreshortened (biased
+    high) for one with a real z-component to its direction.
+    """
+    t = np.asarray(tangent, dtype=float).ravel()
+    nrm = np.linalg.norm(t)
+    if nrm < 1e-12:
+        return np.array([1.0, 0.0, 0.0], dtype=float)
+    t = t / nrm
+    # Pick a reference axis least parallel to t
+    refs = (
+        np.array([1.0, 0.0, 0.0]),
+        np.array([0.0, 1.0, 0.0]),
+        np.array([0.0, 0.0, 1.0]),
+    )
+    best = min(refs, key=lambda r: abs(float(np.dot(r, t))))
+    n = best - np.dot(best, t) * t
+    nn = np.linalg.norm(n)
+    if nn < 1e-12:
+        n = np.array([0.0, 1.0, 0.0]) - np.dot(np.array([0.0, 1.0, 0.0]), t) * t
+        nn = np.linalg.norm(n)
+    if nn < 1e-12:
+        return np.array([1.0, 0.0, 0.0], dtype=float)
+    return (n / nn).astype(float)
+
+
+def _transverse_unit_in_physical_yx_plane(tangent: np.ndarray) -> np.ndarray:
+    """Unit vector perpendicular to ``tangent`` with zero component along physical ``z`` (axis 0).
+
+    Coordinates are ``(z, y, x)`` as elsewhere in this module. The returned direction lies in
+    the slice plane (varies only ``y`` and ``x``), matching typical microscopy where ``z`` is
+    the lower-resolution stack axis and diameters should be measured without stepping along ``z``.
+    """
+    t = np.asarray(tangent, dtype=float).ravel()
+    if t.size != 3:
+        raise ValueError("tangent must have length 3 (z, y, x).")
+    ty, tx = float(t[1]), float(t[2])
+    n2 = float(np.hypot(ty, tx))
+    if n2 < 1e-12:
+        return np.array([0.0, 1.0, 0.0], dtype=float)
+    return np.array([0.0, -tx / n2, ty / n2], dtype=float)
+
+
+TransverseSamplingMode = Literal["in_plane_yx", "true_3d_perpendicular"]
+
+
+def _transverse_unit_for_mode(tangent: np.ndarray, mode: TransverseSamplingMode) -> np.ndarray:
+    """The transverse sampling direction ``mode`` selects, for one tangent."""
+    if mode == "in_plane_yx":
+        return _transverse_unit_in_physical_yx_plane(tangent)
+    if mode == "true_3d_perpendicular":
+        return _gram_schmidt_perpendicular(tangent)
+    raise ValueError(
+        f"Unknown transverse_sampling_mode={mode!r}; "
+        "use 'in_plane_yx' or 'true_3d_perpendicular'."
+    )
+
+
+def _out_of_plane_fraction(tangent: np.ndarray) -> float:
+    """How much of *tangent* points along physical ``z`` (axis 0), in [0, 1].
+
+    ``0`` for a tangent entirely within the y-x slice plane, ``1`` for one
+    running purely along ``z``. Used to warn that ``"in_plane_yx"``
+    sampling -- perpendicular only to the tangent's in-plane projection --
+    is likely biased for this particular vessel, without needing to switch
+    the whole run to ``"true_3d_perpendicular"``.
+    """
+    t = np.asarray(tangent, dtype=float).ravel()
+    norm = float(np.sqrt(t[0] * t[0] + t[1] * t[1] + t[2] * t[2]))
+    if norm < 1e-12:
+        return 0.0
+    return float(abs(t[0]) / norm)
+
+
+def _arc_length_parameterize(poly_phys: np.ndarray) -> tuple[np.ndarray, float]:
+    """Cumulative arc length along polyline (micrometers)."""
+    p = np.asarray(poly_phys, dtype=float)
+    if len(p) < 2:
+        return np.array([0.0], dtype=float), 0.0
+    seg = np.linalg.norm(np.diff(p, axis=0), axis=1)
+    s = np.concatenate([[0.0], np.cumsum(seg)])
+    return s, float(s[-1])
+
+
+def _interpolate_centerline(poly_phys: np.ndarray, s: np.ndarray, targets: np.ndarray) -> np.ndarray:
+    """Interpolate 3D positions at arc-length values ``targets``."""
+    p = np.asarray(poly_phys, dtype=float)
+    out = np.empty((len(targets), 3), dtype=float)
+    for i, t in enumerate(targets):
+        out[i] = np.array(
+            [float(np.interp(t, s, p[:, j])) for j in range(3)],
+            dtype=float,
+        )
+    return out
+
+
+def _tangent_at(poly_phys: np.ndarray, s: np.ndarray, s0: float) -> np.ndarray:
+    """Central-difference tangent on the polyline at arc length ``s0``."""
+    p = np.asarray(poly_phys, dtype=float)
+    if len(p) < 2:
+        return np.array([0.0, 0.0, 1.0], dtype=float)
+    if s0 <= s[0] + 1e-9:
+        return p[1] - p[0]
+    if s0 >= s[-1] - 1e-9:
+        return p[-1] - p[-2]
+    idx = int(np.searchsorted(s, s0, side="right") - 1)
+    idx = max(0, min(idx, len(p) - 2))
+    ds = s[idx + 1] - s[idx]
+    if ds < 1e-12:
+        return p[idx + 1] - p[idx]
+    alpha = (s0 - s[idx]) / ds
+    t0 = p[idx + 1] - p[idx]
+    if idx > 0:
+        t0 = (1 - alpha) * (p[idx + 1] - p[idx]) + alpha * (p[idx] - p[idx - 1])
+    elif idx + 2 < len(p):
+        t0 = p[idx + 2] - p[idx]
+    return t0.astype(float)
+
+
+def _nearest_integer_index(pt_idx: np.ndarray, shape: tuple[int, ...]) -> tuple[int, int, int]:
+    iz, iy, ix = (int(round(float(pt_idx[0]))), int(round(float(pt_idx[1]))), int(round(float(pt_idx[2]))))
+    iz = int(np.clip(iz, 0, shape[0] - 1))
+    iy = int(np.clip(iy, 0, shape[1] - 1))
+    ix = int(np.clip(ix, 0, shape[2] - 1))
+    return iz, iy, ix
+
+
+def _label_at(
+    labels: np.ndarray,
+    pt_idx: np.ndarray,
+    shape: tuple[int, ...],
+) -> int:
+    iz, iy, ix = _nearest_integer_index(pt_idx, shape)
+    return int(labels[iz, iy, ix])
+
+
+def _line_pitch_um(direction_unit: np.ndarray, voxel_size_zyx) -> float:
+    """How far apart, in microns, a line along *direction_unit* crosses voxels:
+    ``1 / |direction / spacing|`` -- each axis's spacing along an axis, and in
+    between for an oblique line."""
+    per_voxel = np.asarray(direction_unit, dtype=float) / _spacing_vec(voxel_size_zyx)
+    return float(1.0 / max(np.linalg.norm(per_voxel), 1e-12))
+
+
+def _max_extent_along_ray(
+    center_idx: np.ndarray,
+    direction_unit: np.ndarray,
+    assigned_label: int,
+    labels: np.ndarray,
+    max_physical_extent: float,
+    voxel_size_zyx: tuple[float, float, float],
+    step_um: float,
+    *,
+    background_label: int,
+    junction_label: int | None,
+    allow_junction_crossing: bool,
+    same_edge_s_lookup: dict[tuple[int, int, int], float] | None = None,
+    same_edge_s0_um: float | None = None,
+    same_edge_arc_window_um: float | None = None,
+    allow_crossing_other_edges: bool = False,
+    vessel_mask: np.ndarray | None = None,
+) -> float:
+    """Positive distance along +direction until hitting another edge or the volume edge.
+
+    With *vessel_mask* (the segmentation, true on vessel), a ray that starts
+    inside a vessel also stops where it enters a *different* one: once it
+    has left its own vessel and crossed at least one voxel of background,
+    the next vessel voxel is another vessel, and the ray ends just before it.
+    That is where another vessel actually is, rather than a guess from
+    other graph centrelines or intensity dips. A ray starting outside the
+    mask (a centreline off its own segmentation) cannot tell its own vessel
+    from a neighbour, so the mask is not consulted for it.
+
+    Voxels labeled ``assigned_label`` or ``background_label`` (unpainted lumen) allow
+    continuation up to ``max_physical_extent``. By default, ``junction_label`` is
+    treated as a hard stop to avoid crossing into neighbouring branches at bifurcations.
+    If ``same_edge_s_lookup`` + ``same_edge_s0_um`` + ``same_edge_arc_window_um`` are
+    provided, same-edge traversal is additionally restricted to local arc-length
+    neighbourhood around the current sample to avoid zig-zag self-intersections.
+
+    By default, any other positive label is treated as a different graph edge and
+    truncates the line -- a single centerline voxel a few microns away is a poor proxy
+    for "this is a different vessel": a wide vessel represented as several nearby
+    graph edges (a common real skeleton/graph-build outcome near dense branching) has
+    its own other edges' centerlines well inside its own true radius, truncating the
+    profile long before the real background and severely underestimating diameter.
+    ``allow_crossing_other_edges=True`` treats another edge's label the same as
+    background instead, leaving the caller's intensity-based single-vessel clip
+    (``_clip_profile_to_single_vessel``) -- which looks for an actual valley-then-rise
+    in the sampled intensity, not just nearby topology -- as the one thing deciding
+    where this vessel's own profile actually ends.
+    """
+    spacing = _spacing_vec(voxel_size_zyx)
+    if step_um <= 0:
+        raise ValueError("step_um must be positive.")
+    d = direction_unit / np.linalg.norm(direction_unit)
+    n_steps = int(np.ceil(max_physical_extent / step_um))
+    if n_steps <= 0:
+        return max_physical_extent
+    shape = np.asarray(labels.shape)
+    # Every step along the ray at once; the ray ends at the first step that
+    # stops it, and each stop returns the distance of the step before.
+    ks = np.arange(1, n_steps + 1)
+    idx = center_idx[None, :] + (ks[:, None] * step_um) * (d / spacing)[None, :]
+    outside = np.any((idx < 0) | (idx > shape - 1), axis=1)
+    stop = int(np.argmax(outside)) if outside.any() else n_steps
+    if stop == 0:
+        return 0.0
+    nearest = np.rint(idx[:stop]).astype(np.intp)
+    if vessel_mask is not None and bool(
+        vessel_mask[_nearest_integer_index(center_idx, vessel_mask.shape)]
+    ):
+        # Less than a voxel of background (measured along this ray) is the
+        # mask's own pixelation, not a gap between two vessels.
+        min_gap_um = float(1.0 / np.linalg.norm(d / spacing))
+        on_vessel = np.asarray(vessel_mask[nearest[:, 0], nearest[:, 1], nearest[:, 2]]) != 0
+        # The ray has left its own vessel once a run of background is at
+        # least min_gap_um long; the next vessel voxel is another vessel.
+        count = 0.0
+        left_at = None
+        for i in range(stop):
+            if on_vessel[i]:
+                count = 0.0
+            else:
+                count += step_um
+                if count >= min_gap_um:
+                    left_at = i
+                    break
+        if left_at is not None:
+            later = np.flatnonzero(on_vessel[left_at + 1:])
+            if later.size:
+                stop = min(stop, left_at + 1 + int(later[0]))
+    lab = np.asarray(labels[nearest[:stop, 0], nearest[:stop, 1], nearest[:stop, 2]])
+    halts = np.zeros(stop, dtype=bool)
+    other = (lab != assigned_label) & (lab != background_label)
+    if junction_label is not None:
+        junction = lab == junction_label
+        halts |= junction & (not allow_junction_crossing)
+        other &= ~junction
+    if not allow_crossing_other_edges:
+        halts |= other
+    if (
+        same_edge_s_lookup is not None
+        and same_edge_s0_um is not None
+        and same_edge_arc_window_um is not None
+        and same_edge_arc_window_um > 0
+    ):
+        first_halt = int(np.argmax(halts)) if halts.any() else stop
+        window = float(same_edge_arc_window_um)
+        s0 = float(same_edge_s0_um)
+        for i in np.flatnonzero(lab[:first_halt] == assigned_label):
+            s_here = same_edge_s_lookup.get(tuple(int(v) for v in nearest[i]))
+            if s_here is not None and abs(float(s_here) - s0) > window:
+                halts[i] = True
+                break
+    if halts.any():
+        stop = min(stop, int(np.argmax(halts)))
+    if stop < n_steps:
+        return max(0.0, stop * step_um)
+    return max_physical_extent
+
+
+def _sample_transverse_profile(
+    raw: np.ndarray,
+    labels: np.ndarray,
+    center_phys: np.ndarray,
+    tangent: np.ndarray,
+    assigned_label: int,
+    half_extent_um: float,
+    transverse_step_um: float,
+    voxel_size_zyx: tuple[float, float, float],
+    *,
+    background_label: int,
+    junction_label: int | None,
+    allow_junction_crossing: bool = False,
+    same_edge_s_lookup: dict[tuple[int, int, int], float] | None = None,
+    same_edge_s0_um: float | None = None,
+    same_edge_arc_window_um: float | None = None,
+    transverse_sampling_mode: TransverseSamplingMode = "in_plane_yx",
+    allow_crossing_other_edges: bool = False,
+    longitudinal_average_um: float = 0.0,
+    vessel_mask: np.ndarray | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Sample intensity along a line through ``center_phys``, perpendicular to ``tangent``.
+
+    ``transverse_sampling_mode="in_plane_yx"`` (default) keeps the line in
+    the physical y-x plane (fixed ``z``); see
+    ``_transverse_unit_in_physical_yx_plane``. ``"true_3d_perpendicular"``
+    instead uses the tangent's real 3D perpendicular (see
+    ``_gram_schmidt_perpendicular``), correcting the foreshortening bias the
+    default has for a vessel with a real z-component to its direction.
+
+    *longitudinal_average_um* > 0 averages the same line over that length
+    along the vessel (centred on *center_phys*, about two lines per voxel),
+    instead of reading one line. A vessel's width barely changes over a few
+    microns while photon noise is independent pixel to pixel, so this cuts
+    the noise without blurring the width. On a dim channel a single line is
+    mostly one-pixel spikes, and a fit to one of them reads ~1 pixel wide
+    whatever the vessel.
+
+    Returns (positions_along_line_um, intensities).
+    """
+    spacing = _spacing_vec(voxel_size_zyx)
+    n_hat = _transverse_unit_for_mode(tangent, transverse_sampling_mode)
+    center_idx = center_phys / spacing
+
+    pos_plus = _max_extent_along_ray(
+        center_idx,
+        n_hat,
+        assigned_label,
+        labels,
+        half_extent_um,
+        voxel_size_zyx,
+        transverse_step_um,
+        background_label=background_label,
+        junction_label=junction_label,
+        allow_junction_crossing=allow_junction_crossing,
+        same_edge_s_lookup=same_edge_s_lookup,
+        same_edge_s0_um=same_edge_s0_um,
+        same_edge_arc_window_um=same_edge_arc_window_um,
+        allow_crossing_other_edges=allow_crossing_other_edges,
+        vessel_mask=vessel_mask,
+    )
+    pos_minus = _max_extent_along_ray(
+        center_idx,
+        -n_hat,
+        assigned_label,
+        labels,
+        half_extent_um,
+        voxel_size_zyx,
+        transverse_step_um,
+        background_label=background_label,
+        junction_label=junction_label,
+        allow_junction_crossing=allow_junction_crossing,
+        same_edge_s_lookup=same_edge_s_lookup,
+        same_edge_s0_um=same_edge_s0_um,
+        same_edge_arc_window_um=same_edge_arc_window_um,
+        allow_crossing_other_edges=allow_crossing_other_edges,
+        vessel_mask=vessel_mask,
+    )
+
+    n_neg = int(np.floor(pos_minus / transverse_step_um))
+    n_pos = int(np.floor(pos_plus / transverse_step_um))
+    offsets = np.arange(-n_neg, n_pos + 1, dtype=float) * transverse_step_um
+    if offsets.size == 0:
+        offsets = np.array([0.0], dtype=float)
+
+    shifts = np.array([0.0])
+    along = np.zeros(3)
+    if longitudinal_average_um > 0:
+        t = np.asarray(tangent, dtype=float).ravel()
+        t_norm = float(np.linalg.norm(t))
+        if t_norm > 1e-12:
+            along = t / t_norm
+            shift_step = 0.5 * float(np.min(spacing))
+            half = 0.5 * float(longitudinal_average_um)
+            n_half = int(np.floor(half / shift_step))
+            shifts = np.arange(-n_half, n_half + 1, dtype=float) * shift_step
+    line_phys = (
+        np.asarray(center_phys, dtype=float)[None, None, :]
+        + shifts[:, None, None] * along[None, None, :]
+        + offsets[None, :, None] * n_hat[None, None, :]
+    )  # (shifts, offsets, 3)
+    idx = (line_phys / spacing).reshape(-1, 3).T
+    vals = map_coordinates(raw, idx, order=1, mode="constant", cval=0.0)
+    return offsets, np.asarray(vals, dtype=float).reshape(shifts.size, offsets.size).mean(axis=0)
+
+
+def _gaussian_fluorescence_1d(
+    x: np.ndarray,
+    baseline: float,
+    amplitude: float,
+    x0: float,
+    sigma: float,
+) -> np.ndarray:
+    """baseline + amplitude * exp(-(x - x0)^2 / (2 sigma^2))."""
+    sig = max(float(sigma), 1e-15)
+    return baseline + amplitude * np.exp(-0.5 * ((x - float(x0)) / sig) ** 2)
+
+
+def robust_baseline_from_profile_wings(
+    x_sorted: np.ndarray,
+    y_sorted: np.ndarray,
+    wing_fraction: float = 0.2,
+) -> float:
+    """Baseline guess from outer ``wing_fraction`` of the line (by position).
+
+    Uses the **minimum** of the left-wing and right-wing intensity medians so a
+    neighbour-induced shoulder on **one** side does not raise the whole baseline.
+    """
+    if wing_fraction <= 0.0 or wing_fraction >= 0.5:
+        raise ValueError("wing_fraction must be in (0, 0.5).")
+    x = np.asarray(x_sorted, dtype=float).ravel()
+    y = np.asarray(y_sorted, dtype=float).ravel()
+    if x.size == 0:
+        raise ValueError("empty profile")
+    x_min = float(x[0])
+    x_max = float(x[-1])
+    span = x_max - x_min
+    if span <= 0:
+        return float(np.median(y))
+    lo_cut = x_min + wing_fraction * span
+    hi_cut = x_max - wing_fraction * span
+    left = y[x <= lo_cut]
+    right = y[x >= hi_cut]
+    if left.size == 0 and right.size == 0:
+        return float(np.median(y))
+    if left.size == 0:
+        return float(np.median(right))
+    if right.size == 0:
+        return float(np.median(left))
+    return float(min(np.median(left), np.median(right)))
+
+
+def _aggregate_edge_diameter(diameters: list[float], method: Literal["median", "mean"]) -> float:
+    """Collapse one edge's accepted per-sample diameters to a single value.
+
+    ``median`` (default) resists a single outlier sample -- one skewed
+    fit pulling a plain mean is exactly the failure mode this exists to
+    avoid -- and is well-defined for any sample count down to one, unlike a
+    trimmed mean or an outlier-filtered mean, which need enough points to
+    define what to trim/filter. ``mean`` is kept for anyone who wants the
+    literal old behaviour reproduced.
+    """
+    values = np.asarray(diameters, dtype=float)
+    if method == "median":
+        return float(np.median(values))
+    if method == "mean":
+        return float(np.mean(values))
+    raise ValueError(f"Unknown edge_diameter_aggregation={method!r}; use 'median' or 'mean'.")
+
+
+def _full_width_at_fraction(
+    x: np.ndarray, y: np.ndarray, baseline: float, peak: float, fraction: float
+) -> float | None:
+    """Width of the profile above ``baseline + fraction*(peak-baseline)``.
+
+    Finds the first crossing on each side of the profile's own centre
+    (smallest ``|x|``), linearly interpolating between the two bracketing
+    samples. ``None`` if either side never reaches that level within the
+    sampled extent -- fail-open, since an indeterminate shape is not
+    evidence either way, and other gates still apply.
+    """
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+    if x.size < 2:
+        return None
+    order = np.argsort(x)
+    x = x[order]
+    y = y[order]
+    level = float(baseline) + float(fraction) * (float(peak) - float(baseline))
+    center_idx = int(np.argmin(np.abs(x)))
+
+    def _crossing(indices: range) -> float | None:
+        prev_x, prev_y = x[center_idx], y[center_idx]
+        if prev_y < level:
+            return None
+        for i in indices:
+            xi, yi = x[i], y[i]
+            if yi < level:
+                span = prev_y - yi
+                if span <= 0:
+                    return None
+                t = (prev_y - level) / span
+                return float(prev_x + t * (xi - prev_x))
+            prev_x, prev_y = xi, yi
+        return None
+
+    left = _crossing(range(center_idx - 1, -1, -1))
+    right = _crossing(range(center_idx + 1, x.size))
+    if left is None or right is None:
+        return None
+    return float(right - left)
+
+
+def _profile_plateau_shape_ratio(
+    x: np.ndarray, y: np.ndarray, baseline: float
+) -> float | None:
+    """``width(80% height) / width(50% height)`` -- how plateau-like a
+    profile's own shape is, independent of any parametric fit's R².
+
+    An ideal Gaussian has a fixed ratio of ``sqrt(ln 0.8 / ln 0.5) ~= 0.567``
+    regardless of its width. A flat-topped/saturated profile (e.g. a
+    detector-clipped signal, or a probability/segmentation field instead of
+    real intensity) has near-vertical edges, so its width barely narrows
+    between 80% and 50% height -- the ratio approaches 1. A parametric
+    Gaussian fit can still report a deceptively high R² against such a
+    shape (an overparameterized 4-parameter fit smoothing over a rounded
+    plateau), so this check reads the sampled profile directly instead of
+    the fit's own residuals.
+    """
+    y = np.asarray(y, dtype=float)
+    if y.size == 0:
+        return None
+    peak = float(np.max(y))
+    w80 = _full_width_at_fraction(x, y, baseline, peak, 0.8)
+    w50 = _full_width_at_fraction(x, y, baseline, peak, 0.5)
+    if w80 is None or w50 is None or w50 <= 0:
+        return None
+    return float(w80 / w50)
+
+
+def fwhm_from_profile(
+    positions_um: np.ndarray,
+    intensities: np.ndarray,
+    *,
+    min_points: int = 5,
+    profile_baseline_mode: Literal["wings", "percentile"] = "wings",
+    profile_baseline_wing_fraction: float = 0.2,
+    constrain_fitted_baseline: bool = False,
+    baseline_constraint_half_width_ptp: float = 0.35,
+) -> float | None:
+    """FWHM (µm) from a least-squares Gaussian + baseline fit to the 1D intensity profile.
+
+    The model is ``baseline + amplitude * exp(-(x - x0)^2 / (2 sigma^2))`` with
+    ``amplitude > 0``. Returns ``FWHM = 2 * sqrt(2 ln 2) * sigma``.
+
+    Thin wrapper around :func:`_fwhm_gaussian_fit_with_diagnostics` (same model,
+    same fit) so the two never silently diverge -- this used to be a second,
+    independent implementation of the identical fit.
+
+    Parameters
+    ----------
+    profile_baseline_mode :
+        ``wings`` (default): initial baseline from ``robust_baseline_from_profile_wings``,
+        which reduces bias when a neighbour adds a shoulder on one side of the profile.
+        ``percentile``: legacy initial guess via the 10th percentile of all samples.
+    profile_baseline_wing_fraction :
+        Fraction of line length (each end) used as wings when ``mode="wings"``.
+    constrain_fitted_baseline :
+        If True, restrict the fitted baseline to a band around the wing (or percentile)
+        guess so the optimiser cannot absorb a shoulder mostly into a higher baseline.
+    baseline_constraint_half_width_ptp :
+        Half-width of that band as a fraction of peak-to-peak intensity (only if
+        ``constrain_fitted_baseline`` is True).
+    """
+    fwhm, _center, _r2 = _fwhm_gaussian_fit_with_diagnostics(
+        positions_um,
+        intensities,
+        min_points=min_points,
+        profile_baseline_mode=profile_baseline_mode,
+        profile_baseline_wing_fraction=profile_baseline_wing_fraction,
+        constrain_fitted_baseline=constrain_fitted_baseline,
+        baseline_constraint_half_width_ptp=baseline_constraint_half_width_ptp,
+    )
+    return fwhm
+
+
+def _fwhm_gaussian_fit_with_diagnostics(
+    positions_um: np.ndarray,
+    intensities: np.ndarray,
+    *,
+    min_points: int = 5,
+    profile_baseline_mode: Literal["wings", "percentile"] = "wings",
+    profile_baseline_wing_fraction: float = 0.2,
+    constrain_fitted_baseline: bool = False,
+    baseline_constraint_half_width_ptp: float = 0.35,
+) -> tuple[float | None, float | None, float | None]:
+    """Return (fwhm_um, fitted_center_um, fit_r2) using same model as ``fwhm_from_profile``."""
+    x = np.asarray(positions_um, dtype=float).ravel()
+    y = np.asarray(intensities, dtype=float).ravel()
+    if x.size != y.size or x.size < max(2, int(min_points)):
+        return None, None, None
+    mask = np.isfinite(x) & np.isfinite(y)
+    x = x[mask]
+    y = y[mask]
+    if x.size < max(2, int(min_points)):
+        return None, None, None
+    order = np.argsort(x)
+    x = x[order]
+    y = y[order]
+    span = float(np.ptp(x))
+    if span <= 0 or not np.isfinite(span):
+        return None, None, None
+    dx = float(np.median(np.abs(np.diff(x)))) if x.size > 1 else span
+    sigma_min = max(0.25 * dx, span * 1e-6, 1e-9)
+    y_min, y_max = float(np.min(y)), float(np.max(y))
+    y_ptp = max(y_max - y_min, 1e-12)
+    if profile_baseline_mode == "wings":
+        try:
+            b_anchor = robust_baseline_from_profile_wings(
+                x, y, wing_fraction=profile_baseline_wing_fraction
+            )
+        except ValueError:
+            b_anchor = float(np.percentile(y, 10))
+    elif profile_baseline_mode == "percentile":
+        b_anchor = float(np.percentile(y, 10))
+    else:
+        raise ValueError(
+            f"Unknown profile_baseline_mode={profile_baseline_mode!r}; "
+            "use 'wings' or 'percentile'."
+        )
+    b0 = min(max(b_anchor, y_min - y_ptp), y_max - 0.01 * y_ptp)
+    amp0 = max(y_max - b0, y_ptp * 0.5, 1e-9)
+    x0_guess = float(x[int(np.argmax(y))])
+    sig0 = max(span / 5.0, sigma_min)
+    p0 = np.array([b0, amp0, x0_guess, sig0], dtype=float)
+    half_w = float(baseline_constraint_half_width_ptp) * y_ptp
+    if constrain_fitted_baseline and half_w > 0:
+        b_lo = max(y_min - 0.5 * y_ptp, b_anchor - half_w)
+        b_hi = min(y_max + 0.5 * y_ptp, b_anchor + half_w)
+        if b_lo >= b_hi:
+            b_lo, b_hi = y_min - 2.0 * y_ptp, y_max + 2.0 * y_ptp
+    else:
+        b_lo = y_min - 5.0 * y_ptp
+        b_hi = y_max + 5.0 * y_ptp
+    lo = np.array([b_lo, 1e-12, np.min(x) - span, sigma_min], dtype=float)
+    hi = np.array([b_hi, max(y_max * 20.0, amp0 * 1e3), np.max(x) + span, span], dtype=float)
+    try:
+        popt, _ = curve_fit(
+            _gaussian_fluorescence_1d,
+            x,
+            y,
+            p0=p0,
+            bounds=(lo, hi),
+            maxfev=50000,
+        )
+    except (RuntimeError, ValueError):
+        return None, None, None
+    baseline_fit, amplitude_fit, x0_fit, sigma_fit = (
+        float(popt[0]),
+        float(popt[1]),
+        float(popt[2]),
+        float(popt[3]),
+    )
+    if not np.isfinite(sigma_fit) or sigma_fit <= 0 or amplitude_fit <= 0:
+        return None, None, None
+    y_hat = _gaussian_fluorescence_1d(x, baseline_fit, amplitude_fit, x0_fit, sigma_fit)
+    ss_res = float(np.sum((y - y_hat) ** 2))
+    ss_tot = float(np.sum((y - np.mean(y)) ** 2))
+    r2 = 1.0 - ss_res / ss_tot if ss_tot > 1e-12 else 1.0
+    fwhm = float(_GAUSSIAN_FWHM_FROM_SIGMA * sigma_fit)
+    if fwhm <= 0:
+        return None, None, None
+    return fwhm, x0_fit, r2
+
+
+#: Which model a transverse profile is fitted with -- see
+#: :func:`_lumen_fwhm_fit_with_diagnostics` and
+#: :func:`_fwhm_gaussian_fit_with_diagnostics`.
+ProfileModel = Literal["blurred_lumen", "gaussian"]
+
+
+def _blurred_lumen_1d(
+    x: np.ndarray,
+    baseline: float,
+    amplitude: float,
+    x0: float,
+    width: float,
+    blur_sigma: float,
+) -> np.ndarray:
+    """A uniformly filled lumen of *width* seen through a Gaussian blur of
+    *blur_sigma*: a flat top with soft edges, whose edges sit at half its
+    height when the lumen is wide against the blur.
+
+    *amplitude* is the profile's peak height above *baseline* -- the plateau
+    for a wide lumen, the top of the blur for a narrow one -- rather than the
+    unblurred lumen's own height. That keeps the fit well posed down to a
+    zero width, which is exactly a Gaussian of *blur_sigma*: parameterised by
+    the unblurred height instead, a sub-resolution vessel sends the width to
+    zero and the height to infinity and the fit never converges.
+    """
+    sig = max(float(blur_sigma), 1e-15)
+    half = 0.5 * max(float(width), 0.0)
+    root2s = np.sqrt(2.0) * sig
+    offset = np.asarray(x, dtype=float) - float(x0)
+    peak = float(erf(half / root2s))
+    if peak < 1e-8:
+        return baseline + amplitude * np.exp(-0.5 * (offset / sig) ** 2)
+    return baseline + amplitude * (
+        0.5 * (erf((offset + half) / root2s) - erf((offset - half) / root2s)) / peak
+    )
+
+
+def _blurred_lumen_fwhm(width: float, blur_sigma: float) -> float:
+    """Full width at half maximum of :func:`_blurred_lumen_1d`.
+
+    The lumen width itself when the vessel is wide against the blur, the
+    blur's own Gaussian FWHM when it is far narrower, and a smooth transition
+    between -- so it is the same quantity the Gaussian fit measured for a
+    sub-resolution capillary, without the Gaussian's bias on a wide one.
+    """
+    w = max(float(width), 0.0)
+    s = max(float(blur_sigma), 1e-15)
+    root2s = np.sqrt(2.0) * s
+    peak = erf(w / (2.0 * root2s))
+    if peak <= 0.0:
+        return float(_GAUSSIAN_FWHM_FROM_SIGMA * s)
+
+    def excess(h: float) -> float:
+        value = 0.5 * (erf((h + 0.5 * w) / root2s) - erf((h - 0.5 * w) / root2s))
+        return value - 0.5 * peak
+
+    hi = 0.5 * w + 6.0 * s
+    try:
+        half_width = brentq(excess, 0.0, hi, xtol=1e-9 * max(hi, 1.0))
+    except ValueError:
+        return float(max(w, _GAUSSIAN_FWHM_FROM_SIGMA * s))
+    return float(2.0 * half_width)
+
+
+def _lumen_fwhm_fit_with_diagnostics(
+    positions_um: np.ndarray,
+    intensities: np.ndarray,
+    *,
+    min_points: int = 5,
+    profile_baseline_mode: Literal["wings", "percentile"] = "wings",
+    profile_baseline_wing_fraction: float = 0.2,
+    constrain_fitted_baseline: bool = False,
+    baseline_constraint_half_width_ptp: float = 0.35,
+    blur_sigma_um: float | None = None,
+) -> tuple[float | None, float | None, float | None]:
+    """``(fwhm_um, fitted_center_um, fit_r2)`` from a blurred-lumen fit.
+
+    *blur_sigma_um*, when given, is the image's own blur along this profile
+    (the PSF projected onto the line), and the fit holds it there rather than
+    fitting it again in every profile: blur is a property of the microscope,
+    not of one vessel, and a narrow vessel's width and blur trade off against
+    each other in a single noisy profile.
+
+    A plasma-labelled vessel is a filled column, not a Gaussian: across a
+    wide one the profile is a flat top with blurred edges. A Gaussian fitted
+    to that shape reports a width about 10% narrower than the column, and
+    the flat top cannot fit it well enough to pass the R² gate at all on a
+    large vessel. This fits :func:`_blurred_lumen_1d` instead and reports
+    the full width at half maximum of the fitted curve (see
+    :func:`_blurred_lumen_fwhm`) -- the lumen width for a wide vessel, the
+    Gaussian FWHM for a sub-resolution one. Same arguments, baseline anchor
+    and return shape as :func:`_fwhm_gaussian_fit_with_diagnostics`, so the
+    two are interchangeable in the sampling loop.
+    """
+    x = np.asarray(positions_um, dtype=float).ravel()
+    y = np.asarray(intensities, dtype=float).ravel()
+    if x.size != y.size or x.size < max(2, int(min_points)):
+        return None, None, None
+    mask = np.isfinite(x) & np.isfinite(y)
+    x = x[mask]
+    y = y[mask]
+    if x.size < max(2, int(min_points)):
+        return None, None, None
+    order = np.argsort(x)
+    x = x[order]
+    y = y[order]
+    span = float(np.ptp(x))
+    if span <= 0 or not np.isfinite(span):
+        return None, None, None
+    dx = float(np.median(np.abs(np.diff(x)))) if x.size > 1 else span
+    sigma_min = max(0.25 * dx, span * 1e-6, 1e-9)
+    y_min, y_max = float(np.min(y)), float(np.max(y))
+    y_ptp = max(y_max - y_min, 1e-12)
+    if profile_baseline_mode == "wings":
+        try:
+            b_anchor = robust_baseline_from_profile_wings(
+                x, y, wing_fraction=profile_baseline_wing_fraction
+            )
+        except ValueError:
+            b_anchor = float(np.percentile(y, 10))
+    elif profile_baseline_mode == "percentile":
+        b_anchor = float(np.percentile(y, 10))
+    else:
+        raise ValueError(
+            f"Unknown profile_baseline_mode={profile_baseline_mode!r}; "
+            "use 'wings' or 'percentile'."
+        )
+    b0 = min(max(b_anchor, y_min - y_ptp), y_max - 0.01 * y_ptp)
+    # The top: the peak of a lightly smoothed copy, since noise inflates the
+    # raw maximum -- not a percentile of the whole window, which is mostly
+    # background by design (the window spans several vessel widths).
+    window = max(1, int(round(_CLIP_DECISION_SMOOTHING_WINDOW_UM / max(dx, 1e-9))))
+    smoothed = (
+        np.convolve(y, np.ones(window) / window, mode="same") if 1 < window < y.size else y
+    )
+    top = float(np.max(smoothed))
+    amp0 = max(top - b0, 0.1 * y_ptp, 1e-9)
+    # Where the profile stands above half height: its extent is the width
+    # guess, its middle the centre guess -- both far better starts for a flat
+    # top than the argmax a Gaussian uses.
+    above = np.flatnonzero(y >= b0 + 0.5 * amp0)
+    if above.size:
+        w0 = max(float(x[above[-1]] - x[above[0]]), 2.0 * dx)
+        x0_guess = 0.5 * float(x[above[0]] + x[above[-1]])
+    else:
+        w0 = span / 3.0
+        x0_guess = float(x[int(np.argmax(y))])
+    s0 = max(2.0 * dx, 0.1 * w0, sigma_min)
+    half_w = float(baseline_constraint_half_width_ptp) * y_ptp
+    if constrain_fitted_baseline and half_w > 0:
+        b_lo = max(y_min - 0.5 * y_ptp, b_anchor - half_w)
+        b_hi = min(y_max + 0.5 * y_ptp, b_anchor + half_w)
+        if b_lo >= b_hi:
+            b_lo, b_hi = y_min - 2.0 * y_ptp, y_max + 2.0 * y_ptp
+    else:
+        b_lo = y_min - 5.0 * y_ptp
+        b_hi = y_max + 5.0 * y_ptp
+    lo = np.array([b_lo, 1e-12, np.min(x) - span, 0.0, sigma_min], dtype=float)
+    hi = np.array(
+        [b_hi, max(y_max * 20.0, amp0 * 1e3), np.max(x) + span, span, 0.5 * span],
+        dtype=float,
+    )
+    p0 = np.clip(np.array([b0, amp0, x0_guess, w0, s0], dtype=float), lo, hi)
+    fixed_sigma = (
+        float(blur_sigma_um)
+        if blur_sigma_um is not None and np.isfinite(blur_sigma_um) and blur_sigma_um > 0
+        else None
+    )
+    try:
+        if fixed_sigma is None:
+            popt, _ = curve_fit(
+                _blurred_lumen_1d, x, y, p0=p0, bounds=(lo, hi), maxfev=50000
+            )
+        else:
+            popt4, _ = curve_fit(
+                lambda xs, b, a, c, w: _blurred_lumen_1d(xs, b, a, c, w, fixed_sigma),
+                x, y, p0=p0[:4], bounds=(lo[:4], hi[:4]), maxfev=50000,
+            )
+            popt = np.append(popt4, fixed_sigma)
+    except (RuntimeError, ValueError):
+        return None, None, None
+    baseline_fit, amplitude_fit, x0_fit, width_fit, sigma_fit = (float(v) for v in popt)
+    if not (np.isfinite(sigma_fit) and sigma_fit > 0 and amplitude_fit > 0):
+        return None, None, None
+    y_hat = _blurred_lumen_1d(x, baseline_fit, amplitude_fit, x0_fit, width_fit, sigma_fit)
+    ss_res = float(np.sum((y - y_hat) ** 2))
+    ss_tot = float(np.sum((y - np.mean(y)) ** 2))
+    r2 = 1.0 - ss_res / ss_tot if ss_tot > 1e-12 else 1.0
+    fwhm = _blurred_lumen_fwhm(width_fit, sigma_fit)
+    if not (np.isfinite(fwhm) and fwhm > 0):
+        return None, None, None
+    return fwhm, x0_fit, r2
+
+
+#: Physical width of the moving-average window used only to decide where a
+#: transverse profile's central lobe ends (see
+#: :func:`_clip_profile_to_central_lobe`), never to the samples actually
+#: fitted. Real intensity data wobbles sample-to-sample even while the true
+#: underlying decay is still monotonic; the raw per-sample valley/rise
+#: check mistook a single noisy uptick for a second peak and truncated the
+#: profile almost immediately after the centre -- confirmed on synthetic
+#: data to be catastrophic: Gaussian noise at just 2% of the peak amplitude
+#: collapsed a true 16um-wide profile's accepted window to under 2um, an
+#: 8x-too-small fitted diameter. Matches ``DEFAULT_NOISE_SIGMA_UM``'s own
+#: scale elsewhere in this codebase for "a light touch meant to smooth
+#: single-sample roughness, not reshape real structure."
+_CLIP_DECISION_SMOOTHING_WINDOW_UM = 1.0
+
+#: Upper bound on how much of one edge's own length its branch-endpoint or
+#: junction-proximity exclusion zone may claim -- see
+#: ``measure_edge_diameters_fwhm_from_raw_tiff``'s own
+#: ``_length_scaled_exclusion``. 0.3 leaves an edge excluded from both ends
+#: (a branch point at u and at v) with its central 40% still samplable,
+#: however short the edge.
+MAX_EXCLUSION_FRACTION_OF_EDGE_LENGTH = 0.3
+
+#: How many bisection attempts the widening loop makes between a known-good
+#: half-extent and a wider one whose own fit failed a quality gate, before
+#: giving up on reaching min_total_extent_multiplier for this pass and
+#: keeping the known-good width instead. See the loop's own comment in
+#: measure_edge_diameters_fwhm_from_raw_tiff for why: a wider window failing
+#: only because it now reaches a neighbouring structure often has a
+#: perfectly good intermediate width in between that the original
+#: all-or-nothing retry never tried.
+_MAX_WIDTH_BISECTIONS = 3
+
+#: A centreline point counts as the vessel folding back on itself -- and so
+#: caps a sample's first transverse ray -- only when it is closer in space
+#: than this fraction of its distance along the arc. A straight or gently
+#: curving vessel keeps its chord close to its arc length (a semicircle's
+#: chord is ~0.64 of its arc), so 0.5 leaves those alone and still catches a
+#: hairpin or a zig-zag, whose far arm really is close by.
+_FOLDED_BACK_CHORD_FRACTION = 0.5
+
+
+def _clip_profile_to_central_lobe(
+    positions_um: np.ndarray,
+    intensities: np.ndarray,
+    *,
+    min_drop_fraction_of_center: float = 0.35,
+    re_rise_fraction_of_center: float = 0.08,
+    min_points_to_clip: int = 9,
+    decision_smoothing_um: float = _CLIP_DECISION_SMOOTHING_WINDOW_UM,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Trim a transverse profile so it stays on the central vessel lobe.
+
+    Profiles can contain a second peak when rays reach a neighbouring branch.
+    This helper keeps the segment around offset 0 and truncates each side at the
+    first clear valley->rise pattern.
+
+    The valley/rise decision itself runs against a lightly smoothed copy of
+    *intensities* (see :data:`_CLIP_DECISION_SMOOTHING_WINDOW_UM`) -- the
+    returned arrays are always sliced from the original, unsmoothed data,
+    so smoothing never touches what the Gaussian fit actually sees, only
+    where this function decides to cut it.
+    """
+    x = np.asarray(positions_um, dtype=float).ravel()
+    y = np.asarray(intensities, dtype=float).ravel()
+    if x.size != y.size or x.size < int(min_points_to_clip):
+        return x, y
+    # Positions from _sample_transverse_profile are monotone and include offset 0.
+    i0 = int(np.argmin(np.abs(x)))
+    if i0 <= 0 or i0 >= x.size - 1:
+        return x, y
+
+    step_um = float(np.median(np.diff(x))) if x.size >= 2 else 1.0
+    window = max(1, int(round(float(decision_smoothing_um) / max(step_um, 1e-9))))
+    if window % 2 == 0:
+        window += 1
+    if window > 1 and y.size >= window:
+        y_decision = np.convolve(y, np.ones(window) / window, mode="same")
+    else:
+        y_decision = y
+
+    center = float(y_decision[i0])
+    if not np.isfinite(center):
+        return x, y
+    min_drop = float(min_drop_fraction_of_center) * max(center, 1e-12)
+    rise_thr = float(re_rise_fraction_of_center) * max(center, 1e-12)
+
+    def _bound_right(start: int) -> int:
+        y_min = float(y_decision[start])
+        i_min = start
+        saw_drop = False
+        for i in range(start + 1, y_decision.size):
+            yi = float(y_decision[i])
+            if yi < y_min:
+                y_min = yi
+                i_min = i
+            if yi <= (center - min_drop):
+                saw_drop = True
+            if saw_drop and yi >= (y_min + rise_thr):
+                return i_min
+        return y_decision.size - 1
+
+    def _bound_left(start: int) -> int:
+        y_min = float(y_decision[start])
+        i_min = start
+        saw_drop = False
+        for i in range(start - 1, -1, -1):
+            yi = float(y_decision[i])
+            if yi < y_min:
+                y_min = yi
+                i_min = i
+            if yi <= (center - min_drop):
+                saw_drop = True
+            if saw_drop and yi >= (y_min + rise_thr):
+                return i_min
+        return 0
+
+    left = _bound_left(i0)
+    right = _bound_right(i0)
+
+    if right - left + 1 < 5:
+        return x, y
+    return x[left : right + 1], y[left : right + 1]
+
+
+def float32_volume(
+    volume: np.ndarray,
+    *,
+    use_memmap: bool = False,
+    memmap_directory: str | Path | None = None,
+) -> np.ndarray:
+    """``np.asarray(volume, dtype=np.float32)``; under *use_memmap* a
+    non-float32 volume is converted a slab at a time into a new memmap."""
+    if not use_memmap:
+        return np.asarray(volume, dtype=np.float32)
+    if volume.dtype == np.float32:
+        return np.asanyarray(volume)
+    from haemolynx.preprocessing.memmap_support import map_by_slab, new_memmap_array
+
+    out = new_memmap_array(volume.shape, np.float32, directory=memmap_directory)
+    return map_by_slab(volume, lambda slab: slab.astype(np.float32), out)
+
+
+def _assign_branch_label_ids(G: nx.MultiGraph) -> tuple[list, dict[tuple[int, int, int], int]]:
+    """Each edge's ``graph_edge_label_id`` (and ``image_branch_label``),
+    ``1 .. E`` in ``(u, v, key)`` order: the same for every copy of *G*, so a
+    label volume built from one serves them all. Returns the sorted edges
+    and their labels."""
+    sorted_edges = sorted(G.edges(keys=True), key=lambda t: (t[0], t[1], t[2]))
+    edge_key_to_label: dict[tuple[int, int, int], int] = {}
+    for i, (u, v, key) in enumerate(sorted_edges, start=1):
+        edge_key_to_label[(u, v, key)] = i
+        G[u][v][key]["graph_edge_label_id"] = i
+        G[u][v][key]["image_branch_label"] = i
+    return sorted_edges, edge_key_to_label
+
+
+def build_graph_branch_label_volume(
+    G: nx.MultiGraph,
+    volume_shape: tuple[int, int, int],
+    voxel_size_zyx: tuple[float, float, float],
+    *,
+    background_label: int = 0,
+    junction_label: int = -1,
+    use_memmap: bool = False,
+    memmap_directory: str | Path | None = None,
+) -> tuple[np.ndarray, dict[tuple[int, int, int], int]]:
+    """Paint each edge's ``voxels`` path into a 3D label array (same shape as the raw stack).
+
+    Edges are processed in deterministic ``(u, v, key)`` order and receive ids ``1 .. E``.
+    Voxels claimed by more than one edge are set to ``junction_label`` so transverse FWHM
+    profiles can cross node regions without immediately hitting another edge's id.
+
+    Each edge dict is updated with ``graph_edge_label_id`` (and ``image_branch_label``
+    as an alias for the same value).
+
+    *use_memmap* (the low-RAM option) paints into a new disk-backed array in
+    *memmap_directory* instead; the caller releases it with
+    ``preprocessing.memmap_support.release_memmap_array`` when done. Same
+    labels either way.
+
+    Returns
+    -------
+    labels :
+        ``int32`` array of shape ``volume_shape``.
+    edge_key_to_label :
+        Map ``(u, v, key) -> int`` label id.
+    """
+    if junction_label == background_label:
+        raise ValueError("junction_label must differ from background_label.")
+    shape = (int(volume_shape[0]), int(volume_shape[1]), int(volume_shape[2]))
+    if use_memmap:
+        from haemolynx.preprocessing.memmap_support import new_memmap_array
+
+        # A fresh memmap reads as zeros; any other background is written in.
+        labels = new_memmap_array(shape, np.int32, directory=memmap_directory)
+        if int(background_label) != 0:
+            for z in range(shape[0]):
+                labels[z] = int(background_label)
+    else:
+        labels = np.full(shape, int(background_label), dtype=np.int32)
+    sorted_edges, edge_key_to_label = _assign_branch_label_ids(G)
+
+    jlab = int(junction_label)
+    bg = int(background_label)
+
+    for u, v, key in sorted_edges:
+        label = edge_key_to_label[(u, v, key)]
+        vox = G[u][v][key].get("voxels")
+        if not vox:
+            continue
+        idx_all = physical_points_to_continuous_indices(
+            np.asarray(vox, dtype=float),
+            voxel_size_zyx,
+        )
+        for row in idx_all:
+            iz, iy, ix = _nearest_integer_index(row, shape)
+            cur = int(labels[iz, iy, ix])
+            if cur == bg:
+                labels[iz, iy, ix] = int(label)
+            elif cur == int(label):
+                continue
+            elif cur == jlab:
+                continue
+            else:
+                labels[iz, iy, ix] = jlab
+
+    return labels, edge_key_to_label
+
+
+def _local_same_edge_window(
+    diameter_estimate: float,
+    *,
+    same_edge_arc_window_um: float | None,
+    same_edge_arc_window_min_um: float,
+    same_edge_arc_window_multiplier: float,
+    sample_spacing_along_edge_um: float,
+    transverse_profile_step_um: float,
+) -> float:
+    """How far along an edge's own centerline (in arc-length) a
+    re-encountered same-edge voxel must be before it counts as a genuinely
+    different part of the vessel, rather than the current cross-section's
+    own local vicinity -- see ``measure_edge_diameters_fwhm_from_raw_tiff``'s
+    ``same_edge_arc_window_multiplier`` docstring entry ("window = max(min,
+    multiplier x current diameter estimate)"), which this implements.
+
+    Used both for the same-edge-locality ray-stop guard during transverse
+    sampling itself, and (as a floor alongside
+    ``nonlocal_same_edge_arc_separation_um``) for the pre-emptive
+    half-extent cap -- see ``cap_half_extent_by_nonlocal_same_edge_distance``.
+
+    Scaled to *diameter_estimate* -- the best estimate available at the
+    point this is called (the initial guess, then each sampling pass's own
+    fitted value) -- not to an unrelated quantity like how far apart
+    samples are placed along the edge: a wider vessel's own wall can
+    legitimately curve back within a wider arc-length radius than a
+    narrower one's without that meaning anything is actually wrong. Before
+    this existed, the very first pass (before any diameter estimate exists
+    at all) always fell back to ``sample_spacing_along_edge_um``,
+    contradicting the documented contract above and silently shrinking the
+    transverse sampling window -- and, via the pre-emptive cap, the
+    visualized/measured extent too -- for any vessel wider than that
+    spacing, regardless of how gently it actually curves.
+
+    *diameter_estimate* of 0 (or less) means no estimate is available yet
+    (``diameter_guess_um=None`` on the very first pass) -- falls back to
+    ``max(sample_spacing_along_edge_um, transverse_profile_step_um)``, the
+    best available scale in that specific case.
+    """
+    if same_edge_arc_window_um is not None:
+        return float(same_edge_arc_window_um)
+    basis = (
+        float(diameter_estimate)
+        if diameter_estimate > 0
+        else max(float(sample_spacing_along_edge_um), float(transverse_profile_step_um))
+    )
+    return max(float(same_edge_arc_window_min_um), float(same_edge_arc_window_multiplier) * basis)
+
+
+def _local_max_center_offset(
+    diameter_estimate: float,
+    *,
+    max_fit_center_offset_um: float,
+    max_fit_center_offset_fraction_of_diameter: float,
+) -> float:
+    """How far a fitted Gaussian center may sit from the sampling origin
+    before a sample counts as off-target (an oblique/nonlocal transect)
+    rather than a genuinely centered cross-section -- see
+    ``measure_edge_diameters_fwhm_from_raw_tiff``'s
+    ``reject_samples_with_center_offset``.
+
+    At least ``max_fit_center_offset_um`` (a floor), and at least
+    ``max_fit_center_offset_fraction_of_diameter`` x *diameter_estimate*
+    when a diameter estimate is available -- the same "scale the guard to
+    the vessel's own width" fix as :func:`_local_same_edge_window`. A fixed
+    micron offset alone means the same absolute number regardless of
+    vessel width: comfortably loose for a 2um capillary (barely
+    constraining anything) and disproportionately strict for a 30um
+    vessel (rejecting a well-centered fit for an offset that is a much
+    smaller fraction of its own radius).
+
+    *diameter_estimate* of 0 (or less, meaning no estimate is available
+    yet) uses only the fixed floor, unchanged from before this existed.
+    """
+    basis = float(diameter_estimate) if diameter_estimate > 0 else 0.0
+    return max(
+        float(max_fit_center_offset_um),
+        float(max_fit_center_offset_fraction_of_diameter) * basis,
+    )
+
+
+def _edge_diameter_guess(
+    data: dict[str, Any],
+    *,
+    diameter_guess_edge_attribute: str | None,
+    fallback_diameter_guess: float,
+) -> float:
+    """One edge's own starting diameter estimate -- see
+    ``measure_edge_diameters_fwhm_from_raw_tiff``'s
+    ``diameter_guess_edge_attribute`` docstring entry.
+
+    *diameter_guess_um* (surfaced here as *fallback_diameter_guess*) was
+    previously the only source, one number applied to every edge
+    regardless of its real width -- comfortably wrong at both ends of a
+    network spanning capillaries to large vessels. When
+    *diameter_guess_edge_attribute* names an edge attribute already
+    holding a real, positive, vessel-specific estimate (the default,
+    ``"edt_diameter_um"``, is what
+    :func:`haemolynx.haemodynamics.edt_diameter.measure_edge_diameters_from_binary_mask`
+    writes -- cheap, no curve fitting, and already computed as a
+    cross-check/fallback signal in a typical run that also enables FWHM),
+    that per-edge value is used instead. Falls back to
+    *fallback_diameter_guess* when the attribute is unset, not a finite
+    positive number, or *diameter_guess_edge_attribute* is ``None`` --
+    unchanged from before this existed.
+    """
+    if diameter_guess_edge_attribute:
+        value = data.get(diameter_guess_edge_attribute)
+        if value is not None:
+            value = float(value)
+            if np.isfinite(value) and value > 0:
+                return value
+    return float(fallback_diameter_guess)
+
+
+def measure_edge_diameters_fwhm_from_raw_tiff(
+    G: nx.MultiGraph,
+    *,
+    raw_tiff_path: str | Path | None = None,
+    voxel_size_zyx: tuple[float, float, float],
+    sample_spacing_along_edge_um: float,
+    transverse_profile_step_um: float,
+    transverse_half_extent_um: float,
+    diameter_guess_um: float | None = None,
+    diameter_guess_edge_attribute: str | None = "edt_diameter_um",
+    background_label: int = 0,
+    junction_label: int = -1,
+    min_total_extent_multiplier: float = 3.0,
+    profile_baseline_mode: Literal["wings", "percentile"] = "wings",
+    profile_baseline_wing_fraction: float = 0.2,
+    constrain_fitted_baseline: bool = False,
+    baseline_constraint_half_width_ptp: float = 0.35,
+    allow_junction_crossing: bool = False,
+    allow_crossing_other_edges: bool = True,
+    clip_profile_to_single_vessel: bool = True,
+    clip_min_drop_fraction_of_center: float = 0.35,
+    clip_re_rise_fraction_of_center: float = 0.08,
+    branch_endpoint_exclusion_um: float = 0.0,
+    junction_proximity_exclusion_um: float = 0.0,
+    store_profile_debug: bool = False,
+    enforce_same_edge_locality: bool = True,
+    same_edge_arc_window_um: float | None = None,
+    same_edge_arc_window_multiplier: float = 1.0,
+    same_edge_arc_window_min_um: float = 1.0,
+    cap_half_extent_by_nonlocal_same_edge_distance: bool = True,
+    nonlocal_same_edge_arc_separation_um: float = 6.0,
+    nonlocal_same_edge_half_extent_factor: float = 0.45,
+    reject_samples_with_center_offset: bool = True,
+    max_fit_center_offset_um: float = 1.5,
+    max_fit_center_offset_fraction_of_diameter: float = 0.3,
+    max_transverse_widen_passes: int = 5,
+    reject_samples_with_low_fit_r2: bool = True,
+    min_fit_r2: float = 0.85,
+    reject_samples_with_plateau_shape: bool = False,
+    max_plateau_shape_ratio: float = 0.85,
+    transverse_sampling_mode: TransverseSamplingMode = "in_plane_yx",
+    warn_out_of_plane_tangent_fraction: float = 0.3,
+    edge_diameter_aggregation: Literal["median", "mean"] = "median",
+    min_accepted_samples: int = 1,
+    profile_model: ProfileModel = "blurred_lumen",
+    profile_psf_sigma_zyx: tuple[float, float, float] | None = None,
+    longitudinal_average_um: float = 4.0,
+    min_diameter_pixels: float = 2.0,
+    clip_decision_smoothing_um: float | None = None,
+    vessel_mask: np.ndarray | None = None,
+    stop_at_other_vessels_in_mask: bool = True,
+    axis_order: str = CANONICAL_AXIS_ORDER,
+    raw_volume: np.ndarray | None = None,
+    use_memmap: bool = False,
+    memmap_directory: str | Path | None = None,
+    raw_channel: int | None = None,
+    edges: Iterable[tuple[Any, Any, Any]] | None = None,
+    at_positions: Mapping[tuple[Any, Any, Any], Sequence[float]] | None = None,
+    branch_labels: np.ndarray | None = None,
+) -> dict[str, Any]:
+    """Measure per-edge diameters (µm) from a raw TIFF using graph-derived branch labels.
+
+    Diameter at each transverse sample is the FWHM of a Gaussian least-squares fit to
+    intensity along the line (see ``fwhm_from_profile``).
+
+    A label volume is built from edge ``voxels`` (see ``build_graph_branch_label_volume``);
+    no separate label TIFF is required.
+
+    Parameters
+    ----------
+    G :
+        MultiGraph with ``voxels`` edge attribute (physical coordinates, same axis order
+        as the raw TIFF).
+    raw_tiff_path :
+        Single-channel 3D TIFF (intensity); shape defines the rasterized label grid.
+        Not read, and may be None, when *raw_volume* is given.
+    voxel_size_zyx :
+        Spacing per image axis (same tuple passed to graph building).
+    sample_spacing_along_edge_um :
+        Distance along the edge centerline between FWHM samples.
+    transverse_profile_step_um :
+        Step size along the transverse line (sampling resolution along the profile).
+    transverse_half_extent_um :
+        Initial half-length of the transverse line (µm). After a first FWHM estimate,
+        the half-extent is enlarged to at least ``min_total_extent_multiplier / 2``
+        times that diameter unless truncated earlier.
+    diameter_guess_um :
+        Optional initial width guess (µm), one global fallback value for
+        every edge -- used when *diameter_guess_edge_attribute* is unset,
+        or that edge has no usable value under it (see below). If both are
+        unavailable, initial half-extent uses ``transverse_half_extent_um``
+        only.
+    diameter_guess_edge_attribute :
+        Name of an edge attribute already holding a real, per-edge
+        diameter estimate (µm) to seed that edge's own initial guess with,
+        instead of the one global *diameter_guess_um* every edge would
+        otherwise share regardless of its real width. Default
+        ``"edt_diameter_um"`` -- what
+        :func:`haemolynx.haemodynamics.edt_diameter.measure_edge_diameters_from_binary_mask`
+        writes: a cheap (no curve fitting), vessel-specific estimate from
+        the segmentation mask's own inscribed radius, already computed in
+        a typical run that also cross-checks or falls back to it (see
+        ``haemodynamics.apply.assign_edge_diameters``, which now runs that
+        measurement before this one so the attribute is there to use).
+        Read once per edge, before that edge's own first sampling pass;
+        ignored (falls back to *diameter_guess_um*) for an edge where the
+        attribute is absent, non-finite, or not a positive number. Pass
+        ``None`` to always use the one global guess, matching this
+        function's behaviour before this parameter existed.
+    junction_label :
+        Reserved value marking voxels shared by multiple edges in the rasterized volume.
+        Transverse rays stop at this label by default to avoid crossing onto neighbouring
+        vessel branches near bifurcations. Set ``allow_junction_crossing=True`` to permit
+        traversal through junction-labeled voxels.
+    allow_crossing_other_edges :
+        A transverse ray also stops the moment it reaches *any other edge's own*
+        centerline voxel -- not just a shared junction. That is a poor proxy for
+        "this is a different vessel": a wide vessel represented as several nearby
+        graph edges (a common real skeleton/graph-build outcome near dense
+        branching) has its own other edges' centerlines well inside its own true
+        radius, truncating the sampled profile long before the real background and
+        severely underestimating diameter. Default ``True`` treats another edge's
+        label the same as background instead, leaving
+        *clip_profile_to_single_vessel*'s intensity-based valley detection -- not
+        nearby topology -- as what decides where this vessel's own profile ends.
+        Set ``False`` to restore the stricter, topology-only behaviour.
+    min_total_extent_multiplier :
+        Ensures total transverse extent >= this factor × measured FWHM when not truncated.
+    profile_baseline_mode :
+        ``wings`` (default) or ``percentile`` — see ``fwhm_from_profile``.
+    profile_baseline_wing_fraction :
+        Outer line fraction used per end for wing baseline (if mode is ``wings``).
+    constrain_fitted_baseline :
+        If True, narrow the fitted-baseline bounds around the anchor guess.
+    baseline_constraint_half_width_ptp :
+        Half-width of that band as a fraction of profile peak-to-peak intensity.
+    clip_profile_to_single_vessel :
+        If True, trim each sampled transverse profile to the central lobe before
+        Gaussian fitting so a second peak from a neighbouring vessel does not
+        inflate diameter.
+    branch_endpoint_exclusion_um :
+        Distance (µm) excluded from sampling near edge endpoints that are
+        bifurcation nodes (graph degree > 1). Helps avoid unstable diameters
+        right where a branch emerges from a junction.
+    junction_proximity_exclusion_um :
+        Distance (µm) excluded from sampling around automatically detected
+        vessel meeting points along each edge. Detection uses the in-memory
+        rasterized label volume: centerline points whose nearest voxel is
+        ``junction_label`` are treated as meeting points.
+    store_profile_debug :
+        If True, store accepted transverse profile polylines per edge in
+        ``edge['fwhm_profile_lines_phys']`` for visualization/debugging.
+    enforce_same_edge_locality :
+        If True, stop transverse rays when they re-enter the same edge label at
+        centerline arc-length far from the current sample (helps zig-zag vessels).
+    same_edge_arc_window_um :
+        Optional fixed arc-length window for same-edge locality guard.
+    same_edge_arc_window_multiplier :
+        If ``same_edge_arc_window_um`` is None, window = max(min, multiplier × current
+        diameter estimate).
+    same_edge_arc_window_min_um :
+        Lower bound for that adaptive window.
+    cap_half_extent_by_nonlocal_same_edge_distance :
+        If True, cap each sample's transverse half-extent using the nearest
+        non-local point on the same edge centerline (geometry-only guard).
+    nonlocal_same_edge_arc_separation_um :
+        Floor on the arc-length separation defining "non-local" centerline
+        points for the above cap -- the actual separation used is at least
+        this, and at least the same diameter-aware window
+        ``same_edge_arc_window_multiplier`` computes for the ray-stop guard
+        (see its own docstring), so a wide vessel does not get an
+        unrealistically small "non-local" threshold just because this
+        constant was tuned for a narrower one.
+    nonlocal_same_edge_half_extent_factor :
+        Half-extent cap = factor × nearest non-local centerline distance.
+    reject_samples_with_center_offset :
+        If True, discard samples whose fitted Gaussian center is far from the
+        intended profile origin (offset 0), indicating oblique/nonlocal transect.
+    max_fit_center_offset_um :
+        Floor on the maximum allowed fitted center offset from 0 for
+        accepted samples -- the actual limit used is at least this, and at
+        least ``max_fit_center_offset_fraction_of_diameter`` x the current
+        diameter estimate (see that parameter's own docstring), so a fixed
+        micron floor tuned for one vessel size does not silently become
+        far too loose or far too strict at another.
+    max_fit_center_offset_fraction_of_diameter :
+        Scales the center-offset limit to the vessel's own current
+        diameter estimate (the initial guess, then each widening pass's
+        own fitted value) -- see :func:`_local_max_center_offset`. A fixed
+        absolute offset alone (``max_fit_center_offset_um`` on its own)
+        means the same number regardless of vessel width: comfortably loose
+        for a narrow capillary and disproportionately strict for a wide
+        vessel. 0.3 (reasoned, not empirically fitted) reproduces
+        ``max_fit_center_offset_um``'s own historical default at roughly a
+        5um vessel, the scale that default was chosen against, while
+        scaling sensibly at other diameters.
+    max_transverse_widen_passes :
+        How many times a sample's transverse half-extent may be widened
+        (each time to ``min_total_extent_multiplier`` x that pass's own
+        fitted diameter) before settling for whatever the last accepted
+        pass measured -- an upper bound on iteration count, not a target:
+        widening stops as soon as a pass's own fit no longer asks for a
+        bigger window. If a later, wider pass's own fit fails a rejection
+        gate, the sample keeps the last successfully-fitted, gate-passing
+        measurement rather than being discarded outright -- widening
+        further is only ever an attempt to improve an already-accepted
+        measurement, never a precondition for keeping it.
+    reject_samples_with_low_fit_r2 :
+        If True, discard samples with poor Gaussian fit quality.
+    min_fit_r2 :
+        Minimum accepted R² for Gaussian fit.
+    reject_samples_with_plateau_shape :
+        If True, discard samples whose profile *shape* -- not the parametric
+        fit's own R² -- looks like a flat plateau rather than a peak (e.g. a
+        saturated detector, or a probability/segmentation field mistakenly
+        used as the raw intensity). Off by default: a plasma-filled lumen is
+        itself a plateau, so this discarded the best-measured samples of
+        every wide vessel. A heavily-overparameterized Gaussian fit
+        can still score a deceptively high R² against a rounded plateau, so
+        this checks the sampled profile directly. See
+        :func:`_profile_plateau_shape_ratio`.
+    max_plateau_shape_ratio :
+        Reject a sample once its 80%-height width is at least this fraction
+        of its 50%-height (half-max) width -- an ideal Gaussian's ratio is
+        ~0.567 regardless of width; a genuine plateau approaches 1.
+    transverse_sampling_mode :
+        ``"in_plane_yx"`` (default): sample perpendicular to the tangent's
+        projection onto the y-x slice plane, never stepping along ``z`` --
+        correct for a vessel running within one slice, but foreshortens
+        (biases high) the measured diameter of one with a real z-component
+        to its direction. ``"true_3d_perpendicular"``: sample perpendicular
+        to the tangent's actual 3D direction instead -- see
+        :func:`_gram_schmidt_perpendicular`.
+    warn_out_of_plane_tangent_fraction :
+        While ``transverse_sampling_mode="in_plane_yx"``, flag an edge
+        (``data["fwhm_out_of_plane_warning"]``) once any accepted sample's
+        tangent has an out-of-plane fraction (see
+        :func:`_out_of_plane_fraction`) at or above this -- a concrete,
+        per-edge signal of which vessels are most likely to carry the
+        foreshortening bias, without changing any measured value or
+        requiring the whole run to switch sampling mode.
+    edge_diameter_aggregation :
+        How to collapse one edge's accepted per-sample diameters into one
+        value -- ``median`` (default, resists a single outlier sample) or
+        ``mean`` (the previous behaviour). See :func:`_aggregate_edge_diameter`.
+    min_accepted_samples :
+        The fewest samples along an edge that must pass every gate for the
+        edge to be measured; one with fewer fails as ``too_few_samples``. On
+        a speckled image a line across a vessel can fit one bright speck
+        cleanly and pass every gate -- the lumen's own texture, or tissue
+        with no vessel in it (see :mod:`haemolynx.haemodynamics.fwhm_decoys`)
+        -- but a speck is one place, and a lumen is all along the vessel.
+    profile_model :
+        ``"blurred_lumen"`` (default): fit each profile as a filled lumen
+        seen through a blur and report that curve's full width at half
+        maximum -- the lumen width for a wide vessel, the Gaussian FWHM for a
+        sub-resolution one (see :func:`_lumen_fwhm_fit_with_diagnostics`).
+        ``"gaussian"``: the previous Gaussian fit, which reads a wide
+        plasma-filled vessel about 10% narrow and often cannot fit its flat
+        top at all.
+    profile_psf_sigma_zyx :
+        The image's blur ``(sigma_z, sigma_y, sigma_x)`` in microns (e.g. from
+        :func:`haemolynx.haemodynamics.raw_section.estimate_psf_sigma`). With
+        ``profile_model="blurred_lumen"`` each profile's blur is then held at
+        this PSF projected onto its line instead of being fitted again per
+        profile; ``None`` (default) fits it per profile.
+    longitudinal_average_um :
+        Average each transverse profile over this length along the vessel
+        before fitting (see :func:`_sample_transverse_profile`). 0 reads a
+        single line, the behaviour before this existed. On a dim,
+        photon-limited channel a single
+        line is mostly one-pixel noise spikes; averaging a few microns of
+        vessel suppresses them without blurring the width.
+    min_diameter_pixels :
+        Reject a sample whose measured diameter is under this many pixels
+        of the sampling plane's own spacing -- a width that small cannot be
+        resolved, and on real data is almost always a fit to a single noise
+        spike. 0 disables the check.
+    vessel_mask :
+        The segmentation (true on vessel, same grid as the raw volume). With
+        *stop_at_other_vessels_in_mask*, a transverse line that has left its
+        own vessel ends where it enters the next one -- see
+        :func:`_max_extent_along_ray` -- so a line is shorter than
+        *min_total_extent_multiplier* x the width only where another vessel
+        really is in the way.
+    stop_at_other_vessels_in_mask :
+        Use *vessel_mask* that way. Ignored without a mask.
+    raw_channel :
+        Which channel of a multi-channel *raw_tiff_path* to read (counting
+        from 0); ``None`` for a single-channel file. Unused with *raw_volume*.
+    edges :
+        Measure only these ``(u, v, key)`` edges (either way round); every
+        other edge keeps what it has. ``None`` (default) measures them all.
+        The label volume is still drawn from the whole graph, so a subset's
+        lines stop at the same neighbouring vessels and junctions a full run's
+        do -- which is what lets a hand-edited vessel be measured on its own.
+    clip_decision_smoothing_um :
+        Width of the smoothing :func:`_clip_profile_to_central_lobe` decides
+        where the central lobe ends on. ``None`` is at least two pixels of
+        the sampling plane (and at least 1um): narrower, and a one-pixel
+        noise dip inside the vessel ends the lobe, so the fit measures one
+        spike.
+    branch_labels :
+        The label volume :func:`build_graph_branch_label_volume` makes of
+        *G* (or of any copy of it: the edges and their voxels the same) with
+        this call's *background_label* and *junction_label*, made once by a
+        caller measuring the same vessels many times -- the settings
+        optimiser -- instead of painted again on every call; the caller's to
+        release. ``None`` (default) builds it.
+    at_positions :
+        Read each edge it names (``(u, v, key)``, either way round) at these
+        arc lengths -- microns along the edge's ``voxels`` from their first
+        point -- instead of every *sample_spacing_along_edge_um*, and with no
+        branch-end or junction zone left out: a profile along a vessel reads
+        as far as it goes. ``summary["readings_at_positions"][edge]`` is each
+        position's accepted width, NaN where no fit passed the gates, keyed
+        as the caller named the edge. The edge's own width is aggregated
+        from those readings and written as usual, so a caller reading
+        profiles measures a copy of its graph.
+
+    With *store_profile_debug*, each accepted sample records its sampled line
+    (``data["fwhm_profile_lines_phys"]``, ~*min_total_extent_multiplier* x
+    the width) and ``data["fwhm_measured_lines_phys"]``: a two-point line
+    across the vessel spanning exactly the diameter measured there, centred
+    on the fitted centre. The viewer draws both, so each can be checked
+    against the vessel by eye.
+
+    *min_total_extent_multiplier* is a requirement, not only a target: a
+    sample whose sampled line stayed shorter than that multiple of its own
+    measured width is dropped (counted in ``summary["samples_rejected_short_line"]``)
+    unless the line was stopped by something -- another vessel's voxels, a
+    fold of this vessel, the volume's edge, or the central-lobe clip cutting
+    at a neighbour's rising signal.
+
+    Every edge this function iterates gets ``data["fwhm_status"]`` written:
+    ``"measured"`` on success, ``f"failed:{reason}"`` on any of the skip
+    paths below -- so an edge FWHM never even reaches (outside this
+    function's scope entirely) simply has no ``fwhm_status`` key at all,
+    distinguishing "not attempted" from "attempted and failed" for a caller
+    that would otherwise see both as an identical, silent branch-order-table
+    fallback.
+    """
+    if profile_baseline_mode not in ("wings", "percentile"):
+        raise ValueError(
+            f"profile_baseline_mode must be 'wings' or 'percentile', got {profile_baseline_mode!r}."
+        )
+    # Not at module level: sections imports from this module.
+    from .sections import projected_sigma
+
+    if profile_model == "blurred_lumen":
+        fit_profile = _lumen_fwhm_fit_with_diagnostics
+    elif profile_model == "gaussian":
+        fit_profile = _fwhm_gaussian_fit_with_diagnostics
+    else:
+        raise ValueError(
+            f"profile_model must be 'blurred_lumen' or 'gaussian', got {profile_model!r}."
+        )
+
+    # Under use_memmap the raw volume and the label volume live on disk; a
+    # volume made here (not the caller's raw_volume) is released on the way out.
+    owned: list[np.ndarray] = []
+    if raw_volume is not None:
+        raw = float32_volume(
+            raw_volume, use_memmap=use_memmap, memmap_directory=memmap_directory
+        )
+    elif raw_tiff_path is None:
+        raise ValueError("FWHM needs the raw image: raw_tiff_path or raw_volume.")
+    else:
+        from haemolynx.io.downsample import raw_volume_like_graph
+
+        whole = load_single_channel_tiff_volume(
+            raw_tiff_path,
+            axis_order=axis_order,
+            use_memmap=use_memmap,
+            memmap_directory=memmap_directory,
+            channel=raw_channel,
+        )
+        # The graph's positions are measured from the crop_on_import box's
+        # corner when the image was cut on import, on the grid it was
+        # downsampled to; so are the raw voxels then.
+        raw = raw_volume_like_graph(
+            whole, G, description="FWHM raw image",
+            use_memmap=use_memmap, memmap_directory=memmap_directory,
+        )
+        if raw is not whole and isinstance(whole, np.memmap):
+            release_memmap_array(whole)
+    if use_memmap and isinstance(raw, np.memmap) and raw is not raw_volume:
+        owned.append(raw)
+    if vessel_mask is not None and tuple(vessel_mask.shape) != tuple(raw.shape):
+        # On another grid its voxels are somewhere else entirely: stopping
+        # rays against it would cut them at the wrong places, silently.
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "FWHM: the vessel mask is %s but the raw image is %s; not using the "
+            "mask to find neighbouring vessels.",
+            tuple(vessel_mask.shape), tuple(raw.shape),
+        )
+        vessel_mask = None
+    try:
+        if branch_labels is not None:
+            if tuple(branch_labels.shape) != tuple(raw.shape):
+                raise ValueError(
+                    f"branch_labels is {tuple(branch_labels.shape)} but the raw image is "
+                    f"{tuple(raw.shape)}: a label volume of another grid."
+                )
+            _assign_branch_label_ids(G)
+            labels = branch_labels
+        else:
+            labels, _ = build_graph_branch_label_volume(
+                G,
+                raw.shape,
+                voxel_size_zyx,
+                background_label=background_label,
+                junction_label=junction_label,
+                use_memmap=use_memmap,
+                memmap_directory=memmap_directory,
+            )
+            if use_memmap:
+                owned.append(labels)
+
+        summary: dict[str, Any] = {
+            "edges_measured": 0,
+            "edges_skipped": [],
+            "per_edge": [],
+            "edges_with_out_of_plane_warning": [],
+            # Samples fitted fine but dropped because their line never
+            # reached min_total_extent_multiplier x the measured width and
+            # nothing (another vessel, the volume edge) was in the way.
+            "samples_rejected_short_line": 0,
+        }
+
+        mult = float(min_total_extent_multiplier)
+        if mult < 1.0:
+            raise ValueError("min_total_extent_multiplier must be >= 1.")
+
+        jn = int(junction_label)
+        branch_excl = max(0.0, float(branch_endpoint_exclusion_um))
+        junction_excl = max(0.0, float(junction_proximity_exclusion_um))
+
+        def _length_scaled_exclusion(exclusion_um: float, total_len: float) -> float:
+            """*exclusion_um*, capped so it cannot alone consume a short edge.
+
+            The default exclusion zones are tuned for major vessels, but a dense
+            capillary network routinely has inter-branch spacing well under
+            their combined reach -- this codebase's own real data has a median
+            edge length under 12um against two 10um zones eating in from either
+            end, leaving most edges with not one valid sample position and no
+            measurement at all (silently falling back to the branch-order
+            table default instead). Capping each zone at
+            :data:`MAX_EXCLUSION_FRACTION_OF_EDGE_LENGTH` of *this edge's own*
+            length keeps a short edge's central region samplable -- smaller,
+            centre-biased, but present -- rather than losing the edge outright.
+            """
+            return min(exclusion_um, MAX_EXCLUSION_FRACTION_OF_EDGE_LENGTH * total_len)
+
+        def _local_arc_window(diameter_estimate: float) -> float:
+            return _local_same_edge_window(
+                diameter_estimate,
+                same_edge_arc_window_um=same_edge_arc_window_um,
+                same_edge_arc_window_min_um=same_edge_arc_window_min_um,
+                same_edge_arc_window_multiplier=same_edge_arc_window_multiplier,
+                sample_spacing_along_edge_um=sample_spacing_along_edge_um,
+                transverse_profile_step_um=transverse_profile_step_um,
+            )
+
+        fallback_diameter_guess = (
+            0.0 if diameter_guess_um is None else max(0.0, float(diameter_guess_um))
+        )
+
+        def _initial_diameter_guess(data: dict[str, Any]) -> float:
+            return _edge_diameter_guess(
+                data,
+                diameter_guess_edge_attribute=diameter_guess_edge_attribute,
+                fallback_diameter_guess=fallback_diameter_guess,
+            )
+
+        def _passes_plateau_gate(pos_fit: np.ndarray, prof_fit: np.ndarray) -> bool:
+            """Independent of the parametric fit's own R² -- see
+            ``reject_samples_with_plateau_shape``'s docstring entry above."""
+            if not reject_samples_with_plateau_shape:
+                return True
+            if profile_baseline_mode == "wings":
+                try:
+                    baseline = robust_baseline_from_profile_wings(
+                        pos_fit, prof_fit, wing_fraction=profile_baseline_wing_fraction
+                    )
+                except ValueError:
+                    baseline = float(np.percentile(prof_fit, 10))
+            else:
+                baseline = float(np.percentile(prof_fit, 10))
+            ratio = _profile_plateau_shape_ratio(pos_fit, prof_fit, baseline)
+            return ratio is None or ratio < float(max_plateau_shape_ratio)
+
+        chosen = edge_selection(edges)
+        for u, v, key, data in G.edges(keys=True, data=True):
+            if chosen is not None and (frozenset((u, v)), key) not in chosen:
+                continue
+            vox = data.get("voxels")
+            assigned = data.get("graph_edge_label_id")
+            if not vox or len(vox) < 2 or assigned is None:
+                summary["edges_skipped"].append((u, v, key, "no_voxels_or_label"))
+                data["fwhm_status"] = "failed:no_voxels_or_label"
+                continue
+
+            poly = np.asarray(vox, dtype=float)
+            s, total_len = _arc_length_parameterize(poly)
+            if total_len <= 0:
+                summary["edges_skipped"].append((u, v, key, "zero_length"))
+                data["fwhm_status"] = "failed:zero_length"
+                continue
+
+            if sample_spacing_along_edge_um <= 0:
+                raise ValueError("sample_spacing_along_edge_um must be positive.")
+
+            # This edge's own starting diameter estimate -- the same for every
+            # sample along it, so read once here rather than on every pass.
+            edge_diameter_guess = _initial_diameter_guess(data)
+
+            asked_as = None
+            if at_positions is not None:
+                asked_as = next((e for e in ((u, v, key), (v, u, key)) if e in at_positions), None)
+            if asked_as is not None:
+                targets = np.clip(np.asarray(at_positions[asked_as], dtype=float).reshape(-1), 0.0, total_len)
+            else:
+                n_samples = max(1, int(np.floor(total_len / sample_spacing_along_edge_um)) + 1)
+                targets = np.linspace(0.0, total_len, n_samples)
+            pts = _interpolate_centerline(poly, s, targets)
+            readings_here: list[float] = []
+            # Exclude profiles too close to bifurcation endpoints, where independent
+            # branch diameter is often not well-defined.
+            u_is_branch = int(G.degree(u)) > 1
+            v_is_branch = int(G.degree(v)) > 1
+            # Auto-detect edge-local meeting points from junction voxels and exclude
+            # nearby arc-length region.
+            junction_s: list[float] = []
+            if junction_excl > 0.0 and jn != int(background_label):
+                idx_all = physical_points_to_continuous_indices(poly, voxel_size_zyx)
+                for i, row in enumerate(idx_all):
+                    iz, iy, ix = _nearest_integer_index(row, labels.shape)
+                    if int(labels[iz, iy, ix]) == jn:
+                        junction_s.append(float(s[i]))
+            same_edge_s_lookup: dict[tuple[int, int, int], float] | None = None
+            dense_poly: np.ndarray | None = None
+            dense_s: np.ndarray | None = None
+            if enforce_same_edge_locality:
+                same_edge_s_lookup = {}
+                # Dense arc-length lookup so curved/zig-zag edges are covered between sparse
+                # control points; otherwise non-local same-edge re-entry can go undetected.
+                ds_lookup = max(0.1, 0.5 * float(np.min(np.asarray(voxel_size_zyx, dtype=float))))
+                dense_pts_list: list[np.ndarray] = []
+                dense_s_list: list[float] = []
+                for i in range(len(poly) - 1):
+                    p0 = poly[i]
+                    p1 = poly[i + 1]
+                    seg_len = float(np.linalg.norm(p1 - p0))
+                    if seg_len <= 1e-12:
+                        continue
+                    n_sub = max(1, int(np.ceil(seg_len / ds_lookup)))
+                    for j in range(n_sub + 1):
+                        t = float(j) / float(n_sub)
+                        p = (1.0 - t) * p0 + t * p1
+                        s_here = (1.0 - t) * float(s[i]) + t * float(s[i + 1])
+                        dense_pts_list.append(p)
+                        dense_s_list.append(s_here)
+                        row = physical_points_to_continuous_indices(p, voxel_size_zyx)[0]
+                        key_idx = _nearest_integer_index(row, labels.shape)
+                        prev = same_edge_s_lookup.get(key_idx)
+                        # Keep arc-length closest to current segment midpoint mapping.
+                        if prev is None or abs(prev - s_here) > 0.5 * ds_lookup:
+                            same_edge_s_lookup[key_idx] = s_here
+                if dense_pts_list:
+                    dense_poly = np.asarray(dense_pts_list, dtype=float)
+                    dense_s = np.asarray(dense_s_list, dtype=float)
+
+            # This edge's own exclusion zones, capped to its own length -- see
+            # _length_scaled_exclusion's own docstring for why a fixed 10um zone
+            # from each end cannot be applied unscaled to a dense network's many
+            # short edges.
+            branch_excl_here = _length_scaled_exclusion(branch_excl, total_len)
+            junction_excl_here = _length_scaled_exclusion(junction_excl, total_len)
+
+            diameters: list[float] = []
+            fit_r2_values: list[float | None] = []
+            profile_lines_phys: list[np.ndarray] = []
+            profile_anchors_phys: list[np.ndarray] = []
+            measured_lines_phys: list[np.ndarray] = []
+            max_out_of_plane_fraction = 0.0
+            for s0, center in zip(targets, pts):
+                if asked_as is None:
+                    if u_is_branch and float(s0) < branch_excl_here:
+                        continue
+                    if v_is_branch and float(total_len - s0) < branch_excl_here:
+                        continue
+                    if junction_s and min(abs(float(s0) - sj) for sj in junction_s) < junction_excl_here:
+                        continue
+                tangent = _tangent_at(poly, s, float(s0))
+                n_hat = _transverse_unit_for_mode(tangent, transverse_sampling_mode)
+                sample_out_of_plane_fraction = _out_of_plane_fraction(tangent)
+                fixed_blur = (
+                    {"blur_sigma_um": projected_sigma(n_hat, profile_psf_sigma_zyx)}
+                    if profile_psf_sigma_zyx is not None and profile_model == "blurred_lumen"
+                    else {}
+                )
+                # The voxel pitch along this sample's own line, for the
+                # minimum width and the clip's smoothing: taking the coarsest
+                # axis's for every line in true-3D sampling rejected every
+                # width under 4 um on a 0.5 x 0.5 x 2 um stack, even on lines
+                # crossing a voxel every 0.5 um.
+                line_pitch_um = _line_pitch_um(n_hat, voxel_size_zyx)
+                min_diameter_um = max(0.0, float(min_diameter_pixels)) * line_pitch_um
+                clip_smoothing_um = (
+                    max(_CLIP_DECISION_SMOOTHING_WINDOW_UM, 2.0 * line_pitch_um)
+                    if clip_decision_smoothing_um is None
+                    else float(clip_decision_smoothing_um)
+                )
+
+                def _capped_initial_half_extent(half_extent: float, local_arc_window: float) -> float:
+                    """`half_extent`, further capped by the nearest non-local
+                    same-edge point's own physical distance -- see
+                    `cap_half_extent_by_nonlocal_same_edge_distance`'s own
+                    docstring. Only ever applied to the very first pass's own
+                    half-extent: later widening passes only ever grow from a
+                    fitted diameter, never re-derive it from raw geometry.
+                    """
+                    if not (cap_half_extent_by_nonlocal_same_edge_distance and len(poly) > 2):
+                        return half_extent
+                    # At least the same diameter-aware local window used for the
+                    # ray-stop guard -- a fixed nonlocal_same_edge_arc_separation_um
+                    # alone silently caps the window for any vessel wider than
+                    # that constant, regardless of how gently it curves (see
+                    # _local_arc_window's own docstring).
+                    arc_sep = max(float(nonlocal_same_edge_arc_separation_um), local_arc_window)
+                    ref_pts = dense_poly if dense_poly is not None else poly
+                    ref_s = dense_s if dense_s is not None else s
+                    arc_apart = np.abs(ref_s - float(s0))
+                    center_arr = np.asarray(center, dtype=float)
+                    # The 3D distance: whether another part of this vessel
+                    # can cross the line. It also took the y-x distance
+                    # alone, and along a vessel running in z every point
+                    # further along it lies straight above or below: a
+                    # y-x distance of about nothing, taken as the vessel
+                    # folding back, so every line was capped at almost
+                    # nothing and no z-running vessel was ever measured.
+                    apart = np.linalg.norm(ref_pts - center_arr, axis=1)
+                    # Only where the centreline folds back on itself: a point
+                    # far along the arc but close in space. Every point at
+                    # least arc_sep along a *straight* vessel is still about
+                    # arc_sep away, so counting those capped every vessel's
+                    # first ray at 2 x factor x arc_sep -- ~5um with the
+                    # defaults, inside the lumen of anything wider -- and
+                    # read a 25um vessel as 3.5um.
+                    folded = (arc_apart >= arc_sep) & (
+                        apart < _FOLDED_BACK_CHORD_FRACTION * arc_apart
+                    )
+                    if not np.any(folded):
+                        return half_extent
+                    d_nonlocal = float(np.min(apart[folded]))
+                    if not (np.isfinite(d_nonlocal) and d_nonlocal > 0):
+                        return half_extent
+                    return min(half_extent, float(nonlocal_same_edge_half_extent_factor) * d_nonlocal)
+
+                def _sample_and_fit(
+                    half_extent: float, local_arc_window: float, diameter_for_gate: float
+                ) -> tuple[float | None, np.ndarray | None, float | None, float | None, bool]:
+                    """One sample-clip-fit-gate pass. Returns (diameter, offsets,
+                    fit_r2, fitted_centre, stopped_by_neighbour) -- diameter is
+                    None if the fit itself failed or any gate rejected it, in
+                    which case the rest are also None/False.
+
+                    *stopped_by_neighbour*: the line could not be as long as
+                    asked -- a ray stopped at another structure (another
+                    vessel's voxels, a fold of this one, the volume's edge), or
+                    the central-lobe clip cut it where a neighbouring vessel's
+                    signal rises -- the one case a line shorter than
+                    ``min_total_extent_multiplier`` x the diameter is allowed."""
+                    pos, prof = _sample_transverse_profile(
+                        raw,
+                        labels,
+                        center,
+                        tangent,
+                        int(assigned),
+                        half_extent,
+                        float(transverse_profile_step_um),
+                        voxel_size_zyx,
+                        background_label=int(background_label),
+                        junction_label=jn,
+                        allow_junction_crossing=bool(allow_junction_crossing),
+                        same_edge_s_lookup=same_edge_s_lookup,
+                        same_edge_s0_um=float(s0),
+                        same_edge_arc_window_um=local_arc_window,
+                        transverse_sampling_mode=transverse_sampling_mode,
+                        allow_crossing_other_edges=bool(allow_crossing_other_edges),
+                        longitudinal_average_um=float(longitudinal_average_um),
+                        vessel_mask=(
+                            vessel_mask if stop_at_other_vessels_in_mask else None
+                        ),
+                    )
+                    pos_fit, prof_fit = (
+                        _clip_profile_to_central_lobe(
+                            pos,
+                            prof,
+                            min_drop_fraction_of_center=clip_min_drop_fraction_of_center,
+                            re_rise_fraction_of_center=clip_re_rise_fraction_of_center,
+                            decision_smoothing_um=clip_smoothing_um,
+                        )
+                        if clip_profile_to_single_vessel
+                        else (pos, prof)
+                    )
+                    d, x0, r2 = fit_profile(
+                        pos_fit,
+                        prof_fit,
+                        profile_baseline_mode=profile_baseline_mode,
+                        profile_baseline_wing_fraction=profile_baseline_wing_fraction,
+                        constrain_fitted_baseline=constrain_fitted_baseline,
+                        baseline_constraint_half_width_ptp=baseline_constraint_half_width_ptp,
+                        **fixed_blur,
+                    )
+                    if d is None or d < min_diameter_um:
+                        return None, None, None, None, False
+                    step_um = float(transverse_profile_step_um)
+                    ray_stopped = (
+                        float(np.max(pos)) < half_extent - step_um
+                        or -float(np.min(pos)) < half_extent - step_um
+                    )
+                    lobe_clipped = (
+                        float(np.max(pos_fit)) < float(np.max(pos)) - step_um / 2
+                        or float(np.min(pos_fit)) > float(np.min(pos)) + step_um / 2
+                    )
+                    stopped_by_neighbour = bool(ray_stopped or lobe_clipped)
+                    # The larger of the pre-fit guess and this pass's own fitted
+                    # diameter: on an edge with no per-edge diameter guess (or a
+                    # guess much narrower than reality), the first pass's guess
+                    # alone would reject an excellent, well-fit-but-off-center
+                    # measurement of a genuinely wide vessel just because the
+                    # offset looks large relative to a stale, too-small estimate.
+                    # Never narrows today's tolerance -- only widens it when the
+                    # fit itself is the more current evidence of this vessel's
+                    # own width.
+                    max_offset = _local_max_center_offset(
+                        max(diameter_for_gate, d),
+                        max_fit_center_offset_um=max_fit_center_offset_um,
+                        max_fit_center_offset_fraction_of_diameter=max_fit_center_offset_fraction_of_diameter,
+                    )
+                    if reject_samples_with_center_offset and x0 is not None and abs(float(x0)) > max_offset:
+                        return None, None, None, None, False
+                    if reject_samples_with_low_fit_r2 and r2 is not None and float(r2) < float(min_fit_r2):
+                        return None, None, None, None, False
+                    if not _passes_plateau_gate(pos_fit, prof_fit):
+                        return None, None, None, None, False
+                    return d, pos, r2, (0.0 if x0 is None else float(x0)), stopped_by_neighbour
+
+                # Widen the transverse window until a pass's own fit no longer
+                # asks for more room, up to max_transverse_widen_passes -- an
+                # upper bound on iteration, not a target (see that parameter's
+                # own docstring). If a wider pass's fit fails a gate, that is
+                # usually because the wider window now reaches a neighbouring
+                # structure the narrower one did not -- not because every width
+                # between the two also fails -- so before giving up and keeping
+                # the last known-good (possibly geometrically-capped, possibly
+                # well short of min_total_extent_multiplier) pass, bisect
+                # towards the failing width up to _MAX_WIDTH_BISECTIONS times
+                # and keep the widest intermediate width that still passes every
+                # gate. Only when none of those work either does this pass keep
+                # whatever the previous, narrower pass already accepted.
+                diameter_estimate = edge_diameter_guess
+                local_arc_window = _local_arc_window(diameter_estimate)
+                half_extent = _capped_initial_half_extent(
+                    max(float(transverse_half_extent_um), 0.5 * mult * diameter_estimate),
+                    local_arc_window,
+                )
+                best_diameter: float | None = None
+                best_fit_r2: float | None = None
+                best_centre: float | None = None
+                best_stopped: bool = False
+                accepted_offsets: np.ndarray | None = None
+                best_half_extent: float | None = None
+                for _pass in range(max(1, int(max_transverse_widen_passes)) + 1):
+                    d, pos, fit_r2, x0, stopped = _sample_and_fit(
+                        half_extent, local_arc_window, diameter_estimate
+                    )
+                    if d is None and best_half_extent is not None:
+                        lo, hi = best_half_extent, half_extent
+                        for _bisection in range(_MAX_WIDTH_BISECTIONS):
+                            mid = 0.5 * (lo + hi)
+                            if mid - lo <= float(transverse_profile_step_um):
+                                break
+                            mid_window = _local_arc_window(diameter_estimate)
+                            d_mid, pos_mid, r2_mid, x0_mid, stopped_mid = _sample_and_fit(
+                                mid, mid_window, diameter_estimate
+                            )
+                            if d_mid is None:
+                                hi = mid
+                                continue
+                            d, pos, fit_r2, x0, stopped = (
+                                d_mid, pos_mid, r2_mid, x0_mid, stopped_mid
+                            )
+                            half_extent, local_arc_window = mid, mid_window
+                            lo = mid
+                    if d is None:
+                        break
+                    best_diameter = d
+                    best_fit_r2 = fit_r2
+                    best_centre = x0
+                    best_stopped = stopped
+                    accepted_offsets = pos
+                    best_half_extent = half_extent
+                    diameter_estimate = d
+                    desired_half = 0.5 * mult * d
+                    if desired_half <= half_extent + float(transverse_profile_step_um):
+                        break
+                    half_extent = desired_half
+                    local_arc_window = _local_arc_window(d)
+                if best_diameter is not None and accepted_offsets is not None:
+                    # FWHM is only defined against the background on both
+                    # sides, so the sampled line has to span
+                    # min_total_extent_multiplier x the width it measured --
+                    # unless something stopped it (another vessel, a fold of
+                    # this one, the volume's edge). A line that merely stopped
+                    # widening -- a wider pass failed a gate, and the widening
+                    # loop kept the last narrower one -- can measure a width
+                    # as wide as the line itself, the profile never reaching
+                    # background at all: a third of the accepted samples on a
+                    # real dim run, down to 1x.
+                    line_um = float(np.max(accepted_offsets) - np.min(accepted_offsets))
+                    wide_enough = line_um + 2.0 * float(transverse_profile_step_um) >= mult * best_diameter
+                    if not (wide_enough or best_stopped):
+                        summary["samples_rejected_short_line"] += 1
+                        best_diameter = None
+                        accepted_offsets = None
+                if best_diameter is not None:
+                    diameters.append(best_diameter)
+                    fit_r2_values.append(best_fit_r2)
+                readings_here.append(float("nan") if best_diameter is None else float(best_diameter))
+
+                if accepted_offsets is not None:
+                    max_out_of_plane_fraction = max(
+                        max_out_of_plane_fraction, sample_out_of_plane_fraction
+                    )
+
+                if store_profile_debug and accepted_offsets is not None and accepted_offsets.size > 0:
+                    c = np.asarray(center, dtype=float)
+                    profile_lines_phys.append(
+                        np.stack([c + float(o) * n_hat for o in accepted_offsets], axis=0)
+                    )
+                    profile_anchors_phys.append(c.copy())
+                    if best_diameter is not None:
+                        middle = 0.0 if best_centre is None else float(best_centre)
+                        half = 0.5 * float(best_diameter)
+                        measured_lines_phys.append(
+                            np.stack(
+                                [c + (middle - half) * n_hat, c + (middle + half) * n_hat],
+                                axis=0,
+                            )
+                        )
+
+            if asked_as is not None:
+                summary.setdefault("readings_at_positions", {})[asked_as] = readings_here
+            if len(diameters) < max(1, int(min_accepted_samples)):
+                reason = "fwhm_failed"
+                if diameters:
+                    reason = "too_few_samples"
+                elif branch_excl > 0 and (u_is_branch or v_is_branch):
+                    reason = "fwhm_failed_or_excluded_near_branch"
+                summary["edges_skipped"].append((u, v, key, reason))
+                data["fwhm_status"] = f"failed:{reason}"
+                continue
+
+            d_final = _aggregate_edge_diameter(diameters, edge_diameter_aggregation)
+            data["fwhm_diameter_um"] = d_final
+            data["fwhm_diameter_samples_um"] = diameters
+            # Parallel to fwhm_diameter_samples_um -- each accepted sample's own
+            # fit R^2, so a caller (the FWHM settings optimiser, in particular)
+            # can judge fit quality without redoing the fit itself. None for a
+            # sample whose accepted fit came from a source that didn't report
+            # one (not expected in practice, but the gate above already treats
+            # r2 is None as "can't reject on r2", so this mirrors that).
+            data["fwhm_diameter_r2_samples"] = fit_r2_values
+            data["fwhm_status"] = "measured"
+            if (
+                transverse_sampling_mode == "in_plane_yx"
+                and max_out_of_plane_fraction >= float(warn_out_of_plane_tangent_fraction)
+            ):
+                data["fwhm_out_of_plane_warning"] = True
+                data["fwhm_max_tangent_out_of_plane_fraction"] = max_out_of_plane_fraction
+                summary["edges_with_out_of_plane_warning"].append((u, v, key))
+            if store_profile_debug:
+                data["fwhm_profile_lines_phys"] = profile_lines_phys
+                data["fwhm_profile_anchors_phys"] = profile_anchors_phys
+                data["fwhm_measured_lines_phys"] = measured_lines_phys
+            summary["edges_measured"] += 1
+            summary["per_edge"].append(
+                {
+                    "edge": (u, v, key),
+                    "graph_edge_label_id": int(assigned),
+                    "fwhm_diameter_um": d_final,
+                    "n_samples": len(diameters),
+                }
+            )
+
+        return summary
+    finally:
+        for array in owned:
+            release_memmap_array(array)

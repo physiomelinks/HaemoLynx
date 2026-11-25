@@ -1,0 +1,375 @@
+"""Betweenness centrality and community/modularity partitioning, plain
+topological and weighted by resistance/length/solved flow."""
+from __future__ import annotations
+
+from typing import Any, Dict, Union
+
+import numpy as np
+import networkx as nx
+from haemolynx.graph.communities import (
+    DEFAULT_MAX_NODES_EXACT,
+    communities_for_weighting,
+    greedy_modularity_partition,
+    simple_graph_with_edge_attr,
+)
+
+from ._sampling import REPRODUCIBILITY_SEED
+from .exact_betweenness import exact_betweenness_centrality
+
+#: Above this many nodes, betweenness centrality falls back to an
+#: approximate computation (`DEFAULT_BETWEENNESS_APPROX_K` source nodes)
+#: instead of the exact one -- lower than
+#: `graph.communities.DEFAULT_MAX_NODES_EXACT` (modularity's own threshold)
+#: because betweenness is more expensive per node.
+DEFAULT_BETWEENNESS_MAX_NODES_EXACT = 1000
+#: How many source nodes an approximate betweenness computation samples,
+#: once a graph is too large for the exact one.
+DEFAULT_BETWEENNESS_APPROX_K = 128
+#: How many of the highest-betweenness nodes a summary reports by name.
+DEFAULT_BETWEENNESS_TOP_N = 5
+
+
+def compute_communities_summary(
+    G: nx.Graph,
+    max_nodes_exact: int = DEFAULT_MAX_NODES_EXACT,
+    precomputed: "tuple[list, str] | None" = None,
+) -> Dict[str, Any]:
+    """Compute community statistics with runtime guards.
+
+    *precomputed*, when given, is the ``(communities, method)`` pair
+    ``communities_for_weighting(G, "topology")`` already returned for this
+    graph (e.g. for the vessels-layer vascular communities), used instead of
+    partitioning it again.
+    """
+    if G.number_of_nodes() == 0:
+        return {"Community Count": 0}
+
+    if precomputed is not None:
+        communities, method = precomputed
+    else:
+        communities, method = communities_for_weighting(G, "topology", max_nodes_exact)
+    sizes = [len(c) for c in communities]
+    return {
+        "Community Count": len(communities),
+        "Largest Community Size": max(sizes) if sizes else 0,
+        "Mean Community Size": float(np.mean(sizes)) if sizes else 0,
+        "Community Method": method,
+    }
+
+
+def compute_communities(G: nx.Graph):
+    # Plain topological communities. Weighted community detection (by
+    # resistance, geometry/length, or solved |flow|) is
+    # compute_weighted_communities_summary, all three reported together by
+    # compute_betweenness_and_community_measurements.
+    return greedy_modularity_partition(G)
+
+
+def compute_betweenness_summary(
+    G: nx.Graph,
+    max_nodes_exact: int = DEFAULT_BETWEENNESS_MAX_NODES_EXACT,
+    approx_k: int = DEFAULT_BETWEENNESS_APPROX_K,
+    seed: int = REPRODUCIBILITY_SEED,
+    top_n: int = DEFAULT_BETWEENNESS_TOP_N,
+) -> Dict[str, Any]:
+    """Compute compact betweenness summary, avoiding huge outputs."""
+    n_nodes = G.number_of_nodes()
+    if n_nodes == 0:
+        return {"Betweenness Mean": 0.0, "Betweenness Max": 0.0}
+
+    if n_nodes <= max_nodes_exact:
+        bet = exact_betweenness_centrality(G)
+        method = "exact"
+    else:
+        k = min(approx_k, n_nodes)
+        bet = nx.betweenness_centrality(G, k=k, seed=seed)
+        method = f"approx_k={k}"
+
+    values = list(bet.values())
+    top = sorted(bet.items(), key=lambda kv: kv[1], reverse=True)[:top_n]
+    return {
+        "Betweenness Mean": float(np.mean(values)) if values else 0.0,
+        "Betweenness Max": float(np.max(values)) if values else 0.0,
+        "Betweenness Top Nodes": top,
+        "Betweenness Method": method,
+    }
+
+
+def compute_betweenness(G: nx.Graph):
+    # Plain topological betweenness. Weighted betweenness (by resistance,
+    # geometry/length, or solved |flow|) is compute_weighted_betweenness_
+    # summary, all three reported together by
+    # compute_betweenness_and_community_measurements. Exact: on a large
+    # network its searches run in worker processes (exact_betweenness).
+    return exact_betweenness_centrality(G)
+
+
+def compute_weighted_betweenness_summary(
+    G: Union[nx.Graph, nx.MultiGraph],
+    source_attr: str,
+    inverse_source_attr: bool = False,
+    max_nodes_exact: int = DEFAULT_BETWEENNESS_MAX_NODES_EXACT,
+    approx_k: int = DEFAULT_BETWEENNESS_APPROX_K,
+    seed: int = REPRODUCIBILITY_SEED,
+    top_n: int = DEFAULT_BETWEENNESS_TOP_N,
+) -> Dict[str, Any]:
+    """Compute weighted betweenness summary from a chosen edge attribute."""
+    transform = (lambda x: 1.0 / x) if inverse_source_attr else None
+    G_s = simple_graph_with_edge_attr(
+        G, source_attr=source_attr, transform=transform, target_attr="analysis_weight"
+    )
+    n_nodes = G_s.number_of_nodes()
+    if n_nodes == 0:
+        return {"Betweenness Mean": 0.0, "Betweenness Max": 0.0}
+
+    if n_nodes <= max_nodes_exact:
+        bet = exact_betweenness_centrality(G_s, weight="analysis_weight")
+        method = "exact_weighted"
+    else:
+        k = min(approx_k, n_nodes)
+        bet = nx.betweenness_centrality(
+            G_s, k=k, seed=seed, weight="analysis_weight"
+        )
+        method = f"approx_weighted_k={k}"
+
+    values = list(bet.values())
+    top = sorted(bet.items(), key=lambda kv: kv[1], reverse=True)[:top_n]
+    return {
+        "Betweenness Mean": float(np.mean(values)) if values else 0.0,
+        "Betweenness Max": float(np.max(values)) if values else 0.0,
+        "Betweenness Top Nodes": [
+            {"node": node, "value": float(value)} for node, value in top
+        ],
+        "Betweenness Method": method,
+    }
+
+
+#: `compute_betweenness_and_community_measurements`'s three source
+#: attributes, translated to `graph.communities`'s own weighting names, so
+#: this function's public `source_attr`/`inverse_source_attr` signature
+#: (unchanged, for backward compatibility) can still delegate to
+#: `communities_for_weighting`.
+_WEIGHTING_FOR_SOURCE_ATTR = {
+    ("resistance", False): "resistance",
+    ("length", False): "length",
+    ("flow_abs", True): "flow",
+}
+
+
+def compute_weighted_communities_summary(
+    G: Union[nx.Graph, nx.MultiGraph],
+    source_attr: str,
+    inverse_source_attr: bool = False,
+    max_nodes_exact: int = DEFAULT_MAX_NODES_EXACT,
+    precomputed: "tuple[list, str] | None" = None,
+) -> Dict[str, Any]:
+    """Compute weighted community summary using greedy modularity.
+
+    *source_attr*/*inverse_source_attr* name a distance, as for
+    :func:`compute_weighted_betweenness_summary`; modularity weighs each
+    vessel by its inverse, how strongly it ties its ends (conductance,
+    1/length, |flow|), parallel vessels' ties added.
+
+    *precomputed*, when given, is a ``(communities, method)`` pair already
+    produced by :func:`~haemolynx.graph.communities.communities_for_weighting`
+    for this exact (*source_attr*, *inverse_source_attr*) -- lets a caller
+    that already partitioned this graph for the same weighting elsewhere
+    (e.g. :func:`haemolynx.graph.communities.assign_vascular_communities`)
+    skip running greedy modularity on it a second time. Not validated
+    against *source_attr*/*inverse_source_attr* for cost reasons; passing a
+    partition for a different weighting is the caller's error.
+    """
+    weighting = _WEIGHTING_FOR_SOURCE_ATTR.get((source_attr, inverse_source_attr))
+    if precomputed is not None:
+        communities, method = precomputed
+    elif weighting is not None:
+        communities, method = communities_for_weighting(G, weighting, max_nodes_exact)
+    else:
+        # An arbitrary (source_attr, inverse_source_attr) pair not among the
+        # three named weightings `graph.communities` knows about -- fall
+        # back to the same computation inline, so this function's public
+        # signature stays general rather than restricted to those three.
+        # The pair names a distance; modularity weighs a tie, its inverse,
+        # parallel vessels' ties added.
+        transform = None if inverse_source_attr else (lambda x: 1.0 / x)
+        G_s = simple_graph_with_edge_attr(
+            G, source_attr=source_attr, transform=transform, target_attr="analysis_weight",
+            combine="sum",
+        )
+        n_nodes = G_s.number_of_nodes()
+        if n_nodes == 0:
+            communities, method = [], "greedy_modularity_weighted"
+        elif n_nodes <= max_nodes_exact:
+            communities = greedy_modularity_partition(G_s, weight="analysis_weight")
+            method = "greedy_modularity_weighted"
+        else:
+            communities = list(nx.connected_components(G_s))
+            method = "connected_components_fallback"
+
+    if not communities and method != "connected_components_fallback":
+        return {"Community Count": 0}
+    sizes = [len(c) for c in communities]
+    return {
+        "Community Count": len(communities),
+        "Largest Community Size": max(sizes) if sizes else 0,
+        "Mean Community Size": float(np.mean(sizes)) if sizes else 0,
+        "Community Method": method,
+    }
+
+
+def compute_betweenness_and_community_measurements(
+    G: Union[nx.Graph, nx.MultiGraph],
+    *,
+    precomputed_communities: "Dict[str, tuple[list, str]] | None" = None,
+) -> Dict[str, Dict[str, Any]]:
+    """Compute weighted betweenness/community using three edge distance models.
+
+    - "edge_resistance": Poiseuille resistance as the shortest-path distance
+      -- the vessels that impede flow least are the most central.
+    - "edge_length": physical length as the distance -- purely geometric,
+      independent of haemodynamics.
+    - "edge_flow_abs": inverse of the solved absolute flow (``flow_abs``,
+      written by haemodynamics.resistance.set_edge_flows) as the distance --
+      vessels carrying the most flow are treated as the shortest, most
+      travelled paths. Only meaningful once flow has been solved; edges with
+      no flow (or none solved yet) drop out the same way a missing
+      resistance or length would.
+
+    All three are reported together rather than one at a time, so a caller
+    never has to guess which distance model a given number came from.
+
+    *precomputed_communities*, when given, maps a
+    :data:`haemolynx.graph.communities.COMMUNITY_WEIGHTINGS` name
+    ("resistance"/"length"/"flow") to a ``(communities, method)`` pair
+    already computed for this graph -- e.g. by
+    :func:`haemolynx.graph.communities.assign_vascular_communities` for the
+    same weighting -- so that one weighting's community partition is not
+    computed twice.
+    """
+    precomputed_communities = precomputed_communities or {}
+    resistance_results = {
+        "Betweenness": compute_weighted_betweenness_summary(
+            G, source_attr="resistance", inverse_source_attr=False
+        ),
+        "Communities": compute_weighted_communities_summary(
+            G, source_attr="resistance", inverse_source_attr=False,
+            precomputed=precomputed_communities.get("resistance"),
+        ),
+    }
+    edge_length_results = {
+        "Betweenness": compute_weighted_betweenness_summary(
+            G, source_attr="length", inverse_source_attr=False
+        ),
+        "Communities": compute_weighted_communities_summary(
+            G, source_attr="length", inverse_source_attr=False,
+            precomputed=precomputed_communities.get("length"),
+        ),
+    }
+    edge_flow_results = {
+        "Betweenness": compute_weighted_betweenness_summary(
+            G, source_attr="flow_abs", inverse_source_attr=True
+        ),
+        "Communities": compute_weighted_communities_summary(
+            G, source_attr="flow_abs", inverse_source_attr=True,
+            precomputed=precomputed_communities.get("flow"),
+        ),
+    }
+    return {
+        "edge_resistance": resistance_results,
+        "edge_length": edge_length_results,
+        "edge_flow_abs": edge_flow_results,
+    }
+
+
+def _node_pressure(G: nx.Graph, node: Any) -> "float | None":
+    """The solved ``pressure`` (Pa) on *node*, or None."""
+    try:
+        pressure = float(G.nodes[node].get("pressure"))
+    except (TypeError, ValueError):
+        return None
+    return pressure if np.isfinite(pressure) else None
+
+
+def compute_flow_hierarchy(
+    G: Union[nx.Graph, nx.MultiGraph],
+    *,
+    signed_flow_attr: str = "flow_signed",
+) -> Dict[str, Any]:
+    """How tree-like (vs. how anastomotic/looped) the solved flow makes this
+    network.
+
+    Orients every edge with a determinate solved flow the way that flow
+    actually moves (u->v for positive ``flow_signed``, v->u for negative),
+    then reports ``nx.flow_hierarchy``: the fraction of directed edges that
+    do *not* sit on a directed cycle. 1.0 means the flow itself never
+    recirculates through any loop -- every anastomosis this network's
+    topology has is still resolved into a one-way street once you look at
+    which way blood is actually moving through it, i.e. this graph carries
+    flow like a tree even though :func:`~haemolynx.statistics.topology.compute_cyclomatic_number`
+    may say the topology has loops. A lower value means flow genuinely
+    recirculates through at least one loop -- physically impossible for a
+    resistive network at steady state, so a low reading past rounding noise
+    is worth checking as a modelling artefact (e.g. two boundary conditions
+    fighting each other) rather than a real anatomical finding.
+
+    An edge with no determinate flow is left out of the directed graph
+    entirely, the same way a missing resistance or length drops an edge from
+    the weighted betweenness/community models above: one the solve's
+    ``flow_state`` says carries none (behind a dead end inside the tissue or
+    a closed image-face end, or in a piece with no inlet and outlet), and
+    one with a missing, zero or non-finite ``flow_signed`` (haemodynamics
+    never solved, or a graph solved before flow states). How many were
+    dropped is reported alongside -- and of those, how many are behind dead
+    ends -- so a high hierarchy reading is not silently inflated by ignoring
+    exactly the edges most likely to have an ambiguous direction.
+    """
+    from haemolynx.graph.prune import FLOW_STATE
+
+    is_mg = isinstance(G, (nx.MultiGraph, nx.MultiDiGraph))
+    directed = nx.MultiDiGraph()
+    directed.add_nodes_from(G.nodes())
+    edge_iter = (
+        G.edges(keys=True, data=True)
+        if is_mg
+        else ((u, v, 0, data) for u, v, data in G.edges(data=True))
+    )
+    skipped = 0
+    behind_dead_ends = 0
+    for u, v, _key, data in edge_iter:
+        state = data.get(FLOW_STATE)
+        if state is not None and state != "solved":
+            skipped += 1
+            behind_dead_ends += state in ("blind_end", "closed_end")
+            continue
+        flow_val = data.get(signed_flow_attr)
+        try:
+            flow_float = float(flow_val) if flow_val is not None else float("nan")
+        except (TypeError, ValueError):
+            flow_float = float("nan")
+        if not np.isfinite(flow_float) or flow_float == 0.0:
+            skipped += 1
+            continue
+        # flow_signed runs from the end the solve iterated first, which a
+        # rebuilt graph (bridges contracted) may iterate second: the two
+        # ends' solved pressures say which way it runs, where they differ.
+        p_u, p_v = (_node_pressure(G, n) for n in (u, v))
+        if p_u is not None and p_v is not None and p_u != p_v:
+            forward = p_u > p_v
+        else:
+            forward = flow_float > 0.0
+        if forward:
+            directed.add_edge(u, v)
+        else:
+            directed.add_edge(v, u)
+
+    if directed.number_of_edges() == 0:
+        return {
+            "Flow Hierarchy": "N/A (no solved flow)",
+            "Flow Hierarchy Edges Skipped": skipped,
+            "Flow Hierarchy Vessels Behind Dead Ends (excluded)": behind_dead_ends,
+        }
+    return {
+        "Flow Hierarchy": float(nx.flow_hierarchy(directed)),
+        "Flow Hierarchy Edges Skipped": skipped,
+        "Flow Hierarchy Vessels Behind Dead Ends (excluded)": behind_dead_ends,
+    }

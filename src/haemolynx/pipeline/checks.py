@@ -3,7 +3,8 @@
 The schema states most of what a run needs — see
 :mod:`haemolynx.parsers.checks`, which reads it. What is left here is knowledge
 of how *this* pipeline behaves: the files it names for itself when a stage is
-skipped, and the external tool it shells out to.
+skipped, the external tool it shells out to, and whether the files it writes
+fit Windows' path limit (:func:`haemolynx.pipeline.batch.check_output_path_lengths`).
 """
 from __future__ import annotations
 
@@ -11,8 +12,32 @@ import shutil
 from pathlib import Path
 from typing import Any, Mapping
 
+from haemolynx.graph.boundaries import (
+    SPLIT_DIAMETER,
+    SPLIT_LARGE_VESSEL_MASKS,
+    VESSEL_MASK_SWITCHES,
+    assigns_large_vessel_branch_orders,
+    boundary_role_configured,
+    large_vessel_mask_split_diameter_um,
+    vessel_classes_by_size,
+    vessel_mask_files_in_use,
+    vessel_masks_in_use,
+)
+from haemolynx.graph.vessel_size_classes import check_size_thresholds, size_class_range
+from haemolynx.graph.boundaries import network_is_synthetic, network_surrounds_image
+from haemolynx.haemodynamics.viscosity import run_diameter_basis
+from haemolynx.haemodynamics.open_ends import ESTIMATED, TERMINAL_RESISTANCE
+from haemolynx.haemodynamics.perturbations import (
+    MEASURED_CONSTRICTION_TYPE,
+    perturbation_mask_setting,
+    perturbation_problems,
+    perturbations_from_settings,
+    settings_for_perturbation_type,
+)
+from haemolynx.io.vessel_masks import global_vessel_mask_roles
 from haemolynx.parsers import Schema
 from haemolynx.parsers.checks import CheckReport, check_settings, resolve_existing_path
+from haemolynx.pipeline.batch import check_output_path_lengths
 
 #: Stage toggle -> the artefact a previous run must have left behind, as a
 #: format string over the run's image stem.
@@ -25,15 +50,20 @@ CACHED_STAGE_ARTEFACTS = {
 def check_cached_artefacts(settings: Mapping[str, Any]) -> CheckReport:
     """When a stage is switched off, the file it would have written must exist."""
     report = CheckReport()
-    vtk_output_prefix = settings.get("vtk_output_prefix")
-    if vtk_output_prefix is None:
+    output_dir = settings.get("output_dir")
+    # A synthetic network is generated every run: nothing is read back.
+    if output_dir is None or network_is_synthetic(settings):
         return report
-    output_dir = Path(vtk_output_prefix).parent
+    output_dir = Path(output_dir)
 
+    from haemolynx.io.ilastik import ilastik_segmented_stem
+    from haemolynx.pipeline.naming import segments_raw_image
+
+    # Named as the stages name them: the segmentation's output only while
+    # ilastik or the classifier segments (a switch on and a raw image to segment).
     input_path = settings.get("input_path")
-    if settings.get("use_ilastik_segmentation"):
-        unsegmented = settings.get("ilastik_unsegmented_image_path")
-        stem = f"{Path(unsegmented).stem}_segmented" if unsegmented else "input"
+    if segments_raw_image(settings):
+        stem = ilastik_segmented_stem(settings["raw_image_path"])
     else:
         stem = Path(input_path).stem if input_path else "input"
 
@@ -53,17 +83,29 @@ def check_cached_artefacts(settings: Mapping[str, Any]) -> CheckReport:
 
 def check_ilastik_executable(settings: Mapping[str, Any]) -> CheckReport:
     """ilastik is a separate program; if a run needs it, it must be findable."""
+    if network_is_synthetic(settings):
+        return CheckReport()  # no image: nothing here applies
+    from haemolynx.pipeline.stages import ilastik_segments
+
     report = CheckReport()
-    needed = any(
-        settings.get(name)
-        for name in (
-            "use_ilastik_segmentation",
-            "use_ilastik_large_vessel_segmentation",
-            "use_ilastik_small_vessel_segmentation",
-        )
-    )
+    needed = ilastik_segments(settings) or ilastik_segments_vessel_masks(settings)
     if not needed:
         return report
+
+    from haemolynx.io.ilastik import OUTPUT_FORMATS
+
+    # What the runner refuses, or cannot name a file in, only once it starts.
+    suffix = settings.get("ilastik_output_suffix")
+    if str(suffix or "").lower() not in OUTPUT_FORMATS:
+        report.add_error(
+            f"ilastik_output_suffix is {suffix!r}; ilastik writes {', '.join(OUTPUT_FORMATS)}. "
+            "Fix: set it to one of them, with its dot."
+        )
+    if settings.get("ilastik_output_dir") in (None, ""):
+        report.add_error(
+            "ilastik segmentation is on but ilastik_output_dir is not set. Fix: set it to "
+            "the folder ilastik's segmentations are written to."
+        )
 
     executable = settings.get("ilastik_executable")
     if not executable:
@@ -88,14 +130,1853 @@ def check_ilastik_executable(settings: Mapping[str, Any]) -> CheckReport:
     return report
 
 
-def preflight(settings: Mapping[str, Any], schema: Schema) -> CheckReport:
-    """Every pre-run check, printed as a checklist.
+def ilastik_classifiers_in_effect(settings: Mapping[str, Any]) -> list[tuple[str, str]]:
+    """Each ilastik project this run segments with, as ``(classifier setting,
+    vessel-label setting)``: the main image's while ilastik segments it
+    (``stages.ilastik_segments``), and each vessel-mask role's arteriole (or
+    global) classifier, with its venule one when that is set, while ilastik
+    makes that role's masks."""
+    from haemolynx.io.vessel_masks import VESSEL_MASK_SETTINGS
+    from haemolynx.pipeline.stages import ilastik_segments
+
+    pairs: list[tuple[str, str]] = []
+    if ilastik_segments(settings):
+        pairs.append(("ilastik_classifier_path", "ilastik_vessel_label"))
+    for role, flag in _ILASTIK_VESSEL_MASK_FLAGS.items():
+        if not (settings.get(flag) and vessel_mask_files_in_use(settings, role)):
+            continue
+        names = VESSEL_MASK_SETTINGS[role]
+        pairs.append(
+            (names["ilastik_arteriole_classifier_path"], names["ilastik_arteriole_vessel_label"])
+        )
+        if settings.get(names["ilastik_venule_classifier_path"]) not in (None, ""):
+            pairs.append(
+                (names["ilastik_venule_classifier_path"], names["ilastik_venule_vessel_label"])
+            )
+    return pairs
+
+
+def ilastik_vessel_mask_channels_in_effect(settings: Mapping[str, Any]) -> list[str]:
+    """The channel setting of each classifier ilastik segments a vessel mask
+    with this run (``ilastik_arteriole_channels`` ...): every one reads the
+    run's raw image."""
+    from haemolynx.io.vessel_masks import VESSEL_MASK_SETTINGS
+
+    names: list[str] = []
+    for role, flag in _ILASTIK_VESSEL_MASK_FLAGS.items():
+        if not (settings.get(flag) and vessel_mask_files_in_use(settings, role)):
+            continue
+        role_names = VESSEL_MASK_SETTINGS[role]
+        names.append(role_names["ilastik_arteriole_channels"])
+        if settings.get(role_names["ilastik_venule_classifier_path"]) not in (None, ""):
+            names.append(role_names["ilastik_venule_channels"])
+    return names
+
+
+def check_ilastik_vessel_mask_channels(settings: Mapping[str, Any]) -> CheckReport:
+    """ilastik's vessel masks are segmented from the run's raw image, each
+    classifier given its own channels of it (the whole file with none): so
+    the raw image must be set, and each classifier's channels ones it has,
+    none twice. A missing raw image file is reported by ``check_raw_image``."""
+    from haemolynx.io import tiff_channels
+
+    report = CheckReport()
+    if network_is_synthetic(settings):
+        return report
+    names = ilastik_vessel_mask_channels_in_effect(settings)
+    if not names:
+        return report
+    path = settings.get("raw_image_path")
+    if path in (None, ""):
+        report.add_error(
+            "ilastik makes the vessel masks from the raw image, but raw_image_path is not "
+            "set. Fix: set raw_image_path on the Input tab, or turn off ilastik for the "
+            "vessel masks and give their mask files."
+        )
+        return report
+    if not Path(path).is_file():
+        return report
+    channels = tiff_channels(path)
+    listing = ", ".join(channel.label for channel in channels)
+    for name in names:
+        chosen = [int(channel) for channel in settings.get(name) or ()]
+        if not chosen:
+            continue
+        if not channels:
+            report.add_error(
+                f"{name} is {chosen}, but raw_image_path is a single-channel image: leave it "
+                "unset, and the classifier reads the whole file."
+            )
+            continue
+        twice = sorted({channel for channel in chosen if chosen.count(channel) > 1})
+        missing = [channel for channel in chosen if not 0 <= channel < len(channels)]
+        if twice:
+            report.add_error(f"{name} names channel(s) {twice} more than once.")
+        elif missing:
+            report.add_error(
+                f"{name} names channel(s) {missing}, but raw_image_path has {len(channels)} "
+                f"channels ({listing}), counting from 0."
+            )
+        else:
+            report.add_pass(
+                name, ", ".join(channels[channel].label for channel in chosen) + f" of {Path(path).name}"
+            )
+    return report
+
+
+def check_ilastik_vessel_labels(settings: Mapping[str, Any]) -> CheckReport:
+    """Each ilastik project the run segments with must have its vessel label
+    named, and the name must be one of the project's labels: its "Simple
+    Segmentation" export numbers the labels 1 to N, and which is the vessel
+    cannot be read from the numbers. The project's labels are read from the
+    ``.ilp``; a project whose labels cannot be read takes a label number,
+    with a warning. A missing project is reported by its own setting."""
+    from haemolynx.io.ilastik import describe_labels, ilastik_label_names, resolve_vessel_label
+
+    report = CheckReport()
+    if network_is_synthetic(settings):
+        return report
+    for classifier_setting, label_setting in ilastik_classifiers_in_effect(settings):
+        project = settings.get(classifier_setting)
+        if project in (None, "") or not Path(project).is_file():
+            continue
+        names = ilastik_label_names(project)
+        if names is None:
+            report.add_warning(
+                f"{classifier_setting}: no label names could be read from {project} (it is "
+                f"not an ilastik pixel-classification project); {label_setting} must be a "
+                "label number."
+            )
+        try:
+            number = resolve_vessel_label(
+                settings.get(label_setting), names, setting=label_setting, project=project
+            )
+        except ValueError as error:
+            report.add_error(str(error))
+            continue
+        name = f" ({names[number - 1]!r})" if names else ""
+        listed = f"; its labels are {describe_labels(names)}" if names else ""
+        report.add_pass(label_setting, f"label {number}{name} of {Path(project).name}{listed}")
+    return report
+
+
+#: Stem tokens that strongly suggest a large-vessel mask was pointed at
+#: ``input_path``. Skeletonising that file yields a network that only exists
+#: inside that mask — cut-at-large-vessel then has almost nothing exterior to keep.
+_LARGE_VESSEL_INPUT_STEM_MARKERS = (
+    "large_venule_mask",
+    "large_arteriole_mask",
+    "large_vein_mask",
+    "large_artery_mask",
+)
+
+
+def _paths_refer_to_same_file(left: Path, right: Path) -> bool:
+    """True when both paths exist and are the same file, else name equality."""
+    try:
+        if left.exists() and right.exists():
+            return left.resolve(strict=False).samefile(right.resolve(strict=False))
+    except OSError:
+        pass
+    return left.resolve(strict=False) == right.resolve(strict=False)
+
+
+def check_input_is_not_a_large_vessel_mask(
+    settings: Mapping[str, Any],
+) -> CheckReport:
+    """Warn when the main input is (or looks like) a large arteriole/venule mask.
+
+    Cut-at-large-vessel removes geometry *inside* those masks. If ``input_path``
+    is itself the venule (or arteriole) mask TIFF, the skeleton and graph are
+    venule-shaped from the start: there is no capillary exterior to keep, so the
+    viewer looks like "network only within the venule" even when cut polarity
+    is correct and both masks are loaded.
+    """
+    if network_is_synthetic(settings):
+        return CheckReport()  # no image: nothing here applies
+    from haemolynx.pipeline.naming import segments_raw_image
+
+    report = CheckReport()
+    if segments_raw_image(settings):
+        return report
+    input_path = settings.get("input_path")
+    if not input_path:
+        return report
+
+    input_p = Path(str(input_path))
+    stem_lower = input_p.stem.lower()
+    looks_like_mask_name = any(
+        marker in stem_lower for marker in _LARGE_VESSEL_INPUT_STEM_MARKERS
+    )
+
+    matched_roles: list[str] = []
+    if vessel_masks_in_use(settings, "large"):
+        for role, key in (
+            ("arteriole", "large_arteriole_mask_path"),
+            ("venule", "large_venule_mask_path"),
+        ):
+            mask_path = settings.get(key)
+            if not mask_path:
+                continue
+            if _paths_refer_to_same_file(input_p, Path(str(mask_path))):
+                matched_roles.append(role)
+
+    if not matched_roles and not looks_like_mask_name:
+        return report
+
+    cut_on = bool(settings.get("cut_network_at_large_vessel_volumes"))
+    if matched_roles:
+        roles = " and ".join(matched_roles)
+        detail = (
+            f"input_path resolves to the same file as the large {roles} mask. "
+            "The pipeline skeletonises that volume as the *main* network, so "
+            "the skeleton/graph only exist inside that mask before any cut runs."
+        )
+    else:
+        detail = (
+            f"input_path stem '{input_p.stem}' looks like a large-vessel mask "
+            "filename. If that file is only the large arteriole/venule volume, "
+            "the skeleton will be confined to that volume from the start."
+        )
+    detail += (
+        " Use the full vessel (or capillary) segmentation as input_path; keep "
+        "large arteriole/venule masks only on large_*_mask_path."
+    )
+    if cut_on:
+        detail += (
+            " With cut_network_at_large_vessel_volumes on, almost every edge is "
+            "interior and is removed — remaining stubs still sit at that mask."
+        )
+    report.add_warning(detail)
+    return report
+
+
+def check_manual_inlets_outlets_while_masks_choose(
+    settings: Mapping[str, Any],
+) -> CheckReport:
+    """Warn when inlets/outlets are set by hand but the masks will choose them.
+
+    The manual Inlet/Outlet methods have no schema ``requires`` (they apply
+    unless the masks choose, which ``requires`` cannot express), so this is
+    what says a hand-picked node would be ignored -- and which switch to turn.
+    """
+    from haemolynx.graph.boundaries import inlets_outlets_from_vessel_masks
+
+    report = CheckReport()
+    if not inlets_outlets_from_vessel_masks(settings):
+        return report
+    set_by_hand = [
+        name
+        for role in ("inlet", "outlet")
+        for name in (f"{role}_node_ids", f"{role}_node_volumes", f"{role}_node_coordinates")
+        if settings.get(name)
+    ]
+    if set_by_hand:
+        report.add_warning(
+            f"{', '.join(set_by_hand)} set, but the large-vessel masks choose the "
+            "inlets and outlets (automated_vessel_assignment and "
+            "inlets_outlets_from_vessel_masks are on), so they will not be used. "
+            "Fix: turn inlets_outlets_from_vessel_masks off to use them; the masks "
+            "still drive the large-vessel treatment."
+        )
+    return report
+
+
+#: The list each listing method reads, by its key in BOUNDARY_ROLE_SETTINGS.
+_LISTED_BY_METHOD = {"coordinates": "coordinates", "volume": "volume_boxes", "node_ids": "node_ids"}
+
+
+def check_boundary_selection(settings: Mapping[str, Any]) -> CheckReport:
+    """The inlet and outlet methods the run reads (and the large-vessel
+    network's, with its tier on): one whose list is empty is refused here, as
+    the Boundaries stage would refuse it once every stage before it had run;
+    and ``edge_percent`` along z on a one-slice image is warned about, since
+    every terminal lies in that one plane and no band holds an outlet."""
+    from haemolynx.graph.boundaries import BOUNDARY_ROLE_SETTINGS, inlets_outlets_from_vessel_masks
+    from haemolynx.io import axis_order_for_run
+
+    report = CheckReport()
+    if network_is_synthetic(settings):
+        return report
+    roles = [] if inlets_outlets_from_vessel_masks(settings) else ["inlet", "outlet"]
+    if assigns_large_vessel_branch_orders(settings):
+        roles += ["large_vessel_inlet", "large_vessel_outlet"]
+    banded = False
+    for role in roles:
+        names = BOUNDARY_ROLE_SETTINGS[role]
+        method = str(settings.get(names["method"]) or "").strip().lower()
+        banded = banded or method == "edge_percent"
+        listed = _LISTED_BY_METHOD.get(method)
+        if listed is not None and not settings.get(names[listed]):
+            report.add_error(
+                f"{names['method']} is '{method}', but {names[listed]} is empty, so the "
+                f"Boundaries stage would find no {role.replace('_', ' ')} node. Fix: fill "
+                f"{names[listed]} (on the Boundaries tab), or choose another method."
+            )
+    if banded and settings.get("boundary_axis") == 0:
+        image = (
+            settings.get("raw_image_path")
+            if settings.get("use_ilastik_segmentation") or settings.get("use_pixel_classifier_segmentation")
+            else settings.get("input_path")
+        )
+        header = _tiff_header(image, axis_order_for_run(settings))
+        if header is not None and (len(header[0]) == 2 or header[0][0] == 1):
+            report.add_warning(
+                "boundary_axis is 0 (z), but the image is one slice: every terminal lies in "
+                "that plane, so edge_percent finds no outlet. Fix: set boundary_axis to 1 (y) "
+                "or 2 (x)."
+            )
+    return report
+
+
+def check_global_vessel_masks(settings: Mapping[str, Any]) -> CheckReport:
+    """Say what a run with global vessel masks does instead, and warn of the
+    settings it then leaves unread.
+
+    A role given its arteriole/global mask with no venule mask
+    (``io.vessel_masks_are_global``) has one mask of every vessel of its
+    size: the vessels are classed Unknown_Large, Unknown_Small and
+    Unknown_Cap rather than given branch orders, the masks cut nothing and
+    choose no inlets or outlets (the Inlet and Outlet tabs do), and a role
+    still given a pair is read as the one mask the two make.
+    """
+    report = CheckReport()
+    roles = global_vessel_mask_roles(settings)
+    if not roles:
+        return report
+    report.add_pass(
+        "global vessel masks",
+        f"the {' and '.join(roles)}-vessel mask{'s are' if len(roles) > 1 else ' is'} "
+        "global (no venule mask entered): vessels are classed Unknown_Large, "
+        "Unknown_Small and Unknown_Cap instead of branch orders, nothing is cut "
+        "at the masks, and the inlets and outlets come from the Inlet and Outlet tabs",
+    )
+    for role in VESSEL_MASK_SWITCHES:
+        if role not in roles and vessel_masks_in_use(settings, role):
+            report.add_warning(
+                f"The {role}-vessel arteriole and venule masks will be read as one "
+                f"global {role}-vessel mask, because the "
+                f"{' and '.join(roles)}-vessel mask is global: no vessel can be "
+                "classed arteriole or venule. Fix: enter the venule mask in both "
+                "roles to class them, or clear it in both."
+            )
+    unread = [
+        name
+        for name in ("assign_large_vessel_branch_orders", "strict_branch_order_assignment")
+        if settings.get(name)
+    ] + [
+        f"{vessel}_boundary_selection_method"
+        for vessel in ("arteriole", "venule")
+        if boundary_role_configured(settings, f"{vessel}_boundary")
+    ]
+    if unread:
+        report.add_warning(
+            f"{', '.join(unread)} set, but with global vessel masks no branch "
+            "orders are assigned, so nothing reads them."
+        )
+    return report
+
+
+def check_large_vessel_mask_split(settings: Mapping[str, Any]) -> CheckReport:
+    """The large masks split by width into large and small ones
+    (``graph.small_vessel_masks_split_from_large``): refuse a width unset or
+    not positive, and say what the run does. A split left on under a gate
+    that is off (small masks given, say) is out of effect and no error."""
+    report = CheckReport()
+    try:
+        diameter = large_vessel_mask_split_diameter_um(settings)
+    except ValueError as problem:
+        report.add_error(f"{problem} Fix: enter {SPLIT_DIAMETER}, or turn {SPLIT_LARGE_VESSEL_MASKS} off.")
+        return report
+    if diameter is None:
+        return report
+    report.add_pass(
+        "large vessel masks split by width",
+        f"each large mask's part at least {diameter:g} um wide, read on the segmented "
+        "image, stays large, and the rest is the small mask of its side, which assigns "
+        "the arteriole and venule boundaries as given small masks would, with the "
+        "small-vessel settings as they stand",
+    )
+    return report
+
+
+def check_vessel_size_classes(settings: Mapping[str, Any]) -> CheckReport:
+    """The size convention (``classify_vessels_by_size``,
+    ``graph.vessel_classes_by_size``): refuse a threshold unset or mid not
+    below wide, say what the run does, and warn of what it leaves unread.
+
+    A box left ticked under the vessel masks is out of effect and no error:
+    the panel hides it, and the schema's ``IneffectiveSettingWarning`` says
+    it is set and unread.
+    """
+    report = CheckReport()
+    if not vessel_classes_by_size(settings):
+        return report
+    try:
+        mid, wide = check_size_thresholds(
+            settings.get("vessel_size_mid_min_diameter_um"),
+            settings.get("vessel_size_wide_min_diameter_um"),
+        )
+    except ValueError as problem:
+        report.add_error(
+            f"classify_vessels_by_size is on, but {problem} Fix: state both widths, "
+            "the mid threshold below the wide one."
+        )
+        return report
+    titles = "; ".join(
+        f"{name} {size_class_range(name, mid, wide)}" for name in ("wide", "mid", "narrow")
+    )
+    report.add_pass(
+        "vessel classes by size",
+        f"vessels are classed by their measured width ({titles}) instead of branch "
+        "orders: Unknown_Large, Unknown_Small and Unknown_Cap inside, named by their "
+        "widths in the outputs, with no arteriole or venule side; every step that acts "
+        "on capillaries acts on the narrow class. Each width is compared as measured, "
+        "on its own basis: FWHM reads the plasma column, the endothelial fit wall to "
+        f"wall, the mask the segmentation's ({run_diameter_basis(settings)}), so "
+        "thresholds stated for one basis do not carry to the other",
+    )
+    if not settings.get("run_haemodynamics", True):
+        report.add_warning(
+            "classify_vessels_by_size is on and run_haemodynamics is off: no diameters "
+            "are measured, so the vessels are classed by the mask's own widths (EDT)."
+        )
+    else:
+        from haemolynx.pipeline.stages import measures_diameters_from_raw_image
+
+        mask_widths = bool(
+            settings.get("use_edt_diameter_crosscheck")
+            and settings.get("edt_diameter_prefer_over_table_on_fwhm_failure", True)
+        )
+        if not measures_diameters_from_raw_image(settings) and not mask_widths:
+            report.add_error(
+                "classify_vessels_by_size is on, but no vessel's width is measured: the raw "
+                "image is not measured (measure_diameters_from_raw_image with a "
+                "raw_image_path) and the mask's widths are not used "
+                "(use_edt_diameter_crosscheck with "
+                "edt_diameter_prefer_over_table_on_fwhm_failure), so every vessel would "
+                "be narrow. Fix: turn either on."
+            )
+    unread = [
+        name
+        for name in ("assign_large_vessel_branch_orders", "strict_branch_order_assignment")
+        if settings.get(name)
+    ] + [
+        f"{vessel}_boundary_selection_method"
+        for vessel in ("arteriole", "venule")
+        if boundary_role_configured(settings, f"{vessel}_boundary")
+    ]
+    if unread:
+        report.add_warning(
+            f"{', '.join(unread)} set, but with classify_vessels_by_size no branch "
+            "orders are assigned, so nothing reads them."
+        )
+    return report
+
+
+def check_large_vessel_branch_order_mode_prerequisites(
+    settings: Mapping[str, Any],
+) -> CheckReport:
+    """assign_large_vessel_branch_orders needs arteriole/venule boundaries.
+
+    Only while it is in effect (``graph.assigns_large_vessel_branch_orders``:
+    the large masks in use, the cut off). Left on under a gate that is off,
+    the panel hides it and the run reads it as off, so it is no error: the
+    schema's ``IneffectiveSettingWarning`` says it is set and unread.
+    """
+    report = CheckReport()
+    if not assigns_large_vessel_branch_orders(settings):
+        return report
+
+    # The same rule as assign_boundaries: a list the current method does not
+    # read (node IDs left behind after switching back to coordinates) is not
+    # a source, and edge_percent does not name arteriole or venule boundaries.
+    vessel_boundaries = boundary_role_configured(
+        settings, "arteriole_boundary"
+    ) or boundary_role_configured(settings, "venule_boundary")
+    if not (vessel_masks_in_use(settings, "small") or vessel_boundaries):
+        report.add_warning(
+            "assign_large_vessel_branch_orders is on, but no small-vessel "
+            "masks are in use and neither the arteriole nor the venule "
+            "boundary method has the coordinates, volume boxes or node IDs "
+            "it reads, so hierarchical Art*/Ven* labelling -- and the "
+            "Large_Art/Large_Ven tier with it -- will never actually run."
+        )
+    return report
+
+
+#: The diameter tables keyed on a tier's own orders (Art n, Large_Art n, ...),
+#: whose meaning ``branch_order_steps`` changes.
+_TIER_DIAMETER_TABLES = (
+    "manual_arteriole_diameter_by_branch_order",
+    "manual_venule_diameter_by_branch_order",
+    "manual_large_arteriole_diameter_by_branch_order",
+    "manual_large_venule_diameter_by_branch_order",
+)
+
+
+def check_branch_order_steps(settings: Mapping[str, Any]) -> CheckReport:
+    """Tier orders counted by the tier's own branchings
+    (``branch_order_steps=tier_branchings``): a synthetic network reads it as
+    every junction, and a per-order diameter table written for the other
+    count gives its widths to other vessels."""
+    report = CheckReport()
+    if settings.get("branch_order_steps") != "tier_branchings":
+        return report
+    if network_is_synthetic(settings):
+        report.add_warning(
+            "branch_order_steps is tier_branchings, but a synthetic network is numbered "
+            "every_junction: its generator reads each tier order as one segment between "
+            "side branches."
+        )
+        return report
+    tables = [name for name in _TIER_DIAMETER_TABLES if settings.get(name)]
+    if tables and not settings.get("all_diams_const"):
+        report.add_warning(
+            f"{', '.join(tables)} key diameters on Art/Ven/Large orders, and "
+            "branch_order_steps=tier_branchings counts those orders where the tier itself "
+            "branches: a table written for every junction gives its widths to other vessels."
+        )
+    return report
+
+
+#: Each vessel-mask role's ilastik switch, which sits under that role's masks.
+_ILASTIK_VESSEL_MASK_FLAGS = {
+    "large": "use_ilastik_large_vessel_segmentation",
+    "small": "use_ilastik_small_vessel_segmentation",
+}
+
+
+def ilastik_segments_vessel_masks(settings: Mapping[str, Any]) -> bool:
+    """Whether ilastik segments a vessel mask this run: a role's ilastik switch
+    on with that role's own masks in use (``graph.vessel_mask_files_in_use``). A switch
+    left on under an unticked mask switch is hidden in the panel and runs
+    nothing, so neither preflight nor the citations count it."""
+    return any(
+        bool(settings.get(flag)) and vessel_mask_files_in_use(settings, role)
+        for role, flag in _ILASTIK_VESSEL_MASK_FLAGS.items()
+    )
+
+
+def check_thick_vessel_restriction_prerequisites(
+    settings: Mapping[str, Any],
+) -> CheckReport:
+    """skeleton_thick_vessel_restrict_to_mask needs the mask(s) it names.
+
+    The schema's own ``requires`` only gates ``use_thick_vessel_skeletonisation``
+    -- it cannot express "large needs use_large_vessel_masks, small needs
+    use_small_vessel_masks_for_boundary_assignment, both needs both" since
+    that depends on *which value* the choice holds, not just whether it is
+    non-default. This is the run-time check that catches that.
+    """
+    if network_is_synthetic(settings):
+        return CheckReport()  # no image: nothing here applies
+    report = CheckReport()
+    choice = str(
+        settings.get("skeleton_thick_vessel_restrict_to_mask", "off")
+    ).strip().lower()
+    # Read only by thickness-gated skeletonisation: with that off the choice
+    # is greyed, keeps its value, and confines nothing.
+    if choice == "off" or not settings.get("use_thick_vessel_skeletonisation"):
+        return report
+
+    # The masks load only while in use (graph.vessel_masks_in_use), which
+    # automated_vessel_assignment gates as well as the role's own switch --
+    # or, for the small masks, the large ones split by width.
+    roles = {"large": ("large",), "small": ("small",), "both": ("large", "small")}.get(
+        choice, ()
+    )
+    missing = [
+        name
+        for role in roles
+        if not vessel_masks_in_use(settings, role)
+        for name in ("automated_vessel_assignment", VESSEL_MASK_SWITCHES[role])
+        if not bool(settings.get(name))
+    ]
+    missing = list(dict.fromkeys(missing))
+    if missing:
+        report.add_error(
+            f"skeleton_thick_vessel_restrict_to_mask={choice!r} requires "
+            f"{', '.join(missing)} to also be on."
+        )
+    return report
+
+
+def check_haemodynamics(settings: Mapping[str, Any]) -> CheckReport:
+    """The Haemodynamics tab's values the solve would refuse, or that leave it
+    nothing to do: an open-end value its model cannot use, and boundary
+    pressures that drive no flow or drive it from the outlets."""
+    report = CheckReport()
+    if not settings.get("run_haemodynamics"):
+        return report
+    model = settings.get("open_end_model")
+    multiple = settings.get("open_end_terminal_resistance_multiple")
+    if model == TERMINAL_RESISTANCE and multiple is not None and not float(multiple) > 0:
+        report.add_error(
+            f"open_end_terminal_resistance_multiple is {multiple}: each open end drains through "
+            "that many times its own vessel's resistance, so it must be above 0 "
+            "(open_end_model=outlet holds the open ends at the outlet pressure)."
+        )
+    pressure = settings.get("open_end_estimate_pressure_target_pa")
+    inlet, outlet = settings.get("inlet_p_bc"), settings.get("outlet_p_bc")
+    if model == ESTIMATED and None not in (pressure, inlet, outlet) and not (
+        min(float(inlet), float(outlet)) <= float(pressure) <= max(float(inlet), float(outlet))
+    ):
+        report.add_warning(
+            f"open_end_estimate_pressure_target_pa ({pressure} Pa) lies outside the boundary "
+            f"pressures ({outlet} to {inlet} Pa): the estimate pulls the open ends towards a "
+            "pressure no inlet or outlet holds, and those that pass the inlet or outlet "
+            "pressure are held just inside it."
+        )
+    target = settings.get("open_end_estimate_shear_target_pa")
+    if model == ESTIMATED and target is not None and not float(target) > 0:
+        report.add_error(
+            f"open_end_estimate_shear_target_pa is {target}: the estimate scales its shear term "
+            "by it, so it must be above 0. Leave it unset for the closed solve's median."
+        )
+    inlet, outlet = settings.get("inlet_p_bc"), settings.get("outlet_p_bc")
+    if inlet is not None and outlet is not None and float(inlet) <= float(outlet):
+        report.add_warning(
+            f"inlet_p_bc ({inlet} Pa) is not above outlet_p_bc ({outlet} Pa): "
+            + (
+                "no pressure difference drives any flow."
+                if float(inlet) == float(outlet)
+                else "blood enters at the outlets and leaves at the inlets, against the branch orders."
+            )
+        )
+    return report
+
+
+def check_perturbations(settings: Mapping[str, Any], schema: Schema) -> CheckReport:
+    """Every configured perturbation must name a type and settings that exist.
+
+    A perturbation is a partial config the run applies to a finished network,
+    so nothing validates it when the config file loads: an entry naming a
+    setting that does not exist, or a path that is not there, would not be
+    found until the re-solve, after the whole pipeline had run. Hence here.
+    """
+    report = CheckReport()
+    specs = perturbations_from_settings(settings)
+    if not specs:
+        return report
+    # The stage runs none of them then, and says so: a list it will not run
+    # must not stop the run it rides on.
+    if not settings.get("run_perturbations"):
+        return report
+    if not settings.get("run_haemodynamics"):
+        report.add_warning(
+            f"{len(specs)} perturbation(s) configured, but run_haemodynamics is off: there "
+            "are no resistances to re-solve, so none will run."
+        )
+        return report
+
+    for message in perturbation_problems(settings, schema):
+        report.add_error(message)
+
+    for spec in specs:
+        unused = spec.unused_overrides()
+        if unused:
+            report.add_warning(
+                f"perturbation '{spec.name}' sets {list(unused)}, which a "
+                f"{spec.type} perturbation does not read, so they will have no "
+                "effect."
+            )
+        if spec.type == "pericyte_spacing_sweep" and {
+            **settings, **spec.applied_overrides(schema)
+        }.get("use_pericyte_mask_constriction"):
+            report.add_warning(
+                f"perturbation '{spec.name}' sweeps the pericytes' spacing but takes them "
+                "from a mask, which places each where it lies whatever the spacing: every "
+                "point of the sweep will be the same."
+            )
+        mask = perturbation_mask_setting(spec.type, {**settings, **spec.applied_overrides(schema)})
+        if mask is not None and network_is_synthetic(settings):
+            report.add_error(
+                f"perturbation '{spec.name}' reads {mask}, a mask on an image's voxel grid, "
+                "and the network is synthetic: nothing places it on the drawn vessels (a "
+                "surround moves the image's own). Fix: run it on the image's own run"
+            )
+        mismatch = _perturbation_mask_shape_problem(settings, spec, schema)
+        if mismatch:
+            report.add_error(mismatch)
+        # A path a perturbation reads is read once that perturbation runs,
+        # which is after the pipeline. Check it against the settings as they
+        # will be then -- the overrides are what switch its feature on, and
+        # the path may be the run's own (a mask switched on by the entry).
+        paths = [
+            name
+            for name in settings_for_perturbation_type(spec.type)
+            if name in schema and schema[name].kind == "path" and schema[name].must_exist
+        ]
+        if not paths:
+            continue
+        # Not `schema.subset(paths)`: a path's prerequisite is a setting of its
+        # own, and a schema missing it will not build at all.
+        checked = check_settings(
+            schema,
+            {**settings, **spec.applied_overrides(schema)},
+            skip=[name for name in schema.names if name not in set(paths)],
+        )
+        for message in checked.errors:
+            report.add_error(f"perturbation '{spec.name}': {message}")
+        for label, detail in checked.passed:
+            report.add_pass(f"perturbation '{spec.name}' {label}", detail)
+
+    if report.ok:
+        report.add_pass(
+            "perturbations",
+            f"{len(specs)} configured: " + ", ".join(spec.name for spec in specs),
+        )
+    return report
+
+
+def _perturbation_mask_shape_problem(settings: Mapping[str, Any], spec, schema: Schema) -> str | None:
+    """A perturbation's mask of another shape than the input image, from the
+    TIFF headers: it would be placed on the wrong voxels, or refused only
+    once the perturbation ran, after the whole pipeline. None when the two
+    agree, or either is not a TIFF that can be read."""
+    if network_is_synthetic(settings):
+        return None  # refused as a whole: perturbation_problems
+    from haemolynx.io import axis_order_for_run
+
+    merged = {**settings, **spec.applied_overrides(schema)}
+    mask = perturbation_mask_setting(spec.type, merged)
+    if mask is None:
+        return None
+    axis_order = axis_order_for_run(settings)
+    mask_header = _tiff_header(merged.get(mask), axis_order)
+    image_header = _tiff_header(settings.get("input_path"), axis_order)
+    if mask_header is None or image_header is None or mask_header[0] == image_header[0]:
+        return None
+    return (
+        f"perturbation '{spec.name}': {mask} is {mask_header[0]} voxels where the input image is "
+        f"{image_header[0]}, so it is not a mask of this image. Fix: save the mask from the "
+        "input image, at its shape"
+    )
+
+
+def check_segmentation_quality(settings: Mapping[str, Any]) -> CheckReport:
+    """Warn (never block) when the segmented input's own 0-10 quality score
+    -- the same score "Check segmented image" reports -- is below a
+    user-configured minimum.
+
+    Opt-in via ``min_acceptable_segmentation_quality`` (default unset, which
+    skips this entirely): unlike every other check here, this one has to
+    load and score the actual image, real work this module otherwise never
+    does, so it only runs for someone who has deliberately asked for the
+    nudge in their normal automated workflow.
+    """
+    if network_is_synthetic(settings):
+        return CheckReport()  # no image: nothing here applies
+    report = CheckReport()
+    threshold = settings.get("min_acceptable_segmentation_quality")
+    if threshold is None:
+        return report
+
+    from haemolynx.io import voxel_size_zyx_from_xyz
+    from haemolynx.io.load import _to_binary_volume_for_skeletonization
+    from haemolynx.pipeline.naming import segments_raw_image
+    from haemolynx.pipeline.stages import (
+        current_ilastik_output,
+        load_volume_for_skeletonise,
+        segment,
+    )
+    from haemolynx.preprocessing import score_segmented_mask
+    from haemolynx.preprocessing.segmentation_quality import RESOLUTION_LIMITING_THRESHOLD
+
+    local_settings = dict(settings)
+    segmented = None
+    if segments_raw_image(settings):
+        # Never segment here: preflight runs on the panel's own thread, and
+        # a segmentation can take hours. Only an output a run of these
+        # settings already made is scored.
+        segmented, why_not = current_ilastik_output(settings)
+        if segmented is None:
+            report.add_warning(
+                "min_acceptable_segmentation_quality is set, but ilastik has not yet made "
+                f"the segmented image it would score ({why_not}); it is checked once a run "
+                "has segmented the raw image."
+            )
+            return report
+    try:
+        inputs = segment(local_settings, segmented_path=segmented)
+        image, metadata_voxel_size, voxel_meta_status = load_volume_for_skeletonise(
+            local_settings, inputs.input_format
+        )
+    except Exception as error:  # noqa: BLE001 - a missing/unreadable image is
+        # already reported by check_settings/check_cached_artefacts; this
+        # optional check must not itself crash preflight over it.
+        report.add_warning(
+            "min_acceptable_segmentation_quality is set, but the segmented "
+            f"input could not be loaded to check it: {error}"
+        )
+        return report
+
+    from haemolynx.pipeline.stages import run_voxel_size_xyz
+
+    voxel_size_xyz, _source = run_voxel_size_xyz(
+        local_settings, metadata_voxel_size, voxel_meta_status
+    )
+    mask = _to_binary_volume_for_skeletonization(image)
+    voxel_size_zyx = voxel_size_zyx_from_xyz(tuple(float(v) for v in voxel_size_xyz))
+    score = score_segmented_mask(
+        mask,
+        voxel_size_zyx=voxel_size_zyx,
+        target_voxels_across_radius=local_settings.get("min_voxels_across_vessel_radius"),
+        boundary_patch_allowance=local_settings.get("expected_boundary_vessel_count"),
+    )
+    threshold = float(threshold)
+    if score.total >= threshold:
+        report.add_pass("segmentation quality", f"{score.total:.1f}/10 >= {threshold:.1f}")
+        return report
+
+    # Same condition segmentation_quality's own report verdict uses -- one
+    # source of truth for "is this a source-data problem or a
+    # pipeline-fixable one", so preflight and "Check segmented image" never
+    # disagree about which tier is responsible.
+    if score.resolution < RESOLUTION_LIMITING_THRESHOLD:
+        tier = "source data -- resegment or re-image; cleanup will not fix this"
+    else:
+        tier = "pipeline-fixable -- try the segmentation_cleanup_* settings"
+    report.add_warning(
+        f"Segmented input quality is {score.total:.1f}/10, below the configured "
+        f"minimum of {threshold:.1f}. Likely limiting tier: {tier}."
+    )
+    return report
+
+
+#: Each image a run reads one channel of: (its path setting, its channel
+#: setting). One channel of the raw image is read by the network build (the
+#: raw evidence round the mask, whenever the image is set), the diameters,
+#: the check, the optimiser and the tissue volume, so it is checked whenever
+#: it is set; ilastik alone reads the whole file, but the build follows it.
+_CHANNEL_IMAGES = (("raw_image_path", "raw_image_channel"),)
+
+
+def check_image_channels(settings: Mapping[str, Any]) -> CheckReport:
+    """A multi-channel image needs a channel chosen, and one it has; a
+    single-channel one needs none. Caught here rather than as the load fails
+    partway through a run -- or, for the raw evidence, reads the first
+    channel of a composite without saying so."""
+    if network_is_synthetic(settings):
+        return CheckReport()  # no image: nothing here applies
+    report = CheckReport()
+    for path_name, channel_name in _CHANNEL_IMAGES:
+        path = settings.get(path_name)
+        if not path or not Path(path).is_file():
+            continue
+        _check_image_channel(report, path_name, path, channel_name, settings.get(channel_name))
+    return report
+
+
+def check_raw_image(settings: Mapping[str, Any]) -> CheckReport:
+    """The raw image is optional, so it is not ``must_exist`` for every run:
+    ilastik segments it and the diameters are measured from it, and without
+    one each is off whatever its switch says (``stages.ilastik_segments``,
+    ``stages.measures_diameters_from_raw_image``) -- a warning, so a config
+    that asks for them knows it is not getting them; an error only when
+    ilastik was to make the segmented image and there is none to read
+    instead. One that is set must be there: the network build reads it
+    whenever it is (``preprocessing.raw_evidence``), so a missing one is an
+    error for every run that names it."""
+    if network_is_synthetic(settings):
+        return CheckReport()  # no image: nothing here applies
+    report = CheckReport()
+    users = [
+        name for name, on in (
+            ("use_ilastik_segmentation", settings.get("use_ilastik_segmentation")),
+            ("use_pixel_classifier_segmentation",
+             settings.get("use_pixel_classifier_segmentation") and not settings.get("use_ilastik_segmentation")),
+            ("measure_diameters_from_raw_image",
+             settings.get("run_haemodynamics", True) and settings.get("measure_diameters_from_raw_image")),
+        ) if on
+    ]
+    path = settings.get("raw_image_path")
+    if not path:
+        if users:
+            skipped = "they are" if len(users) > 1 else "it is"
+            report.add_warning(
+                f"{' and '.join(users)} read the raw image, but raw_image_path is not set, so "
+                f"{skipped} skipped: the run goes on from the segmented image alone. To use "
+                "the raw image, set raw_image_path (and raw_image_channel for a multi-channel "
+                "file) on the Input tab."
+            )
+        segmenting = [name for name in ("use_ilastik_segmentation", "use_pixel_classifier_segmentation")
+                      if name in users]
+        if segmenting:
+            # input_path's own must_exist check stands down while ilastik is
+            # on (it is what ilastik would produce); here it is what is read.
+            exists, detail = resolve_existing_path(settings.get("input_path"))
+            if exists:
+                report.add_pass("input_path", detail)
+            else:
+                report.add_error(
+                    f"{segmenting[0]} is on without a raw image to segment, and the "
+                    f"segmented image it would read instead is not there (input_path: {detail}). "
+                    "Fix: set raw_image_path for ilastik, or input_path for a segmented image."
+                )
+        return report
+    exists, detail = resolve_existing_path(path)
+    if exists and Path(str(path)).suffix.lower() not in {".tif", ".tiff"}:
+        # Only ilastik reads another format; the build's raw evidence, the
+        # diameters and the checks read a TIFF, so a run would stop there.
+        report.add_error(
+            f"raw_image_path: {detail} is not a TIFF; the network build reads the raw image "
+            "whenever it is set, as a TIFF. Fix: save the raw image as a TIFF, or clear it."
+        )
+        return report
+    if exists:
+        report.add_pass("raw_image_path", detail)
+        return report
+    readers = "the network build reads it" + (
+        f", as {' and '.join(users)} would" if users else ""
+    )
+    report.add_error(
+        f"raw_image_path: {detail}; {readers}. Fix: point 'raw_image_path' at the raw "
+        "image, or clear it."
+    )
+    return report
+
+
+def _check_image_channel(
+    report: CheckReport, path_name: str, path: Any, channel_name: str, channel: Any
+) -> None:
+    from haemolynx.io import tiff_channels
+
+    channels = tiff_channels(path)
+    listing = ", ".join(c.label for c in channels)
+    if channels and channel is None:
+        report.add_error(
+            f"{path_name} has {len(channels)} channels ({listing}); choose one with "
+            f"{channel_name}."
+        )
+    elif channel is not None and not channels:
+        report.add_error(
+            f"{path_name} is a single-channel image, but {channel_name} is {channel}; "
+            "leave it unset."
+        )
+    elif channel is not None and int(channel) >= len(channels):
+        report.add_error(
+            f"{channel_name} is {channel} (C{int(channel) + 1}), but {path_name} has "
+            f"{len(channels)} channels ({listing})."
+        )
+
+
+def tissue_raw_image(settings: Mapping[str, Any]) -> tuple[Any, Any, str, str]:
+    """``(path, channel, path setting, channel setting)``: the raw image the
+    tissue volume is measured in. ``tissue_raw_tiff_path``, else the raw image
+    -- and its channel with it, unless ``tissue_raw_channel`` picks another
+    channel of that same file (one where the tissue's own background shows)."""
+    if settings.get("tissue_raw_tiff_path"):
+        return (
+            settings["tissue_raw_tiff_path"], settings.get("tissue_raw_channel"),
+            "tissue_raw_tiff_path", "tissue_raw_channel",
+        )
+    if settings.get("tissue_raw_channel") is not None:
+        return (
+            settings.get("raw_image_path"), settings["tissue_raw_channel"],
+            "raw_image_path", "tissue_raw_channel",
+        )
+    return (
+        settings.get("raw_image_path"), settings.get("raw_image_channel"),
+        "raw_image_path", "raw_image_channel",
+    )
+
+
+#: The image blur pairs the Diameters stage reads, each with what reads it
+#: and the stain it is read for: a blur is read only as a pair.
+_DIAMETER_BLUR_PAIRS = (
+    ("raw_section_psf_sigma_xy_um", "raw_section_psf_sigma_z_um",
+     "FWHM and the raw-section fit", "endothelial"),
+    ("endothelial_psf_sigma_xy_um", "endothelial_psf_sigma_z_um",
+     "the endothelial ring fit", "plasma_column"),
+)
+
+
+def check_diameter_blur_pairs(settings: Mapping[str, Any]) -> CheckReport:
+    """Warn of an image blur set across the slices or along z, not both,
+    where diameters are measured from the raw image: each blur is read only
+    as a pair, so the run estimates both from the image and the one set is
+    not read -- said before the run rather than in its log."""
+    from haemolynx.pipeline.stages import measures_diameters_from_raw_image
+
+    report = CheckReport()
+    if not settings.get("run_haemodynamics", True) or not measures_diameters_from_raw_image(settings):
+        return report
+    for xy, z, readers, unread_for in _DIAMETER_BLUR_PAIRS:
+        if settings.get("raw_image_stain") == unread_for:
+            continue
+        given = [name for name in (xy, z) if settings.get(name) is not None]
+        if len(given) == 1:
+            other = z if given[0] == xy else xy
+            report.add_warning(
+                f"{given[0]} is set but {other} is not: {readers} read the image's blur only "
+                f"as a pair, so both are estimated from the image and {given[0]} is not read. "
+                f"Fix: set {other} too, or clear {given[0]}."
+            )
+    return report
+
+
+def check_tissue_volume_image(settings: Mapping[str, Any]) -> CheckReport:
+    """``measure_tissue_volume`` needs a raw image -- its own, or the run's
+    -- that is there, with a channel chosen if it has several."""
+    if network_is_synthetic(settings):
+        return CheckReport()  # no image: nothing here applies
+    report = CheckReport()
+    if not settings.get("measure_tissue_volume"):
+        return report
+    path, channel, path_name, channel_name = tissue_raw_image(settings)
+    if not path:
+        report.add_error(
+            "measure_tissue_volume needs the raw image to find the tissue in: set "
+            "raw_image_path, or tissue_raw_tiff_path for another image."
+        )
+        return report
+    if not Path(path).is_file():
+        # tissue_raw_tiff_path's own must_exist reports it, and check_raw_image
+        # the raw image.
+        return report
+    if (path_name, channel_name) != ("raw_image_path", "raw_image_channel"):
+        # The raw image's own pair is checked by check_image_channels.
+        _check_image_channel(report, path_name, path, channel_name, channel)
+    return report
+
+
+def _tiff_header(path: Any, axis_order: str) -> tuple[tuple[int, ...], tuple, dict] | None:
+    """``(shape, voxel size (x, y, z), its metadata status)`` from a TIFF's
+    header, as the mask loaders read them (the shape in canonical
+    ``(z, y, x)`` order, *axis_order* resolved against the file); None for
+    anything else."""
+    import tifffile
+
+    from haemolynx.io import axis_order_for_file, axis_order_transpose, read_voxel_size_xyz
+
+    if not path or Path(path).suffix.lower() not in {".tif", ".tiff"} or not Path(path).is_file():
+        return None
+    try:
+        with tifffile.TiffFile(path) as tif:
+            shape = tuple(int(n) for n in tif.series[0].shape)
+    except Exception:  # noqa: BLE001 - the loader reports an unreadable file itself
+        return None
+    if len(shape) == 4:
+        # As io.load.simplify_to_3d: the first channel of the last axis.
+        shape = shape[:3]
+    axis_order = axis_order_for_file(axis_order, path)
+    if len(shape) == 3:
+        shape = tuple(shape[axis] for axis in axis_order_transpose(axis_order))
+    found = read_voxel_size_xyz(path, axis_order)
+    if found is None:
+        return shape, (1.0, 1.0, 1.0), {"status": "missing"}
+    return shape, found[0], found[1]
+
+
+def check_pericyte_measurements(settings: Mapping[str, Any]) -> CheckReport:
+    """``measure_pericytes`` runs in the export stage, so what would stop it
+    there is checked here: a pericyte size range that admits nothing, or
+    nothing for it to measure. Whether the mask is there is check_settings'
+    (it must_exist); a synthetic network is check_synthetic_template's.
+
+    The ``pericyte_measured_constriction`` perturbation reads its pericytes'
+    diameter profiles the same way, whether ``measure_pericytes`` is on or
+    not, so its raw image is checked here too."""
+    report = CheckReport()
+    if network_is_synthetic(settings):
+        return report
+    if settings.get("run_perturbations"):
+        for spec in perturbations_from_settings(settings):
+            if spec.type == MEASURED_CONSTRICTION_TYPE:
+                _check_raw_image_profiles(
+                    report, {**settings, **spec.overrides}, f"The {spec.name} perturbation's "
+                )
+    if not settings.get("measure_pericytes"):
+        return report
+    low = settings.get("pericyte_measurement_min_diameter_um")
+    high = settings.get("pericyte_measurement_max_diameter_um")
+    if low is not None and high is not None and float(low) > float(high):
+        report.add_error(
+            f"pericyte_measurement_min_diameter_um ({low}) is above "
+            f"pericyte_measurement_max_diameter_um ({high}): no pericyte would be measured. "
+            "Fix: lower the first or raise the second."
+        )
+    profiles = bool(settings.get("measure_pericyte_diameter_profiles"))
+    if profiles:
+        _check_raw_image_profiles(report, settings)
+    if not (profiles or settings.get("measure_pericyte_junction_distances")):
+        report.add_warning(
+            "measure_pericytes is on with both its measurements off: the run lists where each "
+            "pericyte sits and measures nothing else."
+        )
+    return report
+
+
+def _check_raw_image_profiles(report: CheckReport, settings: Mapping[str, Any], reader: str = "") -> None:
+    """Diameter profiles read off the raw image (``pericyte_profile_reading``
+    raw_image_fwhm) need a raw image, and a FWHM across a wall stain is not a
+    lumen. *reader* starts each message when it is not measure_pericytes."""
+    if settings.get("pericyte_profile_reading") != "raw_image_fwhm":
+        return
+    if settings.get("raw_image_path") in (None, ""):
+        report.add_error(
+            f"{reader}pericyte_profile_reading is raw_image_fwhm, which fits a FWHM across each "
+            "vessel in the raw image, and raw_image_path is not set. Fix: set the raw "
+            "image, or read the profiles off the segmentation."
+        )
+    elif settings.get("raw_image_stain") == "endothelial":
+        report.add_warning(
+            f"{reader}pericyte_profile_reading is raw_image_fwhm but the raw image stains the vessel "
+            "wall (raw_image_stain: endothelial): a FWHM across a wall stain is not the "
+            "lumen's width."
+        )
+
+
+def check_cell_mask_measurement(settings: Mapping[str, Any]) -> CheckReport:
+    """``measurement_3d_to_cell_mask`` runs last, in the export stage, so what
+    would stop it there is checked here: from the TIFF headers, that the cell
+    mask and a vessel mask of its own have the input image's shape and the
+    run's voxel size -- a mask with no voxel size of its own taking the run's,
+    as the measurement reads it. Whether each is there is check_settings'
+    (both must_exist; the vessel mask may be unset)."""
+    if network_is_synthetic(settings):
+        return CheckReport()  # no image: nothing here applies
+    import numpy as np
+
+    from haemolynx.io import axis_order_for_run
+    from haemolynx.io.vessel_masks import (
+        _VOXEL_SIZE_RELATIVE_TOLERANCE,
+        _resolve_mask_voxel_size_xyz,
+    )
+    from haemolynx.io.voxel_validation import resolve_voxel_size_xyz
+
+    report = CheckReport()
+    if not settings.get("measurement_3d_to_cell_mask") or not settings.get("cell_mask_path"):
+        # An unset cell mask is reported by check_settings: it must_exist.
+        return report
+    axis_order = axis_order_for_run(settings)
+    image = _tiff_header(settings.get("input_path"), axis_order)
+    if image is None:
+        # Checked where it is read; ilastik may not have written it yet.
+        return report
+    shape, image_xyz, image_status = image
+    override = settings.get("voxel_size_override_xyz")
+    policy = settings.get("voxel_size_policy", "auto")
+    try:
+        run_xyz, _source = resolve_voxel_size_xyz(image_xyz, image_status, override, policy)
+    except ValueError:
+        # The run stops on this itself, before any measurement.
+        run_xyz = None
+    for name in ("cell_mask_path", "measurement_3d_vessel_mask_path"):
+        mask = _tiff_header(settings.get(name), axis_order)
+        if mask is None:
+            continue
+        mask_shape, mask_xyz, mask_status = mask
+        problems = []
+        if mask_shape != shape:
+            problems.append(f"is {mask_shape} voxels where the input image is {shape}")
+        if run_xyz is not None:
+            try:
+                resolved = _resolve_mask_voxel_size_xyz(
+                    mask_xyz, mask_status, voxel_size_override_xyz=override,
+                    voxel_size_policy=policy, fallback_voxel_size_xyz=run_xyz,
+                )
+            except ValueError as error:
+                problems.append(f"has no voxel size the run can use ({error})")
+            else:
+                if not np.allclose(resolved, run_xyz, rtol=_VOXEL_SIZE_RELATIVE_TOLERANCE, atol=0.0):
+                    problems.append(
+                        f"has a voxel size (x, y, z) of {tuple(resolved)} um where the run's is "
+                        f"{tuple(run_xyz)} um"
+                    )
+        if problems:
+            report.add_error(
+                f"{name} {' and '.join(problems)}, so the 3D distance measurement would stop "
+                "at the end of the run. Fix: save the mask from the input image, at its shape "
+                "and voxel size."
+            )
+        else:
+            report.add_pass(name, "the input image's shape and voxel size")
+    return report
+
+
+def check_crop_on_import(settings: Mapping[str, Any]) -> CheckReport:
+    """The crop box must be one that some image could hold: three whole
+    numbers for its size or each corner, and its start not past its end.
+    Whether it fits *this* image is only known once it is loaded."""
+    if network_is_synthetic(settings):
+        return CheckReport()  # no image: nothing here applies
+    report = CheckReport()
+    if not settings.get("crop_on_import"):
+        return report
+    from haemolynx.io.crop import crop_problems
+
+    problems = crop_problems(settings)
+    shape = segmented_image_shape(settings) if not problems else None
+    if shape is not None:
+        # Against this image, read from its header: a box outside it
+        # passed, and the Skeletonise stage (or one image of a batch) stopped.
+        from haemolynx.io.crop import crop_box_from_settings
+
+        try:
+            crop_box_from_settings(settings, shape)
+        except ValueError as error:
+            problems = [f"{error} (the segmented image is {shape} voxels, z, y, x)"]
+    for problem in problems:
+        report.add_error(f"Crop on import: {problem}")
+    if not problems:
+        report.add_pass("crop on import", str(settings.get("crop_method")))
+    return report
+
+
+def segmented_image_shape(settings: Mapping[str, Any]) -> tuple[int, int, int] | None:
+    """The segmented image's shape ``(z, y, x)`` as the run reads it, from
+    its header -- a 2D image as a stack of one -- or None: no image yet
+    (ilastik has still to make it), or not a TIFF or HDF5 one can read."""
+    from haemolynx.io import axis_order_for_run, h5_volume_shape
+    from haemolynx.pipeline.stages import segmented_input_path
+
+    path = segmented_input_path(dict(settings))
+    if path is None or not Path(path).is_file():
+        return None
+    axis_order = axis_order_for_run(settings)
+    suffix = Path(path).suffix.lower()
+    if suffix in {".tif", ".tiff"}:
+        header = _tiff_header(path, axis_order)
+        shape = None if header is None else header[0]
+    elif suffix in {".h5", ".hdf5"}:
+        try:
+            shape = tuple(int(n) for n in h5_volume_shape(path, axis_order=axis_order))
+        except Exception:  # noqa: BLE001 - the loader reports an unreadable file itself
+            return None
+    else:
+        return None
+    if shape is not None and len(shape) == 2:
+        shape = (1, *shape)
+    return tuple(shape) if shape is not None and len(shape) == 3 else None
+
+
+def raw_image_shape(settings: Mapping[str, Any]) -> tuple[int, int, int] | None:
+    """The raw image's shape ``(z, y, x)`` as the run reads its channel
+    (``raw_image_channel``), from its header -- a 2D image as a stack of
+    one -- or None: unset, missing, not a TIFF, or its channel not one it has."""
+    import tifffile
+
+    from haemolynx.io import axis_order_for_file, axis_order_for_run, axis_order_transpose, tiff_channel_axis
+
+    path = settings.get("raw_image_path")
+    if not path or Path(path).suffix.lower() not in {".tif", ".tiff"} or not Path(path).is_file():
+        return None
+    try:
+        with tifffile.TiffFile(path) as tif:
+            series = tif.series[0]
+            axes = series.axes.upper()
+            shape = [int(n) for n in series.shape]
+            channel_axis = tiff_channel_axis(
+                axes, shape, tif.imagej_metadata, tif.ome_metadata if tif.is_ome else None
+            )
+    except Exception:  # noqa: BLE001 - the loader reports an unreadable file itself
+        return None
+    channel = settings.get("raw_image_channel")
+    if channel_axis is not None:
+        if channel is None or not 0 <= int(channel) < shape[channel_axis]:
+            return None  # check_image_channels says why
+        del shape[channel_axis]
+    shape = [n for n in shape if n != 1]
+    if len(shape) == 2:
+        return (1, shape[0], shape[1])
+    if len(shape) != 3:
+        return None
+    order = axis_order_for_file(axis_order_for_run(settings), path)
+    return tuple(shape[axis] for axis in axis_order_transpose(order))
+
+
+def check_raw_image_shape(settings: Mapping[str, Any]) -> CheckReport:
+    """The raw image must be the stack the segmentation was made from: the
+    network build reads it beside the mask whenever it is set, and one of
+    another shape stopped the Graph stage after every step, the graph unsaved.
+    Read from the two headers, the raw image's channel as the run reads it;
+    not checked while either cannot be read yet (ilastik makes the mask)."""
+    report = CheckReport()
+    if network_is_synthetic(settings):
+        return report  # no image: nothing here applies
+    raw = raw_image_shape(settings)
+    segmented = segmented_image_shape(settings)
+    if raw is None or segmented is None:
+        return report
+    if raw != segmented:
+        report.add_error(
+            f"raw_image_path: {Path(settings['raw_image_path']).name} is {raw} voxels (z, y, x) "
+            f"but the segmented image is {segmented}: it must be the stack the segmentation was "
+            "made from. Fix: choose that raw image, or clear raw_image_path."
+        )
+    else:
+        report.add_pass("raw image shape", f"{raw}, the segmented image's")
+    return report
+
+
+def check_voxel_size_override(settings: Mapping[str, Any]) -> CheckReport:
+    """A ``voxel_size_override_xyz`` that ``auto`` will not read: the
+    segmented image's own metadata gives every axis's spacing, so the run
+    uses that, whatever the override says. Read from a TIFF's header; any
+    other file, or one not there yet, is not checked."""
+    if network_is_synthetic(settings):
+        return CheckReport()  # no image: nothing here applies
+    import numpy as np
+
+    from haemolynx.io import axis_order_for_run
+    from haemolynx.pipeline.stages import segmented_input_path
+
+    report = CheckReport()
+    override = settings.get("voxel_size_override_xyz")
+    policy = str(settings.get("voxel_size_policy", "auto")).lower()
+    if policy == "override" and override is None:
+        report.add_error(
+            "voxel_size_policy is override but voxel_size_override_xyz is not set: the run "
+            "would stop reading the image. Fix: set the voxel size (x, y, z) in um, or set "
+            "voxel_size_policy to auto."
+        )
+        return report
+    if override is None or policy != "auto":
+        return report
+    image = _tiff_header(segmented_input_path(dict(settings)), axis_order_for_run(settings))
+    if image is None:
+        return report
+    _shape, metadata_xyz, status = image
+    if str((status or {}).get("status", "missing")).lower() != "complete":
+        return report  # auto reads the override
+    if np.allclose([float(v) for v in override], metadata_xyz, rtol=1e-3, atol=0.0):
+        return report
+    report.add_warning(
+        f"voxel_size_override_xyz {tuple(float(v) for v in override)} um is not used: "
+        "voxel_size_policy is auto and the segmented image's metadata gives its voxel size, "
+        f"{tuple(round(float(v), 6) for v in metadata_xyz)} um (x, y, z). Fix: set "
+        "voxel_size_policy to override to use it, or clear it."
+    )
+    return report
+
+
+def check_downsample_on_import(settings: Mapping[str, Any]) -> CheckReport:
+    """The two downsample choices, said plainly before any image is read:
+    the raw image is read onto the segmented image's grid wherever the run
+    reads it, so a ``raw_image_downsample`` other than
+    ``segmented_image_downsample`` is a warning saying what it will do; and
+    ilastik reads the whole raw file whatever the raw choice says."""
+    if network_is_synthetic(settings):
+        return CheckReport()  # no image: nothing here applies
+    from haemolynx.io.downsample import RAW_SETTING, SEGMENTED_SETTING, downsample_factor
+
+    report = CheckReport()
+    try:
+        segmented = downsample_factor(settings.get(SEGMENTED_SETTING))
+        raw = downsample_factor(settings.get(RAW_SETTING)) if settings.get("raw_image_path") else 1
+    except ValueError as error:
+        report.add_error(f"Downsample on import: {error}")
+        return report
+    if segmented == 1 and raw == 1:
+        return report
+    if raw > segmented:
+        report.add_warning(
+            f"raw_image_downsample is {raw}x but segmented_image_downsample is {segmented}x: "
+            "everything that reads the raw image needs it on the segmented image's grid, so "
+            f"it is reduced {raw}x and each coarse voxel spread over the {segmented}x grid -- a "
+            "blockier image, no smaller in memory. Choose the same factor for both unless "
+            "that is what you want."
+        )
+    elif 1 < raw < segmented:
+        report.add_warning(
+            f"raw_image_downsample is {raw}x but segmented_image_downsample is {segmented}x: "
+            "everything that reads the raw image needs it on the segmented image's grid, so "
+            f"the raw image is read at {segmented}x."
+        )
+    if raw > 1 and settings.get("use_ilastik_segmentation"):
+        report.add_warning(
+            f"raw_image_downsample is {raw}x, but ilastik segments the whole raw file as its "
+            "project was trained on it; the choice applies to the raw image read afterwards."
+        )
+    elif raw > 1 and settings.get("use_pixel_classifier_segmentation"):
+        report.add_warning(
+            f"raw_image_downsample is {raw}x, but the classifier segments the whole raw file at "
+            "its own voxel size; the choice applies to the raw image read afterwards."
+        )
+    detail = f"segmented image {segmented}x"
+    if settings.get("raw_image_path"):
+        # A raw image left at none is read on the segmented image's grid too.
+        detail += f", raw image read at {max(raw, segmented)}x"
+    report.add_pass("downsample on import", detail)
+    return report
+
+
+def check_synthetic_template(settings: Mapping[str, Any]) -> CheckReport:
+    """A synthetic run's template (``synthetic_template_path``): a
+    ``.haemorun`` of a microscopy-image run with its statistics saved, read
+    once (``haemolynx.synthetic.load_template`` remembers it) so the error
+    names what the template lacks before any work starts; and what cannot
+    run without an image."""
+    report = CheckReport()
+    if not network_is_synthetic(settings):
+        return report
+    path = settings.get("synthetic_template_path")
+    if path in (None, ""):
+        return report  # check_settings says it is required
+    file = Path(path)
+    if file.suffix.lower() not in (".haemorun", ".haemobatch"):
+        report.add_error(
+            f"synthetic_template_path: {file} is not a .haemorun or .haemobatch file. Fix: save the "
+            "template run from the panel (Save run), or take a batch run's .haemobatch, and point "
+            "synthetic_template_path at it."
+        )
+        return report
+    if not file.exists():
+        return report  # check_settings reports a missing file
+    from haemolynx.gui.run_snapshot import RunSnapshotError
+    from haemolynx.synthetic import TemplateError, load_template
+
+    try:
+        template = load_template(file, settings.get("synthetic_template_source", "statistics"))
+    except RunSnapshotError as error:
+        report.add_error(
+            f"synthetic_template_path: {error} Fix: choose a run the panel saved (Save run), "
+            "of a microscopy-image run."
+        )
+        return report
+    except TemplateError as error:
+        report.add_error(f"synthetic_template_path: {error}")
+        return report
+    notes = list(template.provenance.notes)
+    # A batch template says first what it averages: part of its line, not a warning.
+    averaged = f"; {notes.pop(0)}" if file.suffix.lower() == ".haemobatch" and notes else ""
+    report.add_pass(
+        "synthetic template",
+        f"{file}: {template.vessel_count} vessels, {template.inlet_count} inlet(s), "
+        f"{template.outlet_count} outlet(s), box {tuple(round(v, 1) for v in template.extent_um)} um"
+        + averaged,
+    )
+    for note in notes:
+        report.add_warning(f"synthetic template: {note}")
+    basis = run_diameter_basis(settings)
+    if template.diameter_basis is not None and basis != template.diameter_basis:
+        report.add_warning(
+            f"segmentation_source is {basis} but the template's diameters are {template.diameter_basis}: "
+            f"the drawn vessels keep the template's basis (and its form of the viscosity law), while a "
+            f"width given by hand in Post processing is read as {basis}. Fix: set segmentation_source "
+            f"to {template.diameter_basis}."
+        )
+    for name in ("measurement_3d_to_cell_mask", "measure_tissue_volume", "measure_pericytes"):
+        if settings.get(name):
+            report.add_error(
+                f"{name} needs the run's image, and a synthetic network has none. Fix: switch it off."
+            )
+    for name in _mask_reading_perturbations(settings):
+        # Read with the image's axis order and voxel size, rows the tab hides
+        # for a synthetic network, and lined up with no image at all.
+        report.add_error(
+            f"perturbation '{name}' reads a mask lined up with the run's image, and a synthetic "
+            "network has none. Fix: remove it, or run it on the image's own run."
+        )
+    unread = [
+        ("use_ilastik_segmentation", "nothing is segmented"),
+        ("use_pixel_classifier_segmentation", "nothing is segmented"),
+        ("measure_diameters_from_raw_image", "the vessels keep the widths they were drawn with"),
+        ("automated_vessel_assignment", "the generator chooses the inlets, outlets and boundary nodes"),
+        ("use_thick_vessel_skeletonisation", "nothing is skeletonised"),
+    ]
+    for name, why in unread:
+        if settings.get(name):
+            report.add_warning(f"{name} is on but not read for a synthetic network: {why}.")
+    if settings.get("use_thick_vessel_skeletonisation") and settings.get(
+        "skeleton_thick_vessel_restrict_to_mask", "off"
+    ) not in ("off", None):
+        report.add_warning("skeleton_thick_vessel_restrict_to_mask is not read for a synthetic network: nothing is skeletonised.")
+    # do_graph_building needs a segmented image (its row greys), so the
+    # schema's own check says it is not in effect.
+    for name in ("do_skeletonize",):
+        if settings.get(name, True) is False:
+            report.add_warning(f"{name} is off but a synthetic network is drawn every run; nothing is read back.")
+    if not network_surrounds_image(settings):  # a surround's is planned with its shell
+        from haemolynx.pipeline.stages import synthetic_generation_options
+        from haemolynx.synthetic.generate import planned_bed
+
+        try:
+            plan = planned_bed(template, synthetic_generation_options(settings))
+        except ValueError:
+            return report  # check_settings reports the scale
+        report.extend(_check_planned_solver_memory(settings, plan.nodes))
+    return report
+
+
+def _mask_reading_perturbations(settings: Mapping[str, Any]) -> list[str]:
+    """The names of the perturbations a run makes that read a mask of the
+    image: a block mask, or pericyte sites from a pericyte mask."""
+    if not settings.get("run_perturbations"):
+        return []
+    from haemolynx.haemodynamics.perturbations import perturbations_from_settings, places_pericytes
+
+    names = []
+    for spec in perturbations_from_settings(settings):
+        merged = {**settings, **dict(spec.overrides)}
+        if spec.type == "capillary_block_mask" or (
+            places_pericytes(spec.type) and merged.get("use_pericyte_mask_constriction")
+        ):
+            names.append(spec.name)
+    return names
+
+
+def _check_planned_solver_memory(settings: Mapping[str, Any], nodes: int) -> CheckReport:
+    """Whether the run's dense solvers fit in the memory free now on the
+    *nodes* a synthetic network is planned with (``BedPlan.nodes``): the
+    Graph stage warns once it is drawn, preflight before the draw, and
+    recommends the sparse solvers."""
+    report = CheckReport()
+    if not settings.get("run_haemodynamics"):
+        return report
+    from haemolynx.haemodynamics import dense_solver_memory_warnings
+    from haemolynx.pipeline.stages import solvers_run
+
+    for message in dense_solver_memory_warnings(nodes, planned=True, **solvers_run(settings)):
+        report.add_warning(message)
+    return report
+
+
+def check_synthetic_surround(settings: Mapping[str, Any]) -> CheckReport:
+    """A surround (``network_source=synthetic_surround``): drawn round one
+    run's own network (a ``.haemorun``, not a batch's ``.haemobatch``) in a
+    box larger than its image (``synthetic_scale`` above 1), joined at the
+    vessels its image faces cut, so the run must have some; which are left
+    open, and whether there is a solve to compare the image's flows with."""
+    report = CheckReport()
+    if not network_surrounds_image(settings):
+        return report
+    scale = float(settings.get("synthetic_scale") or 1.0)
+    if scale <= 1.0:
+        report.add_error(
+            f"synthetic_scale is {scale:g}: a surround is drawn in a box larger than the template run's "
+            "image. Fix: set synthetic_scale above 1 (1.5 or 2)."
+        )
+    path = settings.get("synthetic_template_path")
+    if path in (None, "") or not Path(path).exists() or Path(path).suffix.lower() != ".haemorun":
+        if path not in (None, "") and Path(path).suffix.lower() == ".haemobatch":
+            report.add_error(
+                "synthetic_template_path is a batch's .haemobatch: a surround is drawn round one run's own "
+                "network. Fix: choose that run's .haemorun."
+            )
+        return report  # check_synthetic_template reports the rest
+    from haemolynx.gui.run_snapshot import RunSnapshotError
+    from haemolynx.synthetic import TemplateError
+    from haemolynx.synthetic.surround import load_image_run, read_open_ends
+
+    try:
+        image, boundaries = load_image_run(path)
+    except (RunSnapshotError, TemplateError):
+        return report  # check_synthetic_template has said why
+    ends = read_open_ends(image, inlets=boundaries.get("inlet", ()), outlets=boundaries.get("outlet", ()))
+    if not ends:
+        report.add_error(
+            "The template run's network has no open end (no vessel its image faces cut): there is nothing "
+            "to join a surround to. Fix: choose network_source=synthetic for a network drawn to it instead."
+        )
+        return report
+    axes = settings.get("synthetic_scale_axes") or "xyz"
+    left = [e for e in ends if axes == "xy" and e.face[0] == "z"]
+    report.add_pass(
+        "synthetic surround",
+        f"the template run's {image.number_of_edges()} vessels, {len(ends)} open end(s) to join"
+        + (f", {len(left)} on its z faces left open (the box keeps its depth along xy)" if left else ""),
+    )
+    if left:
+        report.add_warning(
+            f"{len(left)} of the template run's open ends lie on its z faces, which a box scaled along xy does "
+            "not grow past: they stay open ends, treated by open_end_model."
+        )
+    if not any(data.get("flow_signed") is not None for *_e, data in image.edges(data=True)):
+        report.add_warning(
+            "The template run was saved before its haemodynamics solved: the image flows CSV has no "
+            "template-run flow to compare each vessel's with."
+        )
+    if scale > 1.0:
+        report.extend(_check_surround_shell_room(settings, image, boundaries))
+    return report
+
+
+def _check_surround_shell_room(settings: Mapping[str, Any], image, boundaries) -> CheckReport:
+    """Whether the shell round the image has room for a bed joining all its
+    open ends (``surround.planned_surround_bed``, the generator's own
+    arithmetic): none below one vertex, and doubtful below
+    ``surround.ROOMY_VERTICES_PER_JOIN`` vertices per join. And whether the
+    dense solvers fit on the image's nodes and the shell's planned ones."""
+    from haemolynx.pipeline.stages import synthetic_generation_options
+    from haemolynx.synthetic import TemplateError, load_template
+    from haemolynx.synthetic.surround import ROOMY_VERTICES_PER_JOIN, planned_surround_bed
+
+    report = CheckReport()
+    try:
+        template = load_template(settings["synthetic_template_path"], settings.get("synthetic_template_source", "statistics"))
+    except (TemplateError, ValueError):
+        return report  # check_synthetic_template has said why
+    plan, joins = planned_surround_bed(
+        image, template, inlets=boundaries.get("inlet", ()), outlets=boundaries.get("outlet", ()),
+        options=synthetic_generation_options(settings),
+    )
+    scale = float(settings.get("synthetic_scale") or 1.0)
+    if plan.vertices < 1:
+        report.add_error(
+            f"At synthetic_scale {scale:g} the shell round the template run's network leaves its capillary bed "
+            f"{plan.vertices} vertices ({plan.capillaries} capillaries, {plan.loops} loops, {plan.roots} roots: "
+            f"{len(joins)} joins to the image among them): no bed can be drawn. Fix: raise synthetic_scale."
+        )
+    elif plan.vertices < ROOMY_VERTICES_PER_JOIN * len(joins):
+        report.add_warning(
+            f"At synthetic_scale {scale:g} the shell's capillary bed is planned with {plan.vertices} vertices for "
+            f"{len(joins)} joins to the template run's network: a shell that thin was not drawn in 13 of 28 "
+            "cut-out harness surrounds (no bed, or a trunk left apart). Fix: raise synthetic_scale if the "
+            "Graph stage fails."
+        )
+    if plan.vertices >= 1:
+        report.extend(_check_planned_solver_memory(settings, image.number_of_nodes() + plan.nodes))
+    return report
+
+
+def pixel_classifiers_in_effect(settings: Mapping[str, Any]) -> list[tuple[str, Any, str]]:
+    """``(path setting, path, purpose)`` for each HaemoLynx classifier the
+    run will apply: the main image's, and each vessel-mask role's."""
+    from haemolynx.graph.boundaries import vessel_mask_classifier_in_use
+    from haemolynx.pipeline.naming import classifier_segments
+
+    found = []
+    if classifier_segments(settings):
+        found.append(("pixel_classifier_path", settings.get("pixel_classifier_path"), "vessels"))
+    if settings.get("raw_image_path") not in (None, "") and not network_is_synthetic(settings):
+        for role in ("large", "small"):
+            if vessel_mask_classifier_in_use(settings, role):
+                name = f"pixel_classifier_{role}_vessel_path"
+                found.append((name, settings.get(name), "vessel_classes"))
+        from haemolynx.pipeline.stages import OBJECT_MASKS, object_masks_made
+
+        for word in object_masks_made(settings):
+            name = OBJECT_MASKS[word].classifier_setting
+            found.append((name, settings.get(name), OBJECT_MASKS[word].job))
+    return found
+
+
+#: The mask each job's classifier must make (``classifier.MASK_LABELS``).
+_JOB_MASKS = {
+    "vessels": "Vessel",
+    "vessel_classes": "Arteriole",
+    "pericytes": "Pericyte",
+    "blocks": "Block",
+    "cells": "Cell",
+}
+
+
+def check_pixel_classifiers(settings: Mapping[str, Any]) -> CheckReport:
+    """Each classifier the run applies is a HaemoLynx classifier trained for
+    its job (vessels for the main image; arterioles and venules for a mask
+    role), shown what it is to find, and reading channels the raw image has."""
+    report = CheckReport()
+    classifiers = pixel_classifiers_in_effect(settings)
+    if not classifiers:
+        return report
+    from haemolynx.classifier import read_classifier_record
+    from haemolynx.classifier.model import JOB_PURPOSES, MASK_LABELS, role_class_masks
+    from haemolynx.io.channels import tiff_channels
+    from haemolynx.io.vessel_masks import VESSEL_MASK_SETTINGS
+
+    roles = {names["classifier_path"]: role for role, names in VESSEL_MASK_SETTINGS.items()}
+    #: Every channel the passing classifiers read: what the pass reads of the raw image.
+    read_channels: set = set()
+
+    raw = settings.get("raw_image_path")
+    try:
+        channel_count = len(tiff_channels(raw)) if raw and Path(raw).is_file() else None
+    except Exception:  # noqa: BLE001 - an unreadable raw image is reported elsewhere
+        channel_count = None
+    for name, path, purpose in classifiers:
+        if path in (None, "") or not Path(path).is_file():
+            continue  # check_settings reports a missing file
+        try:
+            record = read_classifier_record(path)
+        except (OSError, ValueError) as error:
+            report.add_error(f"{name}: {error}")
+            continue
+        mask = _JOB_MASKS[purpose]
+        if record.get("purpose") not in JOB_PURPOSES[purpose]:
+            report.add_error(
+                f"{name}: {Path(path).name} was trained to find "
+                f"{' and '.join(record.get('labels', [])[1:])}, so it makes no {mask} mask. Fix: train "
+                "one for this job in the training window."
+            )
+            continue
+        if name in roles:  # a role's arteriole (or global) mask, as this classifier names it
+            mask = role_class_masks(record["purpose"], roles[name])[0]
+        counts = record.get("voxels_per_label") or {}
+        labels = MASK_LABELS[record["purpose"]][mask]
+        if not any(counts.get(label) for label in labels):
+            report.add_error(f"{name}: {Path(path).name} was never shown any {' or '.join(labels)} voxels.")
+            continue
+        channels = [c for c in (record.get("spec") or {}).get("channels", [None]) if c is not None]
+        if channel_count is not None:
+            problem = None
+            missing = [c for c in channels if c >= channel_count]
+            if channels and channel_count <= 1:
+                problem = (
+                    f"reads channel(s) {', '.join(f'C{c + 1}' for c in channels)}, but the raw image "
+                    "has one channel"
+                )
+            elif missing:
+                problem = (
+                    f"reads channel(s) {', '.join(f'C{c + 1}' for c in missing)}, which the raw image "
+                    f"({channel_count} channels) does not have"
+                )
+            elif not channels and channel_count > 1:
+                problem = (
+                    f"was trained on a one-channel image, but the raw image has {channel_count} "
+                    "channels. Fix: train it on the channels it should read"
+                )
+            if problem:
+                report.add_error(f"{name}: {Path(path).name} {problem}.")
+                continue
+        report.add_pass(name, f"{Path(path).name}: " + ", ".join(f"{k} {v}" for k, v in counts.items()) + " voxels")
+        _warn_if_raw_image_unfamiliar(report, name, path, record, raw)
+        read_channels.update((record.get("spec") or {}).get("channels", [None]))
+    _check_classifier_read_fits_memory(report, settings, raw, read_channels)
+    return report
+
+
+def _check_classifier_read_fits_memory(report: CheckReport, settings: Mapping[str, Any], raw, channels) -> None:
+    """Without the low-RAM option the classifier pass reads the raw image's
+    channels whole: an error when that is more than this machine's memory, a
+    warning when it is most of the memory free (``classifier.memory``)."""
+    from haemolynx.classifier.memory import OPEN_SHARE, gigabytes, memory_bytes, raw_image_memory_bytes
+    from haemolynx.io import axis_order_for_run
+
+    if settings.get("use_memmap_loading") or not channels or raw in (None, "") or not Path(raw).is_file():
+        return
+    try:
+        needed = raw_image_memory_bytes(raw, sorted(channels, key=lambda c: -1 if c is None else c),
+                                        axis_order_for_run(settings))
+    except Exception:  # noqa: BLE001 - an unreadable raw image is reported elsewhere
+        return
+    available, total = memory_bytes()
+    fix = (
+        "Fix: set use_memmap_loading (the panel's low-RAM option): the classifier then reads the image "
+        "a slab at a time."
+    )
+    if total is not None and needed > total:
+        report.add_error(
+            f"pixel classifier: reading {Path(raw).name} whole takes about {gigabytes(needed)}, more than "
+            f"this machine's {gigabytes(total)} of memory. {fix}"
+        )
+    elif available is not None and needed > OPEN_SHARE * available:
+        report.add_warning(
+            f"pixel classifier: reading {Path(raw).name} whole takes about {gigabytes(needed)}, most of the "
+            f"{gigabytes(available)} of memory free. {fix}"
+        )
+
+
+def _warn_if_raw_image_unfamiliar(report: CheckReport, name: str, path, record: Mapping, raw) -> None:
+    """Warn when the raw image's intensities are unlike every image the
+    classifier at *path* was trained on (``classifier.familiar``)."""
+    from haemolynx.classifier.familiar import (
+        raw_image_profiles,
+        unfamiliar_channels_in_record,
+        unfamiliar_note,
+    )
+    from haemolynx.classifier.features import FeatureSpec
+
+    if raw in (None, "") or not Path(raw).is_file():
+        return
+    channels = FeatureSpec.from_record(record["spec"]).channels
+    try:
+        profiles = raw_image_profiles(raw, channels)
+    except Exception:  # noqa: BLE001 - an unreadable raw image is reported elsewhere
+        return
+    found = unfamiliar_channels_in_record(record, profiles)
+    if found:
+        report.add_warning(f"{name}: {unfamiliar_note(Path(raw).name, Path(path).name, found)}")
+
+
+def preflight(
+    settings: Mapping[str, Any], schema: Schema, *, echo: bool = True, resume: Any = None
+) -> CheckReport:
+    """Every pre-run check, printed as a checklist (unless *echo* is False:
+    a batch checks every image and reports them itself).
 
     Called for you by the examples before a run starts; call it yourself to
     check a configuration without running anything.
+
+    *resume* is the ``stages.PipelineResume`` a run from a later tab is
+    handed. When no stage that run does reads the segmented image
+    (``stages.resumed_image_readers``), it goes on from the saved network
+    without it, so ``input_path`` need not be there; when one does and it
+    is not, the report says what reads it.
     """
-    report = check_settings(schema, settings)
+    # The raw image is optional: check_raw_image checks it when it is set. A
+    # synthetic network reads no file but its template: a path left set under
+    # a switch the Input tab hides (an ilastik classifier, a vessel mask) is
+    # not demanded, since check_settings reads a path's own gate only.
+    skip: tuple[str, ...] = ("raw_image_path",)
+    from haemolynx.pipeline.naming import classifier_segments, segments_raw_image
+    from haemolynx.pipeline.stages import ilastik_segments, resumed_image_readers, segmented_input_path
+
+    if settings.get("use_ilastik_segmentation") and not ilastik_segments(settings):
+        # Its switch is out of effect without a raw image (segment reads the
+        # segmented image instead), so the project is not read either.
+        skip += ("ilastik_classifier_path",)
+    if settings.get("use_pixel_classifier_segmentation") and not classifier_segments(settings):
+        skip += ("pixel_classifier_path",)
+    if network_is_synthetic(settings):
+        skip += tuple(
+            setting.name for setting in schema if setting.must_exist and setting.name != "synthetic_template_path"
+        )
+    readers = (
+        None if resume is None
+        else resumed_image_readers(settings, resume.start_from, getattr(resume, "graph", None))
+    )
+    # Unread, it is still named: a resumed run is held to the image its
+    # network's record names (stages._check_resumed_input).
+    unread = (
+        readers == () and not network_is_synthetic(settings)
+        and segmented_input_path(dict(settings)) is not None
+    )
+    if unread:
+        skip += ("input_path",)
+    report = check_settings(schema, settings, skip=skip)
+    if unread:
+        report.add_pass("input_path", "not read: the run goes on from the saved network")
+    elif readers and not segments_raw_image(settings) and not resolve_existing_path(settings.get("input_path"))[0]:
+        from haemolynx.pipeline.progress import STAGES
+
+        tab = next((s.tab or s.title for s in STAGES if s.call == resume.start_from), resume.start_from)
+        report.add_warning(
+            f"The run from {tab} reads the segmented image (input_path) for: {'; '.join(readers)}."
+        )
+    report.extend(check_synthetic_template(settings))
+    report.extend(check_synthetic_surround(settings))
     report.extend(check_cached_artefacts(settings))
     report.extend(check_ilastik_executable(settings))
-    report.print("Preflight")
+    report.extend(check_ilastik_vessel_labels(settings))
+    report.extend(check_ilastik_vessel_mask_channels(settings))
+    report.extend(check_pixel_classifiers(settings))
+    report.extend(check_input_is_not_a_large_vessel_mask(settings))
+    report.extend(check_manual_inlets_outlets_while_masks_choose(settings))
+    report.extend(check_boundary_selection(settings))
+    report.extend(check_global_vessel_masks(settings))
+    report.extend(check_large_vessel_mask_split(settings))
+    report.extend(check_vessel_size_classes(settings))
+    report.extend(check_large_vessel_branch_order_mode_prerequisites(settings))
+    report.extend(check_branch_order_steps(settings))
+    report.extend(check_thick_vessel_restriction_prerequisites(settings))
+    report.extend(check_haemodynamics(settings))
+    report.extend(check_perturbations(settings, schema))
+    report.extend(check_segmentation_quality(settings))
+    report.extend(check_raw_image(settings))
+    report.extend(check_diameter_blur_pairs(settings))
+    report.extend(check_image_channels(settings))
+    report.extend(check_raw_image_shape(settings))
+    report.extend(check_tissue_volume_image(settings))
+    report.extend(check_crop_on_import(settings))
+    report.extend(check_voxel_size_override(settings))
+    report.extend(check_downsample_on_import(settings))
+    report.extend(check_cell_mask_measurement(settings))
+    report.extend(check_pericyte_measurements(settings))
+    report.extend(check_output_path_lengths(settings))
+    if echo:
+        report.print("Preflight")
     return report

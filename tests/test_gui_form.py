@@ -8,24 +8,48 @@ testable with no napari, no Qt and no display.
 """
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from pathlib import Path
 
 from haemolynx.gui.form import (
+    CHANNEL_SETTINGS,
+    CLASSIFIER_FILLED_ROWS,
     DEFAULT_FLOAT_RANGE,
     DEFAULT_INT_RANGE,
+    EXCLUSIVE_SWITCHES,
+    H5_DATASET_SETTINGS,
+    HIDE_WHEN_UNMET_PARENTS,
+    HIDE_WHEN_UNMET_SECTIONS,
     OPTIONS_BY_WIDGET,
+    SHARED_ILASTIK_SETTINGS,
+    SHARED_ILASTIK_SETTING_SET,
     WIDGET_TYPES,
     Field,
+    chain_met,
+    classifier_filled_reason,
+    exclusive_partner_in_effect,
+    exclusive_reason,
     field_for,
     fields_for,
+    hidden_by,
     label_for,
+    prerequisite_chain,
     sections_for,
+    shared_ilastik_host,
+    unmet_chain,
     values_from,
+    visible_diameter_settings,
+    visible_graph_centreline_settings,
+    visible_input_segmentation_settings,
+    visible_statistics_settings,
+    visible_vessel_mask_settings,
 )
 from haemolynx.parsers import Schema, Setting
 from haemolynx.pipeline import default_schema
+from haemolynx.statistics import NETWORK_ANALYSIS_MEASURES, STATISTIC_MEASURES
 
 SCHEMA = default_schema()
 
@@ -70,10 +94,18 @@ def test_supplied_values_win_over_the_defaults():
 
 
 def test_a_choice_setting_offers_exactly_its_choices():
-    setting = next(s for s in SCHEMA if s.kind == "choice")
+    from haemolynx.gui.form import CHOICE_VALUE_LABELS
+
+    setting = next(s for s in SCHEMA if s.kind == "choice" and s.name not in CHOICE_VALUE_LABELS)
     field = field_for(setting)
     assert field.widget_type == "ComboBox"
     assert field.options["choices"] == list(setting.choices)
+
+    # A labelled one still offers exactly its values, each under its label.
+    labelled = field_for(SCHEMA["raw_image_stain"])
+    assert [value for _label, value in labelled.options["choices"]] == list(
+        SCHEMA["raw_image_stain"].choices
+    )
 
 
 def test_a_declared_range_reaches_the_spin_box():
@@ -146,6 +178,22 @@ def test_a_label_with_no_unit_gains_no_brackets():
     assert label_for("do_skeletonize", "") == "Do skeletonize"
 
 
+def test_ide_plot_rows_use_explicit_labels():
+    assert label_for("visualize_results") == "Produce IDE plots"
+    assert label_for("show_plots_in_ide") == "Show plots in IDE"
+    assert label_for("ide_plot_mode") == "IDE plot mode"
+    assert label_for("hold_ide_plots_open") == "Hold IDE plots open"
+
+
+def test_the_two_raw_image_segmentation_switches_say_what_they_do():
+    assert label_for("use_ilastik_segmentation") == (
+        "Segment raw image with a pretrained Ilastik classifier"
+    )
+    assert label_for("use_pixel_classifier_segmentation") == (
+        "Classify and segment raw image in Napari"
+    )
+
+
 def test_the_row_for_a_setting_with_a_unit_is_labelled_with_it():
     field = field_for(Setting("length", "float", 1.0, "How long", "S", unit="um"))
     assert field.label == "Length (um)"
@@ -203,10 +251,10 @@ def test_a_disabled_row_says_which_setting_disabled_it():
     fields = {field.name: field for field in fields_for(_gated_schema())}
 
     assert fields["classifier"].why_disabled({"use_ilastik": False}) == (
-        "Not used while 'use_ilastik' is off."
+        'Not used while "Use ilastik" is off'
     )
     assert fields["mask"].why_disabled({"use_ilastik": True}) == (
-        "Not used while 'use_ilastik' is on."
+        'Not used while "Use ilastik" is on'
     )
 
 
@@ -219,6 +267,956 @@ def test_a_row_with_no_prerequisite_is_always_enabled():
     field = field_for(Setting("always", "bool", True, "On", "S"))
     assert field.enabled_by == ()
     assert field.is_enabled({})
+
+
+def test_vessel_mask_rows_hide_when_requires_unmet_rather_than_only_greying():
+    """Boundaries vessel options disappear until their parent toggles hold."""
+    assert "Vessel masks" in HIDE_WHEN_UNMET_SECTIONS
+    fields = {f.name: f for f in fields_for(SCHEMA)}
+
+    automated = fields["automated_vessel_assignment"]
+    assert automated.hide_when_unmet  # only under a synthetic network
+    assert automated.is_visible({})
+    assert not automated.is_visible({"network_source": "synthetic"})
+
+    large = fields["use_large_vessel_masks"]
+    assert large.hide_when_unmet
+    assert large.section == "Vessel masks"
+    assert not large.is_visible({"automated_vessel_assignment": False})
+    assert large.is_visible({"automated_vessel_assignment": True})
+
+    # Non-vessel sections still show when unmet (greyed by the panel, not hidden)
+    # unless they are themselves a hide-when-unmet section (Input).
+    large_inlet = fields["large_vessel_inlet_node_selection_method"]
+    assert not large_inlet.hide_when_unmet
+    assert large_inlet.is_visible({"assign_large_vessel_branch_orders": False})
+    assert not large_inlet.is_enabled({"assign_large_vessel_branch_orders": False})
+    # The plain inlet method no longer hangs on automated_vessel_assignment:
+    # whether the masks choose the inlets is inlets_outlets_from_vessel_masks,
+    # which greys the Inlet tab as a whole (boundary_picking).
+    inlet = fields["inlet_node_selection_method"]
+    assert inlet.is_enabled({"automated_vessel_assignment": True})
+
+
+def test_input_ilastik_rows_hide_when_use_ilastik_segmentation_is_off():
+    """Input swaps segmented-file vs main-ilastik children; shared knobs host."""
+    assert "Input and segmentation" in HIDE_WHEN_UNMET_SECTIONS
+    fields = {f.name: f for f in fields_for(SCHEMA)}
+
+    toggle = fields["use_ilastik_segmentation"]
+    assert not toggle.hide_when_unmet
+    assert toggle.is_visible({})
+
+    input_path = fields["input_path"]
+    assert input_path.hide_when_unmet
+    assert input_path.is_visible({"use_ilastik_segmentation": False})
+    assert not input_path.is_visible({"use_ilastik_segmentation": True})
+
+    classifier = fields["ilastik_classifier_path"]
+    assert classifier.hide_when_unmet
+    assert not classifier.is_visible({"use_ilastik_segmentation": False})
+    assert classifier.is_visible({"use_ilastik_segmentation": True})
+
+    # The raw image is the run's own, read by ilastik and every raw-image
+    # measurement alike, so it shows whichever way ilastik is set.
+    for name in ("raw_image_path", "raw_image_channel", "raw_image_stain"):
+        assert fields[name].is_visible({"use_ilastik_segmentation": False}), name
+        assert fields[name].is_visible({"use_ilastik_segmentation": True}), name
+
+    # Shared across main / large / small ilastik — Input only while main is on.
+    for name in SHARED_ILASTIK_SETTINGS:
+        shared = fields[name]
+        assert shared.hide_when_unmet, name
+        assert name in SHARED_ILASTIK_SETTING_SET
+        assert not shared.is_visible({"use_ilastik_segmentation": False}), name
+        assert shared.is_visible({"use_ilastik_segmentation": True, "raw_image_path": "raw.tif"}), name
+        # Ticked with no raw image they stay beside the main ilastik rows.
+        assert shared.is_visible({"use_ilastik_segmentation": True}), name
+
+
+PAIRS = (
+    ("use_ilastik_segmentation", "use_pixel_classifier_segmentation", {}),
+    ("use_ilastik_large_vessel_segmentation", "use_pixel_classifier_large_vessel_segmentation",
+     {"automated_vessel_assignment": True, "use_large_vessel_masks": True}),
+    ("use_ilastik_small_vessel_segmentation", "use_pixel_classifier_small_vessel_segmentation",
+     {"automated_vessel_assignment": True, "use_small_vessel_masks_for_boundary_assignment": True}),
+)
+
+
+def test_each_ilastik_switch_and_its_classifier_switch_are_each_others():
+    assert {frozenset(p) for p in EXCLUSIVE_SWITCHES.items()} == {frozenset(p[:2]) for p in PAIRS}
+    for one, other in EXCLUSIVE_SWITCHES.items():
+        assert EXCLUSIVE_SWITCHES[other] == one and one in SCHEMA
+
+
+@pytest.mark.parametrize("ilastik, classifier, gates", PAIRS)
+def test_ilastik_on_greys_the_classifier_switch_rather_than_hiding_it(ilastik, classifier, gates):
+    fields = {f.name: f for f in fields_for(SCHEMA)}
+    values = {**gates, "raw_image_path": "raw.tif", ilastik: True}
+    unmet = unmet_chain(SCHEMA, classifier, values)
+    assert unmet == (f"!{ilastik}",)
+    assert fields[classifier].is_visible(values, unmet)
+    reason = replace(fields[classifier], enabled_by=unmet).why_disabled(values)
+    assert reason == exclusive_reason(ilastik)
+    assert f'"{label_for(ilastik)}" is on' in reason and "Untick" in reason
+    # Rows nested under the classifier switch still hide.
+    path = classifier.replace("use_", "").replace("_segmentation", "_path")  # its file row
+    nested = unmet_chain(SCHEMA, path, {**values, classifier: True})
+    assert not fields[path].is_visible({**values, classifier: True}, nested)
+
+
+@pytest.mark.parametrize("ilastik, classifier, gates", PAIRS)
+def test_the_classifier_on_greys_the_ilastik_switch(ilastik, classifier, gates):
+    values = {**gates, "raw_image_path": "raw.tif", classifier: True}
+    assert exclusive_partner_in_effect(SCHEMA, ilastik, values) == classifier
+    assert exclusive_partner_in_effect(SCHEMA, classifier, values) is None
+    # Off, or ticked but out of effect (no raw image), greys nothing.
+    assert exclusive_partner_in_effect(SCHEMA, ilastik, {**values, classifier: False}) is None
+    assert exclusive_partner_in_effect(SCHEMA, ilastik, {**values, "raw_image_path": None}) is None
+
+
+@pytest.mark.parametrize("ilastik, classifier, gates", PAIRS)
+def test_both_on_greys_only_the_classifier_so_ilastik_can_be_unticked(ilastik, classifier, gates):
+    values = {**gates, "raw_image_path": "raw.tif", ilastik: True, classifier: True}
+    assert exclusive_partner_in_effect(SCHEMA, ilastik, values) is None  # ilastik stays usable
+    assert unmet_chain(SCHEMA, ilastik, values) == ()
+    assert unmet_chain(SCHEMA, classifier, values) == (f"!{ilastik}",)  # the classifier greys
+
+
+#: Each row a classifier fills, and the gates its role's rows need besides.
+_FILLED_ROW_GATES = {
+    "input_path": {},
+    "large_arteriole_mask_path": {"automated_vessel_assignment": True, "use_large_vessel_masks": True},
+    "large_venule_mask_path": {"automated_vessel_assignment": True, "use_large_vessel_masks": True},
+    "small_arteriole_mask_path": {
+        "automated_vessel_assignment": True, "use_small_vessel_masks_for_boundary_assignment": True,
+    },
+    "small_venule_mask_path": {
+        "automated_vessel_assignment": True, "use_small_vessel_masks_for_boundary_assignment": True,
+    },
+    # The masks of objects: the pericytes (the solve's constriction and the
+    # measurements), the capillary blocks (read in a perturbation entry), the
+    # cells and the cell distances' vessels.
+    "pericyte_mask_path": {"run_haemodynamics": True, "use_pericyte_mask_constriction": True},
+    "pericyte_measurement_mask_path": {"measure_pericytes": True},
+    "capillary_block_mask_path": {},
+    "cell_mask_path": {"measurement_3d_to_cell_mask": True},
+    "measurement_3d_vessel_mask_path": {"measurement_3d_to_cell_mask": True},
+}
+
+
+def test_every_row_a_classifier_fills_is_named_with_its_switch():
+    assert set(CLASSIFIER_FILLED_ROWS) == set(_FILLED_ROW_GATES)
+    for row, switch in CLASSIFIER_FILLED_ROWS.items():
+        # The row stands aside for that switch in the schema: the run reads the classifier's mask.
+        assert f"!{switch}" in SCHEMA[row].requires, row
+
+
+@pytest.mark.parametrize("row", sorted(_FILLED_ROW_GATES))
+def test_a_row_the_classifier_fills_stays_in_view_greyed_saying_why(row):
+    fields = {f.name: f for f in fields_for(SCHEMA)}
+    switch = CLASSIFIER_FILLED_ROWS[row]
+    values = {**_FILLED_ROW_GATES[row], "raw_image_path": "raw.tif", switch: True}
+    unmet = unmet_chain(SCHEMA, row, values)
+    assert unmet == (f"!{switch}",)
+    assert hidden_by(fields[row], unmet) == ()
+    assert fields[row].is_visible(values, unmet)  # it hid until now
+    reason = replace(fields[row], enabled_by=unmet).why_disabled(values)
+    assert reason == classifier_filled_reason(switch)
+    assert f'"{label_for(switch)}" is on' in reason and "Untick" in reason
+    # Off, the row is the user's to fill, in view and not greyed.
+    off = {**values, switch: False}
+    assert unmet_chain(SCHEMA, row, off) == () and fields[row].is_visible(off, ())
+    # Ticked with no raw image the classifier makes nothing: the row is the user's.
+    no_raw = {**values, "raw_image_path": None}
+    assert unmet_chain(SCHEMA, row, no_raw) == ()
+
+
+@pytest.mark.parametrize("row", sorted(_FILLED_ROW_GATES))
+def test_a_row_the_classifier_fills_still_hides_for_its_other_gates(row):
+    fields = {f.name: f for f in fields_for(SCHEMA)}
+    switch = CLASSIFIER_FILLED_ROWS[row]
+    values = {**_FILLED_ROW_GATES[row], "raw_image_path": "raw.tif", switch: True}
+    # ilastik segmenting the image instead hides the row as before.
+    if switch in EXCLUSIVE_SWITCHES:
+        with_ilastik = {**values, EXCLUSIVE_SWITCHES[switch]: True}
+        assert not fields[row].is_visible(with_ilastik, unmet_chain(SCHEMA, row, with_ilastik))
+    # A synthetic network reads no raw image: the classifier makes nothing there.
+    synthetic = {**values, "network_source": "synthetic"}
+    assert f"!{switch}" not in unmet_chain(SCHEMA, row, synthetic)
+    if row == "input_path" or row.startswith(("large_", "small_")):  # image-only rows
+        assert not fields[row].is_visible(synthetic, unmet_chain(SCHEMA, row, synthetic))
+    # The row's other gates hide it (or grey it) as before.
+    for gate in _FILLED_ROW_GATES[row]:
+        unticked = {**values, gate: False}
+        unmet = unmet_chain(SCHEMA, row, unticked)
+        assert gate in unmet, gate
+        if fields[row].hide_when_unmet:
+            assert not fields[row].is_visible(unticked, unmet), gate
+
+
+def test_the_input_tab_keeps_the_segmented_image_row_while_the_classifier_segments():
+    on = {"use_pixel_classifier_segmentation": True, "raw_image_path": "raw.tif"}
+    assert "input_path" in visible_input_segmentation_settings(SCHEMA, on)
+    assert "input_path" not in visible_input_segmentation_settings(
+        SCHEMA, {**on, "use_ilastik_segmentation": True}
+    )
+    large = {
+        "automated_vessel_assignment": True, "use_large_vessel_masks": True, "raw_image_path": "raw.tif",
+        "use_pixel_classifier_large_vessel_segmentation": True,
+    }
+    shown = visible_vessel_mask_settings(SCHEMA, large)
+    assert {"large_arteriole_mask_path", "large_venule_mask_path"} <= shown
+
+
+def test_memmap_directory_row_hides_when_use_memmap_loading_is_off():
+    """The directory override is meaningless with memmap loading off, so it
+    hides like every other Input-tab child row rather than staying visible
+    and greyed."""
+    fields = {f.name: f for f in fields_for(SCHEMA)}
+
+    toggle = fields["use_memmap_loading"]
+    assert toggle.hide_when_unmet  # only under a synthetic network
+    assert toggle.is_visible({})
+
+    directory = fields["memmap_directory"]
+    assert directory.hide_when_unmet
+    assert not directory.is_visible({"use_memmap_loading": False})
+    assert directory.is_visible({"use_memmap_loading": True})
+
+
+def test_use_memmap_loading_row_reads_as_a_low_ram_option():
+    """The setting name says how it works (memory-mapped files); the row says
+    what a user picks it for, and that it costs disk space."""
+    fields = {f.name: f for f in fields_for(SCHEMA)}
+    assert fields["use_memmap_loading"].label == (
+        "Low RAM option for large networks (High disk space usage)"
+    )
+
+
+def test_visible_input_segmentation_settings_swaps_on_ilastik_toggle():
+    off = {"use_ilastik_segmentation": False}
+    shown_off = visible_input_segmentation_settings(SCHEMA, off)
+    assert "use_ilastik_segmentation" in shown_off
+    assert "input_path" in shown_off
+    assert "raw_image_path" in shown_off
+    assert "ilastik_classifier_path" not in shown_off
+    assert "ilastik_executable" not in shown_off
+    assert "ilastik_output_dir" not in shown_off
+    assert "ilastik_output_suffix" not in shown_off
+    assert "ilastik_timeout_seconds" not in shown_off
+    assert "voxel_size_override_xyz" in shown_off
+
+    on = {"use_ilastik_segmentation": True, "raw_image_path": "raw.tif"}
+    shown_on = visible_input_segmentation_settings(SCHEMA, on)
+    assert "input_path" not in shown_on
+    assert "raw_image_path" in shown_on
+    assert "ilastik_classifier_path" in shown_on
+    assert "ilastik_executable" in shown_on
+    assert "ilastik_output_dir" in shown_on
+    assert "ilastik_output_suffix" in shown_on
+    assert "ilastik_timeout_seconds" in shown_on
+    assert "use_ilastik_segmentation" in shown_on
+
+
+def test_shared_ilastik_host_prefers_input_then_boundaries():
+    assert shared_ilastik_host({}) is None
+    assert shared_ilastik_host({"use_ilastik_segmentation": False}) is None
+    assert shared_ilastik_host({"use_ilastik_segmentation": True, "raw_image_path": "raw.tif"}) == "input"
+    # Ticked with no raw image, main ilastik segments nothing: its rows stay
+    # on Input, unless a vessel-mask classifier reads them on Boundaries (below).
+    assert shared_ilastik_host({"use_ilastik_segmentation": True}) == "input"
+    assert shared_ilastik_host({"use_ilastik_segmentation": True, "raw_image_path": None}) == "input"
+    assert (
+        shared_ilastik_host(
+            {
+                "use_ilastik_segmentation": True,
+                "automated_vessel_assignment": True,
+                "use_large_vessel_masks": True,
+                "use_ilastik_large_vessel_segmentation": True,
+            }
+        )
+        == "boundaries"
+    )
+    assert (
+        shared_ilastik_host(
+            {
+                "use_ilastik_segmentation": False,
+                "automated_vessel_assignment": True,
+                "use_large_vessel_masks": True,
+                "use_ilastik_large_vessel_segmentation": True,
+            }
+        )
+        == "boundaries"
+    )
+    assert (
+        shared_ilastik_host(
+            {
+                "use_ilastik_segmentation": False,
+                "automated_vessel_assignment": True,
+                "use_small_vessel_masks_for_boundary_assignment": True,
+                "use_ilastik_small_vessel_segmentation": True,
+            }
+        )
+        == "boundaries"
+    )
+    # A vessel ilastik switch left on under its unticked masks is hidden and
+    # runs nothing: the shared rows do not stay on Boundaries for it.
+    assert (
+        shared_ilastik_host(
+            {
+                "use_ilastik_segmentation": False,
+                "automated_vessel_assignment": True,
+                "use_large_vessel_masks": False,
+                "use_ilastik_large_vessel_segmentation": True,
+            }
+        )
+        is None
+    )
+    # Main wins: still Input even when vessel ilastik is also on.
+    assert (
+        shared_ilastik_host(
+            {
+                "use_ilastik_segmentation": True,
+                "raw_image_path": "raw.tif",
+                "use_ilastik_large_vessel_segmentation": True,
+            }
+        )
+        == "input"
+    )
+
+
+def test_shared_ilastik_shows_on_boundaries_when_hidden_on_input():
+    """Vessel-mask ilastik hosts the same three settings on Boundaries."""
+    vessel_only = {
+        "use_ilastik_segmentation": False,
+        "automated_vessel_assignment": True,
+        "use_large_vessel_masks": True,
+        "use_ilastik_large_vessel_segmentation": True,
+        "use_small_vessel_masks_for_boundary_assignment": False,
+    }
+    assert shared_ilastik_host(vessel_only) == "boundaries"
+    assert "ilastik_executable" not in visible_input_segmentation_settings(
+        SCHEMA, vessel_only
+    )
+    shown = visible_vessel_mask_settings(SCHEMA, vessel_only)
+    for name in SHARED_ILASTIK_SETTINGS:
+        assert name in shown, name
+
+    small_only = {
+        "use_ilastik_segmentation": False,
+        "automated_vessel_assignment": True,
+        "use_large_vessel_masks": False,
+        "use_small_vessel_masks_for_boundary_assignment": True,
+        "use_ilastik_small_vessel_segmentation": True,
+    }
+    shown = visible_vessel_mask_settings(SCHEMA, small_only)
+    for name in SHARED_ILASTIK_SETTINGS:
+        assert name in shown, name
+
+    # File-based large masks (no vessel ilastik): shared stay off Boundaries.
+    file_masks = {
+        **vessel_only,
+        "use_ilastik_large_vessel_segmentation": False,
+    }
+    assert shared_ilastik_host(file_masks) is None
+    shown = visible_vessel_mask_settings(SCHEMA, file_masks)
+    for name in SHARED_ILASTIK_SETTINGS:
+        assert name not in shown, name
+
+    # Both main and vessel: Input hosts; Boundaries does not duplicate.
+    both = {
+        "use_ilastik_segmentation": True,
+        "raw_image_path": "raw.tif",
+        "automated_vessel_assignment": True,
+        "use_large_vessel_masks": True,
+        "use_ilastik_large_vessel_segmentation": True,
+    }
+    assert shared_ilastik_host(both) == "input"
+    for name in SHARED_ILASTIK_SETTINGS:
+        assert name in visible_input_segmentation_settings(SCHEMA, both), name
+        assert name not in visible_vessel_mask_settings(SCHEMA, both), name
+
+
+def test_centreline_smoothing_children_hide_when_smooth_centrelines_is_off():
+    """Graph nests method / iterations / max deviation under smooth_centrelines."""
+    assert "smooth_centrelines" in HIDE_WHEN_UNMET_PARENTS
+    fields = {f.name: f for f in fields_for(SCHEMA)}
+
+    parent = fields["smooth_centrelines"]
+    # Parent still greys under do_graph_building; it does not nest-hide itself.
+    assert not parent.hide_when_unmet
+    assert SCHEMA["smooth_centrelines"].requires == ("do_graph_building",)
+    assert parent.is_visible({"do_graph_building": False, "smooth_centrelines": False})
+    assert parent.is_visible({"do_graph_building": True, "smooth_centrelines": False})
+
+    children = (
+        "centreline_smoothing_method",
+        "centreline_smoothing_iterations",
+        "centreline_max_deviation",
+    )
+    for name in children:
+        child = fields[name]
+        assert child.hide_when_unmet, name
+        assert SCHEMA[name].requires == ("smooth_centrelines",), name
+        assert not child.is_visible(
+            {"do_graph_building": True, "smooth_centrelines": False}
+        ), name
+        assert child.is_visible(
+            {"do_graph_building": True, "smooth_centrelines": True}
+        ), name
+
+    off = {"do_graph_building": True, "smooth_centrelines": False}
+    assert visible_graph_centreline_settings(SCHEMA, off) == {"smooth_centrelines"}
+
+    on = {"do_graph_building": True, "smooth_centrelines": True}
+    assert visible_graph_centreline_settings(SCHEMA, on) == {
+        "smooth_centrelines",
+        *children,
+    }
+
+
+def test_ide_plot_children_hide_until_produce_and_show_are_ticked():
+    """Export nests Show / mode / hold under Produce IDE plots."""
+    assert "visualize_results" in HIDE_WHEN_UNMET_PARENTS
+    assert "show_plots_in_ide" in HIDE_WHEN_UNMET_PARENTS
+    fields = {f.name: f for f in fields_for(SCHEMA)}
+
+    produce = fields["visualize_results"]
+    assert produce.label == "Produce IDE plots"
+    assert not produce.hide_when_unmet
+    assert produce.is_visible({})
+
+    off = {"visualize_results": False, "show_plots_in_ide": False}
+    produce_on = {"visualize_results": True, "show_plots_in_ide": False}
+    both = {"visualize_results": True, "show_plots_in_ide": True}
+
+    under_produce = ("interactive_plots", "show_plots_in_ide", "final_render_mode")
+    for name in under_produce:
+        child = fields[name]
+        assert child.hide_when_unmet, name
+        assert not child.is_visible(off), name
+        assert child.is_visible(produce_on), name
+
+    assert fields["show_plots_in_ide"].label == "Show plots in IDE"
+    for name, label in (
+        ("ide_plot_mode", "IDE plot mode"),
+        ("hold_ide_plots_open", "Hold IDE plots open"),
+    ):
+        child = fields[name]
+        assert child.label == label
+        assert child.hide_when_unmet, name
+        assert not child.is_visible(off), name
+        assert not child.is_visible(produce_on), name
+        assert child.is_visible(both), name
+
+
+def test_thick_vessel_children_hide_when_the_toggle_is_off():
+    """Skeletonise nests radius and hole-fill under the thickness-gate toggle."""
+    assert "use_thick_vessel_skeletonisation" in HIDE_WHEN_UNMET_PARENTS
+    fields = {f.name: f for f in fields_for(SCHEMA)}
+
+    parent = fields["use_thick_vessel_skeletonisation"]
+    assert not parent.hide_when_unmet
+    # Not under do_skeletonize: graph building splits the thick vessels of a
+    # loaded skeleton too (PLAN_bridging.md Phase 3).
+    assert SCHEMA["use_thick_vessel_skeletonisation"].requires == ()
+    assert parent.widget_type == "CheckBox"
+    assert parent.value is False
+
+    children = (
+        "skeleton_thick_vessel_min_radius_um",
+        "skeleton_fill_mask_holes_before_thickness",
+    )
+    off = {"do_skeletonize": True, "use_thick_vessel_skeletonisation": False}
+    on = {"do_skeletonize": True, "use_thick_vessel_skeletonisation": True}
+    for name in children:
+        child = fields[name]
+        assert child.hide_when_unmet, name
+        assert SCHEMA[name].requires == ("use_thick_vessel_skeletonisation",), name
+        assert not child.is_visible(off), name
+        assert child.is_visible(on), name
+
+    radius = fields["skeleton_thick_vessel_min_radius_um"]
+    assert radius.widget_type == "FloatSpinBox"
+    assert radius.label.endswith("(um)")
+    assert SCHEMA["skeleton_thick_vessel_min_radius_um"].default == pytest.approx(6.0)
+
+
+def test_cartwheel_hub_children_hide_when_the_toggle_is_off():
+    """Graph nests the cartwheel hub guard's own knobs under its toggle,
+    same as use_thick_vessel_skeletonisation nests the thickness-gate
+    knobs above -- its own small "Cartwheel hub guard" section is too
+    small a slice of "3. Graph" to add to HIDE_WHEN_UNMET_SECTIONS, so it
+    is listed by name in HIDE_WHEN_UNMET_PARENTS instead.
+
+    The hub size and tangent length are read by direction-aware merging too,
+    and a `requires` cannot say "either": they carry neither, only the
+    segmented image both readers need, so a direction-aware run with the guard
+    off still shows them, where it used to hide them."""
+    assert "detect_cartwheel_hub_artifacts" in HIDE_WHEN_UNMET_PARENTS
+    fields = {f.name: f for f in fields_for(SCHEMA)}
+
+    parent = fields["detect_cartwheel_hub_artifacts"]
+    assert not parent.hide_when_unmet
+    assert parent.widget_type == "CheckBox"
+    assert parent.value is False
+
+    image = {"network_source": "segmented_image"}
+    off = {**image, "detect_cartwheel_hub_artifacts": False}
+    on = {**image, "detect_cartwheel_hub_artifacts": True}
+    guard_only = fields["cartwheel_hub_max_radial_dispersion"]
+    assert guard_only.hide_when_unmet
+    assert SCHEMA["cartwheel_hub_max_radial_dispersion"].requires == ("detect_cartwheel_hub_artifacts",)
+    assert not guard_only.is_visible(off)
+    assert guard_only.is_visible(on)
+
+    direction_aware = {**off, "do_graph_building": True, "cluster_collapse_method": "direction_aware"}
+    for name in ("cartwheel_hub_min_degree", "cartwheel_hub_tangent_length_um"):
+        shared = fields[name]
+        assert SCHEMA[name].requires == ("network_source=segmented_image",), name
+        for values in (off, on, direction_aware):
+            assert shared.is_visible(values) and shared.is_enabled(values), (name, values)
+
+
+def test_perturbation_output_dir_hides_when_run_perturbations_is_off():
+    """Perturbations nests its one same-tab child (perturbation_output_dir)
+    under run_perturbations -- everything else in "Perturbation runs" is
+    only ever edited inside a perturbation entry's own typed editor, gated
+    by that entry's type dropdown rather than this checkbox mechanism."""
+    assert "run_perturbations" in HIDE_WHEN_UNMET_PARENTS
+    fields = {f.name: f for f in fields_for(SCHEMA)}
+
+    parent = fields["run_perturbations"]
+    assert not parent.hide_when_unmet
+    assert parent.widget_type == "CheckBox"
+    assert parent.value is False
+
+    child = fields["perturbation_output_dir"]
+    assert child.hide_when_unmet
+    assert SCHEMA["perturbation_output_dir"].requires == ("run_perturbations",)
+    assert not child.is_visible({"run_perturbations": False})
+    assert child.is_visible({"run_perturbations": True})
+
+
+def test_diameter_rows_hide_when_parent_toggles_are_unmet():
+    """Diameters nests per-order tables and FWHM knobs under parent bools."""
+    assert "Diameters and pericytes" in HIDE_WHEN_UNMET_SECTIONS
+    assert "FWHM diameter measurement" in HIDE_WHEN_UNMET_SECTIONS
+    fields = {f.name: f for f in fields_for(SCHEMA)}
+
+    all_const = fields["all_diams_const"]
+    assert not all_const.hide_when_unmet
+    assert all_const.is_visible({})
+
+    for name in (
+        "manual_capillary_diameter_by_branch_order",
+        "manual_arteriole_diameter_by_branch_order",
+        "manual_venule_diameter_by_branch_order",
+        "diameter_by_branch_order",
+    ):
+        child = fields[name]
+        assert child.hide_when_unmet, name
+        assert SCHEMA[name].requires == ("!all_diams_const",), name
+        assert not child.is_visible({"all_diams_const": True}), name
+        assert child.is_visible({"all_diams_const": False}), name
+
+    for name in ("default_diameter", "max_branch_order"):
+        assert not fields[name].hide_when_unmet, name
+        assert fields[name].is_visible({"all_diams_const": True}), name
+        assert fields[name].is_visible({"all_diams_const": False}), name
+
+    raw = fields["measure_diameters_from_raw_image"]
+    assert raw.hide_when_unmet
+    assert not raw.is_visible({"run_haemodynamics": False})
+    assert raw.is_visible({"run_haemodynamics": True})
+
+    # FWHM is the measurement for a plasma label; an endothelial stain's is
+    # the ring fit. Auto may resolve to either, so both stay offered.
+    measure = fields["do_fwhm_measurement"]
+    assert measure.hide_when_unmet
+    assert SCHEMA["do_fwhm_measurement"].requires == (
+        "measure_diameters_from_raw_image", "raw_image_stain!=endothelial",
+    )
+    on = {"run_haemodynamics": True, "measure_diameters_from_raw_image": True}
+    assert not measure.is_visible({**on, "measure_diameters_from_raw_image": False})
+    assert measure.is_visible({**on, "raw_image_stain": "plasma_column"})
+    assert measure.is_visible({**on, "raw_image_stain": "auto"})
+    assert not measure.is_visible({**on, "raw_image_stain": "endothelial"})
+
+    wall = fields["endothelial_wall_thickness_um"]
+    assert wall.is_visible({**on, "raw_image_stain": "endothelial"})
+    assert wall.is_visible({**on, "raw_image_stain": "auto"})
+    assert not wall.is_visible({**on, "raw_image_stain": "plasma_column"})
+
+    nested = fields["fwhm_baseline_constraint_half_width_ptp"]
+    assert nested.hide_when_unmet
+    assert not nested.is_visible({**on, "fwhm_constrain_fitted_baseline": False})
+    assert nested.is_visible({**on, "fwhm_constrain_fitted_baseline": True})
+
+
+def test_visible_diameter_settings_nests_under_all_diams_const_and_fwhm():
+    const_on = {
+        "all_diams_const": True,
+        "run_haemodynamics": True,
+        "measure_diameters_from_raw_image": False,
+        "raw_image_path": "raw.tif",
+    }
+    shown = visible_diameter_settings(SCHEMA, const_on)
+    assert "all_diams_const" in shown
+    assert "default_diameter" in shown
+    assert "max_branch_order" in shown
+    assert "manual_capillary_diameter_by_branch_order" not in shown
+    assert "manual_arteriole_diameter_by_branch_order" not in shown
+    assert "manual_venule_diameter_by_branch_order" not in shown
+    assert "diameter_by_branch_order" not in shown
+    assert "measure_diameters_from_raw_image" in shown
+    assert "do_fwhm_measurement" not in shown
+    # The mask's widths sample at FWHM's spacing too, so it shows with FWHM off.
+    assert "fwhm_sample_spacing_along_edge_um" in shown
+
+    const_off = {**const_on, "all_diams_const": False}
+    shown = visible_diameter_settings(SCHEMA, const_off)
+    assert "manual_capillary_diameter_by_branch_order" in shown
+    assert "manual_arteriole_diameter_by_branch_order" in shown
+    assert "manual_venule_diameter_by_branch_order" in shown
+    assert "diameter_by_branch_order" in shown
+    assert "do_fwhm_measurement" not in shown
+
+    fwhm_on = {
+        **const_on,
+        "measure_diameters_from_raw_image": True,
+        "raw_image_stain": "plasma_column",
+        "fwhm_constrain_fitted_baseline": False,
+        "fwhm_clip_profile_to_single_vessel": False,
+        "fwhm_enforce_same_edge_locality": False,
+        "fwhm_cap_half_extent_by_nonlocal_same_edge_distance": False,
+        "fwhm_reject_samples_with_center_offset": False,
+        "fwhm_reject_samples_with_low_fit_r2": False,
+    }
+    shown = visible_diameter_settings(SCHEMA, fwhm_on)
+    assert "do_fwhm_measurement" in shown
+    assert "fwhm_sample_spacing_along_edge_um" in shown
+    assert "fwhm_constrain_fitted_baseline" in shown
+    assert "fwhm_baseline_constraint_half_width_ptp" not in shown
+    assert "fwhm_clip_min_drop_fraction_of_center" not in shown
+    assert "fwhm_same_edge_arc_window_um" not in shown
+    assert "fwhm_min_fit_r2" not in shown
+
+    fwhm_on["fwhm_constrain_fitted_baseline"] = True
+    shown = visible_diameter_settings(SCHEMA, fwhm_on)
+    assert "fwhm_baseline_constraint_half_width_ptp" in shown
+
+
+# These work as a real, standalone diameter source with FWHM off
+# entirely (stamp_edge_diameters falls back to the EDT estimate for every
+# edge, not just ones FWHM measured and failed on) -- only
+# use_edt_diameter_crosscheck itself gates them.
+_EDT_CHILDREN = ("edt_diameter_prefer_over_table_on_fwhm_failure",)
+# How the mask is read: by the cross-check, and also by the endothelial ring
+# fit (its junction zones) and the size convention without haemodynamics, so
+# no prerequisite.
+_EDT_READING = (
+    "edt_diameter_method",
+    "edt_min_resolvable_diameter_um",
+    "edt_junction_proximity_exclusion_um",
+)
+# Unlike the above, comparing FWHM against EDT genuinely needs both
+# measurements to exist, so this one still nests under FWHM too.
+_EDT_FWHM_ONLY_CHILD = "edt_fwhm_disagreement_warn_ratio"
+
+
+def test_edt_diameter_crosscheck_works_standalone_or_nested_under_fwhm():
+    """EDT is a real diameter source on its own (fallback for every edge
+    when FWHM is off, not just ones FWHM failed on), so it and most of its
+    children only need run_haemodynamics -- only the FWHM-vs-EDT
+    disagreement check genuinely needs FWHM too.
+    """
+    assert "EDT mask diameter estimate" in HIDE_WHEN_UNMET_SECTIONS
+    base = {
+        "run_haemodynamics": True,
+        "measure_diameters_from_raw_image": False,
+        "raw_image_path": "raw.tif",
+        "raw_image_stain": "plasma_column",
+    }
+
+    no_haemo = {**base, "run_haemodynamics": False}
+    shown = visible_diameter_settings(SCHEMA, no_haemo)
+    assert "use_edt_diameter_crosscheck" not in shown
+
+    # EDT on, FWHM off: a standalone EDT-only diameter pipeline. Its
+    # ordinary children show; the FWHM-disagreement child does not.
+    edt_on_fwhm_off = {**base, "use_edt_diameter_crosscheck": True}
+    shown = visible_diameter_settings(SCHEMA, edt_on_fwhm_off)
+    assert "use_edt_diameter_crosscheck" in shown
+    for name in _EDT_CHILDREN:
+        assert name in shown
+    assert _EDT_FWHM_ONLY_CHILD not in shown
+
+    # Both on: every EDT child shows, including the FWHM-disagreement one.
+    both_on = {**edt_on_fwhm_off, "measure_diameters_from_raw_image": True}
+    shown = visible_diameter_settings(SCHEMA, both_on)
+    assert "use_edt_diameter_crosscheck" in shown
+    for name in (*_EDT_CHILDREN, _EDT_FWHM_ONLY_CHILD):
+        assert name in shown
+
+    # FWHM on, EDT off: none of EDT's children show.
+    fwhm_on_edt_off = {**base, "measure_diameters_from_raw_image": True}
+    shown = visible_diameter_settings(SCHEMA, fwhm_on_edt_off)
+    assert "use_edt_diameter_crosscheck" in shown
+    for name in (*_EDT_CHILDREN, _EDT_FWHM_ONLY_CHILD):
+        assert name not in shown
+
+    # How the mask is read shows whatever the cross-check says.
+    for values in (no_haemo, edt_on_fwhm_off, both_on, fwhm_on_edt_off):
+        shown = visible_diameter_settings(SCHEMA, values)
+        assert all(name in shown for name in _EDT_READING)
+
+
+_MEASUREMENT_3D_CHILDREN = (
+    "cell_mask_path",
+    "cell_mask_h5_dataset_name",
+    "measurement_3d_vessel_mask_path",
+    "measurement_3d_vessel_mask_h5_dataset_name",
+)
+
+#: One flat per-measure checkbox per haemolynx.statistics.STATISTIC_MEASURES
+#: entry not in NETWORK_ANALYSIS_MEASURES, nesting directly under
+#: "statistics" (same section). The NETWORK_ANALYSIS_MEASURES ones nest one
+#: level deeper, under "Connectivity/Network Analysis" -- see
+#: _NETWORK_ANALYSIS_MEASURE_CHILDREN below.
+_STATISTICS_MEASURE_CHILDREN = tuple(
+    f"statistics_{measure}"
+    for measure in STATISTIC_MEASURES
+    if measure not in NETWORK_ANALYSIS_MEASURES
+)
+#: Every graph-theoretic connectivity measure, nested under "statistics"
+#: then "statistics_network_analysis" -- see test_gui_form's own
+#: test_network_analysis_measures_nest_under_statistics_then_their_own_toggle.
+_NETWORK_ANALYSIS_MEASURE_CHILDREN = tuple(
+    f"statistics_{measure}" for measure in NETWORK_ANALYSIS_MEASURES
+)
+
+
+#: The two measurement-3D files as HDF5, so their dataset-name rows show
+#: too (a dataset name only means something for an HDF5 file).
+_MEASUREMENT_3D_H5_PATHS = {
+    "cell_mask_path": "cells.h5",
+    "measurement_3d_vessel_mask_path": "vessels.h5",
+}
+
+
+def test_measurement_3d_rows_hide_when_measurement_3d_to_cell_mask_is_off():
+    """Export nests cell-mask paths under measurement_3d_to_cell_mask."""
+    assert "Statistics and measurements" in HIDE_WHEN_UNMET_SECTIONS
+    fields = {f.name: f for f in fields_for(SCHEMA)}
+
+    parent = fields["measurement_3d_to_cell_mask"]
+    assert parent.is_visible({})
+    # Lined up with the run's image: gone for a synthetic network, which
+    # preflight refused it on after showing it.
+    assert not parent.is_visible({"network_source": "synthetic"})
+    assert parent.section == "Statistics and measurements"
+
+    for name in _MEASUREMENT_3D_CHILDREN:
+        child = fields[name]
+        assert child.hide_when_unmet, name
+        assert child.section == "Statistics and measurements", name
+        # The mask rows also stand aside for a classifier making the mask.
+        assert SCHEMA[name].requires[0] == "measurement_3d_to_cell_mask", name
+        assert all(gate.startswith("!use_pixel_classifier_") for gate in SCHEMA[name].requires[1:]), name
+        assert not child.is_visible(
+            {"measurement_3d_to_cell_mask": False, **_MEASUREMENT_3D_H5_PATHS}
+        ), name
+        assert child.is_visible(
+            {"measurement_3d_to_cell_mask": True, **_MEASUREMENT_3D_H5_PATHS}
+        ), name
+
+    # Every non-network-analysis per-measure checkbox nests under statistics
+    # the same way, and starts checked so a user opts individual measures
+    # out rather than in.
+    for name in _STATISTICS_MEASURE_CHILDREN:
+        child = fields[name]
+        assert child.hide_when_unmet, name
+        assert child.section == "Statistics and measurements", name
+        assert SCHEMA[name].requires == ("statistics",), name
+        assert SCHEMA[name].default is True, name
+        assert not child.is_visible({"statistics": False}), name
+        assert child.is_visible({"statistics": True}), name
+
+
+def test_network_analysis_measures_nest_under_statistics_then_their_own_toggle():
+    """Connectivity/Network Analysis (bridges, loops, centrality, community
+    structure) is its own section, nesting two levels under "statistics"
+    then "statistics_network_analysis" -- the same pattern EDT mask
+    diameter estimate uses under FWHM then use_edt_diameter_crosscheck."""
+    assert "Connectivity/Network Analysis" in HIDE_WHEN_UNMET_SECTIONS
+    fields = {f.name: f for f in fields_for(SCHEMA)}
+
+    master = fields["statistics_network_analysis"]
+    assert master.hide_when_unmet
+    assert master.section == "Connectivity/Network Analysis"
+    assert SCHEMA["statistics_network_analysis"].requires == ("statistics",)
+    assert SCHEMA["statistics_network_analysis"].default is True
+    assert not master.is_visible({"statistics": False})
+    assert master.is_visible({"statistics": True})
+
+    for name in ("statistics_mode", *_NETWORK_ANALYSIS_MEASURE_CHILDREN):
+        child = fields[name]
+        assert child.hide_when_unmet, name
+        assert child.section == "Connectivity/Network Analysis", name
+        assert SCHEMA[name].requires == ("statistics", "statistics_network_analysis"), name
+        assert not child.is_visible({"statistics": True, "statistics_network_analysis": False}), name
+        assert not child.is_visible({"statistics": False, "statistics_network_analysis": True}), name
+        assert child.is_visible({"statistics": True, "statistics_network_analysis": True}), name
+
+    # Every measure is on by default except the two that re-solve the network
+    # per vessel/step, which cost tens of seconds on a large network.
+    opt_in = {"statistics_occlusion_impact", "statistics_occlusion_curves"}
+    for name in _NETWORK_ANALYSIS_MEASURE_CHILDREN:
+        assert SCHEMA[name].default is (name not in opt_in), name
+
+    # Ungated parents stay visible either way.
+    assert not fields["statistics"].hide_when_unmet
+    assert fields["statistics"].is_visible({"statistics": False})
+    assert fields["statistics"].is_visible({"statistics": True})
+
+
+def test_visible_statistics_settings_nests_under_measurement_3d_to_cell_mask():
+    off = {
+        "statistics": False,
+        "measurement_3d_to_cell_mask": False,
+    }
+    shown = visible_statistics_settings(SCHEMA, off)
+    assert shown == {"statistics", "measurement_3d_to_cell_mask", "measure_tissue_volume"}
+    for name in _MEASUREMENT_3D_CHILDREN:
+        assert name not in shown, name
+    assert "statistics_mode" not in shown
+
+    on = {**off, "measurement_3d_to_cell_mask": True, **_MEASUREMENT_3D_H5_PATHS}
+    shown = visible_statistics_settings(SCHEMA, on)
+    assert "measurement_3d_to_cell_mask" in shown
+    assert "statistics" in shown
+    for name in _MEASUREMENT_3D_CHILDREN:
+        assert name in shown, name
+    assert "statistics_mode" not in shown
+
+    # With TIFF files there is no dataset to name, so those rows stay hidden.
+    tiffs = {**on, **{k: v.replace(".h5", ".tif") for k, v in _MEASUREMENT_3D_H5_PATHS.items()}}
+    shown = visible_statistics_settings(SCHEMA, tiffs)
+    for name in _MEASUREMENT_3D_CHILDREN:
+        assert (name in shown) is (not name.endswith("_h5_dataset_name")), name
+
+    stats_on = {**off, "statistics": True}
+    shown = visible_statistics_settings(SCHEMA, stats_on)
+    assert shown == {
+        "statistics", "measurement_3d_to_cell_mask", "measure_tissue_volume",
+        "statistics_network_analysis", *_STATISTICS_MEASURE_CHILDREN,
+        # The flow rows' image-face margin (PLAN_dead_ends.md Phase 7).
+        "statistics_flow_face_margin_um",
+    }
+    # statistics_network_analysis itself shows (nested one level under
+    # statistics), but its own children stay hidden until it is on too --
+    # statistics_network_analysis is unset (falsy) in stats_on above.
+    assert "statistics_mode" not in shown
+    for name in _NETWORK_ANALYSIS_MEASURE_CHILDREN:
+        assert name not in shown, name
+    for name in _MEASUREMENT_3D_CHILDREN:
+        assert name not in shown, name
+
+    network_on = {**stats_on, "statistics_network_analysis": True}
+    shown = visible_statistics_settings(SCHEMA, network_on)
+    assert "statistics_mode" in shown
+    for name in _NETWORK_ANALYSIS_MEASURE_CHILDREN:
+        assert name in shown, name
+
+
+def test_visible_vessel_mask_settings_nests_under_automated_and_parents():
+    off = {"automated_vessel_assignment": False}
+    # With the masks off, their alternative: classing the vessels by size.
+    assert visible_vessel_mask_settings(SCHEMA, off) == {
+        "automated_vessel_assignment",
+        "classify_vessels_by_size",
+    }
+    assert visible_vessel_mask_settings(SCHEMA, {**off, "classify_vessels_by_size": True}) == {
+        "automated_vessel_assignment",
+        "classify_vessels_by_size",
+        "vessel_size_mid_min_diameter_um",
+        "vessel_size_wide_min_diameter_um",
+    }
+
+    auto_only = {
+        "automated_vessel_assignment": True,
+        "use_large_vessel_masks": False,
+        "use_small_vessel_masks_for_boundary_assignment": False,
+    }
+    shown = visible_vessel_mask_settings(SCHEMA, auto_only)
+    # Whether the masks choose the inlets is a large-mask setting: it hides
+    # with "Use large vessel masks".
+    assert shown == {
+        "automated_vessel_assignment",
+        "use_large_vessel_masks",
+        "use_small_vessel_masks_for_boundary_assignment",
+    }
+
+    large_on = {
+        **auto_only,
+        "use_large_vessel_masks": True,
+        "use_ilastik_large_vessel_segmentation": False,
+        "large_vessel_remove_small_opposite_attached_components": False,
+        "automated_vessel_assignment_enable_overlap_cleanup": True,
+        "automated_vessel_assignment_fast_mode": True,
+        "automated_vessel_assignment_use_legacy_mode": True,
+        "cut_network_at_large_vessel_volumes": False,
+    }
+    shown = visible_vessel_mask_settings(SCHEMA, large_on)
+    assert "large_arteriole_mask_path" in shown
+    assert "large_vessel_mask_dilation_microns" in shown
+    assert "automated_vessel_assignment_fast_mode" in shown
+    assert "write_fast_mode_preassignment_large_vessel_debug_3d_html" in shown
+    assert "ilastik_arteriole_classifier_path" not in shown
+    assert "automated_vessel_confidence_margin" not in shown
+    assert "orphaned_branch_max_edge_count" not in shown
+    assert "use_small_vessel_masks_for_boundary_assignment" in shown
+    assert "small_arteriole_mask_path" not in shown
+
+    large_on["automated_vessel_assignment_fast_mode"] = False
+    shown = visible_vessel_mask_settings(SCHEMA, large_on)
+    assert "write_fast_mode_preassignment_large_vessel_debug_3d_html" not in shown
+    assert "automated_vessel_assignment_apply_overlap_cleanup_in_normal_mode" in shown
+
+    large_on["cut_network_at_large_vessel_volumes"] = True
+    large_on["remove_orphaned_branches_outside_large_vessel_volumes"] = False
+    shown = visible_vessel_mask_settings(SCHEMA, large_on)
+    assert "cut_network_at_large_vessel_volumes" in shown
+    assert "cut_large_vessel_sample_densely" not in shown
+    assert "remove_orphaned_branches_outside_large_vessel_volumes" in shown
+    assert "orphaned_branch_max_edge_count" not in shown
+
+    large_on["remove_orphaned_branches_outside_large_vessel_volumes"] = True
+    shown = visible_vessel_mask_settings(SCHEMA, large_on)
+    assert "orphaned_branch_max_edge_count" in shown
+
+    small_on = {
+        "automated_vessel_assignment": True,
+        "use_large_vessel_masks": False,
+        "use_small_vessel_masks_for_boundary_assignment": True,
+        "use_ilastik_small_vessel_segmentation": False,
+        "small_vessel_mask_continuity_enable": False,
+        "small_vessel_tangential_redefinition_enable": False,
+        "small_vessel_boundary_assignment_enable_overlap_cleanup": True,
+        "small_vessel_boundary_assignment_fast_mode": True,
+        "small_vessel_boundary_fallback_to_hop_distance": False,
+    }
+    shown = visible_vessel_mask_settings(SCHEMA, small_on)
+    assert "small_arteriole_mask_path" in shown
+    assert "small_vessel_mask_continuity_enable" in shown
+    assert "small_vessel_mask_continuity_allow_small_to_large" not in shown
+    assert "ilastik_small_arteriole_classifier_path" not in shown
+
+    small_on["small_vessel_mask_continuity_enable"] = True
+    shown = visible_vessel_mask_settings(SCHEMA, small_on)
+    assert "small_vessel_mask_continuity_allow_small_to_large" in shown
 
 
 def test_fields_are_immutable():
@@ -413,3 +1411,390 @@ def test_an_unset_path_or_number_is_still_blank():
 
     assert field_for(Setting("where", "path", None, "A path", "S")).value == ""
     assert field_for(Setting("guess", "float", None, "A guess", "S")).value == ""
+
+
+def test_placeholder_reaches_the_field_but_never_the_value():
+    """A placeholder hints at an unset box's auto behaviour without setting it."""
+    from haemolynx.parsers import Setting
+
+    setting = Setting(
+        "wall", "float", None, "A wall radius", "S", placeholder="auto"
+    )
+    field = field_for(setting)
+    assert field.placeholder == "auto"
+    assert field.value == ""
+    assert field.nullable is True
+    assert field.to_setting_value("") is None
+
+
+def test_placeholder_is_none_when_the_setting_declares_none():
+    from haemolynx.parsers import Setting
+
+    field = field_for(Setting("radius", "float", 6.0, "A radius", "S"))
+    assert field.placeholder is None
+
+
+def test_placeholder_requires_an_unset_default():
+    """Placeholder text only makes sense on a box that starts empty."""
+    from haemolynx.parsers import ConfigError, Setting
+
+    with pytest.raises(ConfigError):
+        Setting("radius", "float", 6.0, "A radius", "S", placeholder="auto")
+
+
+def test_the_two_thick_vessel_threshold_overrides_show_an_auto_placeholder():
+    """Locks the GUI request: an empty box should say what it will use, not just be blank."""
+    for name in (
+        "skeleton_thick_vessel_wall_absorption_um",
+        "skeleton_thick_vessel_flake_filter_um",
+    ):
+        field = field_for(SCHEMA[name], SCHEMA[name].default)
+        assert field.widget_type == "LineEdit"
+        assert field.value == ""
+        assert field.placeholder == "auto"
+
+
+def test_the_cell_mask_measurement_row_names_a_3d_object_mask():
+    fields = {f.name: f for f in fields_for(SCHEMA)}
+    assert (
+        fields["measurement_3d_to_cell_mask"].label
+        == "Measure distance between vessels and 3D object mask"
+    )
+
+
+# --- rows gated on one choice, or on a file being HDF5 ------------------------
+
+
+def test_a_row_read_by_every_choice_but_one_says_which_choice_turns_it_off():
+    field = {f.name: f for f in fields_for(SCHEMA)}["voxel_size_override_xyz"]
+    assert field.enabled_by == ("voxel_size_policy!=metadata_only", "network_source=segmented_image")
+    assert field.is_visible({"voxel_size_policy": "auto"})
+    assert field.is_visible({"voxel_size_policy": "override"})
+    assert not field.is_visible({"voxel_size_policy": "metadata_only"})
+    assert field.why_disabled({"voxel_size_policy": "metadata_only"}) == (
+        'Not used while "Voxel size policy" is metadata_only'
+    )
+
+
+def test_the_fwhm_same_edge_window_can_be_left_empty():
+    """Unset, the window is sized by each vessel's width, the only way its
+    multiplier and minimum rows act. A spin box cannot be emptied, so the
+    panel could never choose that, nor take the optimiser's proposal of it."""
+    setting = SCHEMA["fwhm_same_edge_arc_window_um"]
+    assert setting.default == 3.0
+    field = field_for(setting)
+    assert field.widget_type == "LineEdit"
+    assert field.nullable
+    assert field.placeholder == "by vessel width"
+    assert field.value == 3.0
+    assert field.to_setting_value("") is None
+    assert field.to_setting_value("4.5") == 4.5
+    assert SCHEMA.validate({"fwhm_same_edge_arc_window_um": None})["fwhm_same_edge_arc_window_um"] is None
+    # Every other number with a default keeps its spin box.
+    spin_boxes = [
+        s.name
+        for s in SCHEMA
+        if s.kind in ("int", "float") and s.default is not None and s.name not in CHANNEL_SETTINGS
+    ]
+    assert [name for name in spin_boxes if field_for(SCHEMA[name]).widget_type == "LineEdit"] == [
+        "fwhm_same_edge_arc_window_um"
+    ]
+
+
+def test_a_disabled_row_names_its_gate_as_the_panel_shows_it():
+    """By its row's label and its dropdown's text, never the config's spelling."""
+    field = {f.name: f for f in fields_for(SCHEMA)}["synthetic_seed"]
+    assert field.enabled_by == ("network_source!=segmented_image",)
+    assert field.why_disabled({"network_source": "segmented_image"}) == (
+        'Not used while "Input" is Segmented image'
+    )
+
+
+@pytest.mark.parametrize(
+    "name, method",
+    [
+        ("cluster_collapse_max_radial_dispersion", "direction_aware"),
+        ("cluster_collapse_persistence_search_multiple", "persistence"),
+    ],
+)
+def test_a_collapse_knob_shows_only_under_the_method_that_reads_it(name, method):
+    assert "cluster_collapse_method" in HIDE_WHEN_UNMET_PARENTS
+    field = field_for(SCHEMA[name])
+    assert field.hide_when_unmet
+    for choice in SCHEMA["cluster_collapse_method"].choices:
+        values = {"do_graph_building": True, "cluster_collapse_method": choice}
+        assert field.is_visible(values) is (choice == method), choice
+
+
+def test_a_capillary_block_shows_only_the_vessels_its_selection_reads():
+    by_ids = {"capillary_block_selection": "vessel_ids"}
+    by_orders = {"capillary_block_selection": "branch_order_probability"}
+    for name in ("capillary_block_branch_orders", "capillary_block_probability", "capillary_block_seed"):
+        field = field_for(SCHEMA[name])
+        assert field.is_visible(by_orders), name
+        assert not field.is_visible(by_ids), name
+    ids = field_for(SCHEMA["capillary_block_vessel_ids"])
+    assert ids.is_visible(by_ids)
+    assert not ids.is_visible(by_orders)
+
+
+@pytest.mark.parametrize("name, path_name", sorted(H5_DATASET_SETTINGS.items()))
+def test_an_h5_dataset_row_shows_only_for_an_hdf5_file(name, path_name):
+    assert name in SCHEMA and path_name in SCHEMA
+    field = field_for(SCHEMA[name])
+    gates = {prerequisite: True for prerequisite in SCHEMA[name].requires}
+    gates.update({"run_haemodynamics": True})
+    for path, shown in (
+        ("volume.h5", True),
+        ("volume.HDF5", True),
+        ("volume.tif", False),
+        ("", False),
+        (None, False),
+    ):
+        assert field.is_visible({**gates, path_name: path}) is shown, path
+
+
+def test_the_stain_note_says_what_an_auto_run_read_and_nothing_otherwise():
+    """Under the Raw image stain row: what the last run read an auto stain as
+    (the graph's raw_image_stain and its reading); nothing for a stain the
+    user named, or an auto no run has read."""
+    from haemolynx.gui.form import raw_image_stain_note
+
+    reading = {"contrast": -0.364, "blocks": 64}
+    note = raw_image_stain_note("auto", "endothelial", reading)
+    assert note == "Read as: Endothelial (wall stain) (contrast -0.36 over 64 blocks)"
+    assert raw_image_stain_note("auto", "plasma_column", None) == "Read as: Plasma column (luminal stain)"
+    assert raw_image_stain_note("auto", "plasma_column", {"blocks": 0}) == "Read as: Plasma column (luminal stain)"
+    assert raw_image_stain_note("auto", None, reading) == ""
+    assert raw_image_stain_note("endothelial", "endothelial", reading) == ""
+    assert raw_image_stain_note("plasma_column", "endothelial", reading) == ""
+
+
+# --- the raw image: an optional input that gates what reads it ---------------
+
+
+def _raw_gated_schema() -> Schema:
+    return Schema(
+        [
+            Setting("raw", "path", None, "The raw image", "Input and segmentation"),
+            Setting("use_ilastik", "bool", False, "Segment it with ilastik",
+                    "Input and segmentation", requires=("raw",)),
+            Setting("classifier", "path", None, "The trained classifier",
+                    "Input and segmentation", requires=("use_ilastik",)),
+            Setting("mask", "path", None, "A segmented image instead",
+                    "Input and segmentation", requires=("!use_ilastik",)),
+            Setting("stain", "choice", "auto", "What it stains", "Input and segmentation",
+                    choices=("auto", "wall"), requires=("raw",)),
+        ]
+    )
+
+
+def test_a_row_gated_on_a_path_is_greyed_not_hidden_while_the_path_is_unset():
+    """The raw image is an input, not a parent toggle: the switches that
+    read it stay in view, greyed, so what to set is in view -- even in a
+    section whose nested rows hide."""
+    fields = {field.name: field for field in fields_for(_raw_gated_schema())}
+    unset = {"raw": None, "use_ilastik": False}
+
+    toggle = fields["use_ilastik"]
+    assert toggle.path_gates == frozenset({"raw"})
+    assert not toggle.hide_when_unmet
+    assert toggle.is_visible(unset)
+    assert not toggle.is_enabled(unset)
+    assert toggle.why_disabled(unset) == 'Not used while "Raw" is not set'
+    assert fields["stain"].is_visible(unset) and not fields["stain"].is_enabled(unset)
+
+    given = {"raw": "stack.tif", "use_ilastik": False}
+    assert toggle.is_enabled(given) and toggle.why_disabled(given) == ""
+
+
+def test_rows_nested_under_a_greyed_switch_hide_as_under_any_switch_not_in_effect():
+    schema = _raw_gated_schema()
+    fields = {field.name: field for field in fields_for(schema)}
+    ticked_without_raw = {"raw": None, "use_ilastik": True}
+
+    classifier = fields["classifier"]
+    assert classifier.path_gates == frozenset({"raw"})
+    assert classifier.hide_when_unmet
+    assert unmet_chain(schema, "classifier", ticked_without_raw) == ("raw",)
+    assert not classifier.is_visible(
+        ticked_without_raw, unmet_chain(schema, "classifier", ticked_without_raw)
+    )
+    assert classifier.is_visible(
+        {"raw": "stack.tif", "use_ilastik": True},
+        unmet_chain(schema, "classifier", {"raw": "stack.tif", "use_ilastik": True}),
+    )
+
+
+def test_a_switch_ticked_without_its_path_is_out_of_effect_for_the_rows_that_need_it_off():
+    """``!use_ilastik`` holds while ilastik is not segmenting -- off, or on
+    with no raw image to segment -- so the segmented-image row comes back
+    when the raw image is cleared, instead of both rows going."""
+    schema = _raw_gated_schema()
+    fields = {field.name: field for field in fields_for(schema)}
+
+    assert prerequisite_chain(schema, "mask") == ("!use_ilastik",)
+    assert prerequisite_chain(schema, "classifier") == ("use_ilastik", "raw")
+
+    ticked_without_raw = {"raw": None, "use_ilastik": True}
+    assert unmet_chain(schema, "mask", ticked_without_raw) == ()
+    assert chain_met(schema, "mask", ticked_without_raw)
+    assert fields["mask"].is_visible(
+        ticked_without_raw, unmet_chain(schema, "mask", ticked_without_raw)
+    )
+
+    ticked_with_raw = {"raw": "stack.tif", "use_ilastik": True}
+    assert unmet_chain(schema, "mask", ticked_with_raw) == ("!use_ilastik",)
+    assert unmet_chain(schema, "mask", {"raw": None, "use_ilastik": False}) == ()
+
+
+def test_the_input_tab_keeps_the_segmented_image_row_when_ilastik_is_ticked_without_a_raw_image():
+    ticked_without_raw = {"use_ilastik_segmentation": True, "raw_image_path": None}
+    shown = visible_input_segmentation_settings(SCHEMA, ticked_without_raw)
+    assert "input_path" in shown
+    assert "use_ilastik_segmentation" in shown
+    assert "raw_image_path" in shown
+    assert "ilastik_classifier_path" not in shown
+
+
+def test_every_setting_that_reads_the_raw_image_names_it_as_a_gate():
+    """What greys out on every tab while no raw image is entered."""
+    for name in (
+        "raw_image_channel",
+        "raw_image_stain",
+        "use_ilastik_segmentation",
+        "measure_diameters_from_raw_image",
+    ):
+        assert "raw_image_path" in SCHEMA[name].requires, name
+    assert "raw_image_path" not in SCHEMA["input_path"].requires
+    assert "raw_image_path" not in SCHEMA["measure_tissue_volume"].requires
+
+    fields = {field.name: field for field in fields_for(SCHEMA)}
+    unset = {"raw_image_path": None, "run_haemodynamics": True}
+    for name in ("raw_image_channel", "raw_image_stain", "use_ilastik_segmentation"):
+        assert fields[name].is_visible(unset, unmet_chain(SCHEMA, name, unset)), name
+        assert not fields[name].is_enabled(unset), name
+        assert fields[name].why_disabled(unset) == 'Not used while "Raw image path" is not set'
+    measure = fields["measure_diameters_from_raw_image"]
+    assert measure.is_visible(unset, unmet_chain(SCHEMA, "measure_diameters_from_raw_image", unset))
+    assert not measure.is_enabled(unset)
+    # Its FWHM children hide, as they do while it is off.
+    assert "do_fwhm_measurement" not in visible_diameter_settings(
+        SCHEMA, {**unset, "measure_diameters_from_raw_image": True}
+    )
+    assert "do_fwhm_measurement" in visible_diameter_settings(
+        SCHEMA, {**unset, "measure_diameters_from_raw_image": True, "raw_image_path": "raw.tif"}
+    )
+
+
+def test_the_input_tab_swaps_its_rows_on_the_network_source():
+    """Under a synthetic network the image rows hide and the template rows
+    show; under an image the other way round -- and a values mapping that
+    does not name the choice reads it as its default, the image."""
+    image = visible_input_segmentation_settings(SCHEMA, {"network_source": "segmented_image"})
+    synthetic = visible_input_segmentation_settings(SCHEMA, {"network_source": "synthetic"})
+    unsaid = visible_input_segmentation_settings(SCHEMA, {})
+    assert "network_source" in image and "network_source" in synthetic
+    for name in (
+        "input_path", "raw_image_path", "image_axis_order", "voxel_size_policy", "use_memmap_loading",
+        "segmentation_cleanup", "crop_on_import", "expected_boundary_vessel_count",
+    ):
+        assert name in image, name
+        assert name not in synthetic, name
+    for name in (
+        "synthetic_template_path", "synthetic_template_source", "synthetic_seed", "synthetic_scale",
+        "synthetic_scale_axes", "synthetic_extension_arteriole_density", "synthetic_extension_venule_density",
+        "synthetic_interior_dead_ends", "synthetic_open_ends", "synthetic_bed_model",
+    ):
+        assert name in synthetic, name
+        assert name not in image, name
+    assert "segmentation_source" in image and "segmentation_source" in synthetic
+    assert "mid_run_postprocessing" in image and "mid_run_postprocessing" in synthetic
+    assert unsaid == image
+    # The template run's network inside a synthetic one shows the same rows.
+    surround = visible_input_segmentation_settings(SCHEMA, {"network_source": "synthetic_surround"})
+    assert surround == synthetic
+
+
+def test_the_diameter_rows_reading_the_raw_image_hide_under_a_synthetic_network():
+    fields = {f.name: f for f in fields_for(SCHEMA)}
+    values = {"network_source": "synthetic", "raw_image_path": "raw.tif", "measure_diameters_from_raw_image": True}
+    for name in ("measure_diameters_from_raw_image", "do_fwhm_measurement", "automated_vessel_assignment"):
+        assert not fields[name].is_visible(values, unmet_chain(SCHEMA, name, values)), name
+
+
+def test_the_template_row_opens_a_haemorun_file_dialogue():
+    from haemolynx.gui.form import CHOICE_VALUE_LABELS, PATH_FILTERS
+
+    # A run's .haemorun or a batch's .haemobatch, both offered first.
+    template_filter = PATH_FILTERS["synthetic_template_path"]
+    assert template_filter.startswith("HaemoLynx run or batch template (*.haemorun *.haemobatch);;")
+    assert "Batch template (*.haemobatch)" in template_filter
+    field = {f.name: f for f in fields_for(SCHEMA)}["synthetic_template_path"]
+    assert field.options["mode"] == "r"
+    assert field.options["filter"] == template_filter
+    assert label_for("synthetic_template_path", None) == "Template run (.haemorun or .haemobatch)"
+    assert field.hide_when_unmet
+    assert CHOICE_VALUE_LABELS["network_source"]["synthetic"] == "Synthetic network from a template run"
+    assert label_for("network_source", None) == "Input"
+
+
+def test_shared_ilastik_rows_host_nowhere_under_a_synthetic_network():
+    values = {"network_source": "synthetic", "use_ilastik_segmentation": True, "raw_image_path": "raw.tif"}
+    assert shared_ilastik_host(values) is None
+    assert shared_ilastik_host({**values, "network_source": "segmented_image"}) == "input"
+
+
+def test_the_image_measurements_are_gone_for_a_synthetic_network():
+    """Regression: the tissue volume, cell distance and pericyte rows showed
+    under a synthetic network, then preflight refused them."""
+    for name in ("measure_tissue_volume", "measurement_3d_to_cell_mask", "measure_pericytes"):
+        assert not unmet_chain(SCHEMA, name, {"network_source": "segmented_image"}), name
+        for source in ("synthetic", "synthetic_surround"):
+            assert unmet_chain(SCHEMA, name, {"network_source": source}), (name, source)
+
+
+# --- the pericyte and block masks' classifier rows, hosted where read ---------
+
+
+def _entry(kind, **overrides):
+    return {"name": kind, "type": kind, "overrides": overrides}
+
+
+def test_the_pericyte_classifier_sits_with_the_perturbations_that_read_its_mask():
+    from haemolynx.gui.form import hosted_classifier_host
+
+    base = {"run_perturbations": True}
+    reads = {**base, "perturbations": [_entry("pericyte_dilation_sweep", use_pericyte_mask_constriction=True)]}
+    assert hosted_classifier_host("pericytes", reads) == "perturbations"
+    measured = {**base, "perturbations": [_entry("pericyte_measured_constriction")]}
+    assert hosted_classifier_host("pericytes", measured) == "perturbations"
+    # Sites placed another way read no mask; the measurements then host it, or nothing.
+    other = {**base, "perturbations": [_entry("pericyte_dilation_sweep", use_pericyte_mask_constriction=False)]}
+    assert hosted_classifier_host("pericytes", other) is None
+    assert hosted_classifier_host("pericytes", {**other, "measure_pericytes": True}) == "measurements"
+    # The rows go with the entry whether perturbations run this time or not.
+    assert hosted_classifier_host("pericytes", {**reads, "run_perturbations": False}) == "perturbations"
+    from haemolynx.gui.form import hosted_classifier_entry
+
+    two = {"perturbations": [_entry("arteriole_diameter_change"), _entry("pericyte_measured_constriction")]}
+    assert hosted_classifier_entry("pericytes", two) == 1
+
+
+def test_the_block_classifier_sits_with_a_capillary_block_from_a_mask():
+    from haemolynx.gui.form import hosted_classifier_host
+
+    base = {"run_perturbations": True, "measure_pericytes": True}
+    assert hosted_classifier_host("blocks", {**base, "perturbations": [_entry("capillary_block_mask")]}) == (
+        "perturbations"
+    )
+    assert hosted_classifier_host("blocks", {**base, "perturbations": [_entry("capillary_block")]}) is None
+    assert hosted_classifier_host(
+        "blocks", {**base, "network_source": "synthetic", "perturbations": [_entry("capillary_block_mask")]}
+    ) is None
+
+
+def test_the_low_ram_hover_text_says_it_covers_the_classifier_in_napari():
+    from haemolynx.gui.setting_tooltips import SETTING_TOOLTIPS
+
+    assert "classifier training and segmentation in napari" in SETTING_TOOLTIPS["use_memmap_loading"]

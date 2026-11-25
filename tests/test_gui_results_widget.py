@@ -10,6 +10,8 @@ unnoticed.
 """
 from __future__ import annotations
 
+import threading
+from dataclasses import replace
 from types import SimpleNamespace
 
 import networkx as nx
@@ -19,23 +21,35 @@ import pytest
 napari = pytest.importorskip("napari")
 pytest.importorskip("magicgui")
 
+from pytestqt.exceptions import capture_exceptions  # noqa: E402
+
 from haemolynx.gui._widget import (  # noqa: E402
     _add_or_update,
     _apply_layers,
+    _apply_z_filter,
     _clear_our_layers,
+    _colormap_name,
+    _process_pending_qt_events,
     _run_in_background,
 )
+from haemolynx.gui.progress import BarState  # noqa: E402
+from haemolynx.gui.run_state import ALREADY_RUNNING, CANCELLED, RunState  # noqa: E402
 from haemolynx.gui.results import (  # noqa: E402
     BOUNDARY_NODES,
+    FLOW_DIRECTION,
     IMAGE,
     NODES,
+    POINTS_PROJECTION,
     SKELETON,
+    VESSEL_TUBES,
     VESSELS,
     LayerSpec,
     ResultLayers,
     StageLayers,
+    perturbation_layer_names,
+    with_projection_mode,
 )
-from test_gui_results import a_graph, network  # noqa: E402
+from test_gui_results import a_graph, network, spec_named  # noqa: E402
 
 pytestmark = pytest.mark.gui
 
@@ -74,11 +88,50 @@ def test_a_stage_becomes_layers_of_the_right_type_and_scale(viewer):
     assert isinstance(by_name[IMAGE], napari.layers.Image)
     assert isinstance(by_name[SKELETON], napari.layers.Labels)
     assert isinstance(by_name[VESSELS], napari.layers.Vectors)
+    assert isinstance(by_name[VESSEL_TUBES], napari.layers.Surface)
     assert isinstance(by_name[NODES], napari.layers.Points)
 
     # The registration rule, checked where it can actually be checked.
     assert tuple(by_name[SKELETON].scale) == (2.0, 1.0, 0.5)
     assert tuple(by_name[VESSELS].scale) == (1.0, 1.0, 1.0)
+    assert tuple(by_name[VESSEL_TUBES].scale) == (1.0, 1.0, 1.0)
+    assert by_name[VESSELS].visible is False
+    assert by_name[VESSEL_TUBES].visible is True
+
+
+def test_the_tubes_start_smooth_shaded_and_keep_the_users_shading(viewer):
+    """Smooth shading lights the tube round, so it reads as one vessel; flat
+    shows its facets. It is only the starting value: a later stage redrawing
+    the tubes must not undo the user's choice."""
+    from haemolynx.gui._widget import _sync_vessel_tubes
+    from haemolynx.gui.vessel_tubes import TUBE_SHADING
+
+    for group in a_run():
+        _apply_layers(viewer, group)
+    tubes = viewer.layers[VESSEL_TUBES]
+    assert TUBE_SHADING == "smooth"
+    assert str(tubes.shading) == "smooth"
+
+    tubes.shading = "flat"
+    _sync_vessel_tubes(viewer)
+
+    assert viewer.layers[VESSEL_TUBES] is tubes
+    assert str(tubes.shading) == "flat"
+
+
+def test_colouring_vessels_retints_the_tube_mesh(viewer):
+    from haemolynx.gui._widget import _colour_layer
+
+    for group in a_run():
+        _apply_layers(viewer, group)
+    vessels = viewer.layers[VESSELS]
+    tubes = viewer.layers[VESSEL_TUBES]
+    _colour_layer(vessels, "none")
+    edge = np.asarray(vessels.edge_color)
+    verts = np.asarray(tubes.vertex_colors)
+    assert len(verts) == len(tubes.data[0])
+    np.testing.assert_allclose(verts[0, :3], edge[0, :3], atol=0.05)
+    assert np.allclose(verts, verts[0], atol=0.05)
 
 
 def test_the_view_turns_to_3d_when_the_geometry_arrives(viewer):
@@ -94,6 +147,184 @@ def test_the_features_reach_the_layer(viewer):
     vessels = viewer.layers[VESSELS]
     assert "length" in vessels.features
     assert len(vessels.features) > 0
+
+
+def test_vessel_mask_volumes_land_as_coloured_image_layers(viewer):
+    """Masks used by the run become translucent 3D Image volumes, not Labels."""
+    from haemolynx.gui.results import MASK_COLOURS, MASK_LAYERS
+
+    results = ResultLayers()
+    voxel_size_zyx = (2.0, 1.0, 0.5)
+    art = np.zeros((4, 4, 4), dtype=bool)
+    art[2, 2, 2] = True
+    ven = np.zeros((4, 4, 4), dtype=bool)
+    ven[1, 1, 1] = True
+    group = results.stage_finished(
+        "skeletonise",
+        SimpleNamespace(
+            image=np.zeros((4, 4, 4), dtype=np.uint8),
+            skeleton=np.zeros((4, 4, 4), dtype=bool),
+            voxel_size_xyz=tuple(reversed(voxel_size_zyx)),
+            voxel_size_zyx=voxel_size_zyx,
+        ),
+    )
+    _apply_layers(viewer, group)
+    group = results.stage_finished(
+        "build_network",
+        network(
+            a_graph(),
+            voxel_size_zyx=voxel_size_zyx,
+            large_arteriole_mask=art,
+            small_venule_mask=ven,
+        ),
+    )
+    _apply_layers(viewer, group)
+
+    art_name = MASK_LAYERS["large_arteriole_mask"]
+    ven_name = MASK_LAYERS["small_venule_mask"]
+    assert art_name in viewer.layers
+    assert ven_name in viewer.layers
+    assert MASK_LAYERS["large_venule_mask"] not in {
+        layer.name for layer in viewer.layers
+    }
+
+    art_layer = viewer.layers[art_name]
+    ven_layer = viewer.layers[ven_name]
+    assert isinstance(art_layer, napari.layers.Image)
+    assert isinstance(ven_layer, napari.layers.Image)
+    assert tuple(art_layer.scale) == voxel_size_zyx
+    assert art_layer.rendering == "mip"
+    assert art_layer.blending == "translucent"
+    # Colormap stops: transparent at 0, role colour at 1.
+    art_high = tuple(float(c) for c in art_layer.colormap.colors[-1])
+    ven_high = tuple(float(c) for c in ven_layer.colormap.colors[-1])
+    assert art_high == pytest.approx(MASK_COLOURS["large_arteriole_mask"], abs=1e-5)
+    assert ven_high == pytest.approx(MASK_COLOURS["small_venule_mask"], abs=1e-5)
+
+
+def test_the_network_is_first_shown_without_the_volumes_round_it(viewer):
+    """A saved Batch E run opened as the segmented image and two arteriole masks
+    in dark red, every vessel tube behind them. The network's first view
+    hides them; a later stage leaves them as the user sets them."""
+    from haemolynx.gui.results import MASK_LAYERS
+
+    results = ResultLayers()
+    art = np.zeros((4, 4, 4), dtype=bool)
+    art[2, 2, 2] = True
+    _apply_layers(viewer, results.stage_finished("skeletonise", SimpleNamespace(
+        image=np.zeros((4, 4, 4), dtype=np.uint8), skeleton=np.zeros((4, 4, 4), dtype=bool),
+        voxel_size_xyz=(1.0, 1.0, 1.0), voxel_size_zyx=(1.0, 1.0, 1.0),
+    )))
+    assert viewer.layers[IMAGE].visible is True, "before the network, the image is all there is"
+
+    _apply_layers(viewer, results.stage_finished(
+        "build_network", network(a_graph(), large_arteriole_mask=art)
+    ))
+    mask = viewer.layers[MASK_LAYERS["large_arteriole_mask"]]
+    assert viewer.layers[IMAGE].visible is False
+    assert mask.visible is False
+    assert viewer.layers[VESSEL_TUBES].visible is True
+
+    boundaries = SimpleNamespace(
+        inlet_nodes=[0], outlet_nodes=[3], arteriole_boundary_nodes=[],
+        venule_boundary_nodes=[], graph=a_graph(), large_arteriole_mask=art,
+    )
+    _apply_layers(viewer, results.stage_finished("assign_boundaries", boundaries))
+    assert mask.visible is False, "a later stage's spec keeps it hidden"
+
+    mask.visible = True
+    viewer.layers[IMAGE].visible = True
+    _apply_layers(viewer, results.stage_finished("assign_boundaries", boundaries))
+    assert mask.visible is True and viewer.layers[IMAGE].visible is True, "and shown"
+
+
+def test_a_loaded_run_opens_on_the_network_without_volumes_or_nodes(viewer):
+    """Load run replays the stages merged; it is the network's first view too,
+    and the nodes, hidden when the network is built, stay hidden."""
+    from haemolynx.gui._widget import _apply_layer_groups
+    from haemolynx.gui.results import MASK_LAYERS
+
+    results = ResultLayers()
+    art = np.zeros((4, 4, 4), dtype=bool)
+    art[2, 2, 2] = True
+    groups = [
+        results.stage_finished("skeletonise", SimpleNamespace(
+            image=np.zeros((4, 4, 4), dtype=np.uint8), skeleton=np.zeros((4, 4, 4), dtype=bool),
+            voxel_size_xyz=(1.0, 1.0, 1.0), voxel_size_zyx=(1.0, 1.0, 1.0),
+        )),
+        results.stage_finished("build_network", network(a_graph(), large_arteriole_mask=art)),
+        results.stage_finished("assign_boundaries", SimpleNamespace(
+            inlet_nodes=[0], outlet_nodes=[3], arteriole_boundary_nodes=[],
+            venule_boundary_nodes=[], graph=a_graph(), large_arteriole_mask=art,
+        )),
+    ]
+    _apply_layer_groups(viewer, groups)
+
+    assert viewer.layers[IMAGE].visible is False
+    assert viewer.layers[MASK_LAYERS["large_arteriole_mask"]].visible is False
+    assert viewer.layers[NODES].visible is False
+    assert viewer.layers[VESSEL_TUBES].visible is True
+
+
+def boundaries_of(results):
+    return results.stage_finished("assign_boundaries", SimpleNamespace(
+        inlet_nodes=[0], outlet_nodes=[3], arteriole_boundary_nodes=[],
+        venule_boundary_nodes=[], resistance_node_pair=None))
+
+
+def drawn_on_top(viewer, name=BOUNDARY_NODES) -> bool:
+    layer = viewer.layers[name]
+    return (
+        viewer.layers[-1] is layer
+        and str(layer.blending) == "translucent_no_depth"
+        and np.allclose(np.asarray(layer.border_color), (1.0, 1.0, 1.0, 1.0))
+    )
+
+
+def test_the_terminal_nodes_are_drawn_over_tubes_added_after_them(viewer):
+    """With config.yaml every terminal node is a large-vessel stump, inside a
+    thick vessel: depth-tested and drawn before the tubes, the tubes hid all
+    three of Stack A's. A run saved before holds them drawn that way, so the
+    panel puts it right itself rather than trusting the spec."""
+    results = ResultLayers()
+    built = results.stage_finished("build_network", network(a_graph()))
+    saved = replace(spec_named(boundaries_of(results), BOUNDARY_NODES),
+                    options={"size": 6.0, "out_of_slice_display": True})
+    _add_or_update(viewer, saved)
+    assert str(viewer.layers[BOUNDARY_NODES].blending) == "translucent"
+    # Its out_of_slice_display, deprecated by napari 0.9, reaches napari as
+    # the projection mode it stands for (the suite errors on the old name).
+    assert str(viewer.layers[BOUNDARY_NODES].projection_mode) == POINTS_PROJECTION
+
+    _apply_layers(viewer, built)
+
+    assert VESSEL_TUBES in viewer.layers
+    assert drawn_on_top(viewer)
+
+
+@pytest.mark.parametrize("kind", ["points", "vectors"])
+def test_the_projection_modes_are_what_napari_makes_of_out_of_slice_display(kind):
+    """A saved run's out_of_slice_display=True draws as it did: the mode we
+    pass in its place is the one napari itself turns it into."""
+    data = np.zeros((1, 3)) if kind == "points" else np.zeros((1, 2, 3))
+    with pytest.warns(FutureWarning, match="out_of_slice_display"):
+        layer = getattr(napari.layers, kind.capitalize())(data, out_of_slice_display=True)
+    ours = with_projection_mode(kind, {"out_of_slice_display": True})["projection_mode"]
+    assert str(layer.projection_mode) == ours
+
+
+def test_the_terminal_nodes_stay_on_top_through_the_z_depth_filter(viewer):
+    """A window that drops a terminal node rebuilds the layer, which carries
+    over its size and colours but not how it is drawn."""
+    results = ResultLayers()
+    _apply_layers(viewer, results.stage_finished("build_network", network(a_graph())))
+    _apply_layers(viewer, boundaries_of(results))
+    assert drawn_on_top(viewer)
+
+    _apply_z_filter(viewer, 0.0, 15.0, z_extent=30.0)
+
+    assert len(viewer.layers[BOUNDARY_NODES].data) == 1
+    assert drawn_on_top(viewer)
 
 
 # --- a second run ------------------------------------------------------------
@@ -150,6 +381,124 @@ def test_clearing_removes_only_our_layers(viewer):
     assert [layer.name for layer in viewer.layers] == [theirs.name]
 
 
+def test_clearing_processes_qt_events_before_and_between_each_removal(viewer, monkeypatch):
+    """Regression test for a real crash: napari's vispy canvas tears down a
+    removed layer's GL resources synchronously (glDeleteProgram and
+    friends), and starting that teardown while earlier GL work from user
+    interaction (a camera move, a colormap change, a visibility toggle) is
+    still queued in vispy's own GLIR command queue crashed the whole
+    process with a Windows access violation -- below Python, so nothing
+    here could catch it as an exception; only a real crash reproduction
+    with a large dataset surfaced it. Cannot assert "did not crash" in a
+    unit test, so this pins the actual mitigation instead: pending Qt
+    events are drained before starting, and after every single removal,
+    not just once at the end.
+    """
+    from haemolynx.gui import _widget as widget_mod
+
+    for group in a_run():
+        _apply_layers(viewer, group)
+    n_ours = sum(1 for layer in viewer.layers if layer.name.startswith("HaemoLynx"))
+    assert n_ours >= 2, "fixture must leave more than one of our layers to remove"
+
+    calls = []
+    monkeypatch.setattr(
+        widget_mod, "_process_pending_qt_events", lambda: calls.append(len(viewer.layers))
+    )
+
+    removed = _clear_our_layers(viewer)
+
+    # Once before the loop starts, plus once after every removal.
+    assert len(calls) == removed + 1
+
+
+def test_process_pending_qt_events_is_a_safe_no_op_without_a_running_app(monkeypatch):
+    """Must never raise, even if QApplication.instance() is unexpectedly None."""
+    from qtpy.QtWidgets import QApplication
+
+    monkeypatch.setattr(QApplication, "instance", staticmethod(lambda: None))
+    _process_pending_qt_events()  # must not raise
+
+
+def a_perturbation_group(*names):
+    """The layers one perturbations stage would produce, for real."""
+    from test_gui_results import a_perturbation, a_perturbation_run, built
+
+    return built().stage_finished(
+        "run_perturbations",
+        a_perturbation_run(*(a_perturbation(name) for name in names)),
+    )
+
+
+def test_each_perturbation_becomes_its_own_pair_of_layers(viewer):
+    for group in a_run():
+        _apply_layers(viewer, group)
+
+    _apply_layers(viewer, a_perturbation_group("art_dilate_20", "art_constrict_20"))
+
+    names = {layer.name for layer in viewer.layers}
+    assert perturbation_layer_names("art_dilate_20")[0] in names
+    assert perturbation_layer_names("art_constrict_20")[0] in names
+    assert isinstance(
+        viewer.layers[perturbation_layer_names("art_dilate_20")[0]],
+        napari.layers.Vectors,
+    )
+
+
+def test_the_baselines_own_layers_survive_a_perturbation(viewer):
+    """The comparison only exists if what it is compared against is still there."""
+    for group in a_run():
+        _apply_layers(viewer, group)
+    baseline = viewer.layers[VESSELS]
+    baseline_data = baseline.data.copy()
+
+    _apply_layers(viewer, a_perturbation_group("art_dilate_20"))
+
+    assert viewer.layers[VESSELS] is baseline
+    assert np.array_equal(viewer.layers[VESSELS].data, baseline_data)
+
+
+def test_a_perturbation_layer_lands_in_microns(viewer):
+    _apply_layers(viewer, a_perturbation_group("art_dilate_20"))
+    for name in perturbation_layer_names("art_dilate_20"):
+        assert tuple(viewer.layers[name].scale) == (1.0, 1.0, 1.0)
+
+
+def test_a_users_layer_of_the_same_name_is_never_overwritten(viewer):
+    """A perturbation's name comes from a config, so a collision is plausible."""
+    vessels_name = perturbation_layer_names("art_dilate_20")[0]
+    mine = viewer.add_points(np.zeros((3, 3)), name=vessels_name)
+    mine_data = mine.data.copy()
+
+    _apply_layers(viewer, a_perturbation_group("art_dilate_20"))
+
+    assert viewer.layers[vessels_name] is mine
+    assert np.array_equal(viewer.layers[vessels_name].data, mine_data)
+    assert f"{vessels_name} (HaemoLynx)" in {layer.name for layer in viewer.layers}
+
+
+def test_clearing_takes_the_perturbation_layers_with_it(viewer):
+    """They are ours by metadata, which is what "clear ours" reads -- and they
+    are not in `LAYER_NAMES`, which cannot list a name a config invents."""
+    _apply_layers(viewer, a_perturbation_group("art_dilate_20"))
+    assert perturbation_layer_names("art_dilate_20")[0] in viewer.layers
+    # Vessels, nodes and flow direction today; counted rather than spelt out,
+    # so a perturbation that gains a layer does not have to edit this test.
+    ours = len(viewer.layers)
+    assert ours >= 2
+
+    removed = _clear_our_layers(viewer)
+
+    assert removed == ours
+    assert len(viewer.layers) == 0
+
+
+def test_a_perturbation_layer_is_added_hidden(viewer):
+    _apply_layers(viewer, a_perturbation_group("art_dilate_20"))
+    for name in perturbation_layer_names("art_dilate_20"):
+        assert viewer.layers[name].visible is False
+
+
 def test_a_layer_that_changed_type_is_replaced(viewer):
     spec = LayerSpec(kind="points", name="HaemoLynx nodes", data=np.zeros((2, 3)))
     _add_or_update(viewer, spec)
@@ -160,6 +509,36 @@ def test_a_layer_that_changed_type_is_replaced(viewer):
         LayerSpec(kind="image", name="HaemoLynx nodes", data=np.zeros((4, 4, 4))),
     )
     assert isinstance(viewer.layers[NODES], napari.layers.Image)
+
+
+def test_add_or_update_replaces_vectors_when_graph_shrinks(viewer):
+    from haemolynx.gui.results import edge_polylines, polylines_to_vectors
+
+    large_graph = a_graph()
+    large_vectors, _ = polylines_to_vectors(edge_polylines(large_graph)[0])
+    _add_or_update(
+        viewer,
+        LayerSpec(kind="vectors", name=VESSELS, data=large_vectors),
+    )
+    assert len(viewer.layers[VESSELS].data) == len(large_vectors)
+
+    small_graph = nx.MultiGraph()
+    small_graph.add_node(0, pos=np.array([0.0, 0.0, 0.0]))
+    small_graph.add_node(1, pos=np.array([10.0, 0.0, 0.0]))
+    small_graph.add_edge(
+        0,
+        1,
+        key=0,
+        voxels=[[0.0, 0.0, 0.0], [10.0, 0.0, 0.0]],
+        length=10.0,
+    )
+    small_vectors, _ = polylines_to_vectors(edge_polylines(small_graph)[0])
+    _add_or_update(
+        viewer,
+        LayerSpec(kind="vectors", name=VESSELS, data=small_vectors),
+    )
+    assert len(viewer.layers[VESSELS].data) == len(small_vectors)
+    assert len(viewer.layers[VESSELS].data) < len(large_vectors)
 
 
 # --- the delivery path -------------------------------------------------------
@@ -243,6 +622,298 @@ def test_a_run_with_the_viewer_switched_off_shows_nothing(viewer, qtbot, monkeyp
     assert len(viewer.layers) == 0
 
 
+# --- stopping a run on purpose -----------------------------------------------
+
+
+class Quittable:
+    """Stands in for the run's worker where no run is really going."""
+
+    def __init__(self) -> None:
+        self.quits = 0
+
+    def quit(self) -> None:
+        self.quits += 1
+
+
+def a_graph_with_depth() -> nx.MultiGraph:
+    """`a_graph`'s four nodes, moved off its straight line.
+
+    napari fits the camera to the layers by dividing the canvas by their
+    bounding box, so a box with a zero-width side divides by zero and vispy
+    then refuses the projection. `a_graph` runs dead straight along z, giving
+    it no width at all in y or x. Nothing notices while the viewer is in 2D, or
+    while a layer is being updated rather than added -- but the second of two
+    runs adds one into a viewer the first already turned to 3D, and that is the
+    run these tests are about. No real vessel network is a straight line.
+    """
+    graph = nx.MultiGraph()
+    corners = ((0.0, 0.0, 0.0), (10.0, 4.0, 2.0), (20.0, 1.0, 6.0), (30.0, 7.0, 3.0))
+    for node_id, pos in enumerate(corners):
+        graph.add_node(node_id, pos=np.array(pos))
+    for u, v in ((0, 1), (1, 2), (2, 3)):
+        start, end = graph.nodes[u]["pos"], graph.nodes[v]["pos"]
+        graph.add_edge(
+            u, v, key=0,
+            voxels=[start.tolist(), end.tolist()],
+            length=float(np.linalg.norm(end - start)),
+            segment_id=u,
+        )
+    return graph
+
+
+@pytest.fixture
+def paused_run(monkeypatch):
+    """A fake pipeline that waits after `build_network` until it is released.
+
+    The bug needs a run that really is in progress when the button is pressed,
+    and `solve` afterwards to show whether it carried on regardless: the run
+    reports its stage output there, which is one of the two points a
+    cancellation acts on.
+    """
+    from haemolynx.gui import _widget
+
+    graph = a_graph_with_depth()
+    script = SimpleNamespace(
+        graph=graph,
+        drawn=threading.Event(),
+        resume=threading.Event(),
+        stages=[],
+    )
+
+    def fake_run(settings, schema, progress=None, on_stage_output=None, **_kwargs):
+        if on_stage_output is not None:
+            on_stage_output("build_network", network(graph))
+        script.stages.append("build_network")
+        script.drawn.set()
+        script.resume.wait(20)
+        if on_stage_output is not None:
+            on_stage_output(
+                "solve",
+                SimpleNamespace(node_list=(), pressure=None, equivalent_resistance=None),
+            )
+        script.stages.append("solve")
+        return graph
+
+    monkeypatch.setattr(_widget, "run_pipeline_stages", fake_run)
+    return script
+
+
+def test_clearing_the_layers_mid_run_stops_it_and_frees_the_panel(
+    viewer, qtbot, paused_run
+):
+    """The bug: this used to leave the run going and the Run button dead."""
+    from haemolynx.gui._widget import ProgressBars
+
+    report = SimpleNamespace(value="")
+    button = SimpleNamespace(enabled=True)
+    bars = ProgressBars()
+    results = ResultLayers()
+    state = RunState(bars=bars)
+
+    _run_in_background({}, None, report, button, bars, viewer=viewer,
+                       results=results, state=state)
+    qtbot.waitUntil(paused_run.drawn.is_set, timeout=5000)
+    qtbot.waitUntil(lambda: VESSELS in viewer.layers, timeout=5000)
+    assert state.running is True
+
+    # What pressing "Clear layers" does: cancel first so queued layer groups
+    # cannot put work back, then free the panel, then strip the layers.
+    assert state.cancel() is True
+    state.supersede()
+    assert state.running is False
+    assert _clear_our_layers(viewer) >= 2
+    paused_run.resume.set()
+
+    qtbot.waitUntil(lambda: report.value == CANCELLED, timeout=5000)
+
+    # It stopped at its next checkpoint rather than running to the end.
+    assert paused_run.stages == ["build_network"]
+    # And nothing already in flight put the cleared layers back.
+    assert VESSELS not in viewer.layers
+    # The panel is free again: guard clear, button back.
+    assert button.enabled is True
+    # Reported as an intention, not as a fault.
+    assert report.value == CANCELLED
+    # Every stateful thing the run left behind is back to nothing.
+    assert bars.display.stages == BarState()
+    assert bars.display.steps == BarState()
+    assert results.colour_options() == []
+
+
+def test_a_new_run_can_be_started_straight_after_a_cancel(viewer, qtbot, paused_run):
+    """The whole point of the fix: no restarting the plugin."""
+    from haemolynx.gui._widget import ProgressBars
+
+    report = SimpleNamespace(value="")
+    button = SimpleNamespace(enabled=True)
+    bars = ProgressBars()
+    state = RunState(bars=bars)
+
+    _run_in_background({}, None, report, button, bars, viewer=viewer,
+                       results=ResultLayers(), state=state)
+    qtbot.waitUntil(paused_run.drawn.is_set, timeout=5000)
+    _clear_our_layers(viewer)
+    state.cancel()
+    state.supersede()
+    assert state.running is False
+
+    _run_in_background({}, None, report, button, bars, viewer=viewer,
+                       results=ResultLayers(), state=state)
+    paused_run.resume.set()
+    qtbot.waitUntil(lambda: not state.running, timeout=5000)
+
+    assert paused_run.stages == ["build_network", "build_network", "solve"]
+    assert VESSELS in viewer.layers
+    assert "Finished" in report.value
+
+
+def test_a_cancelled_run_puts_no_exception_in_front_of_the_user(
+    viewer, qtbot, paused_run
+):
+    """A cancellation is a sentence in the report box, not an error dialog.
+
+    `RunCancelled` leaves the run through the worker's `errored` signal, like
+    any other exception -- and superqt gives a worker whose `errored` nobody
+    claimed a handler that re-raises. Re-raised, it reaches napari's excepthook
+    and the user gets `RunCancelled` and a stack trace for having pressed a
+    button, which is the report this replaces.
+    """
+    report = SimpleNamespace(value="")
+    button = SimpleNamespace(enabled=True)
+    state = RunState()
+
+    with capture_exceptions() as raised:
+        _run_in_background({}, None, report, button, None, viewer=viewer,
+                           results=ResultLayers(), state=state)
+        qtbot.waitUntil(paused_run.drawn.is_set, timeout=5000)
+        state.cancel()
+        paused_run.resume.set()
+        qtbot.waitUntil(lambda: not state.running, timeout=5000)
+
+    assert [kind for kind, _value, _tb in raised] == []
+    assert report.value == CANCELLED
+
+
+def test_a_run_that_really_fails_still_raises_where_napari_can_show_it(
+    qtbot, monkeypatch
+):
+    """The other half: silencing the cancellation must not silence a failure.
+
+    Claiming `errored` takes superqt's re-raise with it, so the handler does it
+    instead. A broken run still reaches the excepthook that reports it.
+    """
+    from haemolynx.gui import _widget
+
+    def fake_run(settings, schema, progress=None, on_stage_output=None):
+        raise ValueError("the pipeline broke")
+
+    monkeypatch.setattr(_widget, "run_pipeline_stages", fake_run)
+
+    report = SimpleNamespace(value="")
+    button = SimpleNamespace(enabled=True)
+
+    with capture_exceptions() as raised:
+        _run_in_background({}, None, report, button, None, viewer=None, results=None)
+        qtbot.waitUntil(lambda: button.enabled, timeout=5000)
+
+    assert [kind for kind, _value, _tb in raised] == [ValueError]
+    assert report.value == "ValueError: the pipeline broke"
+
+
+def test_the_clear_button_is_what_stops_the_panels_run(make_napari_viewer):
+    """The wiring: the button the user presses is the one that cancels."""
+    from haemolynx.gui._widget import settings_widget
+
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    _apply_layers(viewer, a_perturbation_group("art_dilate_20"))
+
+    results = ResultLayers()
+    results.stage_finished("build_network", network(a_graph()))
+    worker = Quittable()
+    panel._haemolynx_run_state.start(worker=worker, results=results)
+    panel._haemolynx_run_button.enabled = False
+    panel._haemolynx_progress.start()
+
+    panel._haemolynx_clear()
+
+    assert panel._haemolynx_run_state.cancelled is True
+    assert worker.quits == 1
+    assert "Stopping the run" in panel._haemolynx_report()
+    assert results.colour_options() == []
+    assert panel._haemolynx_progress.display.stages == BarState()
+    assert len(viewer.layers) == 0
+    assert panel._haemolynx_run_button.enabled is True
+    assert panel._haemolynx_run_state.running is False
+    panel._haemolynx_run()
+    assert panel._haemolynx_report() != ALREADY_RUNNING
+
+
+def test_clearing_the_layers_with_no_run_going_is_unchanged(make_napari_viewer):
+    from haemolynx.gui._widget import settings_widget
+
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    # Points, not an image: an image dropped in becomes the run's input, which
+    # is a different behaviour and not the one under test.
+    theirs = viewer.add_points(np.zeros((3, 3)), name="their data")
+    _apply_layers(viewer, a_perturbation_group("art_dilate_20"))
+    ours = len(viewer.layers) - 1
+
+    panel._haemolynx_clear()
+
+    assert [layer.name for layer in viewer.layers] == [theirs.name]
+    assert panel._haemolynx_report() == f"Removed {ours} HaemoLynx layer(s)."
+    assert panel._haemolynx_run_button.enabled is True
+    assert panel._haemolynx_run_state.cancelled is False
+
+
+def test_a_fresh_full_run_clears_old_layers_and_results_first(
+    make_napari_viewer, qtbot, monkeypatch
+):
+    """"Run pipeline" must not run on top of a stale previous run's layers.
+
+    "Run from this stage" (start_from set) deliberately keeps prior layers to
+    resume from; a plain "Run pipeline" click does not pass start_from, so it
+    must behave like pressing Clear immediately before Run.
+    """
+    from haemolynx.gui import _widget
+    from haemolynx.gui._widget import settings_widget
+
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    # Points, not an image: an image dropped in becomes the run's input, which
+    # is a different behaviour and not the one under test.
+    theirs = viewer.add_points(np.zeros((3, 3)), name="their data")
+    _apply_layers(viewer, a_perturbation_group("art_dilate_20"))
+    stale_results = ResultLayers()
+    stale_results.stage_finished("build_network", network(a_graph()))
+    panel._haemolynx_view.results = stale_results
+
+    monkeypatch.setattr(_widget, "preflight", lambda *a, **k: SimpleNamespace(ok=True))
+    monkeypatch.setattr(
+        _widget, "run_pipeline_stages", lambda *a, **k: a_graph()
+    )
+
+    panel._haemolynx_run()
+    qtbot.waitUntil(lambda: panel._haemolynx_run_button.enabled, timeout=10000)
+
+    assert [layer.name for layer in viewer.layers] == [theirs.name]
+    assert panel._haemolynx_view.results is not stale_results
+
+
+def test_run_says_how_to_stop_the_run_that_is_already_going(make_napari_viewer):
+    """The panel's own answer to "why will Run not do anything?"."""
+    from haemolynx.gui._widget import settings_widget
+
+    panel = settings_widget(napari_viewer=make_napari_viewer())
+    panel._haemolynx_run_state.start(worker=Quittable())
+
+    panel._haemolynx_run()
+
+    assert panel._haemolynx_report() == ALREADY_RUNNING
+
+
 # --- the panel's own controls ------------------------------------------------
 
 
@@ -257,6 +928,645 @@ def test_the_panel_offers_the_view_controls(make_napari_viewer):
     # the left. The panel configures and runs the pipeline.
     assert not hasattr(panel, "_haemolynx_colour")
     assert not hasattr(panel, "_haemolynx_scales")
+    assert hasattr(panel, "_haemolynx_z_depth_slider")
+    z_depth_row = panel._haemolynx_z_depth_row
+    display = panel._haemolynx_display_group
+    assert z_depth_row.objectName() == "haemolynx_z_depth_row"
+    assert z_depth_row.parentWidget() is display
+    view_controls = panel._haemolynx_view_controls.native
+    layout = panel.layout()
+    assert layout.indexOf(view_controls) >= 0
+    assert layout.indexOf(z_depth_row) == -1
+    assert layout.indexOf(display) == -1
+
+
+def _run_with_thick_vessel_mask(make_napari_viewer):
+    """A viewer with our layers in it, from a run that used thickness-gated
+    skeletonisation -- the skeleton layer's controls should offer the
+    thick/thin debug toggle."""
+    from haemolynx.gui._widget import settings_widget
+
+    viewer = make_napari_viewer()
+    settings_widget(napari_viewer=viewer)
+    thick = np.zeros((4, 4, 4), dtype=bool)
+    thick[0, 0, 0] = True
+    skeleton = np.zeros((4, 4, 4), dtype=bool)
+    skeleton[0, 0, 0] = True
+    skeleton[1, 1, 1] = True
+    group = ResultLayers().stage_finished(
+        "skeletonise",
+        SimpleNamespace(
+            image=np.zeros((4, 4, 4), dtype=np.uint8),
+            skeleton=skeleton,
+            voxel_size_xyz=(1.0, 1.0, 1.0),
+            voxel_size_zyx=(1.0, 1.0, 1.0),
+            thick_vessel_mask=thick,
+        ),
+    )
+    _apply_layers(viewer, group)
+    return viewer, skeleton, thick
+
+
+def test_thick_thin_skeleton_toggle_is_offered_when_thickness_gating_was_used(
+    make_napari_viewer,
+):
+    from haemolynx.gui._widget import (
+        THICK_SKELETON_COLOUR,
+        THIN_SKELETON_COLOUR,
+        _layer_controls,
+    )
+
+    viewer, skeleton, _thick = _run_with_thick_vessel_mask(make_napari_viewer)
+    layer = viewer.layers[SKELETON]
+    controls = _layer_controls(viewer, layer)
+    checkbox = controls._haemolynx_thick_thin
+    assert checkbox.isEnabled()
+    assert checkbox.isChecked() is False
+    np.testing.assert_array_equal(np.asarray(layer.data), skeleton.astype(np.uint8))
+
+    checkbox.setChecked(True)
+    assert layer.data[0, 0, 0] == 2  # thick voxel
+    assert layer.data[1, 1, 1] == 1  # thin voxel
+    assert layer.colormap.color_dict[1] == pytest.approx(THIN_SKELETON_COLOUR)
+    assert layer.colormap.color_dict[2] == pytest.approx(THICK_SKELETON_COLOUR)
+
+    checkbox.setChecked(False)
+    np.testing.assert_array_equal(np.asarray(layer.data), skeleton.astype(np.uint8))
+
+
+def test_thick_thin_skeleton_toggle_is_not_offered_on_a_non_skeleton_labels_layer(
+    make_napari_viewer,
+):
+    """Scoped by layer name, not just napari Labels kind -- today SKELETON is
+    the only Labels-kind layer this plugin ever draws, but any future one
+    must not silently inherit this checkbox and get recoloured from whatever
+    unrelated thick_vessel_mask/skeleton_bool metadata happens to be on it."""
+    from haemolynx.gui._widget import _attach_thick_thin_skeleton_toggle, settings_widget
+
+    viewer = make_napari_viewer()
+    settings_widget(napari_viewer=viewer)
+    layer = viewer.add_labels(
+        np.zeros((3, 3, 3), dtype=np.uint8), name="some_other_labels_layer"
+    )
+
+    assert _attach_thick_thin_skeleton_toggle(viewer, layer) is False
+
+
+def test_thick_thin_skeleton_toggle_is_disabled_without_a_thick_mask(make_napari_viewer):
+    from haemolynx.gui._widget import _layer_controls, settings_widget
+
+    viewer = make_napari_viewer()
+    settings_widget(napari_viewer=viewer)
+    for group in a_run():
+        _apply_layers(viewer, group)
+
+    controls = _layer_controls(viewer, viewer.layers[SKELETON])
+    checkbox = getattr(controls, "_haemolynx_thick_thin", None)
+    assert checkbox is not None
+    assert checkbox.isEnabled() is False
+
+
+def test_thick_thin_skeleton_toggle_turns_off_when_a_rerun_drops_the_mask(
+    make_napari_viewer,
+):
+    from haemolynx.gui._widget import _layer_controls
+
+    viewer, _skeleton, _thick = _run_with_thick_vessel_mask(make_napari_viewer)
+    controls = _layer_controls(viewer, viewer.layers[SKELETON])
+    checkbox = controls._haemolynx_thick_thin
+    checkbox.setChecked(True)
+
+    plain_skeleton = np.zeros((4, 4, 4), dtype=bool)
+    plain_skeleton[2, 2, 2] = True
+    _apply_layers(
+        viewer,
+        ResultLayers().stage_finished(
+            "skeletonise",
+            SimpleNamespace(
+                image=np.zeros((4, 4, 4), dtype=np.uint8),
+                skeleton=plain_skeleton,
+                voxel_size_xyz=(1.0, 1.0, 1.0),
+                voxel_size_zyx=(1.0, 1.0, 1.0),
+            ),
+        ),
+    )
+
+    assert checkbox.isEnabled() is False
+    assert checkbox.isChecked() is False
+    layer = viewer.layers[SKELETON]
+    np.testing.assert_array_equal(np.asarray(layer.data), plain_skeleton.astype(np.uint8))
+    # Regression: the colormap must revert too, not just the data -- a rerun
+    # that drops the mask used to leave the layer stuck on the two-colour
+    # debug scheme (every voxel rendering as THIN_SKELETON_COLOUR) with no
+    # control left to fix it, since the early return in
+    # _apply_thick_thin_skeleton_display ran before the colormap reset.
+    assert layer.colormap is checkbox._haemolynx_default_colormap
+
+
+def test_thick_thin_skeleton_toggle_composes_with_an_active_z_depth_window(
+    make_napari_viewer,
+):
+    """Checking the debug toggle while a Z-depth clip is active must keep
+    the clip, and moving the Z-depth slider while the toggle is checked must
+    keep the thick/thin recolouring -- each used to silently discard the
+    other's effect, since both are unconditional full-volume rewrites of the
+    same layer's data with no awareness of one another."""
+    from haemolynx.gui._widget import _layer_controls, settings_widget
+
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    thick = np.zeros((4, 4, 4), dtype=bool)
+    thick[0, 0, 0] = True
+    thick[3, 3, 3] = True
+    skeleton = np.zeros((4, 4, 4), dtype=bool)
+    skeleton[0, 0, 0] = True
+    skeleton[1, 1, 1] = True
+    skeleton[3, 3, 3] = True
+    results = ResultLayers()
+    group = results.stage_finished(
+        "skeletonise",
+        SimpleNamespace(
+            image=np.zeros((4, 4, 4), dtype=np.uint8),
+            skeleton=skeleton,
+            voxel_size_xyz=(1.0, 1.0, 1.0),
+            voxel_size_zyx=(1.0, 1.0, 1.0),
+            thick_vessel_mask=thick,
+        ),
+    )
+    _apply_layers(viewer, group)
+    panel._haemolynx_view.results = results
+    panel._haemolynx_after_layers_applied()
+
+    layer = viewer.layers[SKELETON]
+    controls = _layer_controls(viewer, layer)
+    checkbox = controls._haemolynx_thick_thin
+
+    # Clip to z in [0, 2): slice 3 falls outside the window.
+    panel._haemolynx_z_depth_slider.setValue((0.0, 2.0))
+    checkbox.setChecked(True)
+    data = np.asarray(layer.data)
+    assert data[0, 0, 0] == 2  # thick voxel, inside the window
+    assert data[1, 1, 1] == 1  # thin voxel, inside the window
+    assert data[3, 3, 3] == 0, "outside the Z-depth window: must stay clipped"
+
+    # Now move the slider while the toggle stays checked.
+    panel._haemolynx_z_depth_slider.setValue((0.0, 4.0))
+    data = np.asarray(layer.data)
+    assert data[0, 0, 0] == 2
+    assert data[1, 1, 1] == 1
+    assert data[3, 3, 3] == 2, "back in range, and still thick/thin recoloured"
+
+
+def _run_with_raw_segmented_image(make_napari_viewer):
+    """A viewer with our layers in it, from a run whose segmentation
+    cleanup changed the mask -- the IMAGE layer's controls should offer
+    the raw-vs-corrected debug toggle."""
+    from haemolynx.gui._widget import settings_widget
+
+    viewer = make_napari_viewer()
+    settings_widget(napari_viewer=viewer)
+    corrected = np.zeros((4, 4, 4), dtype=np.uint8)
+    corrected[0, 0, 0] = 1
+    corrected[1, 1, 1] = 1  # added by cleanup
+    raw = np.zeros((4, 4, 4), dtype=bool)
+    raw[0, 0, 0] = True
+    group = ResultLayers().stage_finished(
+        "skeletonise",
+        SimpleNamespace(
+            image=corrected,
+            skeleton=np.zeros((4, 4, 4), dtype=bool),
+            voxel_size_xyz=(1.0, 1.0, 1.0),
+            voxel_size_zyx=(1.0, 1.0, 1.0),
+            raw_segmented_image=raw,
+        ),
+    )
+    _apply_layers(viewer, group)
+    return viewer, corrected, raw
+
+
+def test_segmentation_cleanup_toggle_is_offered_when_cleanup_ran(make_napari_viewer):
+    from haemolynx.gui._widget import (
+        SEGMENTATION_CLEANUP_ADDED_COLOUR,
+        SEGMENTATION_CLEANUP_UNCHANGED_COLOUR,
+        _layer_controls,
+    )
+
+    viewer, corrected, _raw = _run_with_raw_segmented_image(make_napari_viewer)
+    layer = viewer.layers[IMAGE]
+    controls = _layer_controls(viewer, layer)
+    checkbox = controls._haemolynx_segmentation_cleanup
+    assert checkbox.isEnabled()
+    assert checkbox.isChecked() is False
+    original_data = np.asarray(layer.data).copy()
+    original_colormap = layer.colormap
+    original_contrast_limits = layer.contrast_limits
+
+    checkbox.setChecked(True)
+    assert layer.data[0, 0, 0] == 1  # unchanged voxel
+    assert layer.data[1, 1, 1] == 2  # added by cleanup
+    assert tuple(layer.contrast_limits) == pytest.approx((0.0, 3.0))
+    assert layer.colormap.colors[1] == pytest.approx(SEGMENTATION_CLEANUP_UNCHANGED_COLOUR)
+    assert layer.colormap.colors[2] == pytest.approx(SEGMENTATION_CLEANUP_ADDED_COLOUR)
+
+    checkbox.setChecked(False)
+    np.testing.assert_array_equal(np.asarray(layer.data), original_data)
+    assert layer.colormap is original_colormap
+    assert tuple(layer.contrast_limits) == pytest.approx(tuple(original_contrast_limits))
+
+
+def test_segmentation_cleanup_toggle_is_not_offered_on_a_non_image_or_wrong_name_layer(
+    make_napari_viewer,
+):
+    from haemolynx.gui._widget import (
+        _attach_segmentation_cleanup_toggle,
+        settings_widget,
+    )
+
+    viewer = make_napari_viewer()
+    settings_widget(napari_viewer=viewer)
+    labels_layer = viewer.add_labels(
+        np.zeros((3, 3, 3), dtype=np.uint8), name="some_labels_layer"
+    )
+    assert _attach_segmentation_cleanup_toggle(viewer, labels_layer) is False
+
+    image_layer = viewer.add_image(
+        np.zeros((3, 3, 3), dtype=np.uint8), name="some_other_image_layer"
+    )
+    assert _attach_segmentation_cleanup_toggle(viewer, image_layer) is False
+
+
+def test_segmentation_cleanup_toggle_is_disabled_without_a_raw_mask(make_napari_viewer):
+    from haemolynx.gui._widget import _layer_controls, settings_widget
+
+    viewer = make_napari_viewer()
+    settings_widget(napari_viewer=viewer)
+    for group in a_run():
+        _apply_layers(viewer, group)
+
+    controls = _layer_controls(viewer, viewer.layers[IMAGE])
+    checkbox = getattr(controls, "_haemolynx_segmentation_cleanup", None)
+    assert checkbox is not None
+    assert checkbox.isEnabled() is False
+
+
+def test_segmentation_cleanup_toggle_turns_off_when_a_rerun_drops_the_raw_mask(
+    make_napari_viewer,
+):
+    from haemolynx.gui._widget import _layer_controls
+
+    viewer, _corrected, _raw = _run_with_raw_segmented_image(make_napari_viewer)
+    controls = _layer_controls(viewer, viewer.layers[IMAGE])
+    checkbox = controls._haemolynx_segmentation_cleanup
+    checkbox.setChecked(True)
+
+    plain_image = np.zeros((4, 4, 4), dtype=np.uint8)
+    plain_image[2, 2, 2] = 1
+    _apply_layers(
+        viewer,
+        ResultLayers().stage_finished(
+            "skeletonise",
+            SimpleNamespace(
+                image=plain_image,
+                skeleton=np.zeros((4, 4, 4), dtype=bool),
+                voxel_size_xyz=(1.0, 1.0, 1.0),
+                voxel_size_zyx=(1.0, 1.0, 1.0),
+            ),
+        ),
+    )
+
+    assert checkbox.isEnabled() is False
+    assert checkbox.isChecked() is False
+    layer = viewer.layers[IMAGE]
+    # Regression, matching the thick/thin toggle's own: the colormap and
+    # contrast limits must revert too, not just the data -- a rerun that
+    # drops the mask must not leave the layer stuck on the debug scheme.
+    assert layer.colormap is checkbox._haemolynx_default_colormap
+    assert tuple(layer.contrast_limits) == pytest.approx(
+        tuple(checkbox._haemolynx_default_contrast_limits)
+    )
+
+
+def test_segmentation_cleanup_toggle_composes_with_an_active_z_depth_window(
+    make_napari_viewer,
+):
+    from haemolynx.gui._widget import settings_widget, _layer_controls
+
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    corrected = np.zeros((4, 1, 4), dtype=np.uint8)
+    corrected[0, 0, 0] = 1
+    corrected[3, 0, 3] = 1
+    raw = np.zeros((4, 1, 4), dtype=bool)
+    raw[0, 0, 0] = True
+    results = ResultLayers()
+    group = results.stage_finished(
+        "skeletonise",
+        SimpleNamespace(
+            image=corrected,
+            skeleton=np.zeros((4, 1, 4), dtype=bool),
+            voxel_size_xyz=(1.0, 1.0, 1.0),
+            voxel_size_zyx=(1.0, 1.0, 1.0),
+            raw_segmented_image=raw,
+        ),
+    )
+    _apply_layers(viewer, group)
+    panel._haemolynx_view.results = results
+    panel._haemolynx_after_layers_applied()
+
+    layer = viewer.layers[IMAGE]
+    controls = _layer_controls(viewer, layer)
+    checkbox = controls._haemolynx_segmentation_cleanup
+
+    panel._haemolynx_z_depth_slider.setValue((0.0, 2.0))
+    checkbox.setChecked(True)
+    data = np.asarray(layer.data)
+    assert data[0, 0, 0] == 1  # unchanged, inside the window
+    assert data[3, 0, 3] == 0, "outside the Z-depth window: must stay clipped"
+
+    panel._haemolynx_z_depth_slider.setValue((0.0, 4.0))
+    data = np.asarray(layer.data)
+    assert data[0, 0, 0] == 1
+    assert data[3, 0, 3] == 2, "back in range, and still showing the cleanup diff"
+
+
+def test_z_depth_slider_is_not_mounted_in_layer_controls(make_napari_viewer):
+    from haemolynx.gui._widget import _layer_controls, settings_widget
+
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    for group in a_run():
+        _apply_layers(viewer, group)
+
+    slider = panel._haemolynx_z_depth_slider
+    for layer in viewer.layers:
+        controls = _layer_controls(viewer, layer)
+        if controls is None:
+            continue
+        ancestor = slider.parentWidget()
+        while ancestor is not None:
+            assert ancestor is not controls
+            ancestor = ancestor.parentWidget()
+
+
+def test_z_depth_filter_redraws_graph_layers_not_image(viewer):
+    """Left-panel Z-depth clips graph layers; volumes are clipped without MIP.
+
+    ``_apply_z_filter`` is still the graph-geometry half. Image/labels go
+    through the same window via the view-panel apply path, clipped, never
+    projected.
+    """
+    from haemolynx.gui._widget import settings_widget
+    from haemolynx.gui.results import ResultLayers
+
+    panel = settings_widget(napari_viewer=viewer)
+    results = ResultLayers()
+    groups = []
+    graph = a_graph()
+    groups.append(
+        results.stage_finished(
+            "skeletonise",
+            SimpleNamespace(
+                image=np.zeros((4, 4, 4), dtype=np.uint8),
+                skeleton=np.zeros((4, 4, 4), dtype=bool),
+                voxel_size_xyz=(0.5, 1.0, 2.0),
+                voxel_size_zyx=(2.0, 1.0, 0.5),
+            ),
+        )
+    )
+    groups.append(results.stage_finished("build_network", network(graph, (2.0, 1.0, 0.5))))
+    for group in groups:
+        _apply_layers(viewer, group)
+
+    image = np.zeros((4, 4, 4), dtype=np.uint8)
+    image[0] = 1
+    image[1] = 3
+    image[2] = 2
+    image[3] = 9
+    layer = viewer.layers[IMAGE]
+    layer.data = image
+    from haemolynx.gui._widget import _store_z_window_cache, data_for_pipeline
+
+    _store_z_window_cache(layer, image)
+    panel._haemolynx_view.results = results
+    panel._haemolynx_after_layers_applied()
+
+    full_z = 8.0
+    vessel_count = len(viewer.layers[VESSELS].data)
+    original = image.copy()
+
+    panel._haemolynx_z_depth_slider.setValue((0.0, 5.0))
+    assert len(viewer.layers[VESSELS].data) < vessel_count
+    displayed = np.asarray(layer.data)
+    np.testing.assert_array_equal(displayed[0], 1)
+    np.testing.assert_array_equal(displayed[1], 3)
+    np.testing.assert_array_equal(displayed[2], 2)
+    np.testing.assert_array_equal(displayed[3], 0)
+    np.testing.assert_array_equal(data_for_pipeline(layer), original)
+
+    panel._haemolynx_z_depth_slider.setValue((0.0, full_z))
+    assert len(viewer.layers[VESSELS].data) == vessel_count
+    np.testing.assert_array_equal(np.asarray(layer.data), original)
+
+
+def test_shrinking_the_z_depth_window_drains_qt_events_around_the_layer_recreate(
+    viewer, monkeypatch
+):
+    """Regression test for the same crash class as
+    test_clearing_processes_qt_events_before_and_between_each_removal, via a
+    different code path: narrowing the Z-depth window shrinks the visible
+    vessel count, and _set_z_filtered_layer_data recreates the Vectors layer
+    on shrink (viewer.layers.remove immediately followed by re-adding it) --
+    the exact same synchronous GL teardown _clear_our_layers was fixed to
+    protect, just reached by dragging the slider rather than starting a
+    second run. Cannot assert "did not crash" in a unit test, so this pins
+    the mitigation: the event queue is drained immediately before and after
+    the remove.
+    """
+    from haemolynx.gui import _widget as widget_mod
+    from haemolynx.gui._widget import settings_widget
+    from haemolynx.gui.results import ResultLayers
+
+    panel = settings_widget(napari_viewer=viewer)
+    results = ResultLayers()
+    graph = a_graph()
+    groups = [
+        results.stage_finished(
+            "skeletonise",
+            SimpleNamespace(
+                image=np.zeros((4, 4, 4), dtype=np.uint8),
+                skeleton=np.zeros((4, 4, 4), dtype=bool),
+                voxel_size_xyz=(0.5, 1.0, 2.0),
+                voxel_size_zyx=(2.0, 1.0, 0.5),
+            ),
+        ),
+        results.stage_finished("build_network", network(graph, (2.0, 1.0, 0.5))),
+    ]
+    for group in groups:
+        _apply_layers(viewer, group)
+    panel._haemolynx_view.results = results
+    panel._haemolynx_after_layers_applied()
+
+    vessel_count = len(viewer.layers[VESSELS].data)
+
+    calls: list[str] = []
+    real_remove = viewer.layers.remove
+
+    def spy_remove(*args, **kwargs):
+        calls.append("remove")
+        return real_remove(*args, **kwargs)
+
+    monkeypatch.setattr(viewer.layers, "remove", spy_remove)
+    monkeypatch.setattr(
+        widget_mod, "_process_pending_qt_events", lambda: calls.append("drain")
+    )
+
+    panel._haemolynx_z_depth_slider.setValue((0.0, 5.0))
+
+    assert len(viewer.layers[VESSELS].data) < vessel_count
+    assert "remove" in calls, "narrowing the window did not exercise the recreate path"
+    remove_index = calls.index("remove")
+    assert calls[remove_index - 1] == "drain", "no drain immediately before remove"
+    assert calls[remove_index + 1] == "drain", "no drain immediately after remove"
+
+
+def test_z_depth_filter_keeps_all_edges_at_default_full_slider(viewer):
+    from haemolynx.gui._widget import _apply_layers
+
+    results = ResultLayers()
+    graph = a_graph()
+    skel = results.stage_finished(
+        "skeletonise",
+        SimpleNamespace(
+            image=np.zeros((4, 4, 4), dtype=np.uint8),
+            skeleton=np.zeros((4, 4, 4), dtype=bool),
+            voxel_size_xyz=(0.5, 1.0, 2.0),
+            voxel_size_zyx=(2.0, 1.0, 0.5),
+        ),
+    )
+    build = results.stage_finished(
+        "build_network", network(graph, (2.0, 1.0, 0.5))
+    )
+    expected = len(spec_named(build, VESSELS).data)
+    for group in (skel, build):
+        _apply_layers(viewer, group)
+
+    assert results.image_z_extent_um() == pytest.approx(8.0)
+    assert len(viewer.layers[VESSELS].data) == expected
+
+
+def test_z_depth_extent_fallback_survives_a_vessel_tubes_surface_layer(viewer):
+    """``_z_extent_and_step`` falls back to scanning open layers
+    (``_viewer_z_extent_um``) whenever the panel's own
+    ``results.image_z_extent_um()`` has nothing to report -- exactly the
+    state here, since ``_apply_layers`` puts layers in the viewer without
+    also telling ``panel._haemolynx_view.results`` about them. That fallback
+    used to call ``np.asarray`` on every non-volume layer's ``.data``
+    unconditionally; a vessel-tubes Surface layer's data is a ragged
+    ``(vertices, faces, values)`` tuple, which raised ``ValueError`` the
+    moment tubes -- the default vessel-drawing mode -- were on screen, i.e.
+    every time the Z-depth slider's range gets (re)computed with a run's
+    results showing. See ``_viewer_z_extent_um``.
+    """
+    from haemolynx.gui._widget import settings_widget
+
+    panel = settings_widget(napari_viewer=viewer)
+    for group in a_run():
+        _apply_layers(viewer, group)
+
+    results = panel._haemolynx_view.results
+    assert results is None or results.image_z_extent_um() is None
+    assert VESSEL_TUBES in {layer.name for layer in viewer.layers}
+
+    with capture_exceptions() as raised:
+        panel._haemolynx_after_layers_applied()
+
+    assert [kind for kind, _value, _tb in raised] == []
+    assert panel._haemolynx_z_depth_slider.isEnabled()
+
+
+def test_z_depth_sync_survives_its_slider_widget_being_gone(viewer):
+    """On real production-scale data, a stage-completion callback has been
+    caught mid-run with the Z-depth slider's underlying Qt widget already
+    deleted (``RuntimeError: wrapped C/C++ object of type QDoubleSlider has
+    been deleted``) while the Python DoubleRangePair wrapper itself was
+    still alive -- not reproducible in a fast synthetic test even through
+    the real threaded run path, but directly forceable here by deleting
+    the wrapped widget. Uncaught, that RuntimeError is raised inside a
+    Qt-queued slot, where PyQt/PySide print it and move on rather than
+    propagating it -- silently skipping the rest of the sync (in
+    particular ``slider.setEnabled(True)``) and repeating identically on
+    every later stage of the run. _sync_z_depth_slider must catch it and
+    degrade to an inert slider instead.
+    """
+    from haemolynx.gui._widget import _sync_z_depth_slider, settings_widget
+    from qtpy.QtCore import QEvent
+    from qtpy.QtWidgets import QApplication
+
+    panel = settings_widget(napari_viewer=viewer)
+    slider = panel._haemolynx_z_depth_slider
+    results = ResultLayers()
+    results.stage_finished(
+        "skeletonise",
+        SimpleNamespace(
+            image=np.zeros((4, 4, 4), dtype=np.uint8),
+            skeleton=np.zeros((4, 4, 4), dtype=bool),
+            voxel_size_xyz=(1.0, 1.0, 1.0),
+            voxel_size_zyx=(1.0, 1.0, 1.0),
+        ),
+    )
+
+    slider._lo.deleteLater()
+    # A plain processEvents() does not reliably deliver a DeferredDelete
+    # outside a real running event loop; force it so the widget is
+    # actually gone, matching what happens by the time a real run's
+    # stage-completion callback reaches this slider.
+    QApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+
+    with capture_exceptions() as raised:
+        _sync_z_depth_slider(slider, results, viewer)
+
+    assert [kind for kind, _value, _tb in raised] == []
+
+
+def test_apply_view_z_survives_its_slider_widget_being_gone(viewer):
+    """The other direct touch: apply_view_z reads
+    ``z_depth_slider.isEnabled()``/``.value()`` itself before ever calling
+    _sync_z_depth_slider (see
+    test_z_depth_sync_survives_its_slider_widget_being_gone for why that
+    matters). ``isEnabled()`` is inherited straight from QWidget, so it
+    reliably raises once the wrapped Qt object is gone -- unlike
+    DoubleRangePair's own pure-Python ``value()``, which this Qt binding
+    lets run to completion on a dead object and return a stale default
+    instead of raising, so it cannot be used to force this test's failure.
+    """
+    from haemolynx.gui._widget import settings_widget
+    from qtpy.QtCore import QEvent
+    from qtpy.QtWidgets import QApplication
+
+    panel = settings_widget(napari_viewer=viewer)
+    for group in a_run():
+        _apply_layers(viewer, group)
+    results = ResultLayers()
+    results.stage_finished(
+        "skeletonise",
+        SimpleNamespace(
+            image=np.zeros((4, 4, 4), dtype=np.uint8),
+            skeleton=np.zeros((4, 4, 4), dtype=bool),
+            voxel_size_xyz=(1.0, 1.0, 1.0),
+            voxel_size_zyx=(1.0, 1.0, 1.0),
+        ),
+    )
+    panel._haemolynx_view.results = results
+    panel._haemolynx_after_layers_applied()
+    assert panel._haemolynx_z_depth_slider.isEnabled()
+
+    panel._haemolynx_z_depth_slider.deleteLater()
+    QApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+
+    with capture_exceptions() as raised:
+        panel._haemolynx_apply_view_z(force=True)
+
+    assert [kind for kind, _value, _tb in raised] == []
 
 
 # --- the colour-by dropdowns learn what a stage made available ---------------
@@ -353,6 +1663,69 @@ def test_branch_order_then_flow_does_not_raise_keyerror_nan(make_napari_viewer):
     assert len(layer.edge_color) == len(layer.data)
 
 
+def test_all_nan_flow_stays_flat_grey_not_colormap(make_napari_viewer):
+    """Solve colours by flow_abs; sparse/no conductance can leave every value NaN.
+
+    Entering colormap mode on an all-NaN column is what used to raise
+    `KeyError: nan`; on some Qt builds it aborts the process instead, which
+    `_apply_layers` cannot catch.
+    """
+    from haemolynx.gui._widget import UNCOLOURED, _apply_layers, settings_widget
+
+    viewer = make_napari_viewer()
+    settings_widget(napari_viewer=viewer)
+    graph = a_graph(conductance=1e-18, branch_order="BO1")
+    results = ResultLayers()
+    _apply_layers(viewer, results.stage_finished("assign_diameters", SimpleNamespace(graph=graph)))
+    layer = viewer.layers[VESSELS]
+    features = dict(layer.features)
+    features["flow_abs"] = np.full(len(layer.data), np.nan)
+    layer.features = features
+
+    _apply_layers(
+        viewer,
+        results.stage_finished(
+            "solve",
+            SimpleNamespace(
+                graph=graph,
+                node_list=list(graph.nodes),
+                pressure=np.array([1000.0, 900.0, 700.0, 500.0]),
+                equivalent_resistance=1e18,
+            ),
+        ),
+    )
+
+    assert len(np.unique(np.asarray(layer.edge_color), axis=0)) == 1
+    assert UNCOLOURED == "#cccccc"
+
+
+def test_solve_stage_apply_after_diameters_with_panel(make_napari_viewer):
+    """The path that runs right after ``Stage 7/9 done: Solve`` in the infolog."""
+    from haemolynx.gui._widget import _apply_layers, settings_widget
+
+    viewer = make_napari_viewer()
+    settings_widget(napari_viewer=viewer)
+    graph = a_graph(conductance=1e-18, resistance=1e18, branch_order="BO1")
+    for _u, _v, _k, data in graph.edges(keys=True, data=True):
+        data["flow_abs"] = 5e-16
+        data["flow_signed"] = 5e-16
+    results = ResultLayers()
+    _apply_layers(viewer, results.stage_finished("assign_diameters", SimpleNamespace(graph=graph)))
+    _apply_layers(
+        viewer,
+        results.stage_finished(
+            "solve",
+            SimpleNamespace(
+                graph=graph,
+                node_list=list(graph.nodes),
+                pressure=np.array([1000.0, 900.0, 700.0, 500.0]),
+                equivalent_resistance=1e18,
+            ),
+        ),
+    )
+    assert viewer.layers[VESSELS].edge_color_mode == "colormap"
+
+
 def test_flow_then_branch_order_does_not_raise_either(make_napari_viewer):
     """The mirror image: colormap mode meeting a text column."""
     from haemolynx.gui._widget import _colour_layer
@@ -369,6 +1742,44 @@ def test_flow_then_branch_order_does_not_raise_either(make_napari_viewer):
     _colour_layer(layer, "branch_order", "categorical",
                   (("BO1", (1.0, 0.0, 0.0, 1.0)),))
     assert layer.edge_color_mode == "direct"      # see the note above
+    assert len(layer.edge_color) == len(layer.data)
+
+
+def test_vascular_community_then_flow_does_not_raise_either(make_napari_viewer):
+    """Switching the vessels layer to the new domain colouring, then to a
+    continuous column, must not crash -- same categorical/colormap
+    mode-switch hazard `test_branch_order_then_flow_does_not_raise_keyerror_nan`
+    guards against, now via the real export_results path (graph.assign_vascular_communities
+    + ResultLayers._from_export_results's own re-emission of the vessels layer)."""
+    from haemolynx.gui._widget import _colour_layer
+
+    viewer = make_napari_viewer()
+    graph = a_graph(conductance=1e-18)
+    for _u, _v, _k, data in graph.edges(keys=True, data=True):
+        data["flow_abs"] = 5e-16
+        data["vascular_community"] = "D01"
+    results = ResultLayers()
+    _apply_layers(viewer, results.stage_finished("build_network", network(graph)))
+    _apply_layers(
+        viewer,
+        results.stage_finished(
+            "solve",
+            SimpleNamespace(node_list=list(graph.nodes),
+                            pressure=np.array([1000.0, 900.0, 700.0, 500.0])),
+        ),
+    )
+    _apply_layers(
+        viewer, results.stage_finished("export_results", SimpleNamespace(graph=graph))
+    )
+    layer = viewer.layers[VESSELS]
+    assert list(layer.features["vascular_community"]) == ["D01", "D01", "D01"]
+
+    _colour_layer(layer, "vascular_community", "categorical",
+                  (("D01", (1.0, 0.0, 0.0, 1.0)),))
+    assert layer.edge_color_mode == "direct"
+
+    _colour_layer(layer, "flow_abs", "continuous")
+    assert layer.edge_color_mode == "colormap"
     assert len(layer.edge_color) == len(layer.data)
 
 
@@ -784,13 +2195,80 @@ def test_the_node_dropdown_gains_columns_as_stages_land(make_napari_viewer):
     assert "something_new" in offered
 
 
-def test_the_vessels_keep_napari_s_own_dropdown(make_napari_viewer):
-    """Vectors already has "edge feature:"; do not add a second one."""
+def test_the_vessels_get_a_refreshed_colour_by_dropdown(make_napari_viewer):
+    """Napari's own edge-feature box is filled once and hides in direct mode."""
     from haemolynx.gui._widget import _layer_controls
 
     viewer, vessels, _scale = a_drawn_run(make_napari_viewer)
-    assert getattr(_layer_controls(viewer, vessels), "_haemolynx_feature", None) is None
+    chooser = getattr(_layer_controls(viewer, vessels), "_haemolynx_feature", None)
+    assert chooser is not None
+    offered = [chooser.native.itemText(i) for i in range(chooser.native.count())]
+    assert "length" in offered
+    assert "segment_id" in offered
 
+
+def test_the_colormap_attribute_is_one_napari_actually_has(make_napari_viewer):
+    """Same trap as contrast limits: ``edge_color_colormap`` is a no-op setattr."""
+    viewer, vessels, _scale = a_drawn_run(make_napari_viewer)
+    nodes = viewer.layers[NODES]
+    assert hasattr(vessels, "edge_colormap")
+    assert hasattr(nodes, "face_colormap")
+    assert not hasattr(type(vessels), "edge_color_colormap")
+    assert not hasattr(type(nodes), "face_color_colormap")
+
+
+def test_the_vessels_and_nodes_get_a_colormap_dropdown(make_napari_viewer):
+    from haemolynx.gui._widget import (
+        _COLORMAP_GROUP_HEADERS,
+        _layer_controls,
+        colormap_choices,
+    )
+
+    viewer, vessels, _scale = a_drawn_run(make_napari_viewer)
+    vessel_maps = _layer_controls(viewer, vessels)._haemolynx_colormap
+    node_maps = _layer_controls(viewer, viewer.layers[NODES])._haemolynx_colormap
+    assert vessel_maps is not None and node_maps is not None
+    offered = [
+        vessel_maps.native.itemText(i)
+        for i in range(vessel_maps.native.count())
+        if vessel_maps.native.itemText(i)
+        and vessel_maps.native.itemText(i) not in _COLORMAP_GROUP_HEADERS
+    ]
+    required = {
+        "viridis", "plasma", "inferno", "magma", "cividis", "turbo", "gray",
+        "coolwarm", "RdBu", "seismic", "PiYG",
+        "hsv", "twilight", "twilight_shifted",
+        "jet", "rainbow", "hot", "cool", "spring", "summer", "autumn", "winter",
+        "bone", "copper", "pink",
+    }
+    assert required <= set(offered)
+    assert set(offered) <= set(colormap_choices())
+    assert vessel_maps.shown is True
+    assert node_maps.shown is True
+    assert _colormap_name(vessels) == "viridis"
+    assert vessel_maps.native.currentText() == "viridis"
+
+
+def test_vessel_colormap_combo_changes_the_layer_lut(make_napari_viewer):
+    from haemolynx.gui._widget import _layer_controls
+
+    viewer, vessels, _scale = a_drawn_run(make_napari_viewer)
+    chooser = _layer_controls(viewer, vessels)._haemolynx_colormap
+    before = np.array(vessels.edge_color, copy=True)
+    chooser.native.setCurrentText("plasma")
+    assert _colormap_name(vessels) == "plasma"
+    assert not np.allclose(before, np.asarray(vessels.edge_color))
+
+
+def test_a_text_column_hides_the_colormap_dropdown(make_napari_viewer):
+    from haemolynx.gui._widget import _layer_controls
+
+    viewer, _vessels, _scale = a_drawn_run(make_napari_viewer, branch_order="BO1")
+    layer = viewer.layers[VESSELS]
+    controls = _layer_controls(viewer, layer)
+    controls._haemolynx_feature.native.setCurrentText("branch_order")
+    assert controls._haemolynx_colormap.shown is False
+    assert layer.edge_color_mode == "direct"
 
 def test_a_text_column_is_recognised_by_its_data_not_its_name(make_napari_viewer):
     """Choosing "role" raised `could not convert string to float: 'inlet'`.
@@ -830,3 +2308,352 @@ def test_a_text_column_has_no_range(make_napari_viewer):
     _viewer, layer, _scale = a_drawn_run(make_napari_viewer, branch_order="BO1")
     assert _data_range(layer, "branch_order") is None
     assert _data_range(layer, "length") is not None
+
+
+def test_flow_direction_layer_gets_length_from_schema_at_draw_time(make_napari_viewer):
+    """Initial arrow scale comes from settings; napari's length control adjusts it."""
+    from test_gui_flow_direction import _built_with_flows, _two_node_edge
+
+    viewer = make_napari_viewer()
+    graph = _two_node_edge(flow_signed=1.0)
+    results = _built_with_flows(
+        graph,
+        flow_arrow_scale=2.5,
+    )
+    group = results.stage_finished("export_results", SimpleNamespace())
+    _apply_layers(viewer, group)
+
+    layer = viewer.layers[FLOW_DIRECTION]
+    assert layer.length == pytest.approx(2.5)
+
+    layer.length = 0.8
+    assert layer.length == pytest.approx(0.8)
+
+
+def test_solved_vessel_features_include_flow_abs_and_log10(make_napari_viewer):
+    from haemolynx.haemodynamics.resistance import flow_abs_log10_value
+
+    viewer = make_napari_viewer()
+    for group in _solved_run():
+        _apply_layers(viewer, group)
+    vessels = viewer.layers[VESSELS]
+    assert "flow_abs" in vessels.features
+    assert "flow_abs_log10" in vessels.features
+    flow = np.asarray(vessels.features["flow_abs"], dtype=float)
+    log10 = np.asarray(vessels.features["flow_abs_log10"], dtype=float)
+    finite = np.isfinite(flow)
+    assert np.any(finite)
+    expected = np.array([flow_abs_log10_value(v) for v in flow[finite]], dtype=float)
+    np.testing.assert_allclose(log10[finite], expected)
+
+
+def test_flow_direction_layer_features_include_direction_components(make_napari_viewer):
+    from test_gui_flow_direction import _built_with_flows, _two_node_edge
+
+    viewer = make_napari_viewer()
+    graph = _two_node_edge(flow_signed=1.0)
+    results = _built_with_flows(graph)
+    group = results.stage_finished("export_results", SimpleNamespace())
+    _apply_layers(viewer, group)
+
+    layer = viewer.layers[FLOW_DIRECTION]
+    assert "flow_dir_z" in layer.features
+    assert "flow_dir_rgb" in layer.features
+    assert float(np.asarray(layer.features["flow_dir_z"])[0]) == pytest.approx(1.0)
+
+
+def test_vessel_colour_by_combo_switches_to_flow_abs_log10(make_napari_viewer):
+    from haemolynx.gui._widget import _active_column, _layer_controls
+
+    viewer = make_napari_viewer()
+    for group in _solved_run():
+        _apply_layers(viewer, group)
+    vessels = viewer.layers[VESSELS]
+    chooser = _layer_controls(viewer, vessels)._haemolynx_feature
+    offered = [chooser.native.itemText(i) for i in range(chooser.native.count())]
+    assert "flow_abs_log10" in offered
+
+    chooser.native.setCurrentText("flow_abs_log10")
+    assert _active_column(vessels) == "flow_abs_log10"
+    assert vessels.edge_color_mode == "colormap"
+
+
+def test_the_vessels_colour_by_branch_order_from_the_dropdown_as_tubes_and_lines(
+    make_napari_viewer,
+):
+    """Branch order sits beside flow in the vessels' own Colour by list: its
+    rank along the flow path and its signed generations from the capillary
+    bed colour with a colour map, range and bar like flow does, its label
+    with one colour per order -- and the tube mesh carries exactly the lines'
+    colours every way, drawn as tubes or as lines."""
+    from haemolynx.gui._widget import (
+        _active_column, _layer_controls, settings_widget,
+    )
+    from haemolynx.gui.results import BRANCH_ORDER_RANK, BRANCH_ORDER_SIGNED
+
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    graph = a_graph()
+    for (u, v, key), order in zip(graph.edges(keys=True), ("Art1", "B01", "Ven1")):
+        graph.edges[u, v, key]["branch_order"] = order
+    _apply_layers(viewer, ResultLayers().stage_finished("build_network", network(graph)))
+    vessels = viewer.layers[VESSELS]
+    controls = _layer_controls(viewer, vessels)
+    chooser = controls._haemolynx_feature
+    offered = [chooser.native.itemText(i) for i in range(chooser.native.count())]
+    first = offered.index(BRANCH_ORDER_RANK)
+    assert offered[:first] == [c for c in ("flow_abs", "flow_abs_log10") if c in offered]
+    assert offered[first:first + 3] == [BRANCH_ORDER_RANK, BRANCH_ORDER_SIGNED, "branch_order"]
+
+    def tube_colours_follow_the_lines():
+        tubes = viewer.layers[VESSEL_TUBES]
+        segment = np.asarray(tubes.metadata["haemolynx"]["segment_index"])
+        np.testing.assert_allclose(
+            np.asarray(tubes.vertex_colors)[:, :3],
+            np.asarray(vessels.edge_color)[segment][:, :3],
+            atol=1e-6,
+        )
+
+    def colour_per_order():
+        colours = {}
+        for order, rgba in zip(vessels.features["branch_order"], np.asarray(vessels.edge_color)):
+            colours.setdefault(order, set()).add(tuple(np.round(rgba, 4)))
+        assert all(len(each) == 1 for each in colours.values())
+        return {order: next(iter(each)) for order, each in colours.items()}
+
+    for column, expected in (
+        (BRANCH_ORDER_RANK, {"Art1": 1.0, "B01": 2.0, "Ven1": 3.0}),
+        (BRANCH_ORDER_SIGNED, {"Art1": -1.0, "B01": 0.0, "Ven1": 1.0}),
+    ):
+        chooser.native.setCurrentText(column)
+        assert _active_column(vessels) == column
+        assert vessels.edge_color_mode == "colormap"
+        assert controls._haemolynx_colormap.shown is True
+        values = dict(zip(vessels.features["branch_order"], vessels.features[column]))
+        assert values == expected
+        assert len(set(colour_per_order().values())) == 3
+        tube_colours_follow_the_lines()
+    # Signed: a diverging map, centred on the capillary bed, the arterial side
+    # red and the venous blue, as the vessel masks are drawn (coolwarm had
+    # them the other way round).
+    assert _colormap_name(vessels) == "RdBu"
+    assert tuple(vessels.edge_contrast_limits) == (-1.0, 1.0)
+    signed_colours = colour_per_order()
+    art, ven = signed_colours["Art1"], signed_colours["Ven1"]
+    assert art[0] > art[2] and ven[2] > ven[0]
+
+    chooser.native.setCurrentText("branch_order")
+    assert _active_column(vessels) == "branch_order"
+    assert controls._haemolynx_colormap.shown is False
+    by_order = colour_per_order()
+    assert len(set(by_order.values())) == 3
+    tube_colours_follow_the_lines()
+
+    panel._haemolynx_vessel_draw.setCurrentText("Lines")
+    assert vessels.visible is True and viewer.layers[VESSEL_TUBES].visible is False
+    assert colour_per_order() == by_order
+    panel._haemolynx_vessel_draw.setCurrentText("Tubes")
+    assert viewer.layers[VESSEL_TUBES].visible is True
+    tube_colours_follow_the_lines()
+
+
+#: Every tier, in the order blood passes it. Ven and Large_Ven are numbered
+#: from the outlet (graph.branch_order), so along the path they count down.
+FLOW_PATH = ["Large_Art1", "Large_Art2", "Art1", "Art2", "B01", "B02",
+             "Ven2", "Ven1", "Large_Ven2", "Large_Ven1"]
+
+
+def test_branch_order_rank_follows_the_flow_path_across_tiers():
+    """Art1, B01 and Ven1 are three different places; their bare number (1)
+    is not. The rank is each label's place along the path blood takes."""
+    from haemolynx.gui.results import branch_order_rank_values
+
+    shuffled = ["Ven1", "B02", "Large_Art2", "Art1", "Large_Ven1", "B01",
+                "Art2", "Large_Ven2", "Large_Art1", "Ven2", "", "Ven1"]
+    ranks = dict(zip(shuffled, branch_order_rank_values(shuffled)))
+    assert [label for label in FLOW_PATH] == sorted(FLOW_PATH, key=ranks.get)
+    assert [ranks[label] for label in FLOW_PATH] == list(range(1, 11))
+    assert np.isnan(ranks[""])
+
+
+def test_branch_order_signed_counts_generations_from_the_capillary_bed():
+    """Capillaries 0; the arteriole feeding them -1, counting up the arterial
+    tree to the inlet; the venule draining them +1, counting down the venous
+    tree to the outlet."""
+    from haemolynx.gui.results import branch_order_signed_values
+
+    signed = dict(zip(FLOW_PATH, branch_order_signed_values(FLOW_PATH)))
+    assert signed == {
+        "Large_Art1": -4.0, "Large_Art2": -3.0, "Art1": -2.0, "Art2": -1.0,
+        "B01": 0.0, "B02": 0.0,
+        "Ven2": 1.0, "Ven1": 2.0, "Large_Ven2": 3.0, "Large_Ven1": 4.0,
+    }
+    # No Art tier: the large arterioles feed the capillaries themselves.
+    assert list(branch_order_signed_values(["Large_Art1", "Large_Art2", "B01"])) == [-2.0, -1.0, 0.0]
+    assert np.isnan(branch_order_signed_values(["segment"])[0])
+
+
+def test_the_branch_order_palette_runs_inlet_to_outlet():
+    """The venous tiers are numbered from the outlet; sorted by that number
+    the palette doubled back, putting Ven1 -- next to the outlet -- beside
+    the capillaries."""
+    from haemolynx.gui.results import colour_cycle_for
+
+    assert [label for label, _colour in colour_cycle_for(reversed(FLOW_PATH))] == FLOW_PATH
+    # Other text columns keep a plain order.
+    assert [label for label, _c in colour_cycle_for(["outlet", "inlet"])] == ["inlet", "outlet"]
+
+
+def test_arrow_size_slider_mounts_on_flow_direction_layer(make_napari_viewer):
+    from haemolynx.gui._widget import _layer_controls, settings_widget
+    from test_gui_flow_direction import _built_with_flows, _two_node_edge
+
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    graph = _two_node_edge(flow_signed=1.0)
+    results = _built_with_flows(graph, flow_arrow_scale=2.0)
+    group = results.stage_finished("export_results", SimpleNamespace())
+    panel._haemolynx_view.results = results
+    _apply_layers(viewer, group)
+
+    host = panel._haemolynx_arrow_length_host
+    slider = panel._haemolynx_arrow_length_slider
+    viewer.layers.selection.active = viewer.layers[FLOW_DIRECTION]
+    panel._haemolynx_reparent_arrow_length()
+    controls = _layer_controls(viewer, viewer.layers[FLOW_DIRECTION])
+    assert controls is not None
+    assert host.parentWidget() is controls
+    assert slider.isEnabled()
+    assert slider.value() == pytest.approx(2.0)
+
+
+def test_arrow_size_slider_updates_layer_length_live(make_napari_viewer):
+    from haemolynx.gui._widget import settings_widget
+    from test_gui_flow_direction import _built_with_flows, _two_node_edge
+
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    graph = _two_node_edge(flow_signed=1.0)
+    results = _built_with_flows(graph)
+    group = results.stage_finished("export_results", SimpleNamespace())
+    _apply_layers(viewer, group)
+    layer = viewer.layers[FLOW_DIRECTION]
+    viewer.layers.selection.active = layer
+    panel._haemolynx_reparent_arrow_length()
+
+    panel._haemolynx_arrow_length_slider.setValue(3.5)
+    assert layer.length == pytest.approx(3.5)
+
+
+def test_user_arrow_length_survives_layer_refresh(make_napari_viewer):
+    from haemolynx.gui._widget import settings_widget
+    from test_gui_flow_direction import _built_with_flows, _two_node_edge
+
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    graph = _two_node_edge(flow_signed=1.0)
+    results = _built_with_flows(
+        graph, flow_arrow_scale=1.0,
+    )
+    group = results.stage_finished("export_results", SimpleNamespace())
+    _apply_layers(viewer, group)
+    layer = viewer.layers[FLOW_DIRECTION]
+    viewer.layers.selection.active = layer
+    panel._haemolynx_reparent_arrow_length()
+    panel._haemolynx_arrow_length_slider.setValue(4.2)
+
+    _apply_layers(viewer, group)
+    assert viewer.layers[FLOW_DIRECTION].length == pytest.approx(4.2)
+
+
+# --- drawing a stage without redoing what has not changed ---------------------
+
+
+def test_recolouring_the_tubes_keeps_their_mesh_normals(viewer):
+    """A recolour changes colours only. Through napari's data path it had vispy
+    recompute every vertex normal, 0.4-0.8 s a time on a real network, several
+    times a stage."""
+    from haemolynx.gui._widget import _colour_layer
+
+    for group in a_run():
+        _apply_layers(viewer, group)
+    assert viewer.dims.ndisplay == 3
+    tubes = viewer.layers[VESSEL_TUBES]
+    mesh = viewer.window._qt_viewer.layer_to_visual[tubes].node.mesh_data
+    normals = mesh.get_vertex_normals(indexed="faces")
+
+    _colour_layer(viewer.layers[VESSELS], "none")
+
+    assert mesh.get_vertex_normals(indexed="faces") is normals, "no recompute"
+    edge = np.asarray(viewer.layers[VESSELS].edge_color)
+    np.testing.assert_allclose(mesh.get_vertex_colors()[0, :3], edge[0, :3], atol=0.05)
+    np.testing.assert_allclose(np.asarray(tubes.vertex_colors)[0, :3], edge[0, :3], atol=0.05)
+
+
+def test_a_stage_that_leaves_the_vessels_alone_keeps_the_tube_mesh(viewer, monkeypatch):
+    """Every stage ended by rebuilding the tubes, even one drawing nothing."""
+    from haemolynx.gui import _widget as widget_mod
+
+    for group in a_run():
+        _apply_layers(viewer, group)
+    built = []
+    real = widget_mod.vessel_tube_mesh
+    monkeypatch.setattr(widget_mod, "vessel_tube_mesh",
+                        lambda *a, **k: built.append(1) or real(*a, **k))
+    vertices = np.asarray(viewer.layers[VESSEL_TUBES].vertices).copy()
+
+    _apply_layers(viewer, StageLayers(stage="post_process", title="7. Post processing"))
+    assert built == []
+    np.testing.assert_array_equal(viewer.layers[VESSEL_TUBES].vertices, vertices)
+
+    # New widths are a new mesh.
+    vessels = viewer.layers[VESSELS]
+    features = dict(vessels.features)
+    features["diameter_um"] = np.full(len(vessels.data), 9.0)
+    vessels.features = features
+    _apply_layers(viewer, StageLayers(stage="solve", title="Solve"))
+    assert built == [1]
+
+
+def test_a_full_range_depth_filter_leaves_fresh_layers_alone(viewer, monkeypatch):
+    """At full range the filter is the identity, yet it rewrote every graph
+    layer and rebuilt the tubes after each stage."""
+    from haemolynx.gui import _widget as widget_mod
+
+    for group in a_run():
+        _apply_layers(viewer, group)
+    rewrites = []
+    real = widget_mod._set_z_filtered_layer_data
+    monkeypatch.setattr(widget_mod, "_set_z_filtered_layer_data",
+                        lambda viewer, layer, *a: rewrites.append(layer.name) or real(viewer, layer, *a))
+
+    widget_mod._apply_z_filter(viewer, 0.0, 100.0, z_extent=100.0)
+    assert rewrites == []
+
+    widget_mod._apply_z_filter(viewer, 0.0, 15.0, z_extent=100.0)
+    assert VESSELS in rewrites
+    narrowed = len(viewer.layers[VESSELS].data)
+    rewrites.clear()
+    widget_mod._apply_z_filter(viewer, 0.0, 100.0, z_extent=100.0)
+    assert VESSELS in rewrites, "back to full range puts the rest back"
+    assert len(viewer.layers[VESSELS].data) > narrowed
+
+
+def test_an_unchanged_volume_is_not_sent_again(viewer):
+    """Most stages hand back the image as it was; setting it again re-sliced
+    and re-uploaded the whole volume."""
+    image = np.zeros((4, 4, 4), dtype=np.uint8)
+    image[1, 1, 1] = 1
+    spec = LayerSpec(kind="image", name=IMAGE, data=image, scale=(1.0, 1.0, 1.0))
+    _add_or_update(viewer, spec)
+    sent = []
+    viewer.layers[IMAGE].events.data.connect(lambda *_: sent.append(1))
+
+    _add_or_update(viewer, LayerSpec(kind="image", name=IMAGE, data=image.copy(),
+                                     scale=(1.0, 1.0, 1.0)))
+    assert sent == []
+    changed = image.copy()
+    changed[2, 2, 2] = 1
+    _add_or_update(viewer, LayerSpec(kind="image", name=IMAGE, data=changed,
+                                     scale=(1.0, 1.0, 1.0)))
+    assert sent and int(viewer.layers[IMAGE].data[2, 2, 2]) == 1

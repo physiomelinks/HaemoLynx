@@ -8,6 +8,7 @@ and the schema the config file is generated from.
 """
 from __future__ import annotations
 
+from copy import deepcopy
 import sys
 from pathlib import Path
 
@@ -28,6 +29,7 @@ from haemolynx.haemodynamics.apply import (  # noqa: E402
 from haemolynx.haemodynamics.pericyte_comparison import (  # noqa: E402
     compare_baseline_vs_pericyte_constriction,
 )
+from haemolynx.haemodynamics import probability as probability_mod  # noqa: E402
 from haemolynx.pipeline import default_schema  # noqa: E402
 from haemolynx.haemodynamics.probability import (  # noqa: E402
     resolve_generator,
@@ -227,6 +229,123 @@ def test_apply_poiseuille_haemodynamics_unseeded_still_varies():
         for _ in range(4)
     ]
     assert any(run != runs[0] for run in runs[1:])
+
+
+def test_reuse_comparison_pericyte_cohort_for_main_run(tmp_path):
+    """Library apply path reuses the comparison constricted map when toggled.
+
+    Pipeline baseline forces ``do_pericyte_construction`` /
+    ``run_pericyte_resistance_comparison`` off (see isolation tests), so the
+    image-to-model integration path no longer exercises reuse. The setting
+    still lives in ``apply.py`` for direct / typed construction callers; this
+    pins that behaviour (call counts, map equality, comparison CSV).
+    """
+    probabilistic_call_args: list[dict | None] = []
+    original_probabilistic = (
+        probability_mod.set_poiseuille_resistances_with_probabilistic_periodic_constrictions
+    )
+
+    def _recording_probabilistic(*args, **kwargs):
+        kwargs = dict(kwargs)
+        active_map = kwargs.get("active_center_indices_by_edge")
+        probabilistic_call_args.append(
+            deepcopy(active_map) if active_map is not None else None
+        )
+        return original_probabilistic(*args, **kwargs)
+
+    comparison_csv = tmp_path / "pericyte_resistance_comparison.csv"
+    config = HaemodynamicsApplyConfig(
+        diameters={
+            "diameter_by_branch_order": DIAMETERS,
+            "constriction_by_branch_order": CONSTRICTION_FACTORS,
+            "do_pericyte_construction": True,
+            "use_pericyte_mask_constriction": False,
+            "use_probabilistic_pericyte_constriction": True,
+            "pericyte_constriction_probability": 0.5,
+            "run_pericyte_resistance_comparison": True,
+            "reuse_comparison_pericyte_cohort_for_main_run": True,
+            "pericyte_comparison_baseline_value": 1.0,
+            "pericyte_comparison_constricted_value": 0.6,
+            "pericyte_constriction_seed": 1234,
+            "viscosity_law": "constant",
+        },
+        comparison_output_csv_path=comparison_csv,
+        resistance_node_pair=(0, 3),
+    )
+
+    probability_mod.set_poiseuille_resistances_with_probabilistic_periodic_constrictions = (  # type: ignore[attr-defined]
+        _recording_probabilistic
+    )
+    try:
+        apply_poiseuille_haemodynamics(_chain_graph(), config=config)
+    finally:
+        probability_mod.set_poiseuille_resistances_with_probabilistic_periodic_constrictions = (  # type: ignore[attr-defined]
+            original_probabilistic
+        )
+
+    # Expect 3 calls:
+    # 1) comparison baseline (None),
+    # 2) comparison constricted (fixed non-empty map),
+    # 3) final main run (same fixed map when reuse toggle is True).
+    assert len(probabilistic_call_args) == 3
+    assert probabilistic_call_args[0] is None
+    assert isinstance(probabilistic_call_args[1], dict)
+    assert isinstance(probabilistic_call_args[2], dict)
+    assert probabilistic_call_args[1] == probabilistic_call_args[2]
+    assert any(len(v) > 0 for v in probabilistic_call_args[1].values())
+    assert comparison_csv.exists()
+
+
+def test_without_reuse_main_run_does_not_receive_comparison_map(tmp_path):
+    """With reuse off, the main assign call gets ``active_center_indices_by_edge=None``."""
+    probabilistic_call_args: list[dict | None] = []
+    original_probabilistic = (
+        probability_mod.set_poiseuille_resistances_with_probabilistic_periodic_constrictions
+    )
+
+    def _recording_probabilistic(*args, **kwargs):
+        kwargs = dict(kwargs)
+        active_map = kwargs.get("active_center_indices_by_edge")
+        probabilistic_call_args.append(
+            deepcopy(active_map) if active_map is not None else None
+        )
+        return original_probabilistic(*args, **kwargs)
+
+    comparison_csv = tmp_path / "pericyte_resistance_comparison_no_reuse.csv"
+    config = HaemodynamicsApplyConfig(
+        diameters={
+            "diameter_by_branch_order": DIAMETERS,
+            "constriction_by_branch_order": CONSTRICTION_FACTORS,
+            "do_pericyte_construction": True,
+            "use_pericyte_mask_constriction": False,
+            "use_probabilistic_pericyte_constriction": True,
+            "pericyte_constriction_probability": 0.5,
+            "run_pericyte_resistance_comparison": True,
+            "reuse_comparison_pericyte_cohort_for_main_run": False,
+            "pericyte_comparison_baseline_value": 1.0,
+            "pericyte_comparison_constricted_value": 0.6,
+            "pericyte_constriction_seed": 1234,
+            "viscosity_law": "constant",
+        },
+        comparison_output_csv_path=comparison_csv,
+        resistance_node_pair=(0, 3),
+    )
+
+    probability_mod.set_poiseuille_resistances_with_probabilistic_periodic_constrictions = (  # type: ignore[attr-defined]
+        _recording_probabilistic
+    )
+    try:
+        apply_poiseuille_haemodynamics(_chain_graph(), config=config)
+    finally:
+        probability_mod.set_poiseuille_resistances_with_probabilistic_periodic_constrictions = (  # type: ignore[attr-defined]
+            original_probabilistic
+        )
+
+    assert len(probabilistic_call_args) == 3
+    assert probabilistic_call_args[0] is None
+    assert isinstance(probabilistic_call_args[1], dict)
+    assert probabilistic_call_args[2] is None
+    assert comparison_csv.exists()
 
 
 # ----------------------------------------------------------------------------

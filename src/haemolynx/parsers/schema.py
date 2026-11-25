@@ -15,10 +15,13 @@ loading numpy, ilastik, or any image data — a GUI can render the form from
 from __future__ import annotations
 
 import difflib
+import logging
 import warnings
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Any, Iterable, Iterator, Mapping, Sequence
+from pathlib import Path, PurePath
+from typing import Any, Callable, Iterable, Iterator, Mapping, Sequence
+
+logger = logging.getLogger(__name__)
 
 #: Widget/coercion kinds. Kept as strings rather than Python types so that
 #: ``Schema.describe()`` is directly JSON-serialisable for a GUI.
@@ -38,22 +41,97 @@ KINDS = (
 
 _LIST_KINDS = {"int_list": int, "float_list": float, "str_list": str}
 
+#: What a prerequisite asks of the setting it names: switched on, switched
+#: off, holding one value, or holding anything but one value.
+PREREQUISITE_ON = "on"
+PREREQUISITE_OFF = "off"
+PREREQUISITE_EQUALS = "equals"
+PREREQUISITE_NOT_EQUALS = "not_equals"
 
-def is_prerequisite_met(prerequisite: str, values: Mapping[str, Any]) -> bool:
+
+#: The kinds a plain ``name`` / ``!name`` prerequisite may name: a bool, on
+#: or off, or a path, set or not -- an input the run reads only when it is
+#: given one (the raw image), gating what reads it the way a toggle does.
+PREREQUISITE_GATE_KINDS = ("bool", "path")
+
+
+def parse_prerequisite(prerequisite: str) -> tuple[str, str, str | None]:
+    """``(name, test, expected)`` for one ``requires`` entry.
+
+    ``name`` asks for a bool to be on (or a path to be set) and ``!name``
+    for it to be off (unset); ``name=value`` asks a ``choice`` setting to
+    hold one value and ``name!=value`` to hold any other. *expected* is None
+    for the two bool forms. Every reader of a ``requires`` entry goes through
+    this, so a form cannot be understood in one place and misread in another.
+    """
+    if "!=" in prerequisite:
+        name, _, expected = prerequisite.partition("!=")
+        return name, PREREQUISITE_NOT_EQUALS, expected
+    if "=" in prerequisite:
+        name, _, expected = prerequisite.partition("=")
+        return name, PREREQUISITE_EQUALS, expected
+    if prerequisite.startswith("!"):
+        return prerequisite[1:], PREREQUISITE_OFF, None
+    return prerequisite, PREREQUISITE_ON, None
+
+
+def prerequisite_name(prerequisite: str) -> str:
+    """The setting a ``requires`` entry names, whatever it asks of it."""
+    return parse_prerequisite(prerequisite)[0]
+
+
+def is_prerequisite_met(prerequisite: str, values: Mapping[str, Any], *, default: Any = None) -> bool:
     """True when *prerequisite* holds in *values*.
+
+    *default* stands in for the gate when *values* lacks it: a caller with
+    the schema passes the gate's declared default, so a partial mapping reads
+    a ``choice`` gate as holding its default rather than nothing (a bool
+    missing reads as off either way).
 
     A leading ``!`` negates it, which is how a setting says it applies only
     while some feature is *off* — an input path that a run would otherwise
-    generate for itself, for instance.
+    generate for itself, for instance. A path named this way is "on" while
+    it is set (an empty string is unset). ``name=value`` instead asks whether a
+    ``choice`` setting is holding one specific value, for a setting that
+    only makes sense under one of several modes rather than one on/off
+    feature, and ``name!=value`` whether it is holding any other -- for a
+    setting read by every mode but one -- see :func:`Schema.__init__`'s
+    validation of both forms.
     """
-    if prerequisite.startswith("!"):
-        return not bool(values.get(prerequisite[1:], False))
-    return bool(values.get(prerequisite, False))
+    name, test, expected = parse_prerequisite(prerequisite)
+    value = values.get(name, default)
+    if test == PREREQUISITE_EQUALS:
+        return value == expected
+    if test == PREREQUISITE_NOT_EQUALS:
+        return value != expected
+    if test == PREREQUISITE_OFF:
+        return not bool(value)
+    return bool(value)
 
 
 def is_active(setting: "Setting", values: Mapping[str, Any]) -> bool:
     """True when every one of *setting*'s prerequisites is met."""
     return all(is_prerequisite_met(p, values) for p in setting.requires)
+
+
+def describe_unmet_prerequisite(prerequisite: str, *, kind: str = "bool") -> str:
+    """A sentence fragment naming why *prerequisite* (currently unmet) fails.
+
+    Shared by every message that reports an unmet ``requires`` entry, so a
+    ``name=value`` or ``name!=value`` prerequisite reads naturally everywhere
+    ``!name``/``name`` already did. *kind* is the named setting's: a path
+    gate is "not set" rather than "false".
+    """
+    name, test, expected = parse_prerequisite(prerequisite)
+    if test == PREREQUISITE_EQUALS:
+        return f"'{name}' is not {expected!r}"
+    if test == PREREQUISITE_NOT_EQUALS:
+        return f"'{name}' is {expected!r}"
+    if kind == "path":
+        return f"'{name}' is {'set' if test == PREREQUISITE_OFF else 'not set'}"
+    if test == PREREQUISITE_OFF:
+        return f"'{name}' is true"
+    return f"'{name}' is false"
 
 
 def section_key(section: str) -> str:
@@ -90,7 +168,10 @@ class Setting:
         ``required=True`` to force the user to supply one.
     help:
         One sentence, imperative, no trailing full stop. Becomes the YAML
-        comment and the GUI tooltip, so it must read well out of context.
+        comment and the command-line help, so it must read well out of
+        context. The panel's hover text is a shorter entry of its own, in
+        :mod:`haemolynx.gui.setting_tooltips`; a setting without one there
+        shows this.
     section:
         Grouping for both the YAML file and the GUI form.
     choices:
@@ -101,17 +182,56 @@ class Setting:
         Physical unit shown next to the widget, e.g. ``"um"``.
     requires:
         Names of boolean settings that must all be true for this one to apply,
-        each optionally negated with a leading ``!``. A GUI greys the control
-        out when they are not met; a non-default value whose prerequisites are
-        unmet warns, which is how the silent "setting had no effect" class of
-        bug is caught.
+        each optionally negated with a leading ``!`` -- or ``name=value``,
+        which asks a ``choice`` setting to hold one specific value instead of
+        an on/off feature to be on. A GUI greys the control out when they are
+        not met; a non-default value whose prerequisites are unmet warns,
+        which is how the silent "setting had no effect" class of bug is
+        caught.
     must_exist:
         For a path: the file or directory it names must be there before a run
         starts, whenever this setting is active. Checked by
         :func:`haemolynx.parsers.check_settings`, not at load, so a GUI can
-        show the problem rather than refuse to open the file.
+        show the problem rather than refuse to open the file. Unset, it is an
+        error -- unless the path also declares a ``placeholder``, which makes
+        it optional (:attr:`optional_path`): unset, the run reads what the
+        placeholder names instead, and only a path that is set must be there.
+        The panel opens a ``must_exist`` path's file dialogue for reading.
+    placeholder:
+        Hint text a GUI shows in an empty (unset, ``None``-default) box, e.g.
+        ``"auto"`` for a setting whose blank value means "compute it from
+        something else". Cosmetic only -- never becomes the value -- except
+        that on a ``must_exist`` path it declares the path optional: name
+        there what the run falls back to, and make sure the run does.
     advanced:
         Hide behind an "advanced" disclosure by default.
+    always_effective:
+        Skip the ``requires``-based "nothing will read this" warning for this
+        one setting. For the rare setting genuinely read by more than one
+        feature with different activation conditions (e.g. a raw image path
+        used by both a `requires`-gated pipeline stage and an always-available
+        GUI diagnostic), a blanket `requires` warning would be simply wrong
+        whenever the second use is what set the value. `requires` itself is
+        untouched -- `must_exist`/GUI-enabled-state gating still only applies
+        when the prerequisite is met.
+    value_aliases:
+        Former spellings of this setting's values, ``{old: new}``: a config
+        written before a choice was renamed still loads, reading as the new
+        value.
+    replaces:
+        Retired settings this one took over, ``{old name: {old value: value
+        here}}``. A config still naming one loads, and sets this setting from
+        it unless the config gives this one a value other than its default;
+        an old value with no entry says nothing about this one. An empty
+        table retires the old setting outright: a config naming it still
+        loads, and its value is dropped with a log line.
+    migrates / migrate:
+        Retired settings whose values cannot be listed one by one (paths), or
+        that move together (a path and its channel): ``migrates`` names them,
+        and ``migrate(values)`` reads the whole config as written and returns
+        ``{setting: value}`` for the current settings they become. Each is
+        applied unless the config gives that setting a value other than its
+        default, as with ``replaces``.
     """
 
     name: str
@@ -126,6 +246,14 @@ class Setting:
     requires: tuple[str, ...] = ()
     must_exist: bool = False
     advanced: bool = False
+    always_effective: bool = False
+    #: Hint text for an empty box; on a ``must_exist`` path, also what makes
+    #: it optional (see the class docstring).
+    placeholder: str | None = None
+    value_aliases: Mapping[Any, Any] | None = None
+    replaces: Mapping[str, Mapping[Any, Any]] | None = None
+    migrates: tuple[str, ...] = ()
+    migrate: Callable[[Mapping[str, Any]], Mapping[str, Any]] | None = None
 
     def __post_init__(self) -> None:
         if self.kind not in KINDS:
@@ -161,15 +289,42 @@ class Setting:
                 f"Setting '{self.name}' declares must_exist but is kind "
                 f"'{self.kind}'; only a path can be checked for existence."
             )
+        if self.placeholder is not None and self.default is not None:
+            raise ConfigError(
+                f"Setting '{self.name}' declares a placeholder but has a "
+                f"non-None default; placeholder text is only shown in an "
+                f"empty (unset) box."
+            )
         if self.default is not None:
             # A default that its own rules reject is a schema bug, not a user
             # error, so surface it the moment the schema is imported.
             self.coerce(self.default)
+        # The same for what an old value is read as.
+        for value in (self.value_aliases or {}).values():
+            self.coerce(value)
+        for old_name, values in (self.replaces or {}).items():
+            if old_name == self.name:
+                raise ConfigError(f"Setting '{self.name}' cannot replace itself.")
+            for value in values.values():
+                self.coerce(value)
+        if bool(self.migrates) != (self.migrate is not None):
+            raise ConfigError(
+                f"Setting '{self.name}' needs both migrates (the retired names) "
+                "and migrate (what they become), or neither."
+            )
+
+    @property
+    def optional_path(self) -> bool:
+        """A path that may be left unset: its ``placeholder`` names what the
+        run reads in its place, so ``must_exist`` asks only that a path which
+        is set be there."""
+        return self.kind == "path" and self.placeholder is not None
 
     def coerce(self, value: Any) -> Any:
         """Return *value* converted to this setting's kind, or raise ConfigError."""
         if value is None:
             return None
+        value = _lookup(self.value_aliases, value, value)
         try:
             return self._coerce(value)
         except ConfigError:
@@ -258,7 +413,26 @@ class Setting:
             "requires": list(self.requires),
             "must_exist": self.must_exist,
             "advanced": self.advanced,
+            "placeholder": self.placeholder,
         }
+
+
+def _lookup(table: Mapping[Any, Any] | None, key: Any, missing: Any) -> Any:
+    """``table[key]``, or *missing* -- also for a key that cannot be one (a list)."""
+    if not table:
+        return missing
+    try:
+        return table.get(key, missing)
+    except TypeError:
+        return missing
+
+
+def _is_default(setting: Setting, value: Any) -> bool:
+    """Whether *value* is *setting*'s default; a value it rejects is not."""
+    try:
+        return setting.coerce(value) == setting.coerce(setting.default)
+    except ConfigError:
+        return False
 
 
 def _copy_container(value: Any) -> Any:
@@ -272,7 +446,14 @@ def _copy_container(value: Any) -> Any:
 
 def _jsonify(value: Any) -> Any:
     if isinstance(value, Path):
-        return str(value)
+        # Forward slashes on every platform, so a config generated on Windows
+        # is byte-for-byte the one generated on Linux. `str()` here emitted
+        # `examples\images\...` on Windows, which meant `regenerate_configs.py`
+        # could not be run there without rewriting every committed config and
+        # breaking CI. Windows accepts forward slashes, and `pathlib` reads
+        # them back on either platform, so nothing is lost -- including the
+        # drive letter of an absolute path, which becomes `C:/Users/...`.
+        return PurePath(value).as_posix()
     if isinstance(value, tuple):
         return [_jsonify(v) for v in value]
     if isinstance(value, dict):
@@ -288,6 +469,8 @@ class Schema:
     title: str = ""
     description: str = ""
     _by_name: dict[str, Setting] = field(init=False, repr=False, compare=False)
+    #: Each retired setting's name -> the setting that replaced it.
+    _replaced: dict[str, str] = field(init=False, repr=False, compare=False)
 
     def __init__(
         self,
@@ -304,16 +487,35 @@ class Schema:
             by_name[setting.name] = setting
         for setting in settings:
             for prerequisite in setting.requires:
-                prerequisite = prerequisite.lstrip("!")
-                if prerequisite not in by_name:
+                name, test, expected = parse_prerequisite(prerequisite)
+                if test in (PREREQUISITE_EQUALS, PREREQUISITE_NOT_EQUALS):
+                    if name not in by_name:
+                        raise ConfigError(
+                            f"Setting '{setting.name}' requires '{name}', "
+                            "which is not in the schema."
+                        )
+                    target = by_name[name]
+                    if target.kind != "choice":
+                        raise ConfigError(
+                            f"Setting '{setting.name}' requires "
+                            f"'{prerequisite}', but '{name}' is not a choice."
+                        )
+                    if expected not in (target.choices or ()):
+                        raise ConfigError(
+                            f"Setting '{setting.name}' requires "
+                            f"'{prerequisite}', which is not one of "
+                            f"'{name}'s choices {list(target.choices or ())}."
+                        )
+                    continue
+                if name not in by_name:
                     raise ConfigError(
-                        f"Setting '{setting.name}' requires '{prerequisite}', "
+                        f"Setting '{setting.name}' requires '{name}', "
                         "which is not in the schema."
                     )
-                if by_name[prerequisite].kind != "bool":
+                if by_name[name].kind not in PREREQUISITE_GATE_KINDS:
                     raise ConfigError(
-                        f"Setting '{setting.name}' requires '{prerequisite}', "
-                        "which is not a bool."
+                        f"Setting '{setting.name}' requires '{name}', "
+                        "which is not a bool or a path."
                     )
         for section in {setting.section for setting in settings}:
             slug = section_key(section)
@@ -323,10 +525,25 @@ class Schema:
                     f"a setting name. Rename one of them, or the section heading "
                     "and the setting cannot be told apart when the file is read."
                 )
+        replaced: dict[str, str] = {}
+        for setting in settings:
+            for old_name in [*(setting.replaces or {}), *setting.migrates]:
+                if old_name in by_name:
+                    raise ConfigError(
+                        f"Setting '{setting.name}' replaces '{old_name}', which "
+                        "is still in the schema."
+                    )
+                if old_name in replaced:
+                    raise ConfigError(
+                        f"'{old_name}' is replaced by both '{replaced[old_name]}' "
+                        f"and '{setting.name}'."
+                    )
+                replaced[old_name] = setting.name
         object.__setattr__(self, "settings", settings)
         object.__setattr__(self, "title", title)
         object.__setattr__(self, "description", description)
         object.__setattr__(self, "_by_name", by_name)
+        object.__setattr__(self, "_replaced", replaced)
 
     def __iter__(self) -> Iterator[Setting]:
         return iter(self.settings)
@@ -393,6 +610,67 @@ class Schema:
         hint = f" Did you mean: {', '.join(suggestions)}?" if suggestions else ""
         return f"Unknown setting '{name}'.{hint}"
 
+    def upgrade(self, values: Mapping[str, Any]) -> dict[str, Any]:
+        """*values* as this schema spells them, nothing else checked or changed.
+
+        A retired setting is read into the one whose ``replaces`` names it --
+        only while that one is at its default: a config saved while both
+        existed carries both, and then the old one is what decided -- and a
+        former spelling of a value (``value_aliases``) becomes the current
+        one. :meth:`validate` starts here; a caller writing saved settings
+        straight into a form, which validates nothing, needs this alone.
+        """
+        upgraded: dict[str, Any] = {}
+        retired: dict[str, Any] = {}
+        migrating = {
+            self._replaced[key] for key in values
+            if key in self._replaced and self._by_name[self._replaced[key]].migrates
+            and key in self._by_name[self._replaced[key]].migrates
+        }
+        for key, value in values.items():
+            if key in self._replaced:
+                if key not in self._by_name[self._replaced[key]].migrates:
+                    retired[key] = value
+                continue
+            setting = self._by_name.get(key)
+            upgraded[key] = (
+                value if setting is None else _lookup(setting.value_aliases, value, value)
+            )
+        for old_name, value in retired.items():
+            setting = self._by_name[self._replaced[old_name]]
+            table = (setting.replaces or {})[old_name]
+            if not table:
+                logger.info(
+                    f"Setting '{old_name}' is retired; its value {value!r} is no longer read."
+                )
+                continue
+            if setting.name in upgraded and not _is_default(setting, upgraded[setting.name]):
+                continue
+            missing = object()
+            replacement = _lookup(table, value, missing)
+            if replacement is missing:
+                logger.info(
+                    f"Setting '{old_name}' is retired; its value {value!r} is not "
+                    f"read into {setting.name}."
+                )
+                continue
+            upgraded[setting.name] = replacement
+            logger.info(
+                f"Setting '{old_name}' is retired; read {value!r} as "
+                f"{setting.name}={replacement!r}."
+            )
+        for name in [s.name for s in self.settings if s.name in migrating]:
+            setting = self._by_name[name]
+            old = {key: values[key] for key in setting.migrates if key in values}
+            for target, value in dict(setting.migrate(values)).items():
+                if target not in self._by_name:
+                    continue
+                if target in upgraded and not _is_default(self._by_name[target], upgraded[target]):
+                    continue
+                upgraded[target] = value
+                logger.info(f"Retired settings {sorted(old)} read as {target}={value!r}.")
+        return upgraded
+
     def validate(
         self,
         values: Mapping[str, Any],
@@ -405,22 +683,36 @@ class Schema:
         to its declared kind, enforces choices and bounds, and reports a value
         whose ``requires`` prerequisites are switched off rather than letting it
         be silently ignored. Every problem is collected before raising, so one
-        run of the checker tells the user everything that is wrong.
+        run of the checker tells the user everything that is wrong. A retired
+        setting is not unknown: it is read into the setting whose ``replaces``
+        names it (see :meth:`upgrade`).
+
+        Its lists and dicts are new too, as :meth:`defaults`' are. A stage
+        fills some in place (``inlet_nodes``), and values built from
+        ``setting.default`` are the schema's own objects: passed through, one
+        run's nodes became every later caller's default.
         """
         errors: list[str] = []
         resolved: dict[str, Any] = self.defaults() if fill_defaults else {}
 
-        for key, value in values.items():
+        for key, value in self.upgrade(values).items():
             if key not in self._by_name:
                 errors.append(self._unknown_key_message(key))
                 continue
             try:
-                resolved[key] = self._by_name[key].coerce(value)
+                resolved[key] = _copy_container(self._by_name[key].coerce(value))
             except ConfigError as exc:
                 errors.append(str(exc))
 
         for message in self._ineffective_messages(resolved):
             warnings.warn(message, IneffectiveSettingWarning, stacklevel=3)
+            # warnings.warn alone reaches a console, but not the GUI's own
+            # run log: that only ever listens to the "haemolynx" logger (see
+            # gui.run_log.attach), so a setting toggled on with an unmet
+            # prerequisite used to be visible only if someone was watching
+            # stderr. Logged too so it reaches the same place every other
+            # pipeline warning already does.
+            logger.warning(message)
 
         if errors:
             raise ConfigError(
@@ -433,7 +725,11 @@ class Schema:
     def _ineffective_messages(self, resolved: Mapping[str, Any]) -> list[str]:
         messages: list[str] = []
         for setting in self.settings:
-            if setting.name not in resolved or not setting.requires:
+            if (
+                setting.name not in resolved
+                or not setting.requires
+                or setting.always_effective
+            ):
                 continue
             value = resolved[setting.name]
             if value is None or value == setting.coerce(setting.default):
@@ -441,15 +737,53 @@ class Schema:
             unmet = [
                 prerequisite
                 for prerequisite in setting.requires
-                if not is_prerequisite_met(prerequisite, resolved)
+                if not self._prerequisite_in_effect(prerequisite, resolved)
             ]
             if unmet:
                 messages.append(
-                    f"Setting '{setting.name}' is set to {value!r} but nothing will "
-                    f"read it while {' and '.join(repr(u) for u in unmet)} "
-                    f"{'is' if len(unmet) == 1 else 'are'} false."
+                    f"Setting '{setting.name}' is set to {value!r} but nothing "
+                    "will read it while "
+                    + " and ".join(
+                        describe_unmet_prerequisite(
+                            u, kind=self._by_name[prerequisite_name(u)].kind
+                        )
+                        for u in unmet
+                    )
+                    + "."
                 )
         return messages
+
+    def _prerequisite_in_effect(self, prerequisite: str, values: Mapping[str, Any]) -> bool:
+        """:func:`is_prerequisite_met`, with a ``!gate`` also holding while
+        the gate is on but out of effect -- its own prerequisites unmet, as
+        an ilastik switch ticked with no raw image to segment is -- since what
+        the gate would have replaced is then read after all."""
+        name, test, _expected = parse_prerequisite(prerequisite)
+        if test == PREREQUISITE_OFF and not is_active(self._by_name[name], values):
+            return True
+        return is_prerequisite_met(prerequisite, values)
+
+    def in_effect(
+        self, name: str, values: Mapping[str, Any], _seen: frozenset[str] = frozenset()
+    ) -> bool:
+        """Whether setting *name* is read with *values*, down its whole chain:
+        each of its prerequisites holds (a ``!gate`` also while the gate is
+        out of effect), and each gate one of them needs on, or holding a
+        value, is in effect itself. :func:`is_active` reads only the setting's
+        own prerequisites: an ilastik project under a switch ticked with no
+        raw image to segment is active, and never read."""
+        for prerequisite in self._by_name[name].requires:
+            if not self._prerequisite_in_effect(prerequisite, values):
+                return False
+            gate, test, _expected = parse_prerequisite(prerequisite)
+            if (
+                test != PREREQUISITE_OFF
+                and gate in self._by_name
+                and gate not in _seen
+                and not self.in_effect(gate, values, _seen | {name})
+            ):
+                return False
+        return True
 
     def ineffective_settings(self, values: Mapping[str, Any]) -> list[str]:
         """Settings carrying a value that nothing will read, as messages.

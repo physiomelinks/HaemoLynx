@@ -13,15 +13,17 @@ from typing import Any
 
 import networkx as nx
 import numpy as np
-from scipy.ndimage import center_of_mass, label
 from scipy.spatial import cKDTree
 
 from haemolynx.geometry import cumulative_lengths
 from haemolynx.io import (
     CANONICAL_AXIS_ORDER,
-    load_binary_mask_and_voxel_size,
+    voxel_size_xyz_from_zyx,
     voxel_size_zyx_from_xyz,
 )
+from haemolynx.io.downsample import graph_downsample, mask_volume_like_graph
+from haemolynx.io.load import load_binary_mask_voxel_size_and_status
+from haemolynx.io.vessel_masks import _resolve_mask_voxel_size_xyz
 from .constriction import (
     apply_constriction_sites,
     is_capillary_branch_order,
@@ -30,10 +32,37 @@ from .constriction import (
     select_active_pericyte_indices,
     validate_active_pericyte_indices,
 )
+from .viscosity import DEFAULT_HAEMATOCRIT
 
 #: Names the pericyte mask in loader errors, so a bad path or format says which
 #: of the pipeline's several masks was at fault.
 PERICYTE_MASK_DESCRIPTION = "pericyte mask"
+
+
+def _components_and_centroids(mask_bool: np.ndarray):
+    """``label(mask_bool)``'s components and ``center_of_mass(mask_bool,
+    labels, range(1, n + 1))``, voxel indices -- the same sums in the same
+    order (scipy's are ``np.bincount`` over the volume in C order), from the
+    components labelled a slab of planes at a time and held at their voxels
+    (``preprocessing.slab_labels.ForegroundLabels``). The label volume was 8
+    bytes a voxel once a stack has 2**31 voxels, and each centroid axis a
+    float64 volume besides."""
+    from haemolynx.preprocessing.slab_labels import ForegroundLabels
+
+    labels = ForegroundLabels(np.asarray(mask_bool, dtype=bool))
+    if labels.count <= 0:
+        return labels, np.empty((0, 3), dtype=float)
+    numbers = labels.numbers
+    normalizer = np.bincount(numbers, weights=np.ones(len(numbers)), minlength=labels.count + 1)
+    coords = labels.coords()
+    centroids = np.column_stack(
+        [
+            np.bincount(numbers, weights=coords[:, axis].astype(float), minlength=labels.count + 1)[1:]
+            / normalizer[1:]
+            for axis in range(coords.shape[1])
+        ]
+    )
+    return labels, centroids
 
 
 def _extract_pericyte_centroids_physical(
@@ -41,13 +70,9 @@ def _extract_pericyte_centroids_physical(
     voxel_size_zyx: tuple[float, float, float],
 ) -> np.ndarray:
     """Return connected-component centroids in physical coordinates."""
-    labels, n_labels = label(mask_bool)
-    if n_labels <= 0:
+    labels, centroids_idx = _components_and_centroids(mask_bool)
+    if labels.count <= 0:
         return np.empty((0, 3), dtype=float)
-    indices = list(range(1, n_labels + 1))
-    centroids_idx = np.asarray(center_of_mass(mask_bool, labels, indices), dtype=float)
-    if centroids_idx.ndim == 1:
-        centroids_idx = centroids_idx.reshape(1, 3)
     spacing = np.asarray(voxel_size_zyx, dtype=float).reshape(1, 3)
     return centroids_idx * spacing
 
@@ -57,19 +82,13 @@ def _extract_pericyte_component_properties(
     voxel_size_zyx: tuple[float, float, float],
 ) -> tuple[np.ndarray, np.ndarray]:
     """Return (centroids_phys, equivalent_diameters_um) per connected component."""
-    labels, n_labels = label(mask_bool)
-    if n_labels <= 0:
+    labels, centroids_idx = _components_and_centroids(mask_bool)
+    if labels.count <= 0:
         return np.empty((0, 3), dtype=float), np.empty((0,), dtype=float)
-    indices = list(range(1, n_labels + 1))
-    centroids_idx = np.asarray(center_of_mass(mask_bool, labels, indices), dtype=float)
-    if centroids_idx.ndim == 1:
-        centroids_idx = centroids_idx.reshape(1, 3)
     spacing = np.asarray(voxel_size_zyx, dtype=float)
     voxel_volume = float(np.prod(spacing))
-    counts = np.asarray(
-        [(labels == idx).sum() for idx in indices],
-        dtype=float,
-    )
+    # Each component's voxel count (it was a whole-volume comparison each).
+    counts = labels.sizes[1:].astype(float)
     component_volumes_um3 = counts * voxel_volume
     # Equivalent sphere diameter from volume.
     equivalent_diameters_um = ((6.0 * component_volumes_um3) / np.pi) ** (1.0 / 3.0)
@@ -195,6 +214,220 @@ def _assign_centroids_to_edges(
     return projections
 
 
+def load_pericyte_mask(
+    path: str | Path,
+    graph: nx.MultiGraph,
+    *,
+    h5_dataset_name: str | None = None,
+    axis_order: str = CANONICAL_AXIS_ORDER,
+    voxel_size_override_xyz=None,
+    voxel_size_policy: str = "auto",
+    use_memmap: bool = False,
+    memmap_directory: str | Path | None = None,
+) -> tuple[np.ndarray, tuple[float, float, float], tuple[float, float, float]]:
+    """The pericyte mask as a boolean volume on *graph*'s grid (cut to its
+    crop box, reduced by its downsample on import), its voxel size ``(x, y,
+    z)`` and the same ``(z, y, x)``. A 2D mask is a single-slice volume, as a
+    2D image is; *use_memmap* keeps it on disk (the low-RAM option).
+
+    The mask's voxel size is resolved with the run's *voxel_size_override_xyz*
+    and *voxel_size_policy*, as the main image's and the vessel masks' are,
+    and must match the main image's (the graph's ``image_voxel_size_zyx``,
+    when it records one): a mask exported without z spacing read as 1 um
+    against a 2 um image, and every pericyte landed at half its depth --
+    attached to the wrong vessel, or dropped as too far from any.
+    """
+    mask_bool, metadata_voxel_size, metadata_status = load_binary_mask_voxel_size_and_status(
+        path,
+        h5_dataset_name=h5_dataset_name,
+        axis_order=axis_order,
+        description=PERICYTE_MASK_DESCRIPTION,
+        objects=True,
+        use_memmap=use_memmap,
+        memmap_directory=memmap_directory,
+    )
+    # Its centroids are placed against the graph's positions, which are
+    # measured from the crop_on_import box's corner when the image was cut,
+    # on the grid it was downsampled to.
+    mask_bool = mask_volume_like_graph(
+        mask_bool, graph, description=PERICYTE_MASK_DESCRIPTION,
+        use_memmap=use_memmap, memmap_directory=memmap_directory,
+    )
+    downsample = graph_downsample(graph)
+    image_voxel_size_zyx = graph.graph.get("image_voxel_size_zyx")
+    # Under the auto policy a mask with no voxel size of its own (an ilastik
+    # export) takes the image's as read, as the vessel masks do.
+    if downsample is not None:
+        source_voxel_size_xyz = downsample.source_voxel_size_xyz
+    elif image_voxel_size_zyx is not None:
+        source_voxel_size_xyz = voxel_size_xyz_from_zyx(image_voxel_size_zyx)
+    else:
+        source_voxel_size_xyz = None
+    mask_voxel_size = _resolve_mask_voxel_size_xyz(
+        metadata_voxel_size,
+        metadata_status,
+        voxel_size_override_xyz=voxel_size_override_xyz,
+        voxel_size_policy=voxel_size_policy,
+        fallback_voxel_size_xyz=source_voxel_size_xyz,
+    )
+    # The mask's own voxel size is the image's as read; reduced with the
+    # image, it is the run's.
+    if downsample is not None:
+        mask_voxel_size = downsample.scale_voxel_size_xyz(mask_voxel_size)
+    mask_voxel_size_zyx = voxel_size_zyx_from_xyz(mask_voxel_size)
+    if image_voxel_size_zyx is not None and not np.allclose(
+        mask_voxel_size_zyx, np.asarray(image_voxel_size_zyx, dtype=float), rtol=1e-3, atol=0.0
+    ):
+        raise ValueError(
+            f"The pericyte mask's voxel size (z, y, x) {tuple(mask_voxel_size_zyx)} does not "
+            f"match the main image's {tuple(float(v) for v in image_voxel_size_zyx)}: its "
+            "pericytes would be placed against the wrong vessels. Export the mask with the "
+            "image's voxel size, or give the run's voxel_size_override_xyz with "
+            "voxel_size_policy 'override'."
+        )
+    return (
+        mask_bool,
+        tuple(float(v) for v in mask_voxel_size),
+        tuple(float(v) for v in mask_voxel_size_zyx),
+    )
+
+
+@dataclass(frozen=True)
+class PericytePlacement:
+    """Where a pericyte mask's pericytes go on a network.
+
+    One entry per connected component of the mask, numbered from 0 in
+    component order: ``centroids_um`` its centroid in physical ``(z, y, x)``
+    microns like node ``pos``, ``equivalent_diameters_um`` the diameter of the
+    sphere of its volume. ``projections`` maps each pericyte to the capillary
+    whose centreline is nearest, ``((u, v, key), arc position um, distance
+    um)``; ``eligible`` lists, in order, the pericytes near enough to that
+    capillary and of a pericyte's size -- the ones a run places.
+    """
+
+    centroids_um: np.ndarray
+    equivalent_diameters_um: np.ndarray
+    projections: dict[int, tuple[tuple[Any, Any, Any], float, float]]
+    eligible: list[int]
+
+
+def place_pericytes(
+    graph: nx.MultiGraph,
+    mask_bool: np.ndarray,
+    voxel_size_zyx,
+    *,
+    max_assignment_distance_um: float | None = 3.0,
+    min_pericyte_diameter_um: float | None = 5.0,
+    max_pericyte_diameter_um: float | None = 12.0,
+) -> PericytePlacement:
+    """Each pericyte of *mask_bool* (a volume on *graph*'s grid) projected onto
+    the nearest capillary, and which of them are placed there: within
+    *max_assignment_distance_um* of it, and with an equivalent diameter
+    between *min_pericyte_diameter_um* and *max_pericyte_diameter_um* (None:
+    no limit)."""
+    if (
+        min_pericyte_diameter_um is not None
+        and max_pericyte_diameter_um is not None
+        and float(min_pericyte_diameter_um) > float(max_pericyte_diameter_um)
+    ):
+        raise ValueError(
+            "min_pericyte_diameter_um cannot be greater than max_pericyte_diameter_um."
+        )
+
+    all_centroids_phys, equivalent_diameters_um = _extract_pericyte_component_properties(
+        mask_bool,
+        voxel_size_zyx,
+    )
+    edge_records = _build_edge_records(graph)
+    projection_by_centroid = _assign_centroids_to_edges(
+        edge_records,
+        all_centroids_phys,
+    )
+    eligible_indices: list[int] = []
+    for centroid_idx, (_, _, dist_um) in projection_by_centroid.items():
+        diameter_um = float(equivalent_diameters_um[int(centroid_idx)])
+        passes_distance = (
+            max_assignment_distance_um is None
+            or float(dist_um) <= float(max_assignment_distance_um)
+        )
+        passes_min_diameter = (
+            min_pericyte_diameter_um is None
+            or diameter_um >= float(min_pericyte_diameter_um)
+        )
+        passes_max_diameter = (
+            max_pericyte_diameter_um is None
+            or diameter_um <= float(max_pericyte_diameter_um)
+        )
+        if passes_distance and passes_min_diameter and passes_max_diameter:
+            eligible_indices.append(int(centroid_idx))
+    return PericytePlacement(
+        centroids_um=all_centroids_phys,
+        equivalent_diameters_um=equivalent_diameters_um,
+        projections=projection_by_centroid,
+        eligible=sorted(eligible_indices),
+    )
+
+
+@dataclass(frozen=True)
+class PlacedPericyteMask:
+    """A pericyte mask read once and its pericytes placed on a network
+    (:func:`place_pericyte_mask`): what every strategy call of one
+    perturbation shares -- each sweep grid point and each haematocrit pass --
+    rather than reading the mask from disk again. A dilation moves no
+    centreline, so the placement holds whatever diameters the network takes;
+    it must have been made with the call's own mask and assignment settings."""
+
+    placement: PericytePlacement
+    #: The mask's voxel size, ``(x, y, z)`` and ``(z, y, x)``, on the graph's grid.
+    voxel_size_xyz: tuple[float, float, float]
+    voxel_size_zyx: tuple[float, float, float]
+    #: The mask volume's shape, on the graph's grid.
+    image_shape: tuple[int, ...]
+
+
+def place_pericyte_mask(
+    graph: nx.MultiGraph,
+    pericyte_mask_path: str | Path,
+    *,
+    h5_dataset_name: str | None = None,
+    axis_order: str = CANONICAL_AXIS_ORDER,
+    voxel_size_override_xyz=None,
+    voxel_size_policy: str = "auto",
+    max_assignment_distance_um: float | None = 3.0,
+    min_pericyte_diameter_um: float | None = 5.0,
+    max_pericyte_diameter_um: float | None = 12.0,
+    use_memmap: bool = False,
+    memmap_directory: str | Path | None = None,
+) -> PlacedPericyteMask:
+    """The pericyte mask at *pericyte_mask_path* read onto *graph*'s grid
+    (:func:`load_pericyte_mask`; on disk with *use_memmap*) and its
+    pericytes placed on *graph*'s capillaries (:func:`place_pericytes`)."""
+    mask_bool, voxel_size_xyz, voxel_size_zyx = load_pericyte_mask(
+        pericyte_mask_path,
+        graph,
+        h5_dataset_name=h5_dataset_name,
+        axis_order=axis_order,
+        voxel_size_override_xyz=voxel_size_override_xyz,
+        voxel_size_policy=voxel_size_policy,
+        use_memmap=use_memmap,
+        memmap_directory=memmap_directory,
+    )
+    placement = place_pericytes(
+        graph,
+        mask_bool,
+        voxel_size_zyx,
+        max_assignment_distance_um=max_assignment_distance_um,
+        min_pericyte_diameter_um=min_pericyte_diameter_um,
+        max_pericyte_diameter_um=max_pericyte_diameter_um,
+    )
+    return PlacedPericyteMask(
+        placement=placement,
+        voxel_size_xyz=tuple(voxel_size_xyz),
+        voxel_size_zyx=tuple(voxel_size_zyx),
+        image_shape=tuple(mask_bool.shape),
+    )
+
+
 class MaskConstrictionSites:
     """Sites already fixed to edges by projecting mask centroids onto them.
 
@@ -243,9 +476,15 @@ def set_poiseuille_resistances_with_pericyte_mask(
     max_assignment_distance_um: float | None = 3.0,
     min_pericyte_diameter_um: float | None = 5.0,
     max_pericyte_diameter_um: float | None = 12.0,
+    viscosity_law: str = "pries",
+    haematocrit: float = DEFAULT_HAEMATOCRIT,
+    diameter_basis: str = "plasma_column",
     axis_order: str = CANONICAL_AXIS_ORDER,
     rng: np.random.Generator | None = None,
     seed: int | None = None,
+    voxel_size_override_xyz=None,
+    voxel_size_policy: str = "auto",
+    placed: PlacedPericyteMask | None = None,
 ) -> tuple[nx.MultiGraph, dict[str, Any]]:
     """Set edge resistance/conductance using pericyte centroids from a mask volume.
 
@@ -257,54 +496,43 @@ def set_poiseuille_resistances_with_pericyte_mask(
     With ``use_probabilistic_constriction=True`` the active cohort is drawn from
     ``rng`` if given, else from a generator built on ``seed``; ``seed=None``
     means a different cohort on every call.
+
+    ``viscosity_law``, ``haematocrit`` and ``diameter_basis`` select the
+    apparent-viscosity law the resistances are computed with; see
+    :mod:`haemolynx.haemodynamics.viscosity`.
+
+    The mask's voxel size is resolved with the run's *voxel_size_override_xyz*
+    and *voxel_size_policy*, as the main image's and the vessel masks' are,
+    and must match the main image's (the graph's ``image_voxel_size_zyx``,
+    when it records one): a mask exported without z spacing read as 1 um
+    against a 2 um image, and every pericyte landed at half its depth --
+    attached to the wrong vessel, or dropped as too far from any.
+
+    *placed* is the mask already read and placed on this network
+    (:func:`place_pericyte_mask`), with the same mask and assignment
+    settings; without it the mask is read and placed here.
     """
     require_positive_constriction_length(constriction_length)
     require_enough_integration_points(num_integration_points)
 
-    mask_bool, mask_voxel_size = load_binary_mask_and_voxel_size(
-        pericyte_mask_path,
-        h5_dataset_name=pericyte_mask_h5_dataset_name,
-        axis_order=axis_order,
-        description=PERICYTE_MASK_DESCRIPTION,
-    )
-    mask_voxel_size_zyx = voxel_size_zyx_from_xyz(mask_voxel_size)
-    if (
-        min_pericyte_diameter_um is not None
-        and max_pericyte_diameter_um is not None
-        and float(min_pericyte_diameter_um) > float(max_pericyte_diameter_um)
-    ):
-        raise ValueError(
-            "min_pericyte_diameter_um cannot be greater than max_pericyte_diameter_um."
+    if placed is None:
+        placed = place_pericyte_mask(
+            graph,
+            pericyte_mask_path,
+            h5_dataset_name=pericyte_mask_h5_dataset_name,
+            axis_order=axis_order,
+            voxel_size_override_xyz=voxel_size_override_xyz,
+            voxel_size_policy=voxel_size_policy,
+            max_assignment_distance_um=max_assignment_distance_um,
+            min_pericyte_diameter_um=min_pericyte_diameter_um,
+            max_pericyte_diameter_um=max_pericyte_diameter_um,
         )
-
-    all_centroids_phys, equivalent_diameters_um = _extract_pericyte_component_properties(
-        mask_bool,
-        mask_voxel_size_zyx,
-    )
-    total_pericytes = int(all_centroids_phys.shape[0])
-    edge_records = _build_edge_records(graph)
-    projection_by_centroid = _assign_centroids_to_edges(
-        edge_records,
-        all_centroids_phys,
-    )
-    eligible_indices: list[int] = []
-    for centroid_idx, (_, _, dist_um) in projection_by_centroid.items():
-        diameter_um = float(equivalent_diameters_um[int(centroid_idx)])
-        passes_distance = (
-            max_assignment_distance_um is None
-            or float(dist_um) <= float(max_assignment_distance_um)
-        )
-        passes_min_diameter = (
-            min_pericyte_diameter_um is None
-            or diameter_um >= float(min_pericyte_diameter_um)
-        )
-        passes_max_diameter = (
-            max_pericyte_diameter_um is None
-            or diameter_um <= float(max_pericyte_diameter_um)
-        )
-        if passes_distance and passes_min_diameter and passes_max_diameter:
-            eligible_indices.append(int(centroid_idx))
-    eligible_indices = sorted(eligible_indices)
+    placement = placed.placement
+    mask_voxel_size = placed.voxel_size_xyz
+    equivalent_diameters_um = placement.equivalent_diameters_um
+    total_pericytes = int(placement.centroids_um.shape[0])
+    projection_by_centroid = placement.projections
+    eligible_indices = placement.eligible
     eligible_set = set(eligible_indices)
 
     if active_pericyte_indices is not None:
@@ -378,4 +606,7 @@ def set_poiseuille_resistances_with_pericyte_mask(
         prefer_edge_fwhm_baseline=prefer_edge_fwhm_baseline,
         constriction_length=constriction_length,
         num_integration_points=num_integration_points,
+        viscosity_law=viscosity_law,
+        haematocrit=haematocrit,
+        diameter_basis=diameter_basis,
     )

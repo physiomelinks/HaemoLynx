@@ -4,16 +4,41 @@ The tab split is declared rather than derived, so the thing to guard is that it
 stays complete and unambiguous as settings are added. A setting on no tab is
 unreachable from the GUI; a setting on two is a value the user can set twice
 and disagree with themselves about.
+
+There is one trap in here worth reading before moving a row, and it has its own
+test below: which tab a setting appears on is declared by `Stage.settings` and
+`Stage.sections`, never by the schema *section* the setting is declared in.
+Moving it between schema sections looks like the same thing and is not -- the
+pipeline hands whole schema sections to the code that consumes them.
 """
 from __future__ import annotations
 
+import ast
+from pathlib import Path
+
 import pytest
 
-from haemolynx.gui.tabs import STAGES, Stage, assign_to_stages, tabs_for, unassigned
+from haemolynx.gui.tabs import (
+    STAGES,
+    Stage,
+    assign_to_stages,
+    tab_titles,
+    tabs_for,
+    unassigned,
+)
+from haemolynx.haemodynamics.apply import DIAMETER_DEFAULTS
 from haemolynx.parsers import Schema, Setting
 from haemolynx.pipeline import default_schema
 
 SCHEMA = default_schema()
+
+#: The one schema section a stage hands over whole, and the module that reads
+#: it back by name. See `test_the_haemodynamics_still_gets_its_whole_section`.
+DIAMETERS_AND_PERICYTES = "Diameters and pericytes"
+APPLY_SOURCE = (
+    Path(__file__).resolve().parents[1]
+    / "src" / "haemolynx" / "haemodynamics" / "apply.py"
+)
 
 
 # --- coverage ----------------------------------------------------------------
@@ -43,9 +68,141 @@ def test_the_tabs_hold_every_setting_between_them():
 
 
 def test_no_tab_is_empty():
-    """An empty tab is a stage the panel implies has nothing to configure."""
-    empty = [tab.stage.title for tab in tabs_for(SCHEMA) if not tab.fields]
-    assert empty == [], f"tabs with no settings: {empty}"
+    """An empty tab is a stage the panel implies has nothing to configure.
+
+    Post processing is the one exception: it has no settings, only its own
+    page (the junction table and the edit buttons), which the panel lays out.
+    """
+    empty = [tab.stage.call for tab in tabs_for(SCHEMA) if not tab.fields]
+    assert empty == ["post_process"], f"tabs with no settings: {empty}"
+
+
+# --- the schema section a stage hands over whole -----------------------------
+
+
+def _diameter_group_names_read_by(source_path: Path) -> set[str]:
+    """Every setting `apply.py` looks up in the diameters group, by name.
+
+    Read out of the source rather than listed here, so a name added to the
+    consumer is covered without anyone remembering to add it.
+    """
+    tree = ast.parse(source_path.read_text(encoding="utf-8"))
+
+    def _literal(nodes) -> str | None:
+        if not nodes:
+            return None
+        first = nodes[0]
+        if isinstance(first, ast.Constant) and isinstance(first.value, str):
+            return first.value
+        return None
+
+    def _is_group(node) -> bool:
+        return isinstance(node, ast.Attribute) and node.attr == "diameters"
+
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        # config.diameter("name")
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            if node.func.attr == "diameter":
+                name = _literal(node.args)
+                if name is not None:
+                    names.add(name)
+            # self.diameters.get("name", default)
+            elif node.func.attr == "get" and _is_group(node.func.value):
+                name = _literal(node.args)
+                if name is not None:
+                    names.add(name)
+        # self.diameters["name"]
+        elif isinstance(node, ast.Subscript) and _is_group(node.value):
+            name = _literal([node.slice])
+            if name is not None:
+                names.add(name)
+        # "name" in self.diameters
+        elif isinstance(node, ast.Compare) and any(
+            isinstance(op, (ast.In, ast.NotIn)) for op in node.ops
+        ):
+            if any(_is_group(target) for target in node.comparators):
+                name = _literal([node.left])
+                if name is not None:
+                    names.add(name)
+    return names
+
+
+def test_the_haemodynamics_still_gets_its_whole_section():
+    """The guard on retabbing: move `Stage.settings`, never a schema section.
+
+    `assign_diameters` hands `schema.section_values(settings, "Diameters and
+    pericytes")` to the haemodynamics as one group, and `apply.py` reads each
+    value back out of it *by name*, falling back to `DIAMETER_DEFAULTS` for
+    what is not there. So a setting moved to a different schema *section* --
+    which looks like the natural way to move its row to another tab -- does not
+    fail. It silently reverts (e.g. ``viscosity_law`` would fall back), with
+    no error and no other failing test. Which tab a row appears on is declared
+    in `pipeline/progress.py`, by name or by claiming a section there.
+
+    ``do_pericyte_construction`` must still live in this section so the group
+    is complete; the pipeline then forces it False on the baseline path.
+    """
+    section = set(SCHEMA.section_names(DIAMETERS_AND_PERICYTES))
+    read = _diameter_group_names_read_by(APPLY_SOURCE)
+    assert read, "found no diameters-group lookups in apply.py; the test is broken"
+
+    lost = sorted(read - section - set(DIAMETER_DEFAULTS))
+    assert lost == [], (
+        f"{lost} are read out of the '{DIAMETERS_AND_PERICYTES}' group by "
+        "apply.py but are not declared in that schema section, so they will "
+        "read as unset at run time. Put them back in the section and move "
+        "their tab in pipeline/progress.py instead."
+    )
+    # Named outright as well as derived: these are the ones whose reverting to
+    # a default changes the numbers rather than raising.
+    for name in (
+        "do_pericyte_construction",
+        "use_pericyte_mask_constriction",
+        "viscosity_law",
+        "haematocrit",
+        "diameter_by_branch_order",
+        "pericyte_constriction_factor",
+        "constriction_by_branch_order",
+        "constriction_length_um",
+        "constriction_spacing_um",
+    ):
+        assert name in section, f"{name} has left the {DIAMETERS_AND_PERICYTES} section"
+
+
+def test_the_whole_section_is_on_the_stage_that_hands_it_over():
+    """One tab for one group, except settings retabbed by name for the panel.
+
+    Pericyte / constriction knobs stay in the Diameters schema section so
+    apply.py still finds them, but `STAGES` claims them for Perturbations so
+    they are not always-on Diameters rows. Legacy baseline / comparison flags
+    are retabbed the same way without becoming typed-entry options. The
+    Pries-Secomb haematocrit distribution settings, and the viscosity law /
+    haematocrit themselves, are retabbed the same way again, but to
+    Haemodynamics -- they configure the flow solve and the blood model there,
+    not a perturbation and not the baseline diameter table.
+    """
+    from haemolynx.haemodynamics.perturbations import PERICYTE_CONSTRICTION_SETTINGS
+    from haemolynx.pipeline import progress as progress_module
+
+    owner = assign_to_stages(SCHEMA)
+    retabbed_to_perturbations = set(PERICYTE_CONSTRICTION_SETTINGS) | set(
+        progress_module._LEGACY_SETTINGS_HIDDEN_FROM_DIAMETERS
+    )
+    retabbed_to_haemodynamics = set(
+        progress_module._HAEMATOCRIT_DISTRIBUTION_SETTINGS_ON_HAEMODYNAMICS_TAB
+    ) | set(progress_module._VISCOSITY_SETTINGS_ON_HAEMODYNAMICS_TAB)
+    retabbed = retabbed_to_perturbations | retabbed_to_haemodynamics
+    tabs = {
+        owner[name]
+        for name in SCHEMA.section_names(DIAMETERS_AND_PERICYTES)
+        if name not in retabbed
+    }
+    assert tabs == {"5. Diameters"}
+    for name in retabbed_to_perturbations:
+        assert owner[name] == "8. Perturbations", name
+    for name in retabbed_to_haemodynamics:
+        assert owner[name] == "6. Haemodynamics", name
 
 
 # --- the stages themselves ---------------------------------------------------
@@ -64,6 +221,8 @@ def test_the_tabs_are_the_pipeline_stages_in_order():
         "assign_diameters",
         "build_haemodynamic_model",
         "solve",
+        "post_process",
+        "run_perturbations",
         "export_results",
     ]
     for name in calls:
@@ -79,6 +238,24 @@ def test_every_tab_says_what_its_stage_does():
 def test_tab_titles_are_unique():
     titles = [stage.title for stage in STAGES]
     assert len(set(titles)) == len(titles)
+
+
+def test_the_tabs_read_in_pipeline_order():
+    """What the panel actually shows, pinned: the numbering is the running order."""
+    assert list(tab_titles()) == [
+        "1. Input",
+        "2. Skeletonise",
+        "3. Graph",
+        "4. Boundaries",
+        "5. Diameters",
+        "6. Haemodynamics",
+        # `solve` renders its rows onto the haemodynamics tab rather than
+        # opening one of its own.
+        "7. Post processing",
+        "8. Perturbations",
+        "9. Additional measurements",
+        "10. Export",
+    ]
 
 
 # --- how claims are resolved -------------------------------------------------
@@ -117,6 +294,64 @@ def test_the_first_stage_to_name_a_setting_owns_it(monkeypatch):
     assert assign_to_stages(_two_stage_schema())["solver_pressure"] == "First"
 
 
+def test_the_panel_opens_one_tab_per_stage_that_names_no_other():
+    """Tabs and stages are close but not one for one; `tab_titles` is the list."""
+    assert [tab.stage.title for tab in tabs_for(SCHEMA)] == list(tab_titles())
+
+
+def test_a_stage_can_put_its_rows_on_another_stages_tab(monkeypatch):
+    """`Stage.tab` is how one tab shows two stages' settings.
+
+    The stage still runs and still reports its own progress -- only its form
+    rows move, which is what lets the boundary pressures sit next to the
+    haemodynamics they belong with.
+    """
+    stages = (
+        Stage(call="a", title="1. Boundaries", summary="First.", sections=("Boundaries",)),
+        Stage(
+            call="b",
+            title="Solve",
+            summary="Second.",
+            settings=("solver_pressure",),
+            tab="1. Boundaries",
+        ),
+    )
+    monkeypatch.setattr("haemolynx.gui.tabs.STAGES", stages)
+
+    tabs = tabs_for(_two_stage_schema())
+    assert [tab.stage.title for tab in tabs] == ["1. Boundaries"]
+    assert {field.name for field in tabs[0].fields} == {
+        "shared_output_dir",
+        "boundary_method",
+        "solver_pressure",
+    }
+    assert unassigned(_two_stage_schema()) == []
+
+
+def test_a_tab_naming_no_stage_raises_rather_than_dropping_its_rows(monkeypatch):
+    """A mistyped title would take that stage's settings off the panel silently.
+
+    `unassigned` would still read empty -- the settings *are* claimed, by a
+    stage whose tab nothing draws -- so nothing else can catch this.
+    """
+    stages = (
+        Stage(call="a", title="1. Boundaries", summary="First.", sections=("Boundaries",)),
+        Stage(
+            call="b",
+            title="Solve",
+            summary="Second.",
+            settings=("solver_pressure",),
+            tab="1. Boundries",  # the typo
+        ),
+    )
+    monkeypatch.setattr("haemolynx.gui.tabs.STAGES", stages)
+
+    with pytest.raises(ValueError, match="name no tab"):
+        tabs_for(_two_stage_schema())
+    with pytest.raises(ValueError, match="name no tab"):
+        assign_to_stages(_two_stage_schema())
+
+
 def test_a_claim_for_a_setting_that_does_not_exist_is_ignored(monkeypatch):
     """A renamed setting must not put a phantom row on a tab."""
     stages = (
@@ -133,18 +368,161 @@ def test_a_claim_for_a_setting_that_does_not_exist_is_ignored(monkeypatch):
 
 
 def test_a_tab_carries_the_rows_for_its_settings():
+    """The haemodynamics tab is whether to solve, what blood model to solve
+    with, and what to solve at.
+
+    Two stages' rows: `build_haemodynamic_model` brings the toggle plus the
+    viscosity law and haematocrit (retabbed here from Diameters, since this
+    is the model that reads them), `solve` brings the boundary pressures it
+    reads plus the Pries-Secomb haematocrit distribution settings (retabbed
+    the same way, since they configure the flow solve, not the baseline
+    diameter model). The "Network handling" box is what is done to the
+    assigned network first -- pruning components without I/O, and boundary
+    handling -- which runs at the start of `build_haemodynamic_model`.
+    """
     tabs = {tab.stage.title: tab for tab in tabs_for(SCHEMA)}
-    solve = tabs["7. Solve"]
-    assert {field.name for field in solve.fields} == {
+    haemodynamics = tabs["6. Haemodynamics"]
+    assert {field.name for field in haemodynamics.fields} == {
+        "run_haemodynamics",
+        "viscosity_law",
+        "pries_viscosity_form",
+        "haematocrit",
+        "red_cell_volume_fl",
         "inlet_p_bc",
         "outlet_p_bc",
         "do_equiv_resistance_calculation",
+        "haemodynamics_solver",
+        "equivalent_resistance_solver",
+        "haematocrit_model",
+        "haematocrit_junction_rule",
+        "haematocrit_split_connector_length_um",
+        "haematocrit_distribution_max_iterations",
+        "haematocrit_distribution_tolerance",
+        "boundary_handling",
+        "open_end_model",
+        "open_end_terminal_resistance_multiple",
+        "open_end_estimate_shear_weight",
+        "open_end_estimate_pressure_target_pa",
+        "open_end_estimate_shear_target_pa",
     }
+
+
+def test_the_raw_image_and_its_stain_are_on_the_input_tab():
+    """What the raw image stains is a property of the dataset, set once with
+    the image on Input; the Diameters tab only says whether to measure from
+    it, and the stain chooses how."""
+    tabs = {tab.stage.title: tab for tab in tabs_for(SCHEMA)}
+    on_input = {field.name for field in tabs["1. Input"].fields}
+    on_diameters = {field.name for field in tabs["5. Diameters"].fields}
+    for name in ("raw_image_path", "raw_image_channel", "raw_image_stain"):
+        assert name in on_input, name
+        assert name not in on_diameters, name
+    assert "measure_diameters_from_raw_image" in on_diameters
+    assert "diameter_basis" not in on_diameters
+    assert "viscosity_law" not in on_diameters
+    assert "haematocrit" not in on_diameters
+
+
+def test_the_segmentation_source_sits_with_the_segmented_image_on_input():
+    """What the segmented vessels are -- a plasma column or the wall, which
+    decides the form of the viscosity law every diameter the segmentation
+    gave is read through -- is a property of the dataset, set once on Input
+    right under the segmented image, not a Diameters or Haemodynamics knob."""
+    from haemolynx.gui.layout import TAB_BOXES
+
+    tabs = {tab.stage.title: tab for tab in tabs_for(SCHEMA)}
+    on_input = [field.name for field in tabs["1. Input"].fields]
+    assert "segmentation_source" in on_input
+    assert on_input.index("input_path") < on_input.index("segmentation_source") < on_input.index("raw_image_path")
+    for title in ("5. Diameters", "6. Haemodynamics"):
+        assert "segmentation_source" not in {field.name for field in tabs[title].fields}, title
+    input_box = next(box for box in TAB_BOXES["segment"] if box.key == "segmented_input")
+    assert input_box.names.index("segmentation_source") == input_box.names.index("input_path") + 1
+
+
+def test_legacy_and_comparison_settings_are_not_on_the_diameters_tab():
+    """Legacy flags and comparison CSV knobs leave Diameters without UI rows.
+
+    Settings stay in the Diameters schema section for apply.py / CLI, but
+    their panel rows are claimed by Perturbations and filtered from always-on
+    tab chrome and typed-entry editors (``do_pericyte_construction`` is inert
+    outside typed strategy paths).
+    """
+    from haemolynx.gui.perturbation_editing import (
+        ALWAYS_VISIBLE_TAB_SETTINGS,
+        EDITOR_SETTINGS,
+    )
+    from haemolynx.pipeline import progress as progress_module
+
+    legacy = progress_module._LEGACY_SETTINGS_HIDDEN_FROM_DIAMETERS
+    tabs = {tab.stage.title: tab for tab in tabs_for(SCHEMA)}
+    diameters = {field.name for field in tabs["5. Diameters"].fields}
+    perturbations = {field.name for field in tabs["8. Perturbations"].fields}
+    for name in legacy:
+        assert name not in diameters, f"{name} is still on Diameters"
+        assert name in perturbations, f"{name} is not claimed by Perturbations"
+        assert name not in ALWAYS_VISIBLE_TAB_SETTINGS, name
+        assert name not in EDITOR_SETTINGS, f"{name} is still a typed-entry editor"
+
+
+def test_pericyte_constriction_settings_are_not_on_the_diameters_tab():
+    """They configure a typed perturbation, not the baseline diameter model."""
+    from haemolynx.haemodynamics.perturbations import PERICYTE_CONSTRICTION_SETTINGS
+    from haemolynx.pipeline import progress as progress_module
+
+    assert tuple(PERICYTE_CONSTRICTION_SETTINGS) == (
+        progress_module._PERICYTE_SETTINGS_ON_PERTURBATIONS_TAB
+    ), "progress.py's retab list drifted from PERICYTE_CONSTRICTION_SETTINGS"
+
+    tabs = {tab.stage.title: tab for tab in tabs_for(SCHEMA)}
+    diameters = {field.name for field in tabs["5. Diameters"].fields}
+    perturbations = {field.name for field in tabs["8. Perturbations"].fields}
+    for name in PERICYTE_CONSTRICTION_SETTINGS:
+        assert name not in diameters, f"{name} is still on Diameters"
+        assert name in perturbations, f"{name} is not claimed by Perturbations"
+
+
+def test_the_perturbations_tab_shows_only_the_always_on_run_settings():
+    """Sweep ranges are a type's options, not permanent form rows.
+
+    They stay declared under Perturbation runs so Field objects exist for the
+    editor and defaults remain in the schema, but the tab itself only shows
+    whether to run perturbations, the list, and where to write them.
+    """
+    tabs = {tab.stage.title: tab for tab in tabs_for(SCHEMA)}
+    claimed = {field.name for field in tabs["8. Perturbations"].fields}
+    # Claimed by the stage (so unassigned stays empty and the editor can clone
+    # Field objects), but not shown as ordinary rows -- see
+    # gui.perturbation_editing.visible_tab_settings.
+    from haemolynx.gui.perturbation_editing import (
+        ALWAYS_VISIBLE_TAB_SETTINGS,
+        EDITOR_SETTINGS,
+        visible_tab_settings,
+    )
+
+    assert set(visible_tab_settings(sorted(claimed))) == set(ALWAYS_VISIBLE_TAB_SETTINGS)
+    for name in ALWAYS_VISIBLE_TAB_SETTINGS:
+        assert name in claimed
+    for name in EDITOR_SETTINGS:
+        if name in claimed:
+            assert name not in ALWAYS_VISIBLE_TAB_SETTINGS
+    for name in (
+        "run_pericyte_dilation_sweep",
+        "pericyte_dilation_min_percent",
+        "arteriole_diameter_change_percent",
+        "arteriole_dilation_min_percent",
+        "capillary_dilation_min_percent",
+        "sweep_output_dir",
+        "run_pericyte_resistance_comparison",
+        "pericyte_comparison_baseline_value",
+    ):
+        assert name in claimed
+        assert name not in ALWAYS_VISIBLE_TAB_SETTINGS
 
 
 def test_supplied_values_reach_the_right_tab():
     tabs = {tab.stage.title: tab for tab in tabs_for(SCHEMA, {"inlet_p_bc": 1234.0})}
-    row = next(f for f in tabs["7. Solve"].fields if f.name == "inlet_p_bc")
+    row = next(f for f in tabs["6. Haemodynamics"].fields if f.name == "inlet_p_bc")
     assert row.value == 1234.0
 
 
@@ -156,6 +534,496 @@ def test_rows_keep_the_schema_order_within_a_tab():
     assert shown == declared
 
 
-@pytest.mark.parametrize("tab_title", [stage.title for stage in STAGES])
-def test_every_tab_starts_with_a_number_so_the_order_is_visible(tab_title):
-    assert tab_title[0].isdigit()
+def test_vessel_mask_settings_live_on_boundaries_not_graph():
+    """Volume-assignment masks configure Boundaries, not graph topology."""
+    owner = assign_to_stages(SCHEMA)
+    # Declared under Vessel masks because they name which masks, but read by
+    # skeletonisation's thickness gate, so their rows sit on Skeletonise.
+    on_skeletonise = {
+        "skeleton_thick_vessel_restrict_to_mask",
+        "skeleton_thick_vessel_restrict_to_mask_warn_below",
+    }
+    for name in on_skeletonise:
+        assert owner[name] == "2. Skeletonise", name
+    mask_names = [
+        name for name in SCHEMA.section_names("Vessel masks") if name not in on_skeletonise
+    ]
+    assert mask_names[0] == "automated_vessel_assignment"
+    for name in mask_names:
+        assert owner[name] == "4. Boundaries", name
+
+    tabs = {tab.stage.title: tab for tab in tabs_for(SCHEMA)}
+    graph = {field.name for field in tabs["3. Graph"].fields}
+    boundaries = [field.name for field in tabs["4. Boundaries"].fields]
+    assert "cut_network_at_large_vessel_volumes" in mask_names
+    assert "cut_large_vessel_sample_densely" not in mask_names
+    for name in mask_names:
+        assert name not in graph, name
+        assert name in boundaries, name
+
+    assert boundaries.index("automated_vessel_assignment") < boundaries.index(
+        "use_large_vessel_masks"
+    )
+    assert boundaries.index("use_large_vessel_masks") < boundaries.index(
+        "use_small_vessel_masks_for_boundary_assignment"
+    )
+    assert boundaries.index(
+        "use_small_vessel_masks_for_boundary_assignment"
+    ) < boundaries.index("inlet_node_selection_method")
+    # Overlap-cleanup master switch sits above its fast-mode child.
+    assert boundaries.index(
+        "automated_vessel_assignment_enable_overlap_cleanup"
+    ) < boundaries.index("automated_vessel_assignment_fast_mode")
+    assert boundaries.index(
+        "small_vessel_boundary_assignment_enable_overlap_cleanup"
+    ) < boundaries.index("small_vessel_boundary_assignment_fast_mode")
+
+
+#: The size convention's rows (graph.vessel_classes_by_size), declared under
+#: Vessel masks as their alternative.
+SIZE_CONVENTION_ROWS = (
+    "classify_vessels_by_size",
+    "vessel_size_mid_min_diameter_um",
+    "vessel_size_wide_min_diameter_um",
+)
+
+
+def test_vessel_mask_fields_on_boundaries_declare_hide_when_unmet():
+    """Every gated Vessel masks row is marked to hide, not merely grey out."""
+    tabs = {tab.stage.title: tab for tab in tabs_for(SCHEMA)}
+    for field in tabs["4. Boundaries"].fields:
+        if field.section != "Vessel masks":
+            continue
+        if field.name == "automated_vessel_assignment":
+            # Hides only under a synthetic network, which has no image for a mask.
+            assert field.hide_when_unmet
+            assert field.is_visible({})
+            assert not field.is_visible({"network_source": "synthetic"})
+        elif field.name in SIZE_CONVENTION_ROWS:
+            # The masks' alternative: hidden while the masks are on.
+            assert field.hide_when_unmet, field.name
+            assert not field.is_visible(
+                {"automated_vessel_assignment": True, "classify_vessels_by_size": True}
+            ), field.name
+            assert field.is_visible(
+                {"automated_vessel_assignment": False, "classify_vessels_by_size": True}
+            ), field.name
+        else:
+            assert field.hide_when_unmet, field.name
+            assert not field.is_visible({"automated_vessel_assignment": False}), field.name
+
+
+def test_input_ilastik_fields_declare_hide_when_unmet():
+    """Main-ilastik children on Input hide until use_ilastik_segmentation."""
+    tabs = {tab.stage.title: tab for tab in tabs_for(SCHEMA)}
+    fields = {field.name: field for field in tabs["1. Input"].fields}
+
+    assert not fields["use_ilastik_segmentation"].hide_when_unmet
+    assert fields["input_path"].hide_when_unmet
+    # The raw image hides only under a synthetic network (no image at all).
+    assert fields["raw_image_path"].hide_when_unmet
+    assert fields["raw_image_path"].is_visible({})
+    assert not fields["raw_image_path"].is_visible({"network_source": "synthetic"})
+    assert fields["ilastik_classifier_path"].hide_when_unmet
+    assert fields["ilastik_executable"].hide_when_unmet
+    assert fields["ilastik_output_dir"].hide_when_unmet
+    assert fields["ilastik_output_suffix"].hide_when_unmet
+    assert fields["ilastik_timeout_seconds"].hide_when_unmet
+
+    off = {"use_ilastik_segmentation": False}
+    assert fields["input_path"].is_visible(off)
+    assert fields["raw_image_path"].is_visible(off)
+    assert not fields["ilastik_classifier_path"].is_visible(off)
+    assert not fields["ilastik_executable"].is_visible(off)
+    assert not fields["ilastik_output_dir"].is_visible(off)
+    assert not fields["ilastik_output_suffix"].is_visible(off)
+    assert not fields["ilastik_timeout_seconds"].is_visible(off)
+
+    on = {"use_ilastik_segmentation": True}
+    assert not fields["input_path"].is_visible(on)
+    assert fields["raw_image_path"].is_visible(on)
+    assert fields["ilastik_classifier_path"].is_visible(on)
+    assert fields["ilastik_executable"].is_visible(on)
+    assert fields["ilastik_output_dir"].is_visible(on)
+    assert fields["ilastik_output_suffix"].is_visible(on)
+    assert fields["ilastik_timeout_seconds"].is_visible(on)
+
+
+#: The smoothing settings each read by one smoothing method only.
+_SMOOTHING_METHOD_OF = {
+    "segmentation_cleanup_smooth_sigma_um": "gaussian",
+    "segmentation_cleanup_smooth_morphological_radius_um": "morphological",
+}
+
+
+def test_segmentation_cleanup_fields_are_on_input_and_declare_hide_when_unmet():
+    """All seven cleanup toggles nest under the segmentation_cleanup master
+
+    switch (declared under _INPUT_AND_SEGMENTATION, the only section "1.
+    Input" claims), and each toggle's own dependent params additionally nest
+    under that toggle -- both ancestors must be met for a leaf setting to
+    show, not just its immediate parent.
+    """
+    tabs = {tab.stage.title: tab for tab in tabs_for(SCHEMA)}
+    fields = {field.name: field for field in tabs["1. Input"].fields}
+
+    # The cleanup switch hides only under a synthetic network (no image to clean).
+    assert fields["segmentation_cleanup"].hide_when_unmet
+    assert fields["segmentation_cleanup"].is_visible({})
+    assert not fields["segmentation_cleanup"].is_visible({"network_source": "synthetic"})
+
+    toggles_and_children = {
+        "segmentation_cleanup_fill_cavities": (),
+        "segmentation_cleanup_remove_whiskers": (
+            "segmentation_cleanup_whisker_radius_um",
+        ),
+        "segmentation_cleanup_split_narrow_necks": (
+            "segmentation_cleanup_split_min_marker_separation_um",
+            "segmentation_cleanup_split_min_pinch_radius_ratio",
+            "segmentation_cleanup_split_min_body_radius_um",
+        ),
+        "segmentation_cleanup_close_gaps": (
+            "segmentation_cleanup_close_gaps_radius_um",
+        ),
+        "segmentation_cleanup_reconnect_gaps": (
+            "segmentation_cleanup_reconnect_max_bridge_distance_um",
+            "segmentation_cleanup_reconnect_min_cylindricality",
+            "segmentation_cleanup_reconnect_max_axis_angle_degrees",
+            "segmentation_cleanup_reconnect_min_facing_cosine",
+            "segmentation_cleanup_reconnect_max_radius_ratio",
+        ),
+        "segmentation_cleanup_smooth_surfaces": (
+            "segmentation_cleanup_smooth_method",
+            "segmentation_cleanup_smooth_sigma_um",
+            "segmentation_cleanup_smooth_morphological_radius_um",
+        ),
+        "segmentation_cleanup_remove_small_volumes": (
+            "segmentation_cleanup_remove_small_min_volume_um3",
+        ),
+    }
+
+    for toggle, children in toggles_and_children.items():
+        assert fields[toggle].hide_when_unmet
+        assert SCHEMA[toggle].requires == ("segmentation_cleanup",)
+        assert not fields[toggle].is_visible({"segmentation_cleanup": False})
+        assert fields[toggle].is_visible({"segmentation_cleanup": True})
+
+        cleanup_off = {"segmentation_cleanup": True, toggle: False}
+        cleanup_on = {"segmentation_cleanup": True, toggle: True}
+        master_off_too = {"segmentation_cleanup": False, toggle: True}
+        for child in children:
+            assert fields[child].hide_when_unmet
+            method = _SMOOTHING_METHOD_OF.get(child)
+            if method is None:
+                assert SCHEMA[child].requires == ("segmentation_cleanup", toggle)
+            else:
+                # A smoothing radius also needs the method that reads it.
+                assert SCHEMA[child].requires == (
+                    "segmentation_cleanup",
+                    toggle,
+                    f"segmentation_cleanup_smooth_method={method}",
+                )
+                cleanup_on = {**cleanup_on, "segmentation_cleanup_smooth_method": method}
+                other = {"gaussian": "morphological", "morphological": "gaussian"}[method]
+                assert not fields[child].is_visible(
+                    {**cleanup_on, "segmentation_cleanup_smooth_method": other}
+                )
+            assert not fields[child].is_visible(cleanup_off)
+            assert fields[child].is_visible(cleanup_on)
+            # Regression: a child used to check only its own immediate
+            # parent, so it stayed visible even with the segmentation_cleanup
+            # master switch itself off.
+            assert not fields[child].is_visible(master_off_too)
+
+
+def test_centreline_fields_on_graph_declare_hide_when_unmet():
+    """Centreline children on Graph hide until smooth_centrelines applies."""
+    tabs = {tab.stage.title: tab for tab in tabs_for(SCHEMA)}
+    fields = {field.name: field for field in tabs["3. Graph"].fields}
+
+    assert "smooth_centrelines" in fields
+    assert not fields["smooth_centrelines"].hide_when_unmet
+
+    off = {"do_graph_building": True, "smooth_centrelines": False}
+    on = {"do_graph_building": True, "smooth_centrelines": True}
+    for name in (
+        "centreline_smoothing_method",
+        "centreline_smoothing_iterations",
+        "centreline_max_deviation",
+    ):
+        assert fields[name].hide_when_unmet, name
+        assert SCHEMA[name].requires == ("smooth_centrelines",), name
+        assert not fields[name].is_visible(off), name
+        assert fields[name].is_visible(on), name
+
+
+def test_thick_vessel_fields_on_skeletonise_declare_hide_when_unmet():
+    """Radius and hole-fill hide until the thickness-gate toggle is on."""
+    tabs = {tab.stage.title: tab for tab in tabs_for(SCHEMA)}
+    fields = {field.name: field for field in tabs["2. Skeletonise"].fields}
+
+    assert "use_thick_vessel_skeletonisation" in fields
+    assert not fields["use_thick_vessel_skeletonisation"].hide_when_unmet
+    assert SCHEMA["use_thick_vessel_skeletonisation"].default is False
+    # Graph building splits a loaded skeleton's thick vessels too
+    # (PLAN_bridging.md Phase 3), so the toggle needs no do_skeletonize.
+    assert SCHEMA["use_thick_vessel_skeletonisation"].requires == ()
+
+    off = {"do_skeletonize": True, "use_thick_vessel_skeletonisation": False}
+    on = {"do_skeletonize": True, "use_thick_vessel_skeletonisation": True}
+    for name in (
+        "skeleton_thick_vessel_min_radius_um",
+        "skeleton_fill_mask_holes_before_thickness",
+    ):
+        assert fields[name].hide_when_unmet, name
+        assert SCHEMA[name].requires == ("use_thick_vessel_skeletonisation",), name
+        assert not fields[name].is_visible(off), name
+        assert fields[name].is_visible(on), name
+
+
+def test_cartwheel_hub_fields_on_graph_declare_hide_when_unmet():
+    """The cartwheel hub guard's own knob hides until its toggle is on; the two
+    direction-aware merging reads too stay on the Graph tab either way. Like
+    every Graph-tab row they need a segmented image, which both their readers
+    do: a synthetic network reads none of them."""
+    tabs = {tab.stage.title: tab for tab in tabs_for(SCHEMA)}
+    fields = {field.name: field for field in tabs["3. Graph"].fields}
+
+    assert "detect_cartwheel_hub_artifacts" in fields
+    assert not fields["detect_cartwheel_hub_artifacts"].hide_when_unmet
+    assert SCHEMA["detect_cartwheel_hub_artifacts"].default is False
+
+    image = {"network_source": "segmented_image"}
+    off = {**image, "detect_cartwheel_hub_artifacts": False}
+    on = {**image, "detect_cartwheel_hub_artifacts": True}
+    guard_only = fields["cartwheel_hub_max_radial_dispersion"]
+    assert guard_only.hide_when_unmet
+    assert not guard_only.is_visible(off)
+    assert guard_only.is_visible(on)
+    for name in ("cartwheel_hub_min_degree", "cartwheel_hub_tangent_length_um"):
+        # Neither reader gates them: only the image both readers need.
+        assert SCHEMA[name].requires == ("network_source=segmented_image",), name
+        assert fields[name].is_visible(off) and fields[name].is_visible(on), name
+        for direction_aware in (False, True):
+            values = {**off, "cluster_collapse_method": "direction_aware" if direction_aware else "distance_only"}
+            assert fields[name].is_visible(values), (name, direction_aware)
+
+
+def test_perturbation_output_dir_field_on_perturbations_declares_hide_when_unmet():
+    """perturbation_output_dir hides until run_perturbations is on."""
+    tabs = {tab.stage.title: tab for tab in tabs_for(SCHEMA)}
+    fields = {field.name: field for field in tabs["8. Perturbations"].fields}
+
+    assert "run_perturbations" in fields
+    assert not fields["run_perturbations"].hide_when_unmet
+    assert SCHEMA["run_perturbations"].default is False
+
+    child = fields["perturbation_output_dir"]
+    assert child.hide_when_unmet
+    assert SCHEMA["perturbation_output_dir"].requires == ("run_perturbations",)
+    assert not child.is_visible({"run_perturbations": False})
+    assert child.is_visible({"run_perturbations": True})
+
+
+def test_diameter_fields_on_diameters_declare_hide_when_unmet():
+    """Gated Diameters / FWHM rows hide until their parent toggles hold."""
+    tabs = {tab.stage.title: tab for tab in tabs_for(SCHEMA)}
+    for field in tabs["5. Diameters"].fields:
+        if field.section not in {
+            "Diameters and pericytes",
+            "FWHM diameter measurement",
+        }:
+            continue
+        if not field.enabled_by:
+            assert not field.hide_when_unmet, field.name
+            assert field.is_visible({})
+            continue
+        assert field.hide_when_unmet, field.name
+        if field.name in {
+            "manual_capillary_diameter_by_branch_order",
+            "manual_arteriole_diameter_by_branch_order",
+            "manual_venule_diameter_by_branch_order",
+            "diameter_by_branch_order",
+        }:
+            assert SCHEMA[field.name].requires == ("!all_diams_const",), field.name
+            assert not field.is_visible({"all_diams_const": True}), field.name
+            assert field.is_visible({"all_diams_const": False}), field.name
+        elif field.name == "measure_diameters_from_raw_image":
+            assert not field.is_visible({"run_haemodynamics": False}), field.name
+            assert field.is_visible({"run_haemodynamics": True}), field.name
+        elif field.name == "do_fwhm_measurement":
+            assert not field.is_visible(
+                {"run_haemodynamics": True, "measure_diameters_from_raw_image": False}
+            ), field.name
+            assert field.is_visible(
+                {"run_haemodynamics": True, "measure_diameters_from_raw_image": True}
+            ), field.name
+        elif field.name in ("fwhm_sample_spacing_along_edge_um", "fwhm_edge_diameter_aggregation"):
+            # The mask's widths read these too: shown with FWHM off, on any
+            # segmented image, and hidden for a synthetic network.
+            assert field.is_visible(
+                {"run_haemodynamics": True, "measure_diameters_from_raw_image": False}
+            ), field.name
+            assert not field.is_visible({"network_source": "synthetic"}), field.name
+        elif field.name.startswith("fwhm_"):
+            assert not field.is_visible(
+                {"run_haemodynamics": True, "measure_diameters_from_raw_image": False}
+            ), field.name
+        elif "run_haemodynamics" in field.enabled_by:
+            assert not field.is_visible({"run_haemodynamics": False}), field.name
+            assert field.is_visible({"run_haemodynamics": True}), field.name
+
+
+_MEASUREMENT_3D_CHILDREN = (
+    "cell_mask_path",
+    "cell_mask_h5_dataset_name",
+    "measurement_3d_vessel_mask_path",
+    "measurement_3d_vessel_mask_h5_dataset_name",
+)
+
+
+def test_ide_plot_fields_on_export_declare_hide_when_unmet():
+    """Produce IDE plots nests Show / mode / hold on the Export tab."""
+    tabs = {tab.stage.title: tab for tab in tabs_for(SCHEMA)}
+    fields = {field.name: field for field in tabs["10. Export"].fields}
+
+    assert not fields["visualize_results"].hide_when_unmet
+    assert fields["visualize_results"].label == "Produce IDE plots"
+    assert fields["show_plots_in_ide"].hide_when_unmet
+    assert fields["ide_plot_mode"].hide_when_unmet
+    assert fields["hold_ide_plots_open"].hide_when_unmet
+
+    off = {"visualize_results": False, "show_plots_in_ide": False}
+    assert not fields["show_plots_in_ide"].is_visible(off)
+    assert not fields["ide_plot_mode"].is_visible(off)
+    assert not fields["hold_ide_plots_open"].is_visible(off)
+
+    produce_on = {"visualize_results": True, "show_plots_in_ide": False}
+    assert fields["show_plots_in_ide"].is_visible(produce_on)
+    assert not fields["ide_plot_mode"].is_visible(produce_on)
+    assert not fields["hold_ide_plots_open"].is_visible(produce_on)
+
+
+def test_measurement_3d_fields_on_export_declare_hide_when_unmet():
+    """Gated Statistics rows on Additional measurements hide until their parent toggles hold."""
+    tabs = {tab.stage.title: tab for tab in tabs_for(SCHEMA)}
+    fields = {
+        field.name: field
+        for field in tabs["9. Additional measurements"].fields
+        if field.section in ("Statistics and measurements", "Connectivity/Network Analysis")
+    }
+
+    # Lined up with the run's image, so gone for a synthetic network
+    # (preflight refused it there after showing it); in view otherwise.
+    assert fields["measurement_3d_to_cell_mask"].hide_when_unmet
+    assert SCHEMA["measurement_3d_to_cell_mask"].requires == ("network_source=segmented_image",)
+    assert fields["measurement_3d_to_cell_mask"].is_visible({})
+    assert not fields["measurement_3d_to_cell_mask"].is_visible({"network_source": "synthetic"})
+    assert not fields["statistics"].hide_when_unmet
+
+    # HDF5 files, so the dataset-name rows have a dataset to name and show too.
+    h5_paths = {
+        "cell_mask_path": "cells.h5",
+        "measurement_3d_vessel_mask_path": "vessels.h5",
+    }
+    off = {"measurement_3d_to_cell_mask": False, "statistics": False, **h5_paths}
+    on = {"measurement_3d_to_cell_mask": True, "statistics": False, **h5_paths}
+    for name in _MEASUREMENT_3D_CHILDREN:
+        assert fields[name].hide_when_unmet, name
+        assert SCHEMA[name].requires[0] == "measurement_3d_to_cell_mask", name
+        assert all(gate.startswith("!use_pixel_classifier_") for gate in SCHEMA[name].requires[1:]), name
+        assert not fields[name].is_visible(off), name
+        assert fields[name].is_visible(on), name
+
+    # statistics_mode now nests under statistics then its own
+    # statistics_network_analysis toggle (Connectivity/Network Analysis).
+    assert fields["statistics_mode"].hide_when_unmet
+    assert not fields["statistics_mode"].is_visible(off)
+    assert not fields["statistics_mode"].is_visible(
+        {"measurement_3d_to_cell_mask": False, "statistics": True}
+    )
+    assert fields["statistics_mode"].is_visible(
+        {
+            "measurement_3d_to_cell_mask": False,
+            "statistics": True,
+            "statistics_network_analysis": True,
+        }
+    )
+
+
+def test_the_masks_choose_inlets_outlets_only_while_that_switch_is_on():
+    """Large-vessel masks and choosing the inlets/outlets are separate switches.
+
+    automated_vessel_assignment used to lock the manual Inlet/Outlet methods
+    (``requires=("!automated_vessel_assignment",)``), so keeping the masks for
+    the large-vessel treatment meant never setting an inlet by hand.
+    """
+    from haemolynx.gui.boundary_picking import AUTOMATED_OVERRIDES_MANUAL_NOTE
+
+    note = AUTOMATED_OVERRIDES_MANUAL_NOTE.lower()
+    assert "override" in note and "manual" in note
+    assert "inlets outlets from vessel masks" in note
+    switch = SCHEMA["inlets_outlets_from_vessel_masks"]
+    assert switch.kind == "bool" and switch.default is True
+    # It reads the large masks, so it hides with them.
+    assert switch.requires == ("use_large_vessel_masks", "automated_vessel_assignment")
+    assert "inlets_outlets_from_vessel_masks" in SCHEMA["automated_vessel_assignment"].help
+    # The manual methods apply unless the masks choose: no `requires` can say
+    # that, so they carry none and preflight warns instead.
+    assert SCHEMA["inlet_node_selection_method"].requires == ()
+    assert SCHEMA["outlet_node_selection_method"].requires == ()
+
+@pytest.mark.parametrize("title", tab_titles())
+def test_every_tab_starts_with_a_number_so_the_order_is_visible(title):
+    """Tabs are numbered, not stages: a stage that opens none needs no number."""
+    assert title[0].isdigit()
+
+
+# --- group-box titles -----------------------------------------------------------
+
+
+def test_the_haemodynamics_tab_titles_its_blood_model_box_blood_model():
+    """The viscosity/haematocrit rows are declared in "Diameters and
+    pericytes", but on "6. Haemodynamics" that name describes another tab."""
+    from haemolynx.gui.tabs import section_box_title, tabs_for
+
+    haemodynamics = next(t for t in tabs_for(SCHEMA) if t.stage.call == "build_haemodynamic_model")
+    sections = {field.section for field in haemodynamics.fields}
+    assert DIAMETERS_AND_PERICYTES in sections
+
+    assert section_box_title("build_haemodynamic_model", DIAMETERS_AND_PERICYTES) == "Blood model"
+
+
+def test_a_box_title_changes_only_on_its_own_tab_and_not_the_section():
+    from haemolynx.gui.tabs import section_box_title
+
+    assert section_box_title("assign_diameters", DIAMETERS_AND_PERICYTES) == DIAMETERS_AND_PERICYTES
+    assert section_box_title("build_haemodynamic_model", "Pipeline stages") == "Pipeline stages"
+    # The settings themselves keep keying by the schema's section name.
+    assert SCHEMA["viscosity_law"].section == DIAMETERS_AND_PERICYTES
+
+
+def test_vascular_communities_are_their_own_group_on_the_additional_measurements_tab():
+    """Vascular communities colour the vessels layer; they are not part of the
+    statistics report, so they sit on tab 8 in a section of their own -- after
+    (not inside) the 3D-measurement, Statistics and network-analysis rows --
+    and depend on nothing but their own toggle."""
+    tabs = {tab.stage.title: tab for tab in tabs_for(SCHEMA)}
+    measurements = [field.name for field in tabs["9. Additional measurements"].fields]
+    export = {field.name for field in tabs["10. Export"].fields}
+    for name in ("compute_vascular_communities", "vascular_community_weighting"):
+        assert name in measurements
+        assert name not in export
+        assert SCHEMA[name].section == "Vascular communities"
+    assert measurements[-2:] == ["compute_vascular_communities", "vascular_community_weighting"]
+    assert SCHEMA["compute_vascular_communities"].requires == ()
+    assert SCHEMA["vascular_community_weighting"].requires == ("compute_vascular_communities",)
+
+
+def test_the_3d_object_mask_measurement_comes_before_statistics():
+    tabs = {tab.stage.title: tab for tab in tabs_for(SCHEMA)}
+    measurements = [field.name for field in tabs["9. Additional measurements"].fields]
+    assert measurements.index("measurement_3d_to_cell_mask") < measurements.index("statistics")
+    assert measurements.index("measurement_3d_vessel_mask_h5_dataset_name") < measurements.index(
+        "statistics"
+    )

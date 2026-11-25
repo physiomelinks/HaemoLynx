@@ -1,0 +1,783 @@
+"""A perturbation: a named, typed settings override to re-solve a network for.
+
+Once a run has a network with resistances on it, the question is usually not
+"what does this network do" but "what does it do if". Each answer is a full
+re-solve of the same baseline with a few settings changed -- a different inlet
+pressure, wider arterioles, tighter pericytes -- so a perturbation is described
+the same way a preset is: a name, and the settings it sets.
+
+    perturbations:
+      - name: art_dilate_20
+        type: arteriole_diameter_change
+        overrides:
+          arteriole_diameter_change_percent: 20
+
+The ``type`` is what a run dispatches on and what the panel reveals rows for:
+:data:`SETTINGS_FOR_TYPE` says which settings each type reads, so an override
+that type will not look at can be reported rather than silently ignored. It
+cannot be expressed as a setting's ``requires`` -- a prerequisite must be a
+bool and a type is a choice -- which is the same problem
+:mod:`haemolynx.gui.boundary_picking` solves for the boundary selection
+methods, and this follows it.
+
+Every perturbation runs **from the same baseline**: two of them do not compose,
+and neither changes the run that produced the network.
+
+Nothing here executes anything, imports a GUI, or raises for a badly written
+entry. A hand-edited config must not stop a panel from opening, so reading one
+collects :attr:`PerturbationSpec.problems` and carries on; the run is where a
+bad entry is an error, and :func:`haemolynx.pipeline.preflight` says so before
+any work starts.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from pathlib import Path, PurePath
+from typing import Any, Mapping, Sequence
+
+import numpy as np
+
+__all__ = [
+    "INCOMPARABLE_OVERRIDES",
+    "MEASURED_CONSTRICTION_SETTINGS",
+    "MEASURED_CONSTRICTION_TYPE",
+    "PERTURBATION_TYPES",
+    "PERICYTE_PERTURBATION_TYPES",
+    "PERICYTE_CONSTRICTION_SETTINGS",
+    "PERICYTE_ENTRY_GEOMETRY_SETTINGS",
+    "PERICYTE_DILATION_SWEEP_SETTINGS",
+    "PERICYTE_SPACING_SWEEP_SETTINGS",
+    "PERICYTE_LENGTH_SWEEP_SETTINGS",
+    "ARTERIOLE_DILATION_SWEEP_SETTINGS",
+    "CAPILLARY_BLOCK_MASK_SETTINGS",
+    "CAPILLARY_BLOCK_SETTINGS",
+    "CAPILLARY_BLOCK_TYPES",
+    "CAPILLARY_DILATION_SWEEP_SETTINGS",
+    "PRESSURE_SWEEP_SETTINGS",
+    "SETTINGS_FOR_TYPE",
+    "SWEEP_PERTURBATION_TYPES",
+    "PerturbationSpec",
+    "is_capillary_block",
+    "is_sweep_perturbation",
+    "places_pericytes",
+    "perturbation_folder_name",
+    "perturbation_mask_setting",
+    "perturbation_output_dir",
+    "perturbation_problems",
+    "perturbations_from_settings",
+    "perturbations_to_settings",
+    "is_usable_as_a_directory_name",
+    "settings_for_perturbation_type",
+    "visible_perturbation_settings",
+]
+
+#: What a perturbation can be. ``none`` does nothing and produces nothing: it
+#: is the type an entry has before a user has chosen one.
+PERTURBATION_TYPES: tuple[str, ...] = (
+    "none",
+    "pressure_sweep",
+    "pressure_and_pericyte_sweep",
+    "pericyte_dilation_sweep",
+    "arteriole_diameter_change",
+    "arteriole_diameter_sweep",
+    "pressure_and_arteriole_sweep",
+    "capillary_diameter_sweep",
+    "pressure_and_capillary_sweep",
+    "pericyte_spacing_sweep",
+    "pericyte_length_sweep",
+    "pericyte_diameter_change",
+    "arteriole_and_pericyte_diameter_change",
+    "pericyte_measured_constriction",
+    "capillary_block",
+    "capillary_block_mask",
+)
+
+#: The type that re-solves the network with each branch's pericytes narrowing
+#: it as the segmentation shows them narrowed (pericyte_measurements), rather
+#: than by a constriction factor.
+MEASURED_CONSTRICTION_TYPE = "pericyte_measured_constriction"
+
+#: Length, spacing, probability, base tone and per-order overrides every
+#: pericyte-based perturbation can set on its own entry. Sweeps read these
+#: through the merged settings; ``pericyte_diameter_change`` also needs the
+#: probabilistic enable flag so the existing constriction-strategy path can
+#: honour probability. ``constriction_by_branch_order`` replaces
+#: ``pericyte_constriction_factor`` for listed orders only.
+PERICYTE_ENTRY_GEOMETRY_SETTINGS: tuple[str, ...] = (
+    "pericyte_constriction_factor",
+    "constriction_by_branch_order",
+    "constriction_length_um",
+    "constriction_spacing_um",
+    "use_probabilistic_pericyte_constriction",
+    "pericyte_constriction_probability",
+)
+
+#: Where a pericyte sweep's sites come from (a mask, or a seeded random
+#: cohort): the sweeps read these through the same constriction strategy as
+#: ``pericyte_diameter_change``, so an entry must be able to set them too.
+PERICYTE_SWEEP_SITE_SETTINGS: tuple[str, ...] = (
+    "use_pericyte_mask_constriction",
+    "pericyte_mask_path",
+    "pericyte_mask_h5_dataset_name",
+    "pericyte_max_assignment_distance_um",
+    "pericyte_min_diameter_um",
+    "pericyte_max_diameter_um",
+    "pericyte_constriction_seed",
+)
+
+#: Settings that configure pericyte / constriction modelling. Declared under
+#: Diameters and pericytes in the schema (so apply.py's section_values still
+#: finds them) but claimed on the Perturbations tab: they are options of a
+#: pericyte-based perturbation, not of the baseline diameter model.
+#: ``do_pericyte_construction`` is *not* listed: the pipeline forces it False
+#: on baseline and every merge, and typed pericyte paths call
+#: ``set_resistances_for_constriction_strategy`` by type — so a checkbox would
+#: lie. It is retabbed with the other legacy flags in progress.py.
+#: Order matches ``_PERICYTE_SETTINGS_ON_PERTURBATIONS_TAB`` in progress.py.
+PERICYTE_CONSTRICTION_SETTINGS: tuple[str, ...] = (
+    "pericyte_constriction_factor",
+    "constriction_by_branch_order",
+    "constriction_length_um",
+    "constriction_spacing_um",
+    "use_pericyte_mask_constriction",
+    "pericyte_mask_path",
+    "pericyte_mask_h5_dataset_name",
+    "pericyte_max_assignment_distance_um",
+    "pericyte_min_diameter_um",
+    "pericyte_max_diameter_um",
+    "use_probabilistic_pericyte_constriction",
+    "pericyte_constriction_probability",
+    "pericyte_constriction_seed",
+)
+
+#: What the measured-constriction perturbation reads: the pericyte mask and
+#: which of its components are pericytes on a capillary, as the other pericyte
+#: types read them. The profile's step and reach are the Pericyte measurements
+#: box's (pericyte_profile_step_um, pericyte_profile_reach_um).
+MEASURED_CONSTRICTION_SETTINGS: tuple[str, ...] = (
+    "use_pericyte_mask_constriction",
+    "pericyte_mask_path",
+    "pericyte_mask_h5_dataset_name",
+    "pericyte_max_assignment_distance_um",
+    "pericyte_min_diameter_um",
+    "pericyte_max_diameter_um",
+)
+
+#: Dilation-percent axes for a pericyte dilation sweep.
+PERICYTE_DILATION_SWEEP_SETTINGS: tuple[str, ...] = (
+    "pericyte_dilation_min_percent",
+    "pericyte_dilation_max_percent",
+    "pericyte_dilation_step_percent",
+)
+
+#: Inter-pericyte spacing axis for a geometry sweep at fixed length and tone.
+PERICYTE_SPACING_SWEEP_SETTINGS: tuple[str, ...] = (
+    "constriction_spacing_min_um",
+    "constriction_spacing_max_um",
+    "constriction_spacing_step_um",
+)
+
+#: Constriction-length axis for a geometry sweep at fixed spacing and tone.
+PERICYTE_LENGTH_SWEEP_SETTINGS: tuple[str, ...] = (
+    "constriction_length_min_um",
+    "constriction_length_max_um",
+    "constriction_length_step_um",
+)
+
+#: Whole-branch diameter-percent axes for an arteriole dilation sweep.
+ARTERIOLE_DILATION_SWEEP_SETTINGS: tuple[str, ...] = (
+    "arteriole_dilation_min_percent",
+    "arteriole_dilation_max_percent",
+    "arteriole_dilation_step_percent",
+)
+
+#: Whole-branch diameter-percent axes for a passive capillary dilation sweep.
+CAPILLARY_DILATION_SWEEP_SETTINGS: tuple[str, ...] = (
+    "capillary_dilation_min_percent",
+    "capillary_dilation_max_percent",
+    "capillary_dilation_step_percent",
+)
+
+#: What a capillary block reads: which vessels (a fraction of some branch
+#: orders, or listed vessel ids), how near-infinite their resistance becomes,
+#: and when another vessel counts as hypoperfused in the comparison.
+CAPILLARY_BLOCK_SETTINGS: tuple[str, ...] = (
+    "capillary_block_selection",
+    "capillary_block_branch_orders",
+    "capillary_block_probability",
+    "capillary_block_seed",
+    "capillary_block_replicates",
+    "capillary_block_vessel_ids",
+    "capillary_block_resistance_factor",
+    "capillary_block_hypoperfusion_fraction",
+)
+
+#: What a capillary block read from a mask reads: the mask of the blocks,
+#: when one of its blobs counts as on a vessel and which vessels it then
+#: blocks, and the occlusion and comparison settings every block shares.
+CAPILLARY_BLOCK_MASK_SETTINGS: tuple[str, ...] = (
+    "capillary_block_mask_path",
+    "capillary_block_mask_h5_dataset_name",
+    "capillary_block_mask_min_overlap_fraction",
+    "capillary_block_mask_vessels_per_block",
+    "capillary_block_resistance_factor",
+    "capillary_block_hypoperfusion_fraction",
+)
+
+#: The types that block vessels and compare the blocked network with the
+#: baseline (haemodynamics.capillary_block): they differ only in how the
+#: vessels are chosen.
+CAPILLARY_BLOCK_TYPES: frozenset[str] = frozenset({"capillary_block", "capillary_block_mask"})
+
+
+def is_capillary_block(perturbation_type: Any) -> bool:
+    """Whether a perturbation of *perturbation_type* blocks vessels."""
+    return str(perturbation_type) in CAPILLARY_BLOCK_TYPES
+
+
+#: Inlet-pressure axes for a pressure sweep.
+PRESSURE_SWEEP_SETTINGS: tuple[str, ...] = (
+    "inlet_pressure_min_pa",
+    "inlet_pressure_max_pa",
+    "inlet_pressure_step_pa",
+)
+
+#: Every ``(min, max, step)`` sweep axis, for the preflight range check.
+SWEEP_RANGE_SETTINGS: tuple[tuple[str, str, str], ...] = (
+    PERICYTE_DILATION_SWEEP_SETTINGS,
+    PERICYTE_SPACING_SWEEP_SETTINGS,
+    PERICYTE_LENGTH_SWEEP_SETTINGS,
+    ARTERIOLE_DILATION_SWEEP_SETTINGS,
+    CAPILLARY_DILATION_SWEEP_SETTINGS,
+    PRESSURE_SWEEP_SETTINGS,
+)
+
+#: Which settings each type reads. This is the table the panel shows rows from
+#: -- a type's options stay hidden until that type is chosen, rather than
+#: greyed out -- and what tells a user that an override is doing nothing.
+SETTINGS_FOR_TYPE: Mapping[str, tuple[str, ...]] = {
+    "none": (),
+    "pressure_sweep": PRESSURE_SWEEP_SETTINGS,
+    "pressure_and_pericyte_sweep": (
+        *PERICYTE_DILATION_SWEEP_SETTINGS,
+        *PERICYTE_ENTRY_GEOMETRY_SETTINGS,
+        *PERICYTE_SWEEP_SITE_SETTINGS,
+        *PRESSURE_SWEEP_SETTINGS,
+    ),
+    "pericyte_dilation_sweep": (
+        *PERICYTE_DILATION_SWEEP_SETTINGS,
+        *PERICYTE_ENTRY_GEOMETRY_SETTINGS,
+        *PERICYTE_SWEEP_SITE_SETTINGS,
+    ),
+    "arteriole_diameter_change": ("arteriole_diameter_change_percent",),
+    "arteriole_diameter_sweep": ARTERIOLE_DILATION_SWEEP_SETTINGS,
+    "pressure_and_arteriole_sweep": (
+        *ARTERIOLE_DILATION_SWEEP_SETTINGS,
+        *PRESSURE_SWEEP_SETTINGS,
+    ),
+    "capillary_diameter_sweep": CAPILLARY_DILATION_SWEEP_SETTINGS,
+    "pressure_and_capillary_sweep": (
+        *CAPILLARY_DILATION_SWEEP_SETTINGS,
+        *PRESSURE_SWEEP_SETTINGS,
+    ),
+    "pericyte_spacing_sweep": (
+        *PERICYTE_SPACING_SWEEP_SETTINGS,
+        "pericyte_constriction_factor",
+        "constriction_by_branch_order",
+        "constriction_length_um",
+        "pericyte_geometry_dilation_percent",
+        "use_probabilistic_pericyte_constriction",
+        "pericyte_constriction_probability",
+        *PERICYTE_SWEEP_SITE_SETTINGS,
+    ),
+    "pericyte_length_sweep": (
+        *PERICYTE_LENGTH_SWEEP_SETTINGS,
+        "pericyte_constriction_factor",
+        "constriction_by_branch_order",
+        "constriction_spacing_um",
+        "pericyte_geometry_dilation_percent",
+        "use_probabilistic_pericyte_constriction",
+        "pericyte_constriction_probability",
+        *PERICYTE_SWEEP_SITE_SETTINGS,
+    ),
+    "pericyte_diameter_change": PERICYTE_CONSTRICTION_SETTINGS,
+    # Union of arteriole_diameter_change and pericyte_diameter_change. Apply
+    # order in stages._perturb_one is arteriole whole-branch % scale first,
+    # then focal pericyte constrictions on the scaled graph.
+    "arteriole_and_pericyte_diameter_change": (
+        "arteriole_diameter_change_percent",
+        *PERICYTE_CONSTRICTION_SETTINGS,
+    ),
+    MEASURED_CONSTRICTION_TYPE: MEASURED_CONSTRICTION_SETTINGS,
+    "capillary_block": CAPILLARY_BLOCK_SETTINGS,
+    "capillary_block_mask": CAPILLARY_BLOCK_MASK_SETTINGS,
+}
+
+#: Settings a perturbation may not override, because changing one of them
+#: makes its resistances incomparable with the baseline it is differenced
+#: against. The viscosity law, the diameter basis and the haematocrit each
+#: change *every* resistance in the network -- several-fold in a capillary
+#: between the Pries forms -- so a perturbation that moved one of them would
+#: report that change as its effect; the junction rule moves the haematocrit
+#: downstream of every junction it decides. A run picks one blood model for all
+#: of its arms; comparing two models means two runs.
+INCOMPARABLE_OVERRIDES: tuple[str, ...] = (
+    "viscosity_law",
+    "pries_viscosity_form",
+    "raw_image_stain",
+    "segmentation_source",
+    "haematocrit",
+    "haematocrit_model",
+    "haematocrit_junction_rule",
+    # The boundaries: every perturbation solves with the baseline's open ends.
+    "open_end_model",
+    "open_end_terminal_resistance_multiple",
+    "open_end_estimate_shear_weight",
+    "open_end_estimate_pressure_target_pa",
+    "open_end_estimate_shear_target_pa",
+)
+
+#: Types that run a sweep helper and write a sweep CSV rather than one re-solve.
+#: Derived from :data:`PERTURBATION_TYPES` by name so a new ``*_sweep`` type is
+#: classified without editing a second table.
+SWEEP_PERTURBATION_TYPES: frozenset[str] = frozenset(
+    name for name in PERTURBATION_TYPES if "sweep" in name
+)
+
+
+def is_sweep_perturbation(perturbation_type: Any) -> bool:
+    """Whether *perturbation_type* is a sweep (CSV grid / Alice curves).
+
+    Uses the type name: every declared sweep includes ``sweep``, and non-sweep
+    types do not. Unknown names with ``sweep`` in them are treated as sweeps so
+    a new type gets the sweep export path (and slider-backed napari layer)
+    rather than a single static re-solve layer.
+    """
+    text = str(perturbation_type)
+    if text in SWEEP_PERTURBATION_TYPES:
+        return True
+    return "sweep" in text and text != "none"
+
+
+#: Types that put pericyte constriction sites on the network they solve, so
+#: there is something to draw where the pericytes are. A type places sites
+#: exactly when it reads where they come from (the mask or the seeded cohort),
+#: so this is derived from :data:`SETTINGS_FOR_TYPE` rather than listed twice.
+PERICYTE_PERTURBATION_TYPES: frozenset[str] = frozenset(
+    name
+    for name, settings in SETTINGS_FOR_TYPE.items()
+    if "use_pericyte_mask_constriction" in settings
+)
+
+
+def places_pericytes(perturbation_type: Any) -> bool:
+    """Whether a perturbation of *perturbation_type* places pericyte sites."""
+    return str(perturbation_type) in PERICYTE_PERTURBATION_TYPES
+
+
+def perturbation_mask_setting(perturbation_type: Any, values: Mapping[str, Any]) -> str | None:
+    """The mask a perturbation of *perturbation_type* reads, as the path
+    setting naming it, on *values* (the run's settings with the entry's
+    overrides): the pericyte mask of a pericyte type taking its sites from
+    one, the block mask of ``capillary_block_mask``; None for one that reads
+    no mask."""
+    text = str(perturbation_type)
+    if text == "capillary_block_mask":
+        return "capillary_block_mask_path"
+    if text == MEASURED_CONSTRICTION_TYPE or (
+        places_pericytes(text) and values.get("use_pericyte_mask_constriction")
+    ):
+        return "pericyte_mask_path"
+    return None
+
+
+def settings_for_perturbation_type(perturbation_type: Any) -> tuple[str, ...]:
+    """The settings a perturbation of *perturbation_type* reads.
+
+    An unknown type reads nothing, so a panel showing a hand-edited config
+    shows no options rather than the previous type's.
+    """
+    return tuple(SETTINGS_FOR_TYPE.get(str(perturbation_type), ()))
+
+
+def is_usable_as_a_directory_name(name: str) -> bool:
+    """Whether *name* names one directory, and not a path to somewhere else.
+
+    A perturbation's output goes in ``{name}_{type}``, so a name carrying a
+    separator would write outside the run's output -- and ``..`` would write
+    over the run's own files. That is the whole sanitisation: empty, ``.``,
+    ``..``, and ``/`` ``\\`` ``:`` are refused; everything else is kept as typed.
+    """
+    stripped = name.strip()
+    if not stripped or stripped in {".", ".."}:
+        return False
+    return not any(character in stripped for character in ("/", "\\", ":"))
+
+
+def perturbation_folder_name(name: str, perturbation_type: str) -> str:
+    """The subdirectory one perturbation writes into: ``{name}_{type}``.
+
+    Uses the user-facing name and the type string as they are, joined by one
+    underscore. The name is already required to be a single path component
+    (see :func:`is_usable_as_a_directory_name`); the type is one of
+    :data:`PERTURBATION_TYPES` and so is already filesystem-safe. Nothing else
+    is rewritten.
+    """
+    return f"{name}_{perturbation_type}"
+
+
+def visible_perturbation_settings(specs: Sequence["PerturbationSpec"]) -> set[str]:
+    """Every setting the configured perturbations between them read."""
+    wanted: set[str] = set()
+    for spec in specs:
+        wanted.update(settings_for_perturbation_type(spec.type))
+    return wanted
+
+
+def plain(value: Any) -> Any:
+    """*value* as builtins, however deeply nested.
+
+    The one boundary between this module and YAML. ``yaml.safe_dump`` refuses a
+    ``np.float64`` or a ``Path`` outright, and a perturbation's overrides are
+    ordinary settings values -- so one that has been coerced by the schema
+    arrives as a ``Path``, and one picked up from a graph as a numpy scalar.
+    Paths become forward-slashed strings for the same reason the config writer
+    does it: a file written on Windows must match one written on Linux.
+    """
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, np.ndarray):
+        return [plain(item) for item in value.tolist()]
+    if isinstance(value, PurePath):
+        return PurePath(value).as_posix()
+    if isinstance(value, Mapping):
+        return {str(key): plain(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [plain(item) for item in value]
+    return value
+
+
+@dataclass(frozen=True)
+class PerturbationSpec:
+    """One perturbation: what to call it, what kind it is, what it changes.
+
+    Read leniently -- a malformed entry becomes a spec carrying a line in
+    :attr:`problems` rather than an exception -- so a panel can report a
+    hand-edited config while a run refuses it.
+    """
+
+    name: str
+    type: str
+    overrides: Mapping[str, Any] = field(default_factory=dict)
+    #: One line per thing wrong with this entry that needs no schema to see.
+    problems: tuple[str, ...] = ()
+
+    @classmethod
+    def from_entry(cls, entry: Any, *, index: int = 0) -> "PerturbationSpec":
+        """One entry of the `perturbations` list, however badly written."""
+        where = f"perturbations[{index}]"
+        problems: list[str] = []
+        if not isinstance(entry, Mapping):
+            return cls(
+                name=f"perturbation_{index + 1}",
+                type="none",
+                problems=(f"{where} is not a name/type/overrides entry: {entry!r}",),
+            )
+
+        unknown_keys = sorted(set(entry) - {"name", "type", "overrides"})
+        if unknown_keys:
+            problems.append(
+                f"{where} has unexpected key(s) {unknown_keys}; an entry is "
+                "name, type and overrides"
+            )
+
+        name = entry.get("name")
+        if name is None or not str(name).strip():
+            problems.append(f"{where} has no name")
+            name = f"perturbation_{index + 1}"
+        elif not is_usable_as_a_directory_name(str(name)):
+            problems.append(
+                f"{where} name {str(name)!r} cannot be a directory name, and a "
+                "perturbation's name is used with its type as the directory "
+                "its output goes in"
+            )
+
+        perturbation_type = entry.get("type")
+        if perturbation_type is None:
+            problems.append(
+                f"{where} ('{name}') has no type; one of "
+                f"{', '.join(PERTURBATION_TYPES)}"
+            )
+            perturbation_type = "none"
+        elif str(perturbation_type) not in PERTURBATION_TYPES:
+            problems.append(
+                f"{where} ('{name}') has unknown type {perturbation_type!r}; one "
+                f"of {', '.join(PERTURBATION_TYPES)}"
+            )
+
+        overrides = entry.get("overrides") or {}
+        if not isinstance(overrides, Mapping):
+            problems.append(
+                f"{where} ('{name}') overrides is not a mapping of setting name "
+                f"to value: {overrides!r}"
+            )
+            overrides = {}
+
+        return cls(
+            name=str(name),
+            type=str(perturbation_type),
+            overrides={str(key): value for key, value in overrides.items()},
+            problems=tuple(problems),
+        )
+
+    @property
+    def folder_name(self) -> str:
+        """The subdirectory this perturbation writes into: ``{name}_{type}``."""
+        return perturbation_folder_name(self.name, self.type)
+
+    def to_entry(self) -> dict[str, Any]:
+        """This perturbation as the entry a config file holds."""
+        return {
+            "name": str(self.name),
+            "type": str(self.type),
+            "overrides": {key: plain(value) for key, value in self.overrides.items()},
+        }
+
+    def unused_overrides(self) -> tuple[str, ...]:
+        """Override keys this type does not read, so nothing would apply them.
+
+        The refused keys are left out: they get an error of their own from
+        :meth:`incomparable_overrides` rather than a second, milder line saying
+        the same thing.
+        """
+        reads = set(settings_for_perturbation_type(self.type))
+        return tuple(
+            sorted(
+                key
+                for key in self.overrides
+                if key not in reads and key not in INCOMPARABLE_OVERRIDES
+            )
+        )
+
+    def incomparable_overrides(self) -> tuple[str, ...]:
+        """Override keys that would make this perturbation's numbers a lie.
+
+        See :data:`INCOMPARABLE_OVERRIDES`. Refused rather than warned about:
+        the difference this perturbation reports is what a reader takes from
+        its CSV months later, and a log line does not travel with the file.
+        """
+        return tuple(sorted(key for key in self.overrides if key in INCOMPARABLE_OVERRIDES))
+
+    def schema_problems(self, schema) -> tuple[str, ...]:
+        """What only the schema can see: an unknown key, or a value it rejects.
+
+        Each override is coerced **on its own** rather than through
+        ``Schema.validate``: a perturbation is a partial config, so its
+        prerequisites are met by the run it is applied to and not by itself, and
+        validating the fragment would raise `IneffectiveSettingWarning` for
+        every override whose bool prerequisite lives outside it. This is the
+        same reason `examples/pipeline_presets.py` checks its presets one value
+        at a time.
+        """
+        problems: list[str] = []
+        for key, value in self.overrides.items():
+            try:
+                setting = schema[key]
+            except Exception as exc:  # ConfigError, with a spelling suggestion
+                problems.append(f"perturbation '{self.name}' sets {exc}")
+                continue
+            try:
+                setting.coerce(value)
+            except Exception as exc:
+                problems.append(f"perturbation '{self.name}': {exc}")
+        return tuple(problems)
+
+    def coerced_overrides(self, schema) -> dict[str, Any]:
+        """The overrides this perturbation applies, as the schema's own types.
+
+        Anything the schema rejects is left out -- `schema_problems` is what
+        reports it -- so a caller gets the part of a bad entry that does work
+        rather than nothing at all.
+        """
+        coerced: dict[str, Any] = {}
+        for key, value in self.overrides.items():
+            if key not in schema:
+                continue
+            try:
+                coerced[key] = schema[key].coerce(value)
+            except Exception:
+                continue
+        return coerced
+
+    def applied_overrides(self, schema) -> dict[str, Any]:
+        """The overrides a run actually puts on top of its settings.
+
+        Only what this type reads: every perturbation re-solves the network, so
+        a settings dict carrying an unread override -- `inlet_p_bc` on an
+        arteriole dilation, say -- would change the answer while
+        :meth:`unused_overrides` reported it as having no effect. Filtering here
+        makes that report true, and keeps a perturbation to the one thing it
+        says it is.
+        """
+        reads = set(settings_for_perturbation_type(self.type))
+        return {
+            key: value
+            for key, value in self.coerced_overrides(schema).items()
+            if key in reads
+        }
+
+
+def perturbations_from_settings(values: Mapping[str, Any]) -> tuple[PerturbationSpec, ...]:
+    """Every perturbation the `perturbations` setting describes, in order."""
+    raw = values.get("perturbations")
+    if raw is None:
+        return ()
+    if isinstance(raw, Mapping):
+        entries: list[Any] = [raw]
+    elif isinstance(raw, (str, bytes)):
+        # A single string cannot be an entry, and iterating one would report a
+        # problem per character.
+        return (
+            PerturbationSpec(
+                name="perturbation_1",
+                type="none",
+                problems=(f"perturbations is not a list of entries: {raw!r}",),
+            ),
+        )
+    else:
+        try:
+            entries = list(raw)
+        except TypeError:
+            return (
+                PerturbationSpec(
+                    name="perturbation_1",
+                    type="none",
+                    problems=(f"perturbations is not a list of entries: {raw!r}",),
+                ),
+            )
+    return tuple(
+        PerturbationSpec.from_entry(entry, index=index)
+        for index, entry in enumerate(entries)
+    )
+
+
+def perturbations_to_settings(
+    specs: Sequence[PerturbationSpec],
+) -> dict[str, list[dict[str, Any]]]:
+    """The `perturbations` setting these specs describe, as plain YAML data."""
+    return {"perturbations": [spec.to_entry() for spec in specs]}
+
+
+def perturbation_problems(values: Mapping[str, Any], schema) -> tuple[str, ...]:
+    """Everything wrong with the configured perturbations, as lines.
+
+    What both the panel's report box and the pre-run checks read; neither
+    raises, so they say the same thing in the two places a user meets it.
+    """
+    specs = perturbations_from_settings(values)
+    problems: list[str] = []
+    seen: dict[str, int] = {}
+    for index, spec in enumerate(specs):
+        problems.extend(spec.problems)
+        problems.extend(spec.schema_problems(schema))
+        refused = spec.incomparable_overrides()
+        if refused:
+            problems.append(
+                f"perturbation '{spec.name}' sets {list(refused)}, which a "
+                "perturbation may not change: it would move every resistance in "
+                "the network, so the difference against the baseline would not "
+                "be this perturbation's effect. Fix: set it for the whole run, "
+                "or make it a second run"
+            )
+        problems.extend(_type_problems(spec, values, schema))
+        # Ignoring case: Windows and macOS folders do, so 'A' and 'a' of one
+        # type would write into one folder.
+        first = seen.get(spec.name.casefold())
+        if first is not None:
+            problems.append(
+                f"perturbations[{index}] repeats the name '{spec.name}' from "
+                f"perturbations[{first}] (names are compared ignoring case); each "
+                "one names its own output"
+            )
+        else:
+            seen[spec.name.casefold()] = index
+    return tuple(problems)
+
+
+def _type_problems(spec: PerturbationSpec, values: Mapping[str, Any], schema) -> list[str]:
+    """What a type needs that no single setting's own range can check: a
+    sweep axis whose max is below its min, or a capillary block that would
+    have nothing to block."""
+    merged = {**values, **spec.applied_overrides(schema)}
+    raw_image = merged.get("raw_image_path") not in (None, "")
+
+    def unset(name: str, made_by: str) -> bool:
+        # A mask the HaemoLynx classifier makes from the raw image fills it.
+        return merged.get(name) in (None, "") and not (raw_image and merged.get(made_by))
+
+    if spec.type == MEASURED_CONSTRICTION_TYPE:
+        if not merged.get("use_pericyte_mask_constriction") or unset(
+            "pericyte_mask_path", "use_pixel_classifier_pericyte_segmentation"
+        ):
+            return [
+                f"perturbation '{spec.name}' narrows each branch where a pericyte mask's "
+                "pericytes sit, as the segmentation shows it narrowed, but reads no mask: "
+                "turn on use_pericyte_mask_constriction and set pericyte_mask_path"
+            ]
+        return []
+    if spec.type == "capillary_block_mask":
+        if unset("capillary_block_mask_path", "use_pixel_classifier_block_segmentation"):
+            return [
+                f"perturbation '{spec.name}' blocks the vessels a mask's blobs sit in "
+                "but names no mask: set capillary_block_mask_path to the mask of blocks"
+            ]
+        return []
+    if spec.type != "capillary_block":
+        problems = []
+        read = settings_for_perturbation_type(spec.type)
+        for min_key, max_key, _step_key in SWEEP_RANGE_SETTINGS:
+            if min_key not in read:
+                continue
+            low, high = merged.get(min_key), merged.get(max_key)
+            if low is not None and high is not None and float(high) < float(low):
+                problems.append(
+                    f"perturbation '{spec.name}' sweeps {min_key}={low} up to "
+                    f"{max_key}={high}: the max is below the min, so the sweep "
+                    "would have no points"
+                )
+        return problems
+
+    def listed(value: Any) -> list:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            return [part for part in value.split(",") if part.strip()]
+        return list(value) if isinstance(value, (list, tuple)) else [value]
+
+    if merged.get("capillary_block_selection") == "vessel_ids":
+        if not listed(merged.get("capillary_block_vessel_ids")):
+            return [
+                f"perturbation '{spec.name}' blocks listed vessels but lists no "
+                "vessel IDs: set capillary_block_vessel_ids to the branchIDs to block"
+            ]
+    elif not listed(merged.get("capillary_block_branch_orders")):
+        return [
+            f"perturbation '{spec.name}' blocks by branch order but names no "
+            "branch orders: set capillary_block_branch_orders, e.g. ['BO2']"
+        ]
+    return []
+
+
+def perturbation_output_dir(values: Mapping[str, Any]) -> Path:
+    """Where perturbation output goes, configured or derived.
+
+    Unset means the run's own output folder (`output_dir`) -- so a
+    perturbation lands with the run it perturbs without anyone configuring a
+    second path. Each perturbation still writes into a ``{name}_{type}``
+    subfolder of this root.
+    """
+    configured = values.get("perturbation_output_dir")
+    if configured:
+        return Path(configured)
+    folder = values.get("output_dir")
+    return Path(folder) if folder else Path(".")

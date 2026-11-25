@@ -49,6 +49,7 @@ def test_a_required_path_that_is_missing_is_an_error_naming_the_setting(tmp_path
     assert not report.ok
     assert "input_path" in report.errors[0]
     assert "absent.tif" in report.errors[0]
+    assert "clear it" not in report.errors[0]
 
 
 def test_a_path_the_run_would_generate_is_not_demanded(tmp_path):
@@ -80,6 +81,87 @@ def test_paths_without_must_exist_are_not_checked(tmp_path):
         {"use_ilastik": True, "classifier_path": None, "output_dir": tmp_path / "nope"},
     )
     assert not any("output_dir" in message for message in report.errors)
+
+
+def _schema_with_an_optional_path() -> Schema:
+    return Schema([
+        Setting("measure", "bool", False, "Measure the tissue", "S"),
+        Setting(
+            "tissue_path", "path", None, "Find the tissue in this image", "S",
+            requires=("measure",), must_exist=True, placeholder="the raw image",
+        ),
+    ])
+
+
+def test_an_unset_path_with_a_placeholder_is_optional():
+    """Unset, the run reads what the placeholder names: not an error."""
+    report = check_settings(_schema_with_an_optional_path(), {"measure": True, "tissue_path": None})
+    assert report.ok, report.errors
+    assert report.passed == [("tissue_path", "not set: uses the raw image")]
+
+
+def test_an_optional_path_that_is_set_must_still_exist(tmp_path):
+    schema = _schema_with_an_optional_path()
+    report = check_settings(schema, {"measure": True, "tissue_path": tmp_path / "gone.tif"})
+    assert len(report.errors) == 1
+    assert report.errors[0].startswith("tissue_path: ") and "gone.tif" in report.errors[0]
+    assert report.errors[0].endswith(", or clear it to use the raw image.")
+
+    existing = tmp_path / "tissue.tif"
+    existing.write_bytes(b"x")
+    report = check_settings(schema, {"measure": True, "tissue_path": existing})
+    assert report.ok
+    assert report.passed == [("tissue_path", str(existing))]
+
+
+def test_an_optional_path_is_not_checked_while_its_feature_is_off(tmp_path):
+    report = check_settings(
+        _schema_with_an_optional_path(), {"measure": False, "tissue_path": tmp_path / "gone.tif"}
+    )
+    assert report.ok and report.passed == []
+
+
+def test_a_placeholder_makes_only_a_path_optional():
+    path = Setting("p", "path", None, "A path", "S", must_exist=True, placeholder="the default")
+    assert path.optional_path
+    assert not Setting("p", "path", None, "A path", "S", must_exist=True).optional_path
+    assert not Setting("w", "float", None, "A width", "S", placeholder="auto").optional_path
+
+
+def test_a_config_file_says_an_optional_path_must_exist_only_if_set():
+    from haemolynx.parsers.config import _comment_lines
+
+    optional = _schema_with_an_optional_path()["tissue_path"]
+    required = _schema()["input_path"]
+    assert _comment_lines(optional)[0].endswith("must exist if set]")
+    assert _comment_lines(required)[0].endswith("must exist]")
+
+
+def test_every_optional_must_exist_path_in_the_pipeline_falls_back_when_unset():
+    """A placeholder on a must_exist path turns its unset check off, so each
+    one is listed here with what it falls back to, checked in the run:
+    tissue_raw_tiff_path to the raw image (pipeline.checks.tissue_raw_image,
+    tests/test_tissue_volume.py), measurement_3d_vessel_mask_path to the run's
+    segmentation (stages.export_results, tests/test_three_dim_distances.py),
+    and the four venule masks and classifiers to the arteriole/global one
+    read as a global mask (io.vessel_masks_are_global,
+    tests/test_global_vessel_masks.py). capillary_block_mask_path has no
+    fallback: only a capillary_block_mask perturbation reads it, and preflight
+    refuses one that names none (haemodynamics.perturbations.perturbation_problems,
+    tests/test_capillary_block_mask.py). A new one has to be added here, its
+    fallback checked."""
+    from haemolynx.pipeline import default_schema
+
+    optional = {s.name for s in default_schema() if s.must_exist and s.optional_path}
+    assert optional == {
+        "tissue_raw_tiff_path",
+        "measurement_3d_vessel_mask_path",
+        "large_venule_mask_path",
+        "small_venule_mask_path",
+        "ilastik_venule_classifier_path",
+        "ilastik_small_venule_classifier_path",
+        "capillary_block_mask_path",
+    }
 
 
 def test_named_settings_can_be_skipped(tmp_path):
@@ -131,3 +213,33 @@ def test_must_exist_is_part_of_the_gui_description():
 def test_a_negated_prerequisite_names_a_real_setting():
     with pytest.raises(ConfigError, match="requires 'missing'"):
         Schema([Setting("a", "path", None, "Only", "S", requires=("!missing",))])
+
+
+def test_an_unset_path_needed_outside_one_mode_says_which_mode(tmp_path):
+    schema = Schema([
+        Setting("mode", "choice", "file", "Where masks come from", "S", choices=("file", "none")),
+        Setting(
+            "mask_path", "path", None, "Read this mask", "S",
+            requires=("mode!=none",), must_exist=True,
+        ),
+    ])
+    report = check_settings(schema, {"mode": "file", "mask_path": None})
+    assert any("'mode' is not 'none'" in message for message in report.errors)
+
+
+def test_a_must_exist_path_behind_a_path_gate_is_demanded_only_while_the_gate_is_set(tmp_path):
+    """The reason names the gate as set, not on."""
+    from haemolynx.parsers.checks import check_settings
+    from haemolynx.parsers.schema import Schema, Setting
+
+    schema = Schema([
+        Setting("raw", "path", None, "The raw image", "S"),
+        Setting("classifier", "path", None, "What segments it", "S",
+                requires=("raw",), must_exist=True),
+    ])
+
+    assert check_settings(schema, {"raw": None, "classifier": None}).ok
+
+    report = check_settings(schema, {"raw": str(tmp_path / "raw.tif"), "classifier": None})
+    assert len(report.errors) == 1
+    assert "required because 'raw' is set" in report.errors[0]

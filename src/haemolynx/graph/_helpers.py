@@ -1,9 +1,12 @@
 """Internal helpers for graph operations."""
 import logging
-from typing import List, Tuple, Dict, Any, Union
+from typing import List, Tuple, Dict, Any, Callable, Union
 
 import numpy as np
 import networkx as nx
+from scipy.spatial import cKDTree
+
+from haemolynx.preprocessing.bridge_mask_support import PackedMask
 
 logger = logging.getLogger(__name__)
 
@@ -14,7 +17,13 @@ def edge_id(u: Any, v: Any, key: Any) -> Tuple[Any, Any, Any]:
     ``(u, v, key)`` and ``(v, u, key)`` name the same edge, so callers that key
     dicts or sets by edge must normalise first or they will count it twice.
     """
-    return (u, v, key) if u <= v else (v, u, key)
+    try:
+        first = u <= v
+    except TypeError:
+        # Node ids of two kinds (a hand-built graph's tuples beside the ints
+        # a rewiring adds): ordered by their text, the same way every call.
+        first = str(u) <= str(v)
+    return (u, v, key) if first else (v, u, key)
 
 
 def sort_nodes(nodes) -> List[Any]:
@@ -248,7 +257,6 @@ def calculate_edge_length(node1: int, node2: int, edge_data: dict, voxel_size: T
     
 
 
-# For merge_edges_with_topology_improvement
 def is_path_curved(voxels: List, ratio_threshold: float = 1.15) -> bool:
     """True if path length / straight-line distance > threshold."""
     if len(voxels) < 3:
@@ -296,31 +304,19 @@ def orient_path_from_startpoint(voxels, target_pos):
     else:
         return voxels[::-1]  # Reverse to start from target
 
-def improve_straight_edge_with_skeleton(start_pos, end_pos, skeleton_data, debug=False, voxel_size=(1.0, 1.0, 1.0)):
-    """
-    Improve a straight edge by tracing through skeleton topology.
-    Returns improved voxel path (physical coords) or None if not possible.
-    """
-    if skeleton_data is None:
-        return None
-    
-    traced_path = trace_skeleton_path(skeleton_data, start_pos, end_pos, debug, voxel_size=voxel_size)
-    
-    if traced_path and len(traced_path) >= 2:
-        if is_path_curved(traced_path) or len(traced_path) > 3:
-            return traced_path
-    
-    return None
-
 def trace_skeleton_path(skeleton_data, start_pos, end_pos, debug=False, voxel_size=(1.0, 1.0, 1.0)):
     """
     Trace path through skeleton data from start_pos to end_pos using A* pathfinding.
     
     Positions are in physical units; *voxel_size* converts them to array
     indices for look-ups.  The returned path is converted back to physical
-    coordinates.
+    coordinates. The search for the nearest skeleton voxel and the path's
+    step costs are physical too: in voxels, the path with fewest voxels won
+    over the shortest one, and a merged edge's ``voxels`` and ``length``
+    followed it.
     """
     vs = np.asarray(voxel_size, dtype=float)
+    relative = vs / float(vs.min())
     start_vox = np.round(np.asarray(start_pos, dtype=float) / vs).astype(int)
     end_vox = np.round(np.asarray(end_pos, dtype=float) / vs).astype(int)
     
@@ -330,15 +326,15 @@ def trace_skeleton_path(skeleton_data, start_pos, end_pos, debug=False, voxel_si
     skeleton_array = parse_skeleton_data(skeleton_data)
     if skeleton_array is None:
         if debug:
-            logger.debug(f"       Could not parse skeleton data")
+            logger.debug("       Could not parse skeleton data")
         return None
     
-    start_skeleton = find_nearest_skeleton_voxel(skeleton_array, start_vox)
-    end_skeleton = find_nearest_skeleton_voxel(skeleton_array, end_vox)
+    start_skeleton = find_nearest_skeleton_voxel(skeleton_array, start_vox, spacing=relative)
+    end_skeleton = find_nearest_skeleton_voxel(skeleton_array, end_vox, spacing=relative)
     
     if start_skeleton is None or end_skeleton is None:
         if debug:
-            logger.debug(f"       Could not find skeleton voxels near start/end positions")
+            logger.debug("       Could not find skeleton voxels near start/end positions")
         return None
     
     if debug:
@@ -347,7 +343,7 @@ def trace_skeleton_path(skeleton_data, start_pos, end_pos, debug=False, voxel_si
         logger.debug(f"       Start skeleton voxel: {start_skeleton} (dist: {start_dist:.1f})")
         logger.debug(f"       End skeleton voxel: {end_skeleton} (dist: {end_dist:.1f})")
     
-    path = astar_skeleton_path(skeleton_array, start_skeleton, end_skeleton, debug)
+    path = astar_skeleton_path(skeleton_array, start_skeleton, end_skeleton, debug, spacing=relative)
     
     if path:
         if debug:
@@ -356,7 +352,7 @@ def trace_skeleton_path(skeleton_data, start_pos, end_pos, debug=False, voxel_si
         return phys_path
     else:
         if debug:
-            logger.debug(f"       No skeleton path found")
+            logger.debug("       No skeleton path found")
         return None
 
 def parse_skeleton_data(skeleton_data):
@@ -405,27 +401,33 @@ def parse_skeleton_data(skeleton_data):
         return None
 
 
-def find_nearest_skeleton_voxel(skeleton_array, target_pos, max_search_radius=10):
+def find_nearest_skeleton_voxel(skeleton_array, target_pos, max_search_radius=10, spacing=None):
     """
     Find the nearest skeleton voxel to target_pos within search radius.
+
+    Radius and distance in voxels of the finest axis, each axis weighted by
+    *spacing* (per-axis spacing relative to the finest; cube voxels when
+    ``None``), so the search reaches the same physical distance every way.
     """
     target = np.array(target_pos, dtype=int)
     shape = skeleton_array.shape
-    
+    relative = np.ones(3) if spacing is None else np.asarray(spacing, dtype=float)
+
     if (target >= 0).all() and (target < shape).all():
         if skeleton_array[tuple(target)]:
             return tuple(target)
-    
+
     for radius in range(1, max_search_radius + 1):
-        lo = np.maximum(target - radius, 0)
-        hi = np.minimum(target + radius + 1, shape)
-        
+        reach = np.ceil(radius / relative - 1e-9).astype(int)
+        lo = np.maximum(target - reach, 0)
+        hi = np.minimum(target + reach + 1, shape)
+
         sub = skeleton_array[lo[0]:hi[0], lo[1]:hi[1], lo[2]:hi[2]]
         if not np.any(sub):
             continue
-        
+
         local_hits = np.argwhere(sub) + lo
-        dists = np.linalg.norm(local_hits - target, axis=1)
+        dists = np.linalg.norm((local_hits - target) * relative, axis=1)
         within = dists <= radius
         if np.any(within):
             best = int(np.argmin(np.where(within, dists, np.inf)))
@@ -434,9 +436,11 @@ def find_nearest_skeleton_voxel(skeleton_array, target_pos, max_search_radius=10
     return None
 
 
-def astar_skeleton_path(skeleton_array, start, end, debug=False):
+def astar_skeleton_path(skeleton_array, start, end, debug=False, spacing=None):
     """
-    A* pathfinding through skeleton voxels only.
+    A* pathfinding through skeleton voxels only, each step costing its
+    physical length (*spacing*, per axis relative to the finest; cube voxels
+    when ``None``).
     """
     import heapq
     from collections import defaultdict
@@ -449,6 +453,7 @@ def astar_skeleton_path(skeleton_array, start, end, debug=False):
     
     ex, ey, ez = end
     sx, sy, sz = skeleton_array.shape
+    wx, wy, wz = (1.0, 1.0, 1.0) if spacing is None else (float(s) for s in spacing)
 
     open_set = [(0, 0, start)]
     came_from = {}
@@ -500,7 +505,7 @@ def astar_skeleton_path(skeleton_array, start, end, debug=False):
             if neighbor in closed_set:
                 continue
             
-            distance = (dx*dx + dy*dy + dz*dz) ** 0.5
+            distance = ((dx * wx) ** 2 + (dy * wy) ** 2 + (dz * wz) ** 2) ** 0.5
             tentative_g = cur_g + distance
             
             if tentative_g < g_score[neighbor]:
@@ -509,13 +514,189 @@ def astar_skeleton_path(skeleton_array, start, end, debug=False):
                 hdx = nx_ - ex
                 hdy = ny_ - ey
                 hdz = nz_ - ez
-                f = tentative_g + (hdx*hdx + hdy*hdy + hdz*hdz) ** 0.5
+                f = tentative_g + ((hdx * wx) ** 2 + (hdy * wy) ** 2 + (hdz * wz) ** 2) ** 0.5
                 heapq.heappush(open_set, (f, tentative_g, neighbor))
     
     return None
 
-def are_paths_similar(voxels1, voxels2, tolerance=3.0):
-    """Check if two paths connect similar endpoints."""
+def path_separation(
+    path_a: List, path_b: List, step_um: float = 0.5, *, ignore_within=None
+) -> float:
+    """Furthest either polyline strays from the other (symmetric Hausdorff distance).
+
+    Both paths are sampled every *step_um* along their length, so the result
+    is within ``step_um / 2`` of the exact distance however sparse the inputs.
+
+    *ignore_within*, a ``(centre, radius)`` pair, leaves the samples of either
+    path within *radius* of *centre* out of the measurement (they are still
+    what the other path's samples are measured to); 0.0 when nothing is left
+    to measure.
+    """
+    a = densify_polyline(np.asarray(path_a, dtype=float), max_step_um=step_um)
+    b = densify_polyline(np.asarray(path_b, dtype=float), max_step_um=step_um)
+    if a.ndim != 2 or b.ndim != 2 or len(a) == 0 or len(b) == 0:
+        return float("inf")
+    from_a, from_b = a, b
+    if ignore_within is not None:
+        centre, radius = np.asarray(ignore_within[0], dtype=float), float(ignore_within[1])
+        from_a = a[np.linalg.norm(a - centre, axis=1) > radius]
+        from_b = b[np.linalg.norm(b - centre, axis=1) > radius]
+    a_to_b = cKDTree(b).query(from_a)[0].max() if len(from_a) else 0.0
+    b_to_a = cKDTree(a).query(from_b)[0].max() if len(from_b) else 0.0
+    return float(max(a_to_b, b_to_a))
+
+
+def paths_separated_by_background(
+    path_a: List,
+    path_b: List,
+    inside_lumen: Callable[[np.ndarray], np.ndarray],
+    *,
+    step_um: float = 0.5,
+    min_gap_um: float = 1.0,
+    ignore_within=None,
+) -> bool:
+    """Whether the segmentation shows two vessels along two paths, not one.
+
+    Each sample of either path (every *step_um*) is joined by a straight
+    chord to the nearest point of the other. A chord with both ends in the
+    lumen *separates* the paths when at least *min_gap_um* of it crosses
+    background: two lumens with tissue between them. The paths are two
+    vessels when at least half of those chords separate them.
+
+    A chord with an end outside the lumen is not counted: a path running
+    outside the mask (a straight shortcut, a gap bridge) is no evidence of a
+    second vessel. Nor is a chord shorter than ``2 * min_gap_um``, where the
+    paths meet. With no chord left to judge, the paths are one vessel.
+
+    *inside_lumen* maps ``(N, 3)`` physical ``(z, y, x)`` points to one bool
+    each (see ``assemble.mask_lumen_test``); *ignore_within* is as for
+    :func:`path_separation`.
+    """
+    a = densify_polyline(np.asarray(path_a, dtype=float), max_step_um=step_um)
+    b = densify_polyline(np.asarray(path_b, dtype=float), max_step_um=step_um)
+    if a.ndim != 2 or b.ndim != 2 or len(a) < 2 or len(b) < 2:
+        return False
+    starts, ends = [], []
+    for here, there in ((a, b), (b, a)):
+        if ignore_within is not None:
+            centre, radius = np.asarray(ignore_within[0], dtype=float), float(ignore_within[1])
+            here = here[np.linalg.norm(here - centre, axis=1) > radius]
+        if len(here):
+            starts.append(here)
+            ends.append(there[cKDTree(there).query(here)[1]])
+    if not starts:
+        return False
+    p, q = np.vstack(starts), np.vstack(ends)
+    length = np.linalg.norm(q - p, axis=1)
+    long_enough = length >= 2.0 * min_gap_um
+    p, q, length = p[long_enough], q[long_enough], length[long_enough]
+    if not len(p):
+        return False
+    # Every chord gets as many samples as the longest needs, so each sample
+    # stands for length / (n - 1) of its own chord.
+    n = int(np.ceil(length.max() / step_um)) + 1
+    t = np.linspace(0.0, 1.0, n)
+    samples = p[:, None, :] + t[None, :, None] * (q - p)[:, None, :]
+    inside = np.asarray(inside_lumen(samples.reshape(-1, 3)), dtype=bool).reshape(len(p), n)
+    judged = inside[:, 0] & inside[:, -1]
+    if not judged.any():
+        return False
+    background_um = (~inside).sum(axis=1) * length / (n - 1)
+    separating = judged & (background_um >= min_gap_um)
+    return bool(separating.sum() >= 0.5 * judged.sum())
+
+
+def antipodal_chords(loop_um: np.ndarray, step_um: float):
+    """The chords of a closed path from each of its points, evenly spaced at
+    most *step_um* apart round it, to the point half the path away:
+    ``(starts_at, ends_at, starts, chords)`` -- how far round the path each
+    chord starts and ends, its start, and the vector to its end -- or None
+    for a path under four steps round. *loop_um* runs round once, its last
+    point its first."""
+    loop = np.asarray(loop_um, dtype=float).reshape(-1, 3)
+    arc = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(loop, axis=0), axis=1))])
+    count = int(np.ceil(arc[-1] / step_um))
+    if count < 4:
+        return None
+    along = np.arange(count) * (arc[-1] / count)
+    points = np.column_stack([np.interp(along, arc, loop[:, axis]) for axis in range(3)])
+    half = count // 2
+    return along[:half], along[half:2 * half], points[:half], points[half:2 * half] - points[:half]
+
+
+def loop_separated_by_background(
+    path_a: List,
+    path_b: List,
+    inside_lumen: Callable[[np.ndarray], np.ndarray],
+    *,
+    step_um: float = 0.5,
+    min_gap_um: float = 1.0,
+) -> bool:
+    """Whether two paths joining the same two end points are two vessels
+    round tissue, not one lumen: judged on the closed loop they make, by its
+    antipodal chords (:func:`antipodal_chords`, as
+    ``lumen_loops.loop_inside_one_lumen`` judges a loop).
+
+    The nearest point of one path to a sample of the other is, for most of
+    a loop, one of the junctions the two share, so the chords
+    :func:`paths_separated_by_background` draws ran along the sample's own
+    lumen to it, and the two arcs of a loop round tissue -- 25 um across --
+    read as one vessel. Across the loop a chord crosses what it runs round.
+
+    Only the chords from one path to the other count (a chord between two
+    points of one path says nothing of the other), and each counts as in
+    :func:`paths_separated_by_background`: both its ends in the lumen and
+    at least ``2 * min_gap_um`` long to be judged, separating with at least
+    *min_gap_um* of background along it. The paths are two vessels when at
+    least half the chords judged separate them; with none to judge, one.
+    """
+    a = np.asarray(path_a, dtype=float).reshape(-1, 3)
+    b = np.asarray(path_b, dtype=float).reshape(-1, 3)
+    if len(a) < 2 or len(b) < 2:
+        return False
+    if (np.linalg.norm(a[0] - b[-1]) + np.linalg.norm(a[-1] - b[0])
+            < np.linalg.norm(a[0] - b[0]) + np.linalg.norm(a[-1] - b[-1])):
+        b = b[::-1]
+    # Round the loop: a, across to b's end, b backwards, and back to a's start.
+    a_um = float(np.linalg.norm(np.diff(a, axis=0), axis=1).sum())
+    b_from = a_um + float(np.linalg.norm(a[-1] - b[-1]))
+    b_to = b_from + float(np.linalg.norm(np.diff(b, axis=0), axis=1).sum())
+    chords = antipodal_chords(np.vstack([a, b[::-1], a[:1]]), step_um)
+    if chords is None:
+        return False
+    starts_at, ends_at, p, chord = chords
+    between = (starts_at <= a_um) & (ends_at >= b_from) & (ends_at <= b_to)
+    p, chord = p[between], chord[between]
+    length = np.linalg.norm(chord, axis=1)
+    long_enough = length >= 2.0 * min_gap_um
+    p, chord, length = p[long_enough], chord[long_enough], length[long_enough]
+    if not len(p):
+        return False
+    n = int(np.ceil(length.max() / step_um)) + 1
+    t = np.linspace(0.0, 1.0, n)
+    samples = p[:, None, :] + t[None, :, None] * chord[:, None, :]
+    inside = np.asarray(inside_lumen(samples.reshape(-1, 3)), dtype=bool).reshape(len(p), n)
+    judged = inside[:, 0] & inside[:, -1]
+    if not judged.any():
+        return False
+    background_um = (~inside).sum(axis=1) * length / (n - 1)
+    separating = judged & (background_um >= min_gap_um)
+    return bool(separating.sum() >= 0.5 * judged.sum())
+
+
+def are_paths_similar(voxels1, voxels2, tolerance=3.0, inside_lumen=None):
+    """True when two paths are the same vessel.
+
+    They must join the same end points, and either never stray further than
+    *tolerance* microns from each other or, given *inside_lumen* (the
+    segmentation the skeleton came from), run through one lumen: the loop
+    they make not round tissue (:func:`loop_separated_by_background`).
+    Shared end points alone are not enough: two distinct vessels between the
+    same two junctions (a loop) share them too, and treating those as one
+    path deletes a vessel. Distance alone is not enough either: Lee thinning
+    leaves two or more strands 5-10 um apart through one wide vessel, and
+    those are one vessel.
+    """
     if len(voxels1) < 2 or len(voxels2) < 2:
         return False
     
@@ -526,11 +707,20 @@ def are_paths_similar(voxels1, voxels2, tolerance=3.0):
     dist_same = np.linalg.norm(start1 - start2) + np.linalg.norm(end1 - end2)
     dist_flipped = np.linalg.norm(start1 - end2) + np.linalg.norm(end1 - start2)
     
-    return min(dist_same, dist_flipped) <= tolerance * 2
+    if min(dist_same, dist_flipped) > tolerance * 2:
+        return False
+    if path_separation(voxels1, voxels2) <= tolerance:
+        return True
+    return inside_lumen is not None and not loop_separated_by_background(
+        voxels1, voxels2, inside_lumen
+    )
     
-def should_add_merged_edge(G, n1, n2, new_voxels, new_attrs, debug=False):
+def should_add_merged_edge(G, n1, n2, new_voxels, new_attrs, debug=False, inside_lumen=None):
     """
     Check if we should add this merged edge, avoiding duplicates.
+
+    *inside_lumen*, when given, lets a duplicate be judged by the
+    segmentation as well as by distance (see :func:`are_paths_similar`).
     """
     if not G.has_edge(n1, n2):
         return True, None
@@ -545,15 +735,15 @@ def should_add_merged_edge(G, n1, n2, new_voxels, new_attrs, debug=False):
         existing_is_curved = is_path_curved(existing_voxels)
         
         # Check if paths are similar
-        if are_paths_similar(new_voxels, existing_voxels):
+        if are_paths_similar(new_voxels, existing_voxels, inside_lumen=inside_lumen):
             # Prefer curved over straight
             if new_is_curved and not existing_is_curved:
                 if debug:
-                    logger.debug(f"     Replacing straight with curved path")
+                    logger.debug("     Replacing straight with curved path")
                 return True, edge_key
             elif not new_is_curved and existing_is_curved:
                 if debug:
-                    logger.debug(f"     Keeping existing curved over new straight")
+                    logger.debug("     Keeping existing curved over new straight")
                 return False, None
             else:
                 # Same type - prefer shorter
@@ -579,8 +769,273 @@ def voxel_path_overlap_ratio(path_a: List, path_b: List) -> float:
     overlap = len(set_a.intersection(set_b))
     return overlap / max(len(set_a), len(set_b))
 
-def improve_straight_path_with_skeleton(start_pos, end_pos, skeleton_data, debug=False, voxel_size=(1.0, 1.0, 1.0)):
+
+def points_inside_mask(
+    points_zyx: np.ndarray,
+    mask: np.ndarray,
+    *,
+    voxel_size_zyx: Tuple[float, float, float],
+) -> np.ndarray:
+    """True per point where the physical point falls in a True (interior) mask voxel.
+
+    Vectorized over all of an edge's (densified) sample points at once --
+    the densified polyline can have hundreds of points per edge, and this
+    runs for every edge in the graph on every pipeline run that reaches
+    this stage. *mask* is the volume or a ``preprocessing.PackedMask`` of
+    it: the same answers, read from bits in RAM rather than a memmap.
     """
-    Improve an entire straight path between two endpoints using skeleton.
+    points = np.asarray(points_zyx, dtype=float)
+    if points.ndim != 2 or points.shape[1] != 3:
+        raise ValueError(f"points_zyx must be (N, 3), got shape {points.shape}.")
+    n = points.shape[0]
+    if n == 0:
+        return np.zeros(0, dtype=bool)
+    voxel_size = np.asarray(voxel_size_zyx, dtype=float)
+    if voxel_size.shape != (3,) or np.any(voxel_size <= 0):
+        raise ValueError(
+            f"voxel_size_zyx must be three positive values, got {voxel_size_zyx}."
+        )
+    idx = np.rint(points / voxel_size).astype(int)
+    mask_shape = np.asarray(mask.shape, dtype=int)
+    in_bounds = np.all((idx >= 0) & (idx < mask_shape), axis=1)
+    inside = np.zeros(n, dtype=bool)
+    valid = idx[in_bounds]
+    if valid.size:
+        if isinstance(mask, PackedMask):
+            inside[in_bounds] = mask.contains(valid)
+        else:
+            inside[in_bounds] = mask[valid[:, 0], valid[:, 1], valid[:, 2]]
+    return inside
+
+
+def edge_sample_points(
+    u: Any,
+    v: Any,
+    edge_data: Dict[str, Any],
+    node_pos: Dict[Any, np.ndarray],
+) -> np.ndarray:
+    """Physical polyline for an edge, oriented from ``u`` toward ``v``."""
+    pos_u = np.asarray(node_pos[u], dtype=float)
+    pos_v = np.asarray(node_pos[v], dtype=float)
+    voxels = edge_data.get("voxels")
+    if voxels is not None:
+        arr = np.asarray(voxels, dtype=float)
+        if arr.ndim == 2 and arr.shape[1] == 3 and arr.shape[0] > 0:
+            oriented = orient_path_from_startpoint(arr.tolist(), pos_u)
+            return np.asarray(oriented, dtype=float)
+    return np.vstack([pos_u.reshape(1, 3), pos_v.reshape(1, 3)])
+
+
+def densify_polyline(
+    points: np.ndarray,
+    *,
+    max_step_um: float,
+) -> np.ndarray:
+    """Sample a polyline so consecutive points are at most ``max_step_um`` apart.
+
+    Sparse centreline voxels (or a two-endpoint fallback) can leave a straight
+    segment with both ends outside a mask while every interior mask voxel along
+    the chord is missed. Densifying before the inside/outside test catches those
+    crossings.
     """
-    return improve_straight_edge_with_skeleton(start_pos, end_pos, skeleton_data, debug, voxel_size=voxel_size)
+    if max_step_um <= 0:
+        raise ValueError(f"max_step_um must be > 0, got {max_step_um}.")
+    arr = np.asarray(points, dtype=float)
+    if arr.ndim != 2 or arr.shape[1] != 3 or arr.shape[0] == 0:
+        return arr
+    if arr.shape[0] == 1:
+        return arr
+    # Each segment's points at once: a segment no longer than the step keeps
+    # its end point as it is, a longer one gets start + (k / n) * segment for
+    # k = 1..n, the arithmetic the loop this replaced did point by point, so
+    # the same floats (norm along an axis matches norm of each row).
+    starts, ends = arr[:-1], arr[1:]
+    segments = ends - starts
+    lengths = np.linalg.norm(segments, axis=1)
+    short = lengths <= max_step_um
+    steps = np.where(short, 1, np.ceil(np.where(short, 1.0, lengths) / max_step_um)).astype(np.int64)
+    owner = np.repeat(np.arange(len(segments)), steps)
+    first = np.cumsum(steps) - steps
+    k = np.arange(int(steps.sum()), dtype=np.int64) - np.repeat(first, steps) + 1
+    fractions = k / steps[owner]
+    points = starts[owner] + fractions[:, None] * segments[owner]
+    points[short[owner]] = ends[owner[short[owner]]]
+    return np.vstack([arr[:1], points])
+
+
+class EdgeSampleIndex:
+    """Every edge's centreline points in one KD-tree, for
+    :func:`duplicates_existing_vessel`: built once per pass, not per question.
+
+    Paths a pass adds after building it go in with :meth:`add`; they are
+    judged against separately, so the tree is never rebuilt. Each edge is
+    sampled at least every *step_um*, so a straight edge stored as its two
+    ends still has a point beside every point along it.
+    """
+
+    def __init__(self, G: nx.MultiGraph, step_um: float = 1.0):
+        from haemolynx.preprocessing.bridge_mask_support import _densify
+
+        node_pos = {n: np.asarray(d["pos"], dtype=float) for n, d in G.nodes(data=True) if "pos" in d}
+        points, owners = [], []
+        for u, v, key, data in G.edges(keys=True, data=True):
+            if u not in node_pos or v not in node_pos:
+                continue
+            path = _densify(edge_sample_points(u, v, data, node_pos), step_um)
+            points.append(path)
+            owners.extend([edge_id(u, v, key)] * len(path))
+        self.points = np.vstack(points) if points else np.empty((0, 3))
+        self.owners = owners
+        self.tree = cKDTree(self.points) if len(self.points) else None
+        self.added: List[np.ndarray] = []
+        # Each added path's bounding box, (lo, hi) per row, grown by doubling:
+        # mask recovery adds thousands of paths and asks about each new one,
+        # and a box test per added path in Python made that quadratic.
+        self._boxes = np.empty((16, 2, 3))
+
+    def add(self, path: Any) -> None:
+        from haemolynx.preprocessing.bridge_mask_support import _densify
+
+        dense = _densify(np.asarray(path, dtype=float).reshape(-1, 3), 1.0)
+        if len(self.added) == len(self._boxes):
+            self._boxes = np.concatenate([self._boxes, np.empty_like(self._boxes)])
+        self._boxes[len(self.added)] = (dense.min(axis=0), dense.max(axis=0))
+        self.added.append(dense)
+
+    def added_near(self, lo: np.ndarray, hi: np.ndarray) -> List[np.ndarray]:
+        """The added paths whose bounding box meets the box *lo*..*hi*, in
+        the order they were added."""
+        boxes = self._boxes[: len(self.added)]
+        meets = np.all(boxes[:, 1] >= lo, axis=1) & np.all(boxes[:, 0] <= hi, axis=1)
+        return [self.added[i] for i in np.flatnonzero(meets)]
+
+
+def points_within(tree: cKDTree, points: np.ndarray, reach: float) -> np.ndarray:
+    """The indices of *tree*'s points within *reach* of any of *points*, in
+    ascending order: ``np.unique`` of ``tree.query_ball_point(points, reach)``'s
+    lists, the same indices.
+
+    Asked along a densely sampled centreline, those balls overlap many times
+    over and their lists were most of the pair rule's and the stretch
+    finder's time. Here the balls are asked only at points of *points* half a
+    *reach* apart along it, grown by that half, which holds every point the
+    balls would; each of those is kept when a point of *points* lies within
+    *reach* of it, by the same test SciPy makes (a squared distance is the
+    same whichever way round it is taken). 12_2_f contra's 17,955 edges at
+    their own reaches: 31.6 s -> 13.1 s, every list the same."""
+    points = np.asarray(points, dtype=float).reshape(-1, 3)
+    reach = float(reach)
+    if len(points) <= 2 or not reach > 0:
+        found = tree.query_ball_point(points, r=reach)
+        return np.unique(np.concatenate([np.asarray(f, dtype=np.intp) for f in found] or [np.empty(0, np.intp)]))
+    half = 0.5 * reach
+    arc = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(points, axis=0), axis=1))])
+    bins = np.floor(arc / half)
+    probes = points[np.flatnonzero(np.diff(bins, prepend=-1.0) != 0)]
+    # Every point lies within half a reach (along the path) of the probe
+    # before it; the margin covers rounding.
+    found = tree.query_ball_point(probes, r=reach + half * 1.001 + 1e-9)
+    candidates = np.unique(np.concatenate([np.asarray(f, dtype=np.intp) for f in found]))
+    if not len(candidates):
+        return candidates
+    hits = cKDTree(points).query_ball_point(tree.data[candidates], r=reach, return_length=True)
+    return candidates[hits > 0]
+
+
+def duplicates_existing_vessel(
+    new_path: Any,
+    G: nx.MultiGraph,
+    inside_lumen: Callable[[np.ndarray], np.ndarray],
+    radius_at: Callable[[np.ndarray], np.ndarray],
+    *,
+    index: "EdgeSampleIndex | None" = None,
+    step_um: float = 0.5,
+    judge_short_at_middle: bool = False,
+) -> bool:
+    """Whether a path about to be added to *G* runs beside one of its edges
+    in the same lumen: a second, parallel vessel inside one segmented branch.
+    *judge_short_at_middle*: see ``path_shadows_existing_vessel``.
+
+    The test is ``preprocessing.bridge_mask_support.path_shadows_existing_vessel``
+    against every edge's centreline (*index*, built from *G* when ``None``)
+    and, separately, every path :meth:`EdgeSampleIndex.add` recorded since.
+    The new path's own two ends are left out, so a branch meeting the vessel
+    it joins, or a bridge continuing one, is not a duplicate. *inside_lumen*
+    and *radius_at* map ``(N, 3)`` physical points to a bool / the lumen
+    radius in microns each.
+    """
+    from haemolynx.preprocessing.bridge_mask_support import path_shadows_existing_vessel
+
+    index = EdgeSampleIndex(G) if index is None else index
+    if index.tree is not None and path_shadows_existing_vessel(
+        new_path, index.tree, index.points, inside_lumen, radius_at, step_um=step_um,
+        judge_short_at_middle=judge_short_at_middle,
+    ):
+        return True
+    if not index.added:
+        return False
+    path = np.asarray(new_path, dtype=float).reshape(-1, 3)
+    reach = 2.0 * float(np.max(radius_at(path))) + 1.0
+    lo, hi = path.min(axis=0) - reach, path.max(axis=0) + reach
+    nearby = index.added_near(lo, hi)
+    return bool(nearby) and path_shadows_existing_vessel(
+        path, None, np.vstack(nearby), inside_lumen, radius_at, step_um=step_um,
+        judge_short_at_middle=judge_short_at_middle,
+    )
+
+
+def node_position_key(G: nx.Graph, node) -> tuple:
+    """*node*'s position, ``(z, y, x)``, as a sort key (its id after it):
+    what ties between nodes are broken by, so that the answer does not move
+    when a change elsewhere in the graph renumbers or reorders its nodes, as
+    the order of ids or of insertion does."""
+    pos = G.nodes[node].get("pos")
+    where = (np.inf,) * 3 if pos is None else tuple(float(v) for v in np.asarray(pos, dtype=float)[:3])
+    return (*where, str(node))
+
+
+def next_node_id(G: nx.MultiGraph, reserved: "set[Any]") -> int:
+    """A numeric node id not already used by ``G`` or ``reserved``."""
+    numeric = [
+        int(n)
+        for n in list(G.nodes) + list(reserved)
+        if isinstance(n, (int, np.integer))
+    ]
+    return (max(numeric) if numeric else -1) + 1
+
+def split_self_loops(G: nx.MultiGraph, *, min_length_um: float = 0.0) -> int:
+    """Split, in place, each self-loop of *G* at least *min_length_um* long
+    into two edges between its node and a new one at the point of its path
+    farthest from it: a ring that leaves a junction (or no junction) and
+    comes back to it, as skan traces one. Kept a self-loop, no rule judged
+    it -- the collapse deleted every one, a ring round tissue as surely as a
+    Lee ring inside one lumen -- while two edges between the same two nodes
+    are what degree-2 merging's duplicate test and the loop rules
+    (``lumen_loops``) read. A self-loop whose path has no point off its node
+    is left as it is, and so is every self-loop of a graph that cannot hold
+    two edges between two nodes. Returns how many were split."""
+    if not G.is_multigraph():
+        return 0
+    split = 0
+    for node, _node, key, data in list(nx.selfloop_edges(G, keys=True, data=True)):
+        voxels = np.asarray(data.get("voxels") or [], dtype=float).reshape(-1, 3)
+        if len(voxels) < 3 or G.nodes[node].get("pos") is None:
+            continue
+        length = data.get("length")
+        length = float(calculate_path_length(voxels.tolist()) if length is None else length)
+        if length < float(min_length_um):
+            continue
+        reach = np.linalg.norm(voxels - np.asarray(G.nodes[node]["pos"], dtype=float), axis=1)
+        far = int(np.argmax(reach))
+        if far in (0, len(voxels) - 1) or reach[far] <= 0:
+            continue
+        new = next_node_id(G, set())
+        G.add_node(new, pos=voxels[far].copy())
+        G.remove_edge(node, node, key)
+        for piece in (voxels[: far + 1], voxels[far:][::-1]):
+            half = dict(data)
+            half["voxels"] = piece.tolist()
+            half["length"] = float(calculate_path_length(half["voxels"]))
+            G.add_edge(node, new, **half)
+        split += 1
+    return split

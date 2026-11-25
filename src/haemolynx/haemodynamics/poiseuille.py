@@ -2,12 +2,25 @@
 from __future__ import annotations
 
 import logging
-import warnings
+import re
 
 import numpy as np
 import networkx as nx
 
 logger = logging.getLogger(__name__)
+
+#: ``graph.UNKNOWN_VESSEL_CLASSES`` (large, small, capillary), spelled here so
+#: the diameter table does not import the graph package; a test pins the two.
+UNKNOWN_VESSEL_CLASS_LABELS = ("Unknown_Large", "Unknown_Small", "Unknown_Cap")
+
+
+def edge_selection(edges) -> set[tuple[frozenset, object]] | None:
+    """*edges* (``(u, v, key)``, either way round) as a set to test edges
+    against with ``(frozenset((u, v)), key) in``; None -- every edge -- for None.
+    """
+    if edges is None:
+        return None
+    return {(frozenset((u, v)), key) for u, v, key in edges}
 
 
 def build_diameter_by_branch_order(
@@ -18,8 +31,13 @@ def build_diameter_by_branch_order(
     manual_capillary_diameter_by_branch_order: dict[str, float] | None = None,
     manual_arteriole_diameter_by_branch_order: dict[str, float] | None = None,
     manual_venule_diameter_by_branch_order: dict[str, float] | None = None,
+    manual_large_arteriole_diameter_by_branch_order: dict[str, float] | None = None,
+    manual_large_venule_diameter_by_branch_order: dict[str, float] | None = None,
 ) -> dict[str, float]:
-    """Build diameter mapping for Bxx, Artx, and Venx branch-order labels."""
+    """Build diameter mapping for Bxx, Artx, Venx, Large_Artx, Large_Venx labels,
+    and the unknown classes a run with global vessel masks gives instead
+    (``graph.UNKNOWN_VESSEL_CLASSES``): a capillary at *default_diameter*, a
+    small vessel at the small vessels' default, a large one as Large_Art's."""
     if max_branch_order < 1:
         raise ValueError(
             f"max_branch_order must be >= 1, got {max_branch_order}."
@@ -32,6 +50,8 @@ def build_diameter_by_branch_order(
     capillary_overrides = manual_capillary_diameter_by_branch_order or {}
     arteriole_overrides = manual_arteriole_diameter_by_branch_order or {}
     venule_overrides = manual_venule_diameter_by_branch_order or {}
+    large_arteriole_overrides = manual_large_arteriole_diameter_by_branch_order or {}
+    large_venule_overrides = manual_large_venule_diameter_by_branch_order or {}
 
     diameter_by_branch_order: dict[str, float] = {}
     if all_diams_const:
@@ -39,6 +59,10 @@ def build_diameter_by_branch_order(
             diameter_by_branch_order[f"B{i:02d}"] = default_diameter
             diameter_by_branch_order[f"Art{i}"] = default_diameter
             diameter_by_branch_order[f"Ven{i}"] = default_diameter
+            diameter_by_branch_order[f"Large_Art{i}"] = default_diameter
+            diameter_by_branch_order[f"Large_Ven{i}"] = default_diameter
+        for label in UNKNOWN_VESSEL_CLASS_LABELS:
+            diameter_by_branch_order[label] = default_diameter
         return diameter_by_branch_order
 
     for i in range(1, max_branch_order + 1):
@@ -63,59 +87,584 @@ def build_diameter_by_branch_order(
             ven_key,
             default_small_vessel_diameter,
         )
+
+    # Large_Art/Large_Ven fall back to default_diameter directly, not the
+    # capillary-derived default_small_vessel_diameter the small Art/Ven loop
+    # above uses: a large vessel is by definition bigger than a capillary,
+    # so that fallback would be actively wrong here, not just approximate.
+    # In practice this fallback rarely fires -- a real run resolves these
+    # from per-edge FWHM measurement, same as the other branch orders.
+    for i in range(1, max_branch_order + 1):
+        large_art_key = f"Large_Art{i}"
+        large_ven_key = f"Large_Ven{i}"
+        diameter_by_branch_order[large_art_key] = large_arteriole_overrides.get(
+            large_art_key,
+            default_diameter,
+        )
+        diameter_by_branch_order[large_ven_key] = large_venule_overrides.get(
+            large_ven_key,
+            default_diameter,
+        )
+    unknown_large, unknown_small, unknown_capillary = UNKNOWN_VESSEL_CLASS_LABELS
+    diameter_by_branch_order[unknown_large] = default_diameter
+    diameter_by_branch_order[unknown_small] = default_small_vessel_diameter
+    diameter_by_branch_order[unknown_capillary] = default_diameter
     return diameter_by_branch_order
+
+
+#: How an edge's modelled ``diameter_um`` was chosen. ``measured`` is a FWHM
+#: fit; ``raw_section`` is the raw image's own cross-section, fitted where
+#: FWHM failed when ``use_raw_section_fallback`` is on (see
+#: ``haemolynx.haemodynamics.raw_section``); ``endothelial`` is the internal
+#: diameter inside the endothelial wall, what a run measures in place of FWHM
+#: when its raw image is an endothelial stain (see
+#: ``haemolynx.haemodynamics.endothelial``); ``edt_mask`` is the segmentation
+#: mask's own width estimate, used only when both of those failed for that
+#: edge and ``use_edt_fallback`` is on (see
+#: ``haemolynx.haemodynamics.edt_diameter``); ``class_median`` is the median of
+#: those measurements over the run's edges with the same ``branch_order``
+#: label, for an edge none of them reached; ``table`` is the branch-order
+#: lookup; ``override`` is a human value.
+DIAMETER_SOURCE_MEASURED = "measured"
+DIAMETER_SOURCE_RAW_SECTION = "raw_section"
+DIAMETER_SOURCE_ENDOTHELIAL = "endothelial"
+DIAMETER_SOURCE_EDT = "edt_mask"
+DIAMETER_SOURCE_CLASS_MEDIAN = "class_median"
+DIAMETER_SOURCE_TABLE = "table"
+DIAMETER_SOURCE_OVERRIDE = "override"
+#: A width a synthetic network was drawn with (``haemolynx.synthetic``): the
+#: vessel's own, kept like a measurement.
+DIAMETER_SOURCE_SYNTHETIC = "synthetic"
+#: A width the template run gave its own vessel, kept on that vessel inside
+#: a synthetic network drawn round it (``synthetic.surround``): the run's own
+#: source is on the edge as ``image_diameter_source``.
+DIAMETER_SOURCE_IMAGE_RUN = "image_run"
+DIAMETER_SOURCES = frozenset(
+    {
+        DIAMETER_SOURCE_MEASURED,
+        DIAMETER_SOURCE_RAW_SECTION,
+        DIAMETER_SOURCE_ENDOTHELIAL,
+        DIAMETER_SOURCE_EDT,
+        DIAMETER_SOURCE_CLASS_MEDIAN,
+        DIAMETER_SOURCE_TABLE,
+        DIAMETER_SOURCE_OVERRIDE,
+        DIAMETER_SOURCE_SYNTHETIC,
+        DIAMETER_SOURCE_IMAGE_RUN,
+    }
+)
+
+#: The sources that are this run's own measurement of the edge itself --
+#: what a class median is taken over.
+_MEASURED_DIAMETER_SOURCES = frozenset(
+    {
+        DIAMETER_SOURCE_MEASURED,
+        DIAMETER_SOURCE_RAW_SECTION,
+        DIAMETER_SOURCE_ENDOTHELIAL,
+        DIAMETER_SOURCE_EDT,
+        DIAMETER_SOURCE_SYNTHETIC,
+        DIAMETER_SOURCE_IMAGE_RUN,
+    }
+)
+
+#: The default of the ``diameter_class_median_min_edges`` setting: measured
+#: edges a label needs before its median stands in for an unmeasured one.
+DEFAULT_CLASS_MEDIAN_MIN_EDGES = 3
+
+_KEPT_DIAMETER_SOURCES = frozenset(
+    {
+        DIAMETER_SOURCE_MEASURED,
+        DIAMETER_SOURCE_RAW_SECTION,
+        DIAMETER_SOURCE_ENDOTHELIAL,
+        DIAMETER_SOURCE_EDT,
+        DIAMETER_SOURCE_OVERRIDE,
+        DIAMETER_SOURCE_SYNTHETIC,
+        DIAMETER_SOURCE_IMAGE_RUN,
+    }
+)
+
+
+_BRANCH_ORDER_LABEL = re.compile(r"^(?P<kind>[A-Za-z_]+?)(?P<order>\d+)$")
+
+
+def table_diameter_for_order(diameter_by_branch_order: dict, branch_order: object):
+    """*diameter_by_branch_order*'s entry for *branch_order*; for an order past
+    the highest the table lists of its kind, that highest order's.
+
+    The table is built up to ``max_branch_order`` (51 by default), and a real
+    network's orders run past it -- B59 on a user's -- with every unlisted
+    order taking the same default, so the last entry is what the table would
+    say had it gone that far. An order with no entry otherwise failed the run
+    as soon as that vessel had no width of its own. A gap inside the table,
+    or a label of a kind it does not list, still has no entry.
+    """
+    spec = diameter_by_branch_order.get(branch_order)
+    if spec is not None or not isinstance(branch_order, str):
+        return spec
+    label = _BRANCH_ORDER_LABEL.match(branch_order)
+    if label is None:
+        return None
+    order = int(label["order"])
+    listed = []
+    for key, value in diameter_by_branch_order.items():
+        other = _BRANCH_ORDER_LABEL.match(key) if isinstance(key, str) else None
+        if other is not None and other["kind"] == label["kind"]:
+            listed.append((int(other["order"]), value))
+    if not listed:
+        return None
+    last_order, last_value = max(listed, key=lambda entry: entry[0])
+    return last_value if order > last_order else None
+
+
+#: A vessel's own ``diameter_basis`` edge attribute, when a measurement knows
+#: which diameter it read -- an endothelial internal diameter runs wall to
+#: wall (``endothelial``; ``anatomical`` before), FWHM across a plasma label
+#: reads the plasma column -- whatever the run's ``diameter_basis`` (the
+#: segmentation's, ``segmentation_source``) says about the rest. Read wherever
+#: a vessel's viscosity is computed, so one network can hold both, each
+#: through its own form of the law.
+EDGE_DIAMETER_BASIS = "diameter_basis"
+
+#: The basis each raw-image measurement reads, by ``diameter_source``: FWHM
+#: and the raw-section fit run across a luminal (plasma) label, so they read
+#: the plasma column; the endothelial fit reads inside the wall ring, wall to
+#: wall. A source not listed here -- the mask's own width, the table, a hand
+#: value -- is on the run's basis, what the segmentation measures.
+MEASUREMENT_DIAMETER_BASIS: dict[str, str] = {
+    DIAMETER_SOURCE_MEASURED: "plasma_column",
+    DIAMETER_SOURCE_RAW_SECTION: "plasma_column",
+    DIAMETER_SOURCE_ENDOTHELIAL: "endothelial",
+}
+
+
+def edge_diameter_basis(data: dict, default: str) -> str:
+    """The diameter basis *data*'s diameter was measured on: its own
+    :data:`EDGE_DIAMETER_BASIS` when it names a known one, else *default*
+    (the run's)."""
+    basis = normalise_diameter_basis(data.get(EDGE_DIAMETER_BASIS))
+    return basis if basis in DIAMETER_BASES else normalise_diameter_basis(default)
+
+
+def positive_diameter_um(value: object) -> float | None:
+    """A finite positive diameter in micrometres, or ``None``."""
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not np.isfinite(number) or number <= 0:
+        return None
+    return number
+
+
+def baseline_edge_diameter(
+    data: dict,
+    branch_order: str,
+    diameter_by_branch_order: dict,
+    *,
+    fwhm_fallback: bool = True,
+) -> tuple[float, bool]:
+    """``(d1, from_fwhm)``: the unconstricted diameter a constriction starts from.
+
+    The same choice :meth:`PoiseuilleModel.set_poiseuille_resistances` makes
+    for the baseline: the diameter stamped at assign_diameters (a FWHM fit,
+    the EDT fallback, a hand override or the table), else -- with
+    *fwhm_fallback*, the baseline's ``prefer_edge_fwhm_diameter`` -- the FWHM
+    fit, else the table. Reading ``fwhm_diameter_um`` alone (FWHM on) or the
+    table alone (FWHM off) put every vessel that fell back to EDT or was set
+    by hand at another diameter, so a constriction factor of 1 did not
+    reproduce the baseline; and demanding a table entry first failed the
+    whole run on any branch order past ``max_branch_order``, even when the
+    vessel had its own diameter.
+    """
+    diameter = positive_diameter_um(data.get("diameter_um"))
+    from_fwhm = data.get("diameter_source") == DIAMETER_SOURCE_MEASURED
+    if diameter is None and fwhm_fallback:
+        diameter = positive_diameter_um(data.get("fwhm_diameter_um"))
+        from_fwhm = diameter is not None
+    if diameter is not None:
+        return diameter, from_fwhm
+    spec = table_diameter_for_order(diameter_by_branch_order, branch_order)
+    if spec is None:
+        raise ValueError(
+            f"No fallback baseline diameter for branch_order '{branch_order}'."
+        )
+    if isinstance(spec, dict):
+        raise ValueError(
+            "With prefer_edge_fwhm_baseline=True, diameter_by_branch_order must "
+            f"map '{branch_order}' to a numeric fallback baseline diameter."
+        )
+    return float(spec), False
+
+
+def clear_edge_resistances(G: nx.MultiGraph) -> None:
+    """Drop ``resistance`` and ``conductance`` so diameters can exist alone."""
+    for _u, _v, _key, data in G.edges(keys=True, data=True):
+        data.pop("resistance", None)
+        data.pop("conductance", None)
+
+
+def set_edge_diameter_override(data: dict, diameter_um: float) -> None:
+    """Record a human diameter on one edge; it wins over FWHM and the table."""
+    diameter = positive_diameter_um(diameter_um)
+    if diameter is None:
+        raise ValueError(
+            f"Override diameter must be finite and positive, got {diameter_um}."
+        )
+    data["diameter_um"] = diameter
+    data["diameter_source"] = DIAMETER_SOURCE_OVERRIDE
+    data.pop(EDGE_DIAMETER_BASIS, None)  # a human value is on the run's basis
+
+
+#: What an edge was measured as: every width and its flags, and the
+#: resistance built on them.
+MEASUREMENT_PREFIXES = ("fwhm_", "edt_", "raw_section_", "endothelial_")
+MEASUREMENT_ATTRIBUTES = (
+    "diameter_um",
+    "diameter_source",
+    EDGE_DIAMETER_BASIS,
+    "resistance",
+    "conductance",
+)
+
+
+def clear_edge_measurements(data: dict, *, keep_prefixes: tuple[str, ...] = ()) -> None:
+    """Delete what *data* was measured as (:data:`MEASUREMENT_PREFIXES`,
+    :data:`MEASUREMENT_ATTRIBUTES`), but the attributes named with one of
+    *keep_prefixes*."""
+    stale = [
+        name
+        for name in data
+        if (name in MEASUREMENT_ATTRIBUTES or str(name).startswith(MEASUREMENT_PREFIXES))
+        and not str(name).startswith(keep_prefixes)
+    ]
+    for name in stale:
+        del data[name]
+
+
+def start_measurement_afresh(data: dict) -> None:
+    """Clear what *data* was measured as, keeping its diameter as provisional.
+
+    The provisional diameter is what the edit gave it -- its neighbours' mean
+    for a vessel drawn by hand, the cut vessel's for each half -- held as an
+    override: a measurement replaces it, the branch-order table does not.
+    """
+    provisional = positive_diameter_um(data.get("diameter_um"))
+    clear_edge_measurements(data)
+    if provisional is not None:
+        set_edge_diameter_override(data, provisional)
+
+
+def scale_stored_edge_diameters(data: dict, scale: float) -> bool:
+    """Multiply ``fwhm_diameter_um`` and ``diameter_um`` when they are set.
+
+    Returns whether either attribute moved, so a caller can count scaled edges.
+    """
+    factor = float(scale)
+    moved = False
+    for attr in ("fwhm_diameter_um", "diameter_um"):
+        diameter = positive_diameter_um(data.get(attr))
+        if diameter is None:
+            continue
+        data[attr] = diameter * factor
+        moved = True
+    return moved
+
+
+#: Edge attribute naming why an edge's FWHM width is not used (see
+#: :func:`mark_fwhm_demotions`); absent when it is.
+FWHM_DEMOTED_ATTR = "fwhm_demoted"
+
+
+def fwhm_demotion_reason(data: dict) -> str | None:
+    """Why this edge's FWHM width was set aside, or ``None`` if it was not."""
+    return data.get(FWHM_DEMOTED_ATTR)
+
+
+def mark_fwhm_demotions(G: nx.MultiGraph, *, enabled: bool = True) -> dict[str, int]:
+    """Set aside FWHM widths the run's own checks call into doubt.
+
+    Two checks flag an FWHM width without changing it: the decoy check
+    (``fwhm_in_speck_width_range`` -- the width is one FWHM also reads off
+    specks in vessel-free tissue) and the EDT cross-check
+    (``fwhm_low_confidence_vs_edt`` -- it disagrees with the mask's own width
+    past the warn ratio). With *enabled*, such an edge gets
+    :data:`FWHM_DEMOTED_ATTR` saying which, and :func:`stamp_edge_diameters`
+    goes on to its next source; the FWHM width itself stays on the edge.
+    Returns how many edges each reason demoted.
+    """
+    counts = {"speck_width": 0, "edt_disagreement": 0}
+    for _u, _v, _key, data in G.edges(keys=True, data=True):
+        data.pop(FWHM_DEMOTED_ATTR, None)
+        if not enabled or positive_diameter_um(data.get("fwhm_diameter_um")) is None:
+            continue
+        if data.get("fwhm_in_speck_width_range"):
+            data[FWHM_DEMOTED_ATTR] = "speck_width"
+        elif data.get("fwhm_low_confidence_vs_edt"):
+            data[FWHM_DEMOTED_ATTR] = "edt_disagreement"
+        else:
+            continue
+        counts[data[FWHM_DEMOTED_ATTR]] += 1
+    if any(counts.values()):
+        logger.info(
+            "FWHM widths set aside for the next diameter source: %d in the speck-width "
+            "range, %d disagreeing with the mask's own width.",
+            counts["speck_width"],
+            counts["edt_disagreement"],
+        )
+    return counts
+
+
+def stamp_edge_diameters(
+    G: nx.MultiGraph,
+    diameter_by_branch_order: dict | None,
+    *,
+    keep_existing: bool = False,
+    use_edt_fallback: bool = False,
+    use_raw_section_fallback: bool = False,
+    use_endothelial: bool = False,
+    class_median_min_edges: int = 0,
+    fresh_edges=None,
+    before_fallbacks=None,
+) -> dict[str, int]:
+    """Write ``diameter_um`` and ``diameter_source`` on every edge that can.
+
+    When *keep_existing* is True, measured/raw-section/endothelial/EDT/
+    override edges stay as they are (so a resume does not wipe approvals or
+    re-fall-back) -- except *fresh_edges* (``(u, v, key)``, either way round),
+    just measured again, which go down the whole chain below as if it were
+    False: a hand-edited vessel's provisional override must not outrank its
+    new measurement. Otherwise -- with *use_endothelial* -- the endothelial
+    internal diameter (``endothelial_diameter_um``, see
+    ``haemolynx.haemodynamics.endothelial``) wins, the run's alternative to
+    FWHM; else FWHM, when present and not set aside by
+    :func:`mark_fwhm_demotions`, wins; then -- when
+    *use_raw_section_fallback* is True and the edge carries a
+    ``raw_section_diameter_um`` (see ``haemolynx.haemodynamics.raw_section``)
+    -- the raw image's own cross-section, still a measurement of the
+    intensity FWHM reads; then -- when *use_edt_fallback* is True and
+    the edge carries an ``edt_diameter_um`` (see
+    ``haemolynx.haemodynamics.edt_diameter``) -- the segmentation mask's own
+    estimate, a vessel-specific reading unlike the generic branch-order
+    table; then -- when *class_median_min_edges* is positive and at least that
+    many edges with the same ``branch_order`` label were measured by any of
+    the above -- their median (``class_median``, see
+    :func:`class_median_diameters`): a large arteriole the table has no entry
+    for would otherwise be modelled at ``default_diameter``; then the table
+    (see :func:`table_diameter_for_order` for an order past its end). A
+    vessel whose mask was too thin to give a width has no ``edt_diameter_um``
+    and so takes the class median or the table's.
+
+    A diameter read from the raw image is marked with the basis that
+    measurement reads (:data:`MEASUREMENT_DIAMETER_BASIS`): an endothelial
+    diameter runs wall to wall, so its edge carries :data:`EDGE_DIAMETER_BASIS`
+    ``"endothelial"``, and FWHM's or the raw section's the plasma column; its
+    viscosity takes that form of the law (see :func:`edge_diameter_basis`)
+    whatever the segmentation's vessels are. Every other source -- the mask's
+    width, the table -- is on the run's own basis, and clears the mark. A
+    class median carries the basis of the widths it was taken over.
+
+    *before_fallbacks*, when given, is called once every edge with a width of
+    its own has it, before a class median or the table fills the rest:
+    ``before_fallbacks(G, waiting)``, *waiting* the ``(u, v, key)`` of the
+    edges still to be filled. The size convention classes the vessels there,
+    so the branch orders the fallbacks read follow from the widths
+    (``graph.tag_vessels_by_size``).
+    """
+    table = diameter_by_branch_order or {}
+    counts = {
+        "measured": 0, "raw_section": 0, "endothelial": 0, "edt_mask": 0,
+        "class_median": 0, "table": 0, "override": 0, "synthetic": 0, "image_run": 0, "unset": 0,
+    }
+
+    def stamp(data: dict, diameter: float, source: str, *, basis: str | None = None) -> None:
+        data["diameter_um"] = diameter
+        data["diameter_source"] = source
+        basis = MEASUREMENT_DIAMETER_BASIS.get(source, basis)
+        if basis is None:
+            data.pop(EDGE_DIAMETER_BASIS, None)
+        else:
+            data[EDGE_DIAMETER_BASIS] = basis
+        counts[source] += 1
+
+    unmeasured: list[dict] = []
+    waiting: list[tuple] = []
+    fresh = edge_selection(fresh_edges) or set()
+
+    for u, v, key, data in G.edges(keys=True, data=True):
+        source = data.get("diameter_source")
+        keep = keep_existing and (frozenset((u, v)), key) not in fresh
+        if keep and source in _KEPT_DIAMETER_SOURCES:
+            kept = positive_diameter_um(data.get("diameter_um"))
+            if kept is None and source == DIAMETER_SOURCE_MEASURED:
+                kept = positive_diameter_um(data.get("fwhm_diameter_um"))
+                if kept is not None:
+                    data["diameter_um"] = kept
+            if kept is not None:
+                counts[str(source)] += 1
+                continue
+        if keep:
+            measured = positive_diameter_um(data.get("fwhm_diameter_um"))
+            if measured is not None and fwhm_demotion_reason(data) is None:
+                stamp(data, measured, DIAMETER_SOURCE_MEASURED)
+                continue
+
+        # The template run's own vessels inside a surround keep the widths that
+        # run gave them, ahead of the readings it left on them: this run's
+        # chain would read them by its own settings, not that run's.
+        if source == DIAMETER_SOURCE_IMAGE_RUN:
+            kept = positive_diameter_um(data.get("diameter_um"))
+            if kept is not None:
+                counts["image_run"] += 1
+                continue
+        if use_endothelial:
+            endothelial = positive_diameter_um(data.get("endothelial_diameter_um"))
+            if endothelial is not None:
+                stamp(data, endothelial, DIAMETER_SOURCE_ENDOTHELIAL)
+                continue
+        measured = positive_diameter_um(data.get("fwhm_diameter_um"))
+        if measured is not None and fwhm_demotion_reason(data) is None:
+            stamp(data, measured, DIAMETER_SOURCE_MEASURED)
+            continue
+        if use_raw_section_fallback:
+            section = positive_diameter_um(data.get("raw_section_diameter_um"))
+            if section is not None:
+                stamp(data, section, DIAMETER_SOURCE_RAW_SECTION)
+                continue
+        if use_edt_fallback:
+            edt = positive_diameter_um(data.get("edt_diameter_um"))
+            if edt is not None:
+                stamp(data, edt, DIAMETER_SOURCE_EDT)
+                continue
+        # A synthetic network's vessels were drawn at their widths: those are
+        # the measurement, never replaced by a class median or the table.
+        if source == DIAMETER_SOURCE_SYNTHETIC:
+            drawn = positive_diameter_um(data.get("diameter_um"))
+            if drawn is not None:
+                counts["synthetic"] += 1
+                continue
+        # A human diameter beats the generic table (a vessel drawn by hand in
+        # the post-processing tab carries one); a measurement above still
+        # replaces it, as a fresh FWHM run always has.
+        if source == DIAMETER_SOURCE_OVERRIDE:
+            override = positive_diameter_um(data.get("diameter_um"))
+            if override is not None:
+                counts["override"] += 1
+                continue
+        unmeasured.append(data)
+        waiting.append((u, v, key))
+
+    if before_fallbacks is not None:
+        before_fallbacks(G, waiting)
+    medians = class_median_diameters(G, min_edges=class_median_min_edges)
+    for data in unmeasured:
+        order = data.get("branch_order")
+        median = medians.get(str(order)) if order is not None else None
+        if median is not None:
+            diameter, basis = median
+            stamp(data, diameter, DIAMETER_SOURCE_CLASS_MEDIAN, basis=basis)
+            continue
+        table_diameter = positive_diameter_um(
+            table_diameter_for_order(table, data.get("branch_order"))
+        )
+        if table_diameter is not None:
+            stamp(data, table_diameter, DIAMETER_SOURCE_TABLE)
+            continue
+        counts["unset"] += 1
+    return counts
+
+
+def class_median_diameters(
+    G: nx.MultiGraph, *, min_edges: int
+) -> dict[str, tuple[float, str | None]]:
+    """``{branch_order label: (median diameter, basis)}`` over the edges
+    whose ``diameter_source`` is one of this run's measurements, for each label
+    with at least *min_edges* of them (none when *min_edges* is 0).
+
+    Taken over the label's edges of the basis most of them have -- the one
+    their :data:`EDGE_DIAMETER_BASIS` mark names, or None for the run's own
+    (unmarked) -- so one median never mixes two; on a tie the run's own.
+    """
+    if int(min_edges) <= 0:
+        return {}
+    by_label: dict[str, dict[str | None, list[float]]] = {}
+    for _u, _v, _key, data in G.edges(keys=True, data=True):
+        if data.get("diameter_source") not in _MEASURED_DIAMETER_SOURCES:
+            continue
+        order = data.get("branch_order")
+        diameter = positive_diameter_um(data.get("diameter_um"))
+        if order is None or diameter is None:
+            continue
+        basis = normalise_diameter_basis(data.get(EDGE_DIAMETER_BASIS))
+        if basis not in DIAMETER_BASES:
+            basis = None
+        by_label.setdefault(str(order), {}).setdefault(basis, []).append(diameter)
+    medians: dict[str, tuple[float, str | None]] = {}
+    for label, by_basis in by_label.items():
+        basis, diameters = max(
+            by_basis.items(), key=lambda item: (len(item[1]), item[0] is None)
+        )
+        if len(diameters) >= int(min_edges):
+            medians[label] = (float(np.median(diameters)), basis)
+    return medians
+
+
+def flag_fwhm_edt_disagreement(G: nx.MultiGraph, *, warn_ratio: float) -> int:
+    """Compare each edge's ``fwhm_diameter_um`` and ``edt_diameter_um`` and
+    flag a large disagreement between the two measurement techniques.
+
+    Writes ``fwhm_edt_disagreement_ratio`` (>= 1, the larger divided by the
+    smaller) and ``fwhm_low_confidence_vs_edt`` (whether that ratio reaches
+    *warn_ratio*) on every edge that carries *both* values -- a pure QA
+    signal, independent of which one (if either) :func:`stamp_edge_diameters`
+    picked as the edge's modelled ``diameter_um``, so it works whether or
+    not ``use_edt_fallback`` is on.
+
+    Returns how many edges were flagged as low-confidence.
+    """
+    flagged = 0
+    for _u, _v, _key, data in G.edges(keys=True, data=True):
+        fwhm = positive_diameter_um(data.get("fwhm_diameter_um"))
+        edt = positive_diameter_um(data.get("edt_diameter_um"))
+        if fwhm is None or edt is None:
+            continue
+        ratio = max(fwhm, edt) / min(fwhm, edt)
+        data["fwhm_edt_disagreement_ratio"] = ratio
+        low_confidence = ratio >= float(warn_ratio)
+        data["fwhm_low_confidence_vs_edt"] = low_confidence
+        if low_confidence:
+            flagged += 1
+    return flagged
 
 
 # --- Viscosity model -------------------------------------------------------
 #
-# Apparent blood viscosity rises as vessels narrow (the Fahraeus-Lindqvist
-# reversal below ~7 um). The empirical law used here is a power law in
-# diameter, pinned to a physical reference so that resistance comes out in SI
-# units rather than arbitrary model units:
-#
-#     mu(d) = REFERENCE_VISCOSITY_PA_S * (REFERENCE_DIAMETER_UM / d) ** EXPONENT
-#
-# Only the absolute scale depends on the reference point; every resistance
-# *ratio* is fixed by the exponent alone.
-REFERENCE_VISCOSITY_PA_S = 3.0e-3
-REFERENCE_DIAMETER_UM = 5.0
-VISCOSITY_DIAMETER_EXPONENT = 1.647
-
-# Plasma viscosity. The power law crosses this at ~8.7 um, above which it would
-# predict blood thinner than its own plasma, so the power law is only used below.
-PLASMA_VISCOSITY_PA_S = 1.2e-3
-CAPILLARY_REGIME_MAX_DIAMETER_UM = 7.0
-
-# Above the capillary regime, viscosity is held at the macroscale value: whole
-# blood at physiological haematocrit in vessels wide enough (d >~ 300 um) that
-# the Fahraeus-Lindqvist effect has died out.
-#
-# This is a deliberate placeholder, not a model of the 7 um-to-macroscale
-# transition, where apparent viscosity actually recovers gradually. It jumps
-# discontinuously at 7 um (1.72 -> 3.5 mPa.s), so between 7 and ~8.4 um a wider
-# vessel is predicted *more* resistive per unit length than a 7 um one. Vessels
-# well above that band are the ones this branch is meant to serve. Replacing it
-# with a continuous law (Pries et al. in-vivo) is tracked in issue #90.
-LARGE_VESSEL_VISCOSITY_PA_S = 3.5e-3
-
-# Upper end of the placeholder's error. By ~100 um the constant is close to the
-# true macroscale apparent viscosity, so vessels above this are served well by
-# it; between 7 and 100 um they are not, and every such vessel raises
-# PlaceholderViscosityWarning.
-PLACEHOLDER_REGIME_MAX_DIAMETER_UM = 100.0
+# Which law supplies the viscosity is a setting, because it changes every
+# resistance a run produces and the laws do not agree. They live in
+# `viscosity.py` with their validity ranges; the names are re-exported here
+# because this is where callers have always found them.
+from .viscosity import (  # noqa: E402, F401  (re-export, must follow the docstring)
+    CAPILLARY_REGIME_MAX_DIAMETER_UM,
+    DEFAULT_HAEMATOCRIT,
+    DIAMETER_BASES,
+    LARGE_VESSEL_VISCOSITY_PA_S,
+    normalise_diameter_basis,
+    PLACEHOLDER_REGIME_MAX_DIAMETER_UM,
+    PLASMA_VISCOSITY_PA_S,
+    PRIES_MAX_DIAMETER_UM,
+    PRIES_MIN_DIAMETER_UM,
+    REFERENCE_DIAMETER_UM,
+    REFERENCE_VISCOSITY_PA_S,
+    VISCOSITY_DIAMETER_EXPONENT,
+    VISCOSITY_LAWS,
+    PlaceholderViscosityWarning,
+    describe_law,
+    reads_in_vivo_1994,
+    validity_range_um,
+    viscosity_for,
+)
 
 UM_PER_M = 1.0e6
-
-
-class PlaceholderViscosityWarning(UserWarning):
-    """A vessel fell in the 7-100 um regime where viscosity is a placeholder.
-
-    Raised so that a run using arteriole- and venule-scale vessels cannot
-    quietly report resistances that carry more precision than the model has.
-    Silence it deliberately, once you have accepted the approximation, with::
-
-        warnings.filterwarnings("ignore", category=PlaceholderViscosityWarning)
-    """
 
 
 def set_edge_resistance(edge_data: dict, resistance: float) -> None:
@@ -145,9 +694,33 @@ class PoiseuilleModel:
     pressure drop in Pa divided by a resistance yields a flow in m^3/s.
     """
 
-    def __init__(self, constriction_length: float, constriction_spacing: float) -> None:
+    def __init__(
+        self,
+        constriction_length: float,
+        constriction_spacing: float,
+        viscosity_law: str = "pries",
+        haematocrit: float = DEFAULT_HAEMATOCRIT,
+        diameter_basis: str = "plasma_column",
+    ) -> None:
+        if viscosity_law not in VISCOSITY_LAWS:
+            raise ValueError(
+                f"Unknown viscosity_law {viscosity_law!r}. Fix: choose one of "
+                f"{', '.join(VISCOSITY_LAWS)}."
+            )
+        diameter_basis = normalise_diameter_basis(diameter_basis)
+        if diameter_basis not in DIAMETER_BASES:
+            raise ValueError(
+                f"Unknown diameter_basis {diameter_basis!r}. Fix: choose one "
+                f"of {', '.join(DIAMETER_BASES)}."
+            )
         self.constriction_length = constriction_length
         self.constriction_spacing = constriction_spacing
+        #: Which viscosity law this model applies. Resistances are not
+        #: comparable across laws, so a run records it.
+        self.viscosity_law = viscosity_law
+        self.haematocrit = float(haematocrit)
+        #: What the graph's diameters mean; see `viscosity.DIAMETER_BASES`.
+        self.diameter_basis = diameter_basis
 
     def get_diameter_at_position(
         self, position: float, length: float, d1: float, d2: float
@@ -165,74 +738,143 @@ class PoiseuilleModel:
             return d2 + (d1 - d2) * ((phase - 30) / 10)
         return d1
 
-    @staticmethod
-    def calculate_viscosity(diameter: float) -> float:
+    def constriction_centres(self, length: float) -> list[float]:
+        """The middle of each constriction :meth:`get_diameter_at_position`
+        puts on a vessel *length* um long: one every ``constriction_spacing``
+        from ``constriction_length / 2``, as far as the vessel's end -- the
+        same sites the probabilistic strategy places before drawing which are
+        active."""
+        if length <= 0 or self.constriction_length <= 0 or self.constriction_spacing <= 0:
+            return []
+        centres: list[float] = []
+        centre = float(self.constriction_length) / 2.0
+        while centre <= float(length):
+            centres.append(centre)
+            centre += float(self.constriction_spacing)
+        return centres
+
+    def calculate_viscosity(
+        self,
+        diameter: float,
+        *,
+        haematocrit: float | None = None,
+        diameter_basis: str | None = None,
+    ) -> float:
         """Apparent blood viscosity in Pa.s for a vessel of *diameter* um.
 
-        Piecewise: the calibrated capillary power law up to
-        ``CAPILLARY_REGIME_MAX_DIAMETER_UM``, and a constant
-        ``LARGE_VESSEL_VISCOSITY_PA_S`` above it. The constant branch is a
-        placeholder for the real transition regime (issue #90), so diameters
-        from 7 um to ``PLACEHOLDER_REGIME_MAX_DIAMETER_UM`` raise
-        :class:`PlaceholderViscosityWarning` and their resistances should be
-        read as order-of-magnitude only.
+        Which law answers is `self.viscosity_law`; see
+        :mod:`haemolynx.haemodynamics.viscosity` for what each covers.
+
+        ``haematocrit`` overrides ``self.haematocrit`` for this one call --
+        used by callers that have a per-edge discharge haematocrit (see
+        :mod:`haemolynx.haemodynamics.haematocrit_distribution`) instead of
+        the uniform value every edge otherwise shares. ``diameter_basis``
+        overrides ``self.diameter_basis`` the same way, for a vessel whose
+        diameter was measured on another basis (see :func:`edge_diameter_basis`).
         """
-        if diameter <= 0:
-            raise ValueError(f"Diameter must be positive, got {diameter} um.")
-        if diameter > CAPILLARY_REGIME_MAX_DIAMETER_UM:
-            if diameter <= PLACEHOLDER_REGIME_MAX_DIAMETER_UM:
-                # Deliberately free of the actual diameter so repeated calls
-                # collapse to one message under the default warning filter.
-                warnings.warn(
-                    "Vessel diameters between "
-                    f"{CAPILLARY_REGIME_MAX_DIAMETER_UM} and "
-                    f"{PLACEHOLDER_REGIME_MAX_DIAMETER_UM} um use a placeholder "
-                    "viscosity: it is held constant at "
-                    f"{LARGE_VESSEL_VISCOSITY_PA_S * 1e3} mPa.s instead of "
-                    "recovering gradually from the capillary law toward the "
-                    "macroscale value. The error is largest just above "
-                    f"{CAPILLARY_REGIME_MAX_DIAMETER_UM} um, where viscosity "
-                    "also steps up discontinuously. Treat resistances for these "
-                    "vessels as order-of-magnitude only — see issue #90.",
-                    PlaceholderViscosityWarning,
-                    stacklevel=2,
-                )
-            return LARGE_VESSEL_VISCOSITY_PA_S
-        return REFERENCE_VISCOSITY_PA_S * (
-            (REFERENCE_DIAMETER_UM / diameter) ** VISCOSITY_DIAMETER_EXPONENT
+        basis = self.diameter_basis if diameter_basis is None else diameter_basis
+        if self.reads_below_fitted_floor(diameter, basis):
+            # The 1994 in vivo form is singular at 1.1 um: read a narrower
+            # vessel's viscosity at the law's fitted floor. Its own width
+            # still sets the d^4 of its resistance.
+            diameter = PRIES_MIN_DIAMETER_UM
+        return viscosity_for(
+            diameter,
+            law=self.viscosity_law,
+            haematocrit=self.haematocrit if haematocrit is None else float(haematocrit),
+            diameter_basis=basis,
         )
 
-    @staticmethod
-    def resistance_of_uniform_segment(length: float, diameter: float) -> float:
+    def reads_below_fitted_floor(self, diameter: float, diameter_basis: str | None = None) -> bool:
+        """Whether a vessel *diameter* um wide has its viscosity read at the
+        1994 in vivo form's fitted floor (:func:`viscosity.reads_in_vivo_1994`)."""
+        basis = self.diameter_basis if diameter_basis is None else diameter_basis
+        return 0 < float(diameter) < PRIES_MIN_DIAMETER_UM and reads_in_vivo_1994(self.viscosity_law, basis)
+
+    def describe_viscosity_law(self) -> str:
+        """The law and its range, for a run's metadata."""
+        return describe_law(
+            self.viscosity_law, self.haematocrit, self.diameter_basis
+        )
+
+    def resistance_of_uniform_segment(
+        self,
+        length: float,
+        diameter: float,
+        *,
+        haematocrit: float | None = None,
+        diameter_basis: str | None = None,
+    ) -> float:
         """Poiseuille resistance (Pa.s/m^3) of a straight uniform segment.
 
-        ``length`` and ``diameter`` are in micrometres.
+        ``length`` and ``diameter`` are in micrometres. A non-positive
+        diameter has no physical channel to carry flow through, so it is
+        treated the same as a non-positive length rather than raising
+        ``ZeroDivisionError`` when ``diameter`` is exactly 0.
+
+        ``haematocrit`` overrides ``self.haematocrit`` for this one segment
+        -- see :meth:`calculate_viscosity`.
         """
-        if length <= 0:
+        if length <= 0 or diameter <= 0:
             return float("inf")
-        viscosity = PoiseuilleModel.calculate_viscosity(diameter)
+        viscosity = self.calculate_viscosity(
+            diameter, haematocrit=haematocrit, diameter_basis=diameter_basis
+        )
         length_m = length / UM_PER_M
         diameter_m = diameter / UM_PER_M
         return (128.0 * viscosity * length_m) / (np.pi * diameter_m ** 4)
 
     def resistance_integrand(
-        self, position: float, length: float, d1: float, d2: float
+        self,
+        position: float,
+        length: float,
+        d1: float,
+        d2: float,
+        *,
+        haematocrit: float | None = None,
+        diameter_basis: str | None = None,
     ) -> float:
-        """Resistance per unit length (Pa.s/m^4) at *position* um along the vessel."""
+        """Resistance per unit length (Pa.s/m^4) at *position* um along the vessel.
+
+        ``pericyte_constriction_factor`` is schema-permitted down to 0.0 (a
+        fully closed vessel), which would otherwise reach this with
+        diameter=0 and raise ``ZeroDivisionError``.
+
+        ``haematocrit`` overrides ``self.haematocrit`` -- see
+        :meth:`calculate_viscosity`.
+        """
         diameter = self.get_diameter_at_position(position, length, d1, d2)
-        viscosity = self.calculate_viscosity(diameter)
+        if diameter <= 0:
+            return float("inf")
+        viscosity = self.calculate_viscosity(
+            diameter, haematocrit=haematocrit, diameter_basis=diameter_basis
+        )
         diameter_m = diameter / UM_PER_M
         return (128.0 * viscosity) / (np.pi * diameter_m ** 4)
 
     def calculate_integrated_resistance(
-        self, length: float, d1: float, d2: float, num_points: int = 1000
+        self,
+        length: float,
+        d1: float,
+        d2: float,
+        num_points: int = 1000,
+        *,
+        haematocrit: float | None = None,
+        diameter_basis: str | None = None,
     ) -> float:
-        """Total resistance (Pa.s/m^3) by trapezoidal integration along the vessel."""
+        """Total resistance (Pa.s/m^3) by trapezoidal integration along the vessel.
+
+        ``haematocrit`` overrides ``self.haematocrit`` for the whole
+        integration -- see :meth:`calculate_viscosity`.
+        """
         if length <= 0:
             return float("inf")
         positions = np.linspace(0, length, num_points)
         resistances = [
-            self.resistance_integrand(pos, length, d1, d2) for pos in positions
+            self.resistance_integrand(
+                pos, length, d1, d2, haematocrit=haematocrit, diameter_basis=diameter_basis
+            )
+            for pos in positions
         ]
         dx = (length / (num_points - 1) if num_points > 1 else length) / UM_PER_M
         integ = getattr(np, "trapezoid", None) or getattr(np, "trapz")
@@ -248,7 +890,10 @@ class PoiseuilleModel:
         """
         Set edge resistance and conductance from Poiseuille's law.
         resistance = (128 * viscosity * length) / (π * diameter^4)
-        Where viscosity = 1 / diameter^1.647
+        Where viscosity is the apparent blood viscosity at that diameter under
+        this model's ``viscosity_law`` (see
+        :mod:`haemolynx.haemodynamics.viscosity`), so resistances are not
+        comparable between runs that chose different laws.
 
         Parameters:
         -----------
@@ -265,9 +910,10 @@ class PoiseuilleModel:
         --------
         dict : Summary of resistance assignments
         """
-        import numpy as np
+        from haemolynx.graph.thick_vessel_junctions import IS_ZERO_RESISTANCE
 
-        PI = np.pi
+        from .resistance import pass_log_level
+
         results = {
             'edges_set': 0,
             'missing_branch_order': [],
@@ -277,23 +923,24 @@ class PoiseuilleModel:
             'invalid_diameter': [],
             'viscosity_calculations': {},  # Track viscosity for each diameter
             'used_fwhm_edge_diameter': 0,
+            'zero_resistance_bridges': 0,
+            'viscosity_at_fitted_floor': 0,
         }
 
-        logger.info("=== Poiseuille Resistance Calculation (Branch Order Based) ===")
-        logger.info("Formula: resistance = (128 * viscosity * length) / (π * diameter^4)")
-        logger.info(
-            f"Viscosity: μ(d) = {REFERENCE_VISCOSITY_PA_S * 1e3} mPa.s * "
-            f"({REFERENCE_DIAMETER_UM} μm / d)^{VISCOSITY_DIAMETER_EXPONENT} "
-            f"for d <= {CAPILLARY_REGIME_MAX_DIAMETER_UM} μm, "
-            f"else {LARGE_VESSEL_VISCOSITY_PA_S * 1e3} mPa.s (large-vessel constant)"
-        )
-        logger.info("Units: diameter and length in μm; resistance in Pa.s/m^3")
+        # Inside the haematocrit loop, which repeats this every pass, at DEBUG.
+        info, warning = pass_log_level(logging.INFO), pass_log_level(logging.WARNING)
+        logger.log(info, "=== Poiseuille Resistance Calculation (Branch Order Based) ===")
+        logger.log(info, "Formula: resistance = (128 * viscosity * length) / (pi * diameter^4)")
+        # The law is a setting, so the log has to name the one that actually
+        # ran: reading a fixed formula here made every run look identical.
+        logger.log(info, f"Viscosity: {self.describe_viscosity_law()}")
+        logger.log(info, "Units: diameter and length in um; resistance in Pa.s/m^3")
 
         # Pre-calculate viscosities for each diameter to avoid redundant calculations
         diameter_viscosity_map = {}
         for branch_order, diameter in diameter_by_branch_order.items():
             if diameter <= 0:
-                logger.warning(f"Invalid diameter {diameter} for {branch_order}")
+                logger.log(warning, f"Invalid diameter {diameter} for {branch_order}")
                 continue
             viscosity = self.calculate_viscosity(diameter)
             diameter_viscosity_map[diameter] = viscosity
@@ -301,11 +948,16 @@ class PoiseuilleModel:
                 'diameter': diameter,
                 'viscosity': viscosity
             }
-            logger.info(
-                f"{branch_order}: diameter={diameter}μm, calculated viscosity={viscosity:.6f}"
+            logger.log(info,
+                f"{branch_order}: diameter={diameter}um, calculated viscosity={viscosity:.6f}"
             )
 
         for u, v, key, data in G.edges(keys=True, data=True):
+            if data.get(IS_ZERO_RESISTANCE):
+                # A thick-vessel bridge has no branch order and is no vessel:
+                # apply_final_resistance_overrides gives it its resistance.
+                results['zero_resistance_bridges'] += 1
+                continue
             # Check for branch order
             branch_order = data.get('branch_order', None)
             if branch_order is None:
@@ -322,15 +974,17 @@ class PoiseuilleModel:
                 results['invalid_length'].append((u, v, key, length))
                 continue
 
-            # Get diameter for this branch order (or per-edge FWHM measurement)
-            diameter = None
-            if prefer_edge_fwhm_diameter:
-                fwhm_d = data.get("fwhm_diameter_um")
-                if fwhm_d is not None and float(fwhm_d) > 0:
-                    diameter = float(fwhm_d)
-                    results['used_fwhm_edge_diameter'] += 1
+            # Modelled diameter stamped at assign_diameters, else FWHM, else table.
+            diameter = positive_diameter_um(data.get("diameter_um"))
+            used_fwhm = data.get("diameter_source") == DIAMETER_SOURCE_MEASURED
+            if diameter is None and prefer_edge_fwhm_diameter:
+                diameter = positive_diameter_um(data.get("fwhm_diameter_um"))
+                used_fwhm = diameter is not None
             if diameter is None:
-                diameter = diameter_by_branch_order.get(branch_order, None)
+                diameter = table_diameter_for_order(diameter_by_branch_order, branch_order)
+                used_fwhm = False
+            if used_fwhm:
+                results['used_fwhm_edge_diameter'] += 1
             if diameter is None:
                 results['unknown_branch_order'].append((u, v, key, branch_order))
                 continue
@@ -339,47 +993,75 @@ class PoiseuilleModel:
                 results['invalid_diameter'].append((u, v, key, branch_order, diameter))
                 continue
 
-            # Get pre-calculated viscosity for this diameter
-            viscosity = diameter_viscosity_map.get(diameter, None)
-            if viscosity is None:
-                # Fallback calculation if not in map
-                viscosity = self.calculate_viscosity(diameter)
-
-            resistance = self.resistance_of_uniform_segment(length, diameter)
+            # A per-edge discharge haematocrit (see
+            # haemodynamics.haematocrit_distribution) takes over from the
+            # precalculated map, which only ever assumed self.haematocrit
+            # uniformly -- everything else falls through to that cache
+            # exactly as before, so the default (no per-edge override) path
+            # pays no extra cost.
+            edge_haematocrit = data.get("discharge_haematocrit")
+            basis = edge_diameter_basis(data, self.diameter_basis)
+            if self.reads_below_fitted_floor(diameter, basis):
+                results['viscosity_at_fitted_floor'] += 1
+            if basis != self.diameter_basis:
+                # Its own basis: the precalculated map assumed the run's.
+                viscosity = self.calculate_viscosity(
+                    diameter, haematocrit=edge_haematocrit, diameter_basis=basis
+                )
+                resistance = self.resistance_of_uniform_segment(
+                    length, diameter, haematocrit=edge_haematocrit, diameter_basis=basis
+                )
+            elif edge_haematocrit is None:
+                # Get pre-calculated viscosity for this diameter
+                viscosity = diameter_viscosity_map.get(diameter, None)
+                if viscosity is None:
+                    # Fallback calculation if not in map
+                    viscosity = self.calculate_viscosity(diameter)
+                resistance = self.resistance_of_uniform_segment(length, diameter)
+            else:
+                viscosity = self.calculate_viscosity(diameter, haematocrit=edge_haematocrit)
+                resistance = self.resistance_of_uniform_segment(
+                    length, diameter, haematocrit=edge_haematocrit
+                )
             set_edge_resistance(G[u][v][key], resistance)
 
             results['edges_set'] += 1
 
             logger.debug(f"Edge ({u}, {v}, {key}): {branch_order}, "
-                        f"diameter={diameter}μm, length={length:.3f}μm, "
+                        f"diameter={diameter}um, length={length:.3f}um, "
                         f"viscosity={viscosity:.3e} Pa.s, "
                         f"resistance={resistance:.3e} Pa.s/m^3")
 
         # Log summary
-        logger.info("=== Summary ===")
-        logger.info(f"Edges assigned resistance: {results['edges_set']}")
+        logger.log(info, "=== Summary ===")
+        logger.log(info, f"Edges assigned resistance: {results['edges_set']}")
         if prefer_edge_fwhm_diameter:
-            logger.info(
+            logger.log(info,
                 f"Edges using per-edge fwhm_diameter_um: "
                 f"{results.get('used_fwhm_edge_diameter', 0)}"
             )
         # Every count below is an edge that was skipped, so it left the graph
         # without a resistance: a problem the run recovered from, not progress.
         if results['missing_branch_order']:
-            logger.warning(
+            logger.log(warning,
                 f"Edges missing branch_order: {len(results['missing_branch_order'])}"
             )
         if results['missing_length']:
-            logger.warning(f"Edges missing length: {len(results['missing_length'])}")
+            logger.log(warning, f"Edges missing length: {len(results['missing_length'])}")
         if results['unknown_branch_order']:
-            logger.warning(
+            logger.log(warning,
                 f"Edges with unknown branch_order: {len(results['unknown_branch_order'])}"
             )
         if results['invalid_length']:
-            logger.warning(f"Edges with invalid length: {len(results['invalid_length'])}")
+            logger.log(warning, f"Edges with invalid length: {len(results['invalid_length'])}")
         if results['invalid_diameter']:
-            logger.warning(
+            logger.log(warning,
                 f"Edges with invalid diameter: {len(results['invalid_diameter'])}"
+            )
+        if results['viscosity_at_fitted_floor']:
+            logger.log(warning,
+                f"Edges narrower than {PRIES_MIN_DIAMETER_UM} um, the in vivo law's fitted floor, "
+                f"with their viscosity read at it: {results['viscosity_at_fitted_floor']}"
             )
 
         return G, results
@@ -391,8 +1073,16 @@ class PoiseuilleModel:
         *,
         prefer_edge_fwhm_baseline: bool = False,
         constriction_factor_by_branch_order: dict[str, float] | None = None,
+        fwhm_fallback: bool = True,
     ) -> tuple[nx.MultiGraph, dict]:
         """Set edge resistance/conductance by integrating resistance along constrictions.
+
+        Every edge starts from its own diameter -- the one the baseline was
+        solved with -- when it has one (see :func:`baseline_edge_diameter`);
+        the table only fills in for edges that have none. *fwhm_fallback*
+        (with ``prefer_edge_fwhm_baseline``) lets an edge with no stamped
+        diameter fall back to its FWHM fit before the table, as the baseline
+        does when FWHM diameters are on.
 
         Parameters
         ----------
@@ -401,11 +1091,12 @@ class PoiseuilleModel:
             ``{"d1": float, "d2": float}`` (passive and constricted diameters in µm).
 
             If True: maps ``branch_order`` to a **scalar** fallback diameter (µm) used
-            only when an edge has no positive ``fwhm_diameter_um``.
+            only when an edge has no diameter of its own.
         prefer_edge_fwhm_baseline :
-            When True, per edge ``d1 = fwhm_diameter_um`` if set and positive, else the
-            scalar fallback for that ``branch_order``; ``d2 = d1 * factor`` where
-            ``factor`` comes from ``constriction_factor_by_branch_order[branch_order]``.
+            When True, per edge ``d1`` is the baseline's own diameter (see
+            :func:`baseline_edge_diameter`), else the scalar fallback for that
+            ``branch_order``; ``d2 = d1 * factor`` where ``factor`` comes from
+            ``constriction_factor_by_branch_order[branch_order]``.
         constriction_factor_by_branch_order :
             Required when ``prefer_edge_fwhm_baseline`` is True: multiplier applied to
             baseline ``d1`` to obtain ``d2`` (same role as d2/d1 in the manual pipeline).
@@ -426,9 +1117,20 @@ class PoiseuilleModel:
                     "prefer_edge_fwhm_baseline=True."
                 )
         constr_map = constriction_factor_by_branch_order
+        from haemolynx.graph.prune import flow_is_undefined
+        from haemolynx.graph.thick_vessel_junctions import IS_ZERO_RESISTANCE
 
         for u, v, key, data in G.edges(keys=True, data=True):
+            if data.get(IS_ZERO_RESISTANCE):
+                # A thick-vessel bridge has no branch order and is no vessel:
+                # apply_final_resistance_overrides gives it its resistance.
+                continue
             branch_order = data.get("branch_order")
+            if branch_order is None and flow_is_undefined(data):
+                # In a piece no inlet and outlet reach: branch orders are
+                # assigned from the inlets, and no flow runs whatever its
+                # resistance (set_poiseuille_resistances skips it too).
+                continue
             if branch_order is None:
                 raise ValueError(
                     f"Edge ({u}, {v}, {key}) missing required 'branch_order' attribute."
@@ -444,24 +1146,15 @@ class PoiseuilleModel:
                 )
 
             if prefer_edge_fwhm_baseline:
-                spec = diameter_by_branch_order.get(branch_order)
-                if spec is None:
-                    raise ValueError(
-                        f"Edge ({u}, {v}, {key}) has unknown branch_order '{branch_order}'. "
-                        "No matching entry in diameter_by_branch_order (fallback diameters)."
+                try:
+                    d1, from_fwhm = baseline_edge_diameter(
+                        data, branch_order, diameter_by_branch_order,
+                        fwhm_fallback=fwhm_fallback,
                     )
-                if isinstance(spec, dict):
-                    raise ValueError(
-                        "When prefer_edge_fwhm_baseline=True, diameter_by_branch_order "
-                        f"must map to numeric fallbacks, not dict for '{branch_order}'."
-                    )
-                fallback_d1 = float(spec)
-                fwhm_d = data.get("fwhm_diameter_um")
-                if fwhm_d is not None and float(fwhm_d) > 0:
-                    d1 = float(fwhm_d)
+                except ValueError as error:
+                    raise ValueError(f"Edge ({u}, {v}, {key}): {error}") from error
+                if from_fwhm:
                     results["used_fwhm_baseline"] += 1
-                else:
-                    d1 = fallback_d1
                 factor = constr_map.get(branch_order) if constr_map is not None else None
                 if factor is None:
                     raise ValueError(
@@ -481,6 +1174,10 @@ class PoiseuilleModel:
                         "Expected dict containing 'd1' and 'd2'."
                     )
                 d1, d2 = diameters["d1"], diameters["d2"]
+                own = positive_diameter_um(data.get("diameter_um"))
+                if own is not None:
+                    # The pair's constriction, on the diameter the baseline used.
+                    d1, d2 = own, own * float(d2) / float(d1)
 
             if d1 <= 0 or d2 <= 0:
                 raise ValueError(
@@ -488,11 +1185,21 @@ class PoiseuilleModel:
                     f"branch_order '{branch_order}': d1={d1}, d2={d2}."
                 )
             try:
-                total_resistance = self.calculate_integrated_resistance(length, d1, d2)
+                total_resistance = self.calculate_integrated_resistance(
+                    length, d1, d2, haematocrit=data.get("discharge_haematocrit"),
+                    diameter_basis=edge_diameter_basis(data, self.diameter_basis),
+                )
                 set_edge_resistance(G[u][v][key], total_resistance)
                 results["edges_set"] += 1
             except Exception as e:
                 raise ValueError(f"Resistance calculation failed for edge ({u}, {v}, {key}): {e}")
+            # Where the pattern narrows this vessel, recorded the way
+            # `constriction.apply_constriction_sites` records its sites, so the
+            # viewer can draw this strategy's pericytes too. An edge whose
+            # factor leaves d2 == d1 has a pattern that changes nothing.
+            centres = self.constriction_centres(float(length)) if d2 != d1 else []
+            G[u][v][key]["pericyte_count_assigned"] = len(centres)
+            G[u][v][key]["pericyte_centers_um"] = centres
         return G, results
 
     def set_poiseuille_edge_resistances(
@@ -537,7 +1244,9 @@ class PoiseuilleModel:
                 if vessel_length <= 0:
                     continue
                 new_resistance = self.resistance_of_uniform_segment(
-                    vessel_length, edge_diameter
+                    vessel_length,
+                    edge_diameter,
+                    haematocrit=edge_data.get("discharge_haematocrit"),
                 )
                 set_edge_resistance(G[u_actual][v_actual][key], new_resistance)
                 results["updated"].append(

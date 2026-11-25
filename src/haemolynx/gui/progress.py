@@ -91,17 +91,30 @@ class ProgressDisplay:
             done = (event.step_index or 0) + 1
             total = event.step_total or 0
             of_total = f"/{total}" if total else ""
-            self.steps = BarState(
-                value=done,
-                total=total,
-                text=f"{event.step} ({done}{of_total})",
-                visible=True,
+            # The step running, not the one just finished: shown the finished
+            # one, a watcher blames it for however long the next one takes.
+            text = (
+                f"{event.next_step}... ({done}{of_total} done)"
+                if event.next_step
+                else f"{event.step} ({done}{of_total})"
             )
+            self.steps = BarState(value=done, total=total, text=text, visible=True)
 
     def finish(self, message: str = "Finished") -> None:
         """The run is over: fill the bar in, and drop the step one."""
         self.stages = BarState(
             value=self.stages.total,
+            total=self.stages.total,
+            text=message,
+            visible=True,
+        )
+        self.steps = BarState()
+
+    def pause(self, message: str) -> None:
+        """The run stopped on purpose part-way (to post-process by hand): the
+        bar stays where it got to -- it is not finished -- and says why."""
+        self.stages = BarState(
+            value=self.stages.value,
             total=self.stages.total,
             text=message,
             visible=True,
@@ -116,4 +129,14 @@ class ProgressDisplay:
             text=message,
             visible=True,
         )
+        self.steps = BarState()
+
+    def reset(self) -> None:
+        """Both bars back to nothing, for a run that was stopped on purpose.
+
+        Not :meth:`fail`: a bar left part-filled says a run got that far and
+        then broke. A cancelled run got that far and was told to stop, and the
+        next thing worth showing is the next run's :meth:`start`.
+        """
+        self.stages = BarState()
         self.steps = BarState()

@@ -1,7 +1,8 @@
 """Diagnostics utilities for graph topology cleanup."""
-from typing import Any, Dict, List, Union
+from typing import Any, Dict, List, Optional, Union
 
 import networkx as nx
+import numpy as np
 
 from ._helpers import get_all_edge_data
 
@@ -91,3 +92,832 @@ def format_degree2_diagnostics_report(report: Dict[str, Any]) -> str:
         lines.append(f"  {key}: {count}" + (f" (sample={sample})" if sample else ""))
 
     return "\n".join(lines)
+
+
+def _rasterize_graph_edges(
+    G: Union[nx.Graph, nx.MultiGraph],
+    shape: tuple,
+    spacing: np.ndarray,
+) -> np.ndarray:
+    """Every edge's ``voxels`` polyline (physical microns), converted back
+    to voxel indices and rasterised onto a volume of the given *shape*.
+
+    Shared by the two graph-vs-raster consistency checks below, so a graph
+    with no ``voxels`` on an edge, or a point that rounds just past the
+    array edge, is handled identically by both.
+    """
+    covered = np.zeros(shape, dtype=bool)
+    for _u, _v, data in G.edges(data=True):
+        voxels = data.get("voxels")
+        if voxels is None or len(voxels) == 0:
+            continue
+        indices = np.round(np.asarray(voxels, dtype=float) / spacing).astype(int)
+        for axis in range(indices.shape[1]):
+            indices[:, axis] = np.clip(indices[:, axis], 0, shape[axis] - 1)
+        covered[indices[:, 0], indices[:, 1], indices[:, 2]] = True
+    return covered
+
+
+def diagnose_skeleton_graph_consistency(
+    G: Union[nx.Graph, nx.MultiGraph],
+    skeleton: np.ndarray,
+    *,
+    voxel_size_zyx: tuple = (1.0, 1.0, 1.0),
+) -> Dict[str, Any]:
+    """Fraction of *skeleton* the finished graph's edges still trace.
+
+    Every edge's own ``voxels`` polyline (physical microns) is converted
+    back to voxel indices and rasterised onto a volume the skeleton's own
+    shape; the fraction of skeleton foreground voxels landing on that
+    rasterised set is how much of the original skeleton this graph's
+    topology repair -- reconnection, degree-2 removal, cluster collapse,
+    stub pruning, orphan repair -- still accounts for by the time it is
+    finished. A steep drop points at over-aggressive pruning or collapsing,
+    not at skeletonisation itself, which this never touches.
+
+    An approximate reading, not a precise one: centreline smoothing moves an
+    edge's points off the original skeleton voxels on purpose (see
+    ``graph.smoothing``), and a handful of interior voxels absorbed by
+    ``collapse_node_clusters`` at a merged junction are expected to go
+    unmatched even in a healthy run. It is a coarse "did a large chunk of
+    the skeleton go missing" check, not a per-voxel audit.
+    """
+    skeleton_bool = np.asarray(skeleton, dtype=bool)
+    skeleton_voxel_count = int(skeleton_bool.sum())
+    if skeleton_voxel_count == 0:
+        return {
+            "skeleton_voxel_count": 0,
+            "graph_voxel_count": 0,
+            "matched_voxel_count": 0,
+            "coverage_fraction": 1.0,
+        }
+
+    spacing = np.asarray([float(v) for v in voxel_size_zyx], dtype=float)
+    covered = _rasterize_graph_edges(G, skeleton_bool.shape, spacing)
+
+    matched_voxel_count = int((covered & skeleton_bool).sum())
+    return {
+        "skeleton_voxel_count": skeleton_voxel_count,
+        "graph_voxel_count": int(covered.sum()),
+        "matched_voxel_count": matched_voxel_count,
+        "coverage_fraction": matched_voxel_count / skeleton_voxel_count,
+    }
+
+
+def format_skeleton_graph_consistency_report(report: Dict[str, Any]) -> str:
+    """A one-line summary of :func:`diagnose_skeleton_graph_consistency`."""
+    return (
+        "Skeleton/graph consistency: "
+        f"{report.get('matched_voxel_count', 0)} of "
+        f"{report.get('skeleton_voxel_count', 0)} skeleton voxels are still "
+        f"traced by the graph's edges "
+        f"({report.get('coverage_fraction', 1.0):.1%})."
+    )
+
+
+def diagnose_graph_mask_consistency(
+    G: Union[nx.Graph, nx.MultiGraph],
+    mask: np.ndarray,
+    *,
+    voxel_size_zyx: tuple = (1.0, 1.0, 1.0),
+) -> Dict[str, Any]:
+    """Fraction of the segmented image the finished graph's edges run through.
+
+    The third leg of the consistency triangle:
+    ``preprocessing.skeleton_consistency.diagnose_skeleton_mask_consistency``
+    checks the skeleton against the mask before any graph exists,
+    :func:`diagnose_skeleton_graph_consistency` above checks the graph
+    against the skeleton it was built from; this checks the graph directly
+    against the original segmented image, so a loss that compounds across
+    both earlier steps -- individually healthy skeleton/mask and
+    skeleton/graph numbers that still add up to a poor graph/mask number --
+    has somewhere to show up.
+
+    Uses the same local-radius-plus-one-voxel-diagonal criterion as
+    ``diagnose_skeleton_mask_consistency`` (see that function's docstring
+    for the empirical justification): a mask voxel counts as "explained"
+    once the nearest point on the graph's own rasterised edges is no
+    farther from it than that point's own inscribed radius plus that
+    margin. *mask* is read via the same canonical
+    ``io.load._to_binary_volume_for_skeletonization`` binarisation the
+    other two consistency checks use, not a plain ``!= 0`` test, for the
+    same reason.
+    """
+    from haemolynx.io.load import _to_binary_volume_for_skeletonization
+    from haemolynx.preprocessing.skeleton_consistency import _explained_by_local_radius
+
+    mask_bool = _to_binary_volume_for_skeletonization(mask)
+    mask_voxel_count = int(mask_bool.sum())
+    if mask_voxel_count == 0:
+        return {
+            "mask_voxel_count": 0,
+            "graph_voxel_count": 0,
+            "explained_voxel_count": 0,
+            "coverage_fraction": 1.0,
+        }
+
+    spacing = np.asarray([float(v) for v in voxel_size_zyx], dtype=float)
+    covered = _rasterize_graph_edges(G, mask_bool.shape, spacing)
+
+    explained = _explained_by_local_radius(
+        covered, mask_bool, voxel_size_zyx=voxel_size_zyx
+    )
+    explained_voxel_count = int(explained.sum())
+    return {
+        "mask_voxel_count": mask_voxel_count,
+        "graph_voxel_count": int(covered.sum()),
+        "explained_voxel_count": explained_voxel_count,
+        "coverage_fraction": explained_voxel_count / mask_voxel_count,
+    }
+
+
+def format_graph_mask_consistency_report(report: Dict[str, Any]) -> str:
+    """A one-line summary of :func:`diagnose_graph_mask_consistency`."""
+    return (
+        "Graph/mask consistency: "
+        f"{report.get('explained_voxel_count', 0)} of "
+        f"{report.get('mask_voxel_count', 0)} segmented-image voxels are "
+        f"within their own local radius (plus discretisation margin) of "
+        f"the graph's edges ({report.get('coverage_fraction', 1.0):.1%})."
+    )
+
+
+def diagnose_vessels_missing_from_graph(
+    G: Union[nx.Graph, nx.MultiGraph],
+    mask: np.ndarray,
+    *,
+    voxel_size_zyx: tuple = (1.0, 1.0, 1.0),
+    min_vessel_voxels: int = 2,
+) -> Dict[str, Any]:
+    """Whole segmented-image vessels the finished graph drops entirely.
+
+    The graph-side counterpart of
+    ``preprocessing.skeleton_consistency.diagnose_vessels_missing_from_skeleton``
+    -- the inverse question to :func:`diagnose_graph_mask_consistency`'s
+    coverage fraction, which can stay high even while a whole small vessel
+    is unrepresented, as long as it is a small enough slice of total
+    volume. This instead treats each connected component of the mask as
+    one candidate vessel and asks whether the graph's own rasterised edges
+    explain *any* of it at all -- catching a vessel a topology-repair pass
+    (pruning, orphan removal, cluster collapse) dropped whole, which a
+    single blended percentage can hide. See
+    ``preprocessing.skeleton_consistency._missing_mask_components`` for the
+    noise-vessel size floor and why it matters.
+    """
+    from haemolynx.io.load import _to_binary_volume_for_skeletonization
+    from haemolynx.preprocessing.skeleton_consistency import (
+        _explained_by_local_radius,
+        _missing_mask_components,
+    )
+
+    mask_bool = _to_binary_volume_for_skeletonization(mask)
+    spacing = np.asarray([float(v) for v in voxel_size_zyx], dtype=float)
+    covered = _rasterize_graph_edges(G, mask_bool.shape, spacing)
+
+    explained = _explained_by_local_radius(
+        covered, mask_bool, voxel_size_zyx=voxel_size_zyx
+    )
+    return _missing_mask_components(
+        explained, mask_bool, min_vessel_voxels=min_vessel_voxels
+    )
+
+
+def diagnose_graph_against_mask(
+    G: Union[nx.Graph, nx.MultiGraph],
+    mask: np.ndarray,
+    *,
+    voxel_size_zyx: tuple = (1.0, 1.0, 1.0),
+    min_vessel_voxels: int = 2,
+) -> tuple[Dict[str, Any], Dict[str, Any]]:
+    """``(diagnose_graph_mask_consistency(...),
+    diagnose_vessels_missing_from_graph(...))`` for the same pair, from one
+    rasterisation, one local-radius map and one distance transform of the
+    graph's edges instead of two of each -- the same two reports.
+    """
+    from haemolynx.io.load import _to_binary_volume_for_skeletonization
+    from haemolynx.preprocessing.skeleton_consistency import (
+        _explained_by_local_radius,
+        _missing_mask_components,
+    )
+
+    mask_bool = _to_binary_volume_for_skeletonization(mask)
+    mask_voxel_count = int(mask_bool.sum())
+    if mask_voxel_count == 0:
+        consistency = {
+            "mask_voxel_count": 0,
+            "graph_voxel_count": 0,
+            "explained_voxel_count": 0,
+            "coverage_fraction": 1.0,
+        }
+        return consistency, _missing_mask_components(
+            mask_bool, mask_bool, min_vessel_voxels=min_vessel_voxels
+        )
+    spacing = np.asarray([float(v) for v in voxel_size_zyx], dtype=float)
+    covered = _rasterize_graph_edges(G, mask_bool.shape, spacing)
+    explained = _explained_by_local_radius(covered, mask_bool, voxel_size_zyx=voxel_size_zyx)
+    explained_voxel_count = int(explained.sum())
+    consistency = {
+        "mask_voxel_count": mask_voxel_count,
+        "graph_voxel_count": int(covered.sum()),
+        "explained_voxel_count": explained_voxel_count,
+        "coverage_fraction": explained_voxel_count / mask_voxel_count,
+    }
+    return consistency, _missing_mask_components(
+        explained, mask_bool, min_vessel_voxels=min_vessel_voxels
+    )
+
+
+def _edge_signature(eid, data: dict, pos_u, pos_v) -> tuple:
+    """What an edge's centreline is drawn from: its id, its voxels and its
+    two nodes' positions. Equal signatures, equal paths."""
+    voxels = data.get("voxels")
+    body = np.asarray(voxels if voxels is not None else (), dtype=float).tobytes()
+    ends = np.asarray([pos_u, pos_v], dtype=float).tobytes()
+    return (eid, len(body), hash(body), ends)
+
+
+def diagnose_parallel_duplicates_in_lumen(
+    G: Union[nx.Graph, nx.MultiGraph],
+    mask: np.ndarray,
+    *,
+    voxel_size_zyx: tuple = (1.0, 1.0, 1.0),
+    mask_support=None,
+    memo: Optional[dict] = None,
+) -> Dict[str, Any]:
+    """Pairs of edges that run beside each other in one lumen over at least
+    half of either's length: one segmented vessel represented twice.
+
+    Each edge is judged against every other edge's centreline by
+    ``preprocessing.bridge_mask_support.path_shadows_existing_vessel`` --
+    the guard every reconnect and the mask recovery apply to a path before
+    adding it -- so two vessels with background between them, a branch
+    meeting the vessel it leaves, and two edges continuing each other are
+    not pairs. *mask_support*, a ``MaskSupport`` over *mask*, is used in
+    place of building one.
+
+    *memo*, a dict a caller passes to every call on one graph (and one
+    mask), keeps each edge's verdict for the next call: an edge whose
+    centreline is unchanged, with no edge added, changed or removed since
+    within the distance it is judged over, is not judged again -- its
+    verdict reads only its own path and the centrelines in that reach.
+    Graph building's clean-up asks again after every round, of a graph each
+    round changes in a few places.
+    """
+    from haemolynx.io.load import _to_binary_volume_for_skeletonization
+    from haemolynx.preprocessing.bridge_mask_support import (
+        MaskSupport,
+        _densify,
+        _sample_step,
+        _shadowing_points,
+    )
+    from scipy.spatial import cKDTree
+
+    from ._helpers import EdgeSampleIndex, edge_id, edge_sample_points, points_within
+
+    if mask_support is None:
+        mask_support = MaskSupport(_to_binary_volume_for_skeletonization(mask), voxel_size_zyx)
+    step = _sample_step(mask_support.voxel_size_zyx)
+    index = EdgeSampleIndex(G)
+    ids: Dict[Any, int] = {}
+    owners = np.asarray([ids.setdefault(owner, len(ids)) for owner in index.owners], dtype=np.intp)
+    edges = list(ids)
+    node_pos = {n: np.asarray(d["pos"], dtype=float) for n, d in G.nodes(data=True) if "pos" in d}
+    remembered: Dict[tuple, tuple] = memo.get("edges", {}) if memo is not None else {}
+    entries = []
+    for u, v, key, data in G.edges(keys=True, data=True):
+        eid = edge_id(u, v, key)
+        own = ids.get(eid)
+        if own is None:
+            continue
+        signature = (
+            _edge_signature(eid, data, node_pos[u], node_pos[v]) if memo is not None else None
+        )
+        if signature in remembered:
+            path, reach, _partner = remembered[signature]
+        else:
+            path = _densify(edge_sample_points(u, v, data, node_pos), step)
+            reach = 2.0 * float(np.max(mask_support.radius(path))) + 1.0
+        entries.append((own, signature, path, reach))
+    changed_tree = None
+    if remembered:
+        # What changed since the last call: centrelines gone and centrelines new.
+        present = {signature for _own, signature, _path, _reach in entries}
+        changed = [remembered[s][0] for s in remembered if s not in present]
+        changed += [path for _own, s, path, _reach in entries if s not in remembered]
+        if changed:
+            changed_tree = cKDTree(np.vstack(changed))
+    signature_of_edge = {own: signature for own, signature, _path, _reach in entries}
+    edge_of_signature = {signature: own for own, signature, _path, _reach in entries}
+    kept: Dict[tuple, tuple] = {}
+    pairs = set()
+    for own, signature, path, reach in entries:
+        if signature in remembered:
+            partner_signature = remembered[signature][2]
+            # The judging path is denser than the index's samples a judgement
+            # reads, so a change one sample step further out still counts.
+            untouched = changed_tree is None or not np.isfinite(
+                changed_tree.query(path, k=1, distance_upper_bound=reach + step)[0]
+            ).any()
+            if untouched and (partner_signature is None or partner_signature in edge_of_signature):
+                if partner_signature is not None:
+                    partner = edges[edge_of_signature[partner_signature]]
+                    pairs.add(tuple(sorted((edges[own], partner), key=str)))
+                kept[signature] = (path, reach, partner_signature)
+                continue
+        near = points_within(index.tree, path, reach)
+        near = near[owners[near] != own]
+        partner_signature = None
+        if len(near):
+            judged, shadowing = _shadowing_points(
+                path, cKDTree(index.points[near]), index.points[near],
+                mask_support.inside, mask_support.radius, step_um=step,
+            )
+            if judged and 2 * len(shadowing) >= judged:
+                partner_index = int(np.bincount(owners[near[shadowing]]).argmax())
+                pairs.add(tuple(sorted((edges[own], edges[partner_index]), key=str)))
+                partner_signature = signature_of_edge.get(partner_index)
+        if memo is not None:
+            kept[signature] = (path, reach, partner_signature)
+    if memo is not None:
+        memo["edges"] = kept
+    return {
+        "edge_count": len(edges),
+        "duplicate_pair_count": len(pairs),
+        "duplicate_pairs": sorted(pairs, key=str),
+    }
+
+
+def format_parallel_duplicates_report(report: Dict[str, Any]) -> str:
+    """A one-line summary of :func:`diagnose_parallel_duplicates_in_lumen`."""
+    pairs = report.get("duplicate_pairs", [])
+    return (
+        "Parallel duplicates in a lumen: "
+        f"{report.get('duplicate_pair_count', 0)} pair(s) of the graph's "
+        f"{report.get('edge_count', 0)} edges run beside each other inside one "
+        "segmented vessel"
+        + (f" (e.g. {pairs[:3]})." if pairs else ".")
+    )
+
+
+#: The fixed face margin dead ends were once judged by, in microns. The face
+#: test is now :func:`haemolynx.graph.dead_ends.leaves_image`; a caller may
+#: still ask for a fixed margin.
+IMAGE_FACE_MARGIN_UM = 10.0
+
+#: The artefact labels :func:`diagnose_lumen_artefacts` counts, in report
+#: order (what a dead end *is* is its kind, :mod:`haemolynx.graph.dead_ends`).
+DEAD_END_KINDS = (
+    "inside_other_lumen",
+    "beside_vessel",
+    "off_mask",
+    "mask_continues",
+    "short",
+)
+
+
+def _sample_weights(samples: np.ndarray) -> np.ndarray:
+    """The length of centreline each sample of a polyline stands for."""
+    if len(samples) < 2:
+        return np.zeros(len(samples))
+    spacing = np.linalg.norm(np.diff(samples, axis=0), axis=1)
+    return np.concatenate([[spacing[0] / 2], (spacing[:-1] + spacing[1:]) / 2, [spacing[-1] / 2]])
+
+
+class _CentrelineNeighbours:
+    """Every edge's centreline samples over one mask, for asking what runs
+    beside an edge in the same lumen: what :func:`diagnose_lumen_artefacts`
+    and :func:`classify_dead_ends` share."""
+
+    def __init__(self, G: Union[nx.Graph, nx.MultiGraph], support):
+        from haemolynx.preprocessing.bridge_mask_support import _sample_step
+
+        from ._helpers import EdgeSampleIndex
+
+        self.support = support
+        self.step = _sample_step(support.voxel_size_zyx)
+        self.node_pos = {n: np.asarray(d["pos"], dtype=float) for n, d in G.nodes(data=True) if "pos" in d}
+        self.index = EdgeSampleIndex(G)
+        self.ids: Dict[Any, int] = {}
+        self.owners = np.asarray(
+            [self.ids.setdefault(owner, len(self.ids)) for owner in self.index.owners], dtype=np.intp
+        )
+
+    def other_points_near(self, points: np.ndarray, own: Any, reach: float) -> np.ndarray:
+        if self.index.tree is None:
+            return np.empty(0, dtype=np.intp)
+        from ._helpers import points_within
+
+        near = points_within(self.index.tree, points, reach)
+        return near[self.owners[near] != own] if own is not None else near
+
+    def beside(self, u: Any, v: Any, key: Any, data: dict):
+        """``(centreline_um, beside_um, share)`` for edge ``(u, v, key)``: its
+        length as sampled, how much of that runs beside another centreline in
+        the same lumen, and the share of its judged samples that do (None when
+        none were judged). None for an edge with no samples to judge."""
+        measured = self.beside_runs(u, v, key, data)
+        return None if measured is None else measured[:3]
+
+    def beside_runs(self, u: Any, v: Any, key: Any, data: dict):
+        """:meth:`beside` plus the edge's **doubled runs**: each stretch of
+        consecutive judged samples (a gap of one sample allowed) that runs
+        beside another centreline, as ``DoubledRun`` with the edge it runs
+        beside (the one most of the run's samples are nearest to) and
+        whether the run reaches the first or last judged sample -- a run
+        at an edge's end is a fork or a branch meeting its parent, one in
+        the middle a second strand. The report counts the doubled centreline
+        by run length and place from these."""
+        from haemolynx.preprocessing.bridge_mask_support import (
+            MAX_SHADOW_COSINE, SAME_LUMEN_MARGIN_UM, _densify, _judged_samples, _same_lumen_neighbours,
+        )
+        from scipy.spatial import cKDTree
+
+        from ._helpers import edge_id, edge_sample_points
+
+        if u not in self.node_pos or v not in self.node_pos:
+            return None
+        own = self.ids.get(edge_id(u, v, key))
+        path = edge_sample_points(u, v, data, self.node_pos)
+        dense = _densify(path, self.step)
+        if len(dense) < 2:
+            return None
+        total = float(_sample_weights(dense).sum())
+        near = self.other_points_near(dense, own, 2.0 * float(np.max(self.support.radius(dense))) + 1.0)
+        if not len(near):
+            return total, 0.0, None, []
+        samples, tangents, judged = _judged_samples(
+            path, self.support.radius, step_um=self.step, margin_um=SAME_LUMEN_MARGIN_UM
+        )
+        beside = np.zeros(len(samples), dtype=bool)
+        runs: List[DoubledRun] = []
+        if judged.any():
+            points = self.index.points[near]
+            neighbour = _same_lumen_neighbours(
+                samples[judged], tangents[judged], cKDTree(points), points, self.support.inside,
+                self.support.radius, step_um=self.step, margin_um=SAME_LUMEN_MARGIN_UM,
+                max_cosine=MAX_SHADOW_COSINE,
+            )
+            hit = neighbour >= 0
+            beside[np.flatnonzero(judged)] = hit
+            owners = [self.index.owners[near[k]] if k >= 0 else None for k in neighbour]
+            i, n = 0, len(hit)
+            while i < n:
+                if not hit[i]:
+                    i += 1
+                    continue
+                j = i
+                while j + 1 < n and (hit[j + 1] or (j + 2 < n and hit[j + 2])):
+                    j += 1
+                partners = [owners[k] for k in range(i, j + 1) if owners[k] is not None]
+                partner = max(set(partners), key=partners.count)
+                runs.append(DoubledRun(
+                    edge=edge_id(u, v, key), partner=partner, length_um=(j - i + 1) * self.step,
+                    at_start=i == 0, at_end=j == n - 1,
+                ))
+                i = j + 1
+        share = float(beside[judged].mean()) if judged.any() else None
+        return total, float(_sample_weights(samples)[beside].sum()), share, runs
+
+
+class DoubledRun:
+    """One stretch of an edge running beside another centreline in the same
+    lumen: its edge and the edge it runs beside (``_helpers.edge_id`` keys),
+    its length, and whether it reaches the first or last judged sample."""
+
+    __slots__ = ("edge", "partner", "length_um", "at_start", "at_end")
+
+    def __init__(self, edge, partner, length_um: float, at_start: bool, at_end: bool):
+        self.edge, self.partner = edge, partner
+        self.length_um, self.at_start, self.at_end = float(length_um), bool(at_start), bool(at_end)
+
+    def __repr__(self) -> str:
+        return f"DoubledRun({self.edge!r} beside {self.partner!r}, {self.length_um:.1f} um)"
+
+
+#: Where a doubled run lies, in the order the report lists them.
+DOUBLED_RUN_PLACES = ("dead_end_chain", "fork", "mid_edge", "bridge")
+#: A run at least this long is a second strand, not the flare where vessels meet.
+DOUBLED_RUN_LONG_UM = 5.0
+
+
+def _edge_nodes(eid) -> set:
+    return {eid[0], eid[1]}
+
+
+def doubled_run_place(run: DoubledRun, chain_edges: set, bridges: set) -> str:
+    """Which of :data:`DOUBLED_RUN_PLACES` *run* is: with a thick-vessel
+    bridge, on a dead-end chain (a hair or a sprout along its parent), at the
+    junction both edges leave (a fork), or along an edge (a second strand
+    through the lumen, whether or not it reaches the edge's end)."""
+    if run.edge in bridges or run.partner in bridges:
+        return "bridge"
+    if run.edge in chain_edges or run.partner in chain_edges:
+        return "dead_end_chain"
+    if (run.at_start or run.at_end) and (_edge_nodes(run.edge) & _edge_nodes(run.partner)):
+        return "fork"
+    return "mid_edge"
+
+
+def _judge_dead_ends(
+    G: Union[nx.Graph, nx.MultiGraph],
+    support,
+    *,
+    stub_radius_multiple: float,
+    image_face_margin_um: Optional[float],
+) -> Dict[str, Any]:
+    """Every dead end, judged by :func:`haemolynx.graph.dead_ends.classify_dead_ends`
+    (the one definition), sorted the way this report has always counted them:
+    those leaving the image, the interior ones with their artefact labels, and
+    the isolated single edges apart."""
+    from .dead_ends import LEAVES_IMAGE
+    from .dead_ends import classify_dead_ends as classify
+
+    extent = (np.asarray(support.mask.shape, dtype=float) - 1.0) * np.asarray(support.voxel_size_zyx)
+    ends = classify(
+        G, extent_um=extent, support=support, stub_radius_multiple=stub_radius_multiple,
+        face_margin_um=image_face_margin_um,
+    )
+    dead_ends: Dict[str, List[Any]] = {kind: [] for kind in DEAD_END_KINDS}
+    isolated = sum(1 for u, v in G.edges() if u != v and G.degree[u] == 1 and G.degree[v] == 1)
+    at_face: List[Any] = []
+    interior: List[Any] = []
+    for tip, end in ends.items():
+        if all(G.degree[other] == 1 for other in G.neighbors(tip)):
+            continue
+        if end.kind == LEAVES_IMAGE:
+            at_face.append(tip)
+            continue
+        interior.append(tip)
+        for flag in end.flags:
+            dead_ends[flag].append(tip)
+    return {"dead_ends": dead_ends, "at_image_face": at_face, "interior": interior, "isolated": isolated, "ends": ends}
+
+
+def classify_dead_ends(
+    G: Union[nx.Graph, nx.MultiGraph],
+    mask: np.ndarray,
+    *,
+    voxel_size_zyx: tuple = (1.0, 1.0, 1.0),
+    mask_support=None,
+    stub_radius_multiple: float = 3.0,
+    image_face_margin_um: Optional[float] = None,
+) -> Dict[str, Any]:
+    """The dead ends of :func:`diagnose_lumen_artefacts`, tip by tip, without
+    the rest of its report: what Post processing's dead-end review lists.
+
+    Judged by :func:`haemolynx.graph.dead_ends.classify_dead_ends`, the one
+    definition every module shares: a dead end is a degree-1 node whose
+    vessel leads to a node of degree two or more, judged as its whole chain.
+    Returns ``kinds`` (each interior tip's artefact labels, in
+    :data:`DEAD_END_KINDS` order; empty for a dead end that is none of them),
+    ``dead_ends`` (the tips with each label), ``interior`` and
+    ``at_image_face`` (the tips that do not and do leave the image, in node
+    order), ``isolated_single_edges``, and ``ends``: every dead end's
+    :class:`~haemolynx.graph.dead_ends.DeadEnd`, its kind and measures.
+    *image_face_margin_um*, when given, replaces the face test with a fixed
+    distance (0: no tip leaves the image).
+    """
+    from haemolynx.io.load import _to_binary_volume_for_skeletonization
+    from haemolynx.preprocessing.bridge_mask_support import MaskSupport
+
+    support = mask_support
+    if support is None:
+        support = MaskSupport(_to_binary_volume_for_skeletonization(mask), voxel_size_zyx)
+    judged = _judge_dead_ends(
+        G, support, stub_radius_multiple=stub_radius_multiple, image_face_margin_um=image_face_margin_um,
+    )
+    found = judged["dead_ends"]
+    return {
+        "kinds": {
+            tip: tuple(kind for kind in DEAD_END_KINDS if tip in found[kind]) for tip in judged["interior"]
+        },
+        "dead_ends": found,
+        "interior": judged["interior"],
+        "at_image_face": judged["at_image_face"],
+        "isolated_single_edges": judged["isolated"],
+        "ends": judged["ends"],
+    }
+
+
+def diagnose_lumen_artefacts(
+    G: Union[nx.Graph, nx.MultiGraph],
+    mask: np.ndarray,
+    *,
+    voxel_size_zyx: tuple = (1.0, 1.0, 1.0),
+    mask_support=None,
+    stub_radius_multiple: float = 3.0,
+    image_face_margin_um: Optional[float] = None,
+) -> Dict[str, Any]:
+    """What graph building can leave in a segmented vessel that is not a
+    vessel, measured against the mask: one report, read-only.
+
+    - **Two edges in one lumen**: the pairs
+      :func:`diagnose_parallel_duplicates_in_lumen` reports, those of them
+      sharing one node (a *fork*: two edges leaving a junction side by side
+      through one lumen), and the length of centreline, counted sample by
+      sample (``preprocessing.shadowed_samples``), that runs beside another
+      in the same lumen -- a doubled stretch of a long edge included.
+    - **Loops inside one lumen**: of each edge's shortest loop
+      (``lumen_loops.iter_short_loops``), those
+      ``lumen_loops.loop_inside_one_lumen`` says run round no tissue.
+    - **Dead ends** that do not leave the image (the face test of
+      :func:`haemolynx.graph.dead_ends.leaves_image`, or a fixed
+      *image_face_margin_um* when given), by label (one dead end can carry
+      several): its tip inside another
+      vessel's lumen (not one of its own chain's, a thick-vessel bridge
+      included); at least half of it beside another centreline in the
+      same lumen; less than half of it in the mask; the mask running on past
+      its tip (``assemble.mask_continues_past``); shorter than
+      *stub_radius_multiple* radii of the vessel it leaves -- the whole chain,
+      tip to junction through degree-2 nodes and any thick-vessel bridge,
+      against the radius at that junction, as the stub prune judges it.
+      Isolated single edges are counted apart. :func:`classify_dead_ends` lists them alone.
+      Every dead end's kind (:mod:`haemolynx.graph.dead_ends`) is counted too,
+      in ``dead_end_kind_counts``.
+
+    *mask_support*, a ``MaskSupport`` over *mask*, is used in place of
+    building one; without one *mask* is binarised as the loaders do.
+    """
+    from haemolynx.io.load import _to_binary_volume_for_skeletonization
+    from haemolynx.preprocessing.bridge_mask_support import MaskSupport
+
+    from .lumen_loops import iter_short_loops, loop_inside_one_lumen
+
+    support = mask_support
+    if support is None:
+        support = MaskSupport(_to_binary_volume_for_skeletonization(mask), voxel_size_zyx)
+    duplicates = diagnose_parallel_duplicates_in_lumen(
+        G, support.mask, voxel_size_zyx=support.voxel_size_zyx, mask_support=support
+    )
+    forks = [
+        (a, b) for a, b in duplicates["duplicate_pairs"]
+        if len({a[0], a[1]} & {b[0], b[1]}) == 1
+    ]
+
+    from ._helpers import edge_id
+    from .dead_ends import chain_to_junction
+    from .thick_vessel_junctions import IS_ZERO_RESISTANCE
+
+    neighbours = _CentrelineNeighbours(G, support)
+    total_um = duplicated_um = 0.0
+    runs: List[DoubledRun] = []
+    for u, v, key, data in G.edges(keys=True, data=True):
+        measured = neighbours.beside_runs(u, v, key, data)
+        if measured is None:
+            continue
+        centreline_um, beside_um, _share, edge_runs = measured
+        total_um += centreline_um
+        duplicated_um += beside_um
+        runs.extend(edge_runs)
+
+    # Where each doubled run lies, and how long it is: the census of
+    # PLAN_clean_graph.md, which tells a flare at a junction from a second
+    # strand. A run on a dead-end chain is judged as the whole chain, as
+    # the prune judges it.
+    bridges = {edge_id(a, b, k) for a, b, k, d in G.edges(keys=True, data=True) if d.get(IS_ZERO_RESISTANCE)}
+    chain_edges: set = set()
+    for tip in [n for n in G if G.degree(n) == 1]:
+        nodes, edges = chain_to_junction(G, tip)
+        # A chain hanging from a junction; an isolated piece is no dead end.
+        if G.degree(nodes[-1]) > 1:
+            chain_edges.update(edge_id(*e) for e in edges)
+    by_place = {place: {"runs": 0, "um": 0.0} for place in DOUBLED_RUN_PLACES}
+    long_runs = {"runs": 0, "um": 0.0}
+    for run in runs:
+        counted = by_place[doubled_run_place(run, chain_edges, bridges)]
+        counted["runs"] += 1
+        counted["um"] += run.length_um
+        if run.length_um >= DOUBLED_RUN_LONG_UM:
+            long_runs["runs"] += 1
+            long_runs["um"] += run.length_um
+    doubled_edges = {r.edge for r in runs if r.length_um >= 2.0} | {r.partner for r in runs if r.length_um >= 2.0}
+
+    loop_count = 0
+    loops_in_lumen: List[Any] = []
+    loops_by_side = {"doubled_side": 0, "through_bridge": 0, "triangle": 0}
+    for cycle, polyline in iter_short_loops(G):
+        loop_count += 1
+        if loop_inside_one_lumen(polyline, support):
+            loops_in_lumen.append(cycle)
+        edges_in_loop = {edge_id(*e) for e in cycle}
+        if edges_in_loop & doubled_edges:
+            loops_by_side["doubled_side"] += 1
+        if edges_in_loop & bridges:
+            loops_by_side["through_bridge"] += 1
+        if len(cycle) <= 3:
+            loops_by_side["triangle"] += 1
+
+    judged = _judge_dead_ends(
+        G, support, stub_radius_multiple=stub_radius_multiple, image_face_margin_um=image_face_margin_um,
+    )
+    dead_ends = judged["dead_ends"]
+    from .dead_ends import dead_end_census
+    return {
+        "edge_count": duplicates["edge_count"],
+        "centreline_um": total_um,
+        "duplicate_pair_count": duplicates["duplicate_pair_count"],
+        "duplicate_pairs": duplicates["duplicate_pairs"],
+        "fork_pair_count": len(forks),
+        "duplicated_centreline_um": duplicated_um,
+        "duplicated_centreline_fraction": duplicated_um / total_um if total_um else 0.0,
+        "doubled_runs": runs,
+        "doubled_runs_by_place": by_place,
+        "doubled_long_runs": long_runs,
+        "short_loop_count": loop_count,
+        "short_loops_by_side": loops_by_side,
+        "loops_inside_one_lumen": len(loops_in_lumen),
+        "loop_cycles_inside_one_lumen": loops_in_lumen,
+        "dead_ends_at_image_face": len(judged["at_image_face"]),
+        "interior_dead_ends": len(judged["interior"]),
+        "isolated_single_edges": judged["isolated"],
+        "dead_end_counts": {kind: len(nodes) for kind, nodes in dead_ends.items()},
+        "dead_ends": dead_ends,
+        "dead_end_kind_counts": dead_end_census(judged["ends"]),
+        "stub_radius_multiple": float(stub_radius_multiple),
+    }
+
+
+def lumen_artefacts_found(report: Dict[str, Any]) -> bool:
+    """Whether :func:`diagnose_lumen_artefacts` found anything that is never
+    a vessel: two edges in one lumen, a loop inside one, or a dead end whose
+    tip lies in another vessel's lumen."""
+    return bool(
+        report.get("duplicate_pair_count", 0)
+        or report.get("loops_inside_one_lumen", 0)
+        or report.get("dead_end_counts", {}).get("inside_other_lumen", 0)
+    )
+
+
+#: Where ``build_network`` keeps :func:`lumen_artefact_counts` of the graph it
+#: hands on (``G.graph``), and the key of the run manifest's ``checks`` that
+#: repeats them. Absent where the report did not run (the low-RAM option).
+LUMEN_ARTEFACT_COUNTS = "lumen_artefacts"
+
+
+def lumen_artefact_counts(report: Dict[str, Any]) -> Dict[str, Any]:
+    """The counts of :func:`diagnose_lumen_artefacts`' *report* a run keeps, as
+    plain numbers: what it found that is never a vessel (``found``, as
+    :func:`lumen_artefacts_found`: a pair in one lumen, a loop inside one, a
+    tip in another vessel's lumen), and the rest of the summary line."""
+    counts = report.get("dead_end_counts", {})
+    return {
+        "found": lumen_artefacts_found(report),
+        "pairs_in_one_lumen": int(report.get("duplicate_pair_count", 0)),
+        "loops_inside_one_lumen": int(report.get("loops_inside_one_lumen", 0)),
+        "tips_in_another_lumen": int(counts.get("inside_other_lumen", 0)),
+        "fork_pairs": int(report.get("fork_pair_count", 0)),
+        "doubled_centreline_um": float(report.get("duplicated_centreline_um", 0.0)),
+        "doubled_long_runs": int((report.get("doubled_long_runs") or {}).get("runs", 0)),
+        "centreline_um": float(report.get("centreline_um", 0.0)),
+        "short_loops": int(report.get("short_loop_count", 0)),
+        "interior_dead_ends": int(report.get("interior_dead_ends", 0)),
+        "dead_ends_beside_another_centreline": int(counts.get("beside_vessel", 0)),
+        "dead_ends_off_the_mask": int(counts.get("off_mask", 0)),
+        "dead_ends_at_image_faces": int(report.get("dead_ends_at_image_face", 0)),
+        "isolated_single_edges": int(report.get("isolated_single_edges", 0)),
+    }
+
+
+def format_lumen_artefacts_report(report: Dict[str, Any]) -> str:
+    """A one-line summary of :func:`diagnose_lumen_artefacts`."""
+    counts = report.get("dead_end_counts", {})
+    return (
+        "Lumen artefacts: "
+        f"{report.get('duplicate_pair_count', 0)} pair(s) of edges share one lumen "
+        f"({report.get('fork_pair_count', 0)} leaving one node side by side), and "
+        f"{report.get('duplicated_centreline_um', 0.0):.0f} um "
+        f"({report.get('duplicated_centreline_fraction', 0.0):.1%}) of centreline runs beside "
+        "another in the same lumen; "
+        f"{report.get('loops_inside_one_lumen', 0)} of {report.get('short_loop_count', 0)} "
+        "short loops lie inside one lumen; "
+        f"{report.get('interior_dead_ends', 0)} dead ends away from the image faces "
+        f"({counts.get('inside_other_lumen', 0)} ending inside another vessel's lumen, "
+        f"{counts.get('beside_vessel', 0)} beside another centreline, "
+        f"{counts.get('off_mask', 0)} mostly off the mask, "
+        f"{counts.get('mask_continues', 0)} where the mask runs on past the tip, "
+        f"{counts.get('short', 0)} shorter than "
+        f"{report.get('stub_radius_multiple', 3.0):g} radii of their vessel), "
+        f"{report.get('dead_ends_at_image_face', 0)} leaving the image, and "
+        f"{report.get('isolated_single_edges', 0)} isolated single edge(s)."
+        + (
+            " Dead ends by kind: " + ", ".join(
+                f"{count} {kind.replace('_', ' ')}"
+                for kind, count in report["dead_end_kind_counts"].items() if count
+            ) + "."
+            if report.get("dead_end_kind_counts") else ""
+        )
+    )
+
+
+def format_vessels_missing_from_graph_report(report: Dict[str, Any]) -> str:
+    """A one-line summary of :func:`diagnose_vessels_missing_from_graph`."""
+    from haemolynx.preprocessing.skeleton_consistency import _missing_volume_clause
+
+    return (
+        "Vessels missing from graph: "
+        f"{report.get('missing_vessel_count', 0)} of "
+        f"{report.get('vessel_count', 0)} segmented-image vessels have no "
+        f"graph edge anywhere within their own local radius "
+        f"({report.get('explained_vessel_fraction', 1.0):.1%} represented)."
+        + _missing_volume_clause(report)
+    )

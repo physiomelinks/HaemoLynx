@@ -11,6 +11,7 @@ from typing import Any, Mapping
 
 from haemolynx import haemodynamics
 from haemolynx.parsers import Schema, load_config
+from haemolynx.pipeline.naming import run_stem
 
 
 def resolve_settings(
@@ -33,7 +34,8 @@ def resolve_settings(
     else:
         # An already-resolved dict carries the derived entries too; they are not
         # schema settings, so set them aside rather than failing validation.
-        merged = {**settings, **overrides}
+        # Each is read in today's names first: a retired setting is not one.
+        merged = {**schema.upgrade(settings), **schema.upgrade(overrides)}
         plot_dir = plot_dir or merged.pop("plot_dir", None)
         resolved = schema.validate({k: v for k, v in merged.items() if k in schema})
     fill_derived_settings(resolved)
@@ -42,15 +44,30 @@ def resolve_settings(
     return resolved
 
 
+def plot_folder(settings: Mapping[str, Any]) -> Path:
+    """Where a run's plots go: ``{base_plot_dir}/{stem}``, a folder per image.
+
+    The plot files carry no stem of their own (``final_graph_3d.html``), so
+    two images' runs into one plot folder overwrote each other's. A run that
+    names no image yet plots into ``base_plot_dir`` itself.
+    """
+    stem = run_stem(settings)
+    base = Path(settings["base_plot_dir"])
+    return base / stem if stem else base
+
+
 def fill_derived_settings(settings: dict) -> None:
     """Add the settings computed from other settings.
 
     The branch-order tables are functions of the manual diameter settings, so
     the config file states those and leaves these null rather than duplicating
-    a 150-entry table that could then disagree with them.
+    a 150-entry table that could then disagree with them. A
+    ``diameter_by_branch_order`` stated whole is read only with
+    ``all_diams_const`` off, as its row says: ticked, every order is the
+    default diameter whatever table is set.
     """
-    settings.setdefault("plot_dir", Path(settings["base_plot_dir"]) / "nerve")
-    if settings.get("diameter_by_branch_order") is None:
+    settings.setdefault("plot_dir", plot_folder(settings))
+    if settings.get("diameter_by_branch_order") is None or settings.get("all_diams_const"):
         settings["diameter_by_branch_order"] = haemodynamics.build_diameter_by_branch_order(
             all_diams_const=settings["all_diams_const"],
             max_branch_order=settings["max_branch_order"],
@@ -64,12 +81,15 @@ def fill_derived_settings(settings: dict) -> None:
             manual_venule_diameter_by_branch_order=settings[
                 "manual_venule_diameter_by_branch_order"
             ],
+            manual_large_arteriole_diameter_by_branch_order=settings[
+                "manual_large_arteriole_diameter_by_branch_order"
+            ],
+            manual_large_venule_diameter_by_branch_order=settings[
+                "manual_large_venule_diameter_by_branch_order"
+            ],
         )
     if settings.get("constriction_by_branch_order") is None:
-        max_order = int(settings["max_branch_order"])
-        constriction = {"B01": 1.0, "Art1": 1.0, "Ven1": 1.0}
-        for order in range(2, max_order + 1):
-            constriction[f"B{order:02d}"] = 0.8
-            constriction[f"Art{order}"] = 0.8
-            constriction[f"Ven{order}"] = 0.8
-        settings["constriction_by_branch_order"] = constriction
+        # Empty override map: every order keeps pericyte_constriction_factor.
+        # Listed keys replace that global factor for those orders only
+        # (see constriction_strategy.resolve_constriction_factor_table).
+        settings["constriction_by_branch_order"] = {}

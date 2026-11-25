@@ -1,0 +1,1358 @@
+"""``graph.mask_recovery``: vessels the mask has and the graph lost.
+
+A branch whose bridge was refused, or a fragment the skeleton filter dropped,
+leaves segmented vessel with no edge through it. Recovery traces those pieces
+and joins them to the network through the mask -- never as a second strand
+beside a vessel the graph already has, and never across background.
+"""
+from __future__ import annotations
+
+import networkx as nx
+import numpy as np
+import pytest
+
+from haemolynx.graph import diagnose_parallel_duplicates_in_lumen
+from haemolynx.graph.mask_recovery import (
+    REGION_SAMPLE_VOXELS,
+    recover_uncovered_mask_vessels,
+    remove_edges_off_the_mask,
+    uncovered_mask_regions,
+    uncovered_mask_voxels,
+)
+from haemolynx.preprocessing import MaskSupport
+
+pytest.importorskip("skan")
+
+
+def _tube(mask, axis, centre, radius, lo, hi):
+    """Fill a tube of *radius* along *axis* through *centre* from *lo* to *hi*."""
+    idx = np.indices(mask.shape)
+    others = [a for a in range(3) if a != axis]
+    r2 = sum((idx[a] - centre[a]) ** 2 for a in others)
+    mask |= (r2 <= radius**2) & (idx[axis] >= lo) & (idx[axis] <= hi)
+
+
+def _trunk_graph() -> nx.MultiGraph:
+    G = nx.MultiGraph()
+    G.graph["voxel_size"] = (1.0, 1.0, 1.0)
+    G.add_node(0, pos=np.array([7.0, 7.0, 0.0]))
+    G.add_node(1, pos=np.array([7.0, 7.0, 59.0]))
+    G.add_edge(0, 1, voxels=[[7.0, 7.0, float(x)] for x in range(60)], length=59.0)
+    return G
+
+
+def _trunk_mask():
+    mask = np.zeros((15, 40, 60), dtype=bool)
+    _tube(mask, 2, (7, 7, 0), 3, 0, 59)
+    return mask
+
+
+def _support(mask):
+    return MaskSupport(mask, (1.0, 1.0, 1.0))
+
+
+def test_a_covered_vessel_leaves_nothing_to_recover():
+    mask = _trunk_mask()
+
+    assert len(uncovered_mask_voxels(_trunk_graph(), _support(mask))) == 0
+    G = recover_uncovered_mask_vessels(_trunk_graph(), _support(mask))
+
+    assert G.number_of_edges() == 1
+
+
+def test_a_branch_the_graph_lost_is_traced_and_joined_to_its_trunk():
+    mask = _trunk_mask()
+    _tube(mask, 1, (7, 0, 30), 2, 7, 35)  # a branch along y off the trunk
+
+    G = recover_uncovered_mask_vessels(_trunk_graph(), _support(mask))
+
+    recovered = [d for *_, d in G.edges(data=True) if d.get("recovered")]
+    assert recovered
+    assert sum(d["length"] for d in recovered) > 15.0
+    assert nx.number_connected_components(G) == 1
+    junctions = [n for n in G.nodes if G.degree[n] == 3]
+    assert len(junctions) == 1
+    assert np.allclose(np.asarray(G.nodes[junctions[0]]["pos"])[[0, 2]], (7.0, 30.0), atol=1.0)
+    assert all(d.get("bridge_kind") == "recovered" for *_, d in G.edges(data=True) if d.get("reconnected"))
+    assert diagnose_parallel_duplicates_in_lumen(G, mask)["duplicate_pair_count"] == 0
+    assert len(uncovered_mask_voxels(G, _support(mask))) < 0.05 * mask.sum()
+
+
+def test_a_speck_and_a_vessel_out_of_reach_are_left_alone():
+    """Recovery adds network, not islands: a piece below the volume floor,
+    and a vessel no end of which lies near the network, add nothing."""
+    mask = _trunk_mask()
+    mask[7, 30:32, 10:12] = True  # 4 um^3 of speck
+    _tube(mask, 2, (7, 30, 0), 2, 20, 50)  # a vessel 23 um from the trunk
+
+    G = recover_uncovered_mask_vessels(_trunk_graph(), _support(mask))
+
+    assert G.number_of_edges() == 1
+
+
+def _two_trunks_and_a_lost_capillary():
+    """Trunks along x at y = 7 and y = 31, and a capillary between them at
+    x = 30 that the graph does not have: 24 um centreline to centreline."""
+    mask = np.zeros((15, 40, 60), dtype=bool)
+    _tube(mask, 2, (7, 7, 0), 3, 0, 59)
+    _tube(mask, 2, (7, 31, 0), 3, 0, 59)
+    _tube(mask, 1, (7, 0, 30), 2, 7, 31)
+    G = _trunk_graph()
+    G.add_node(2, pos=np.array([7.0, 31.0, 0.0]))
+    G.add_node(3, pos=np.array([7.0, 31.0, 59.0]))
+    G.add_edge(2, 3, voxels=[[7.0, 31.0, float(x)] for x in range(60)], length=59.0)
+    return G, mask
+
+
+def test_a_capillary_lost_between_two_vessels_is_recovered_end_to_end():
+    G, mask = _two_trunks_and_a_lost_capillary()
+    before = len(uncovered_mask_voxels(G, _support(mask)))
+
+    G = recover_uncovered_mask_vessels(G, _support(mask))
+
+    recovered = [d for *_, d in G.edges(data=True) if d.get("recovered")]
+    assert sum(d["length"] for d in recovered) == pytest.approx(24.0, rel=0.1)
+    assert nx.number_connected_components(G) == 1
+    junctions = sorted(
+        tuple(np.round(np.asarray(G.nodes[n]["pos"])[[1, 2]]).astype(int))
+        for n in G.nodes if G.degree[n] == 3
+    )
+    assert len(junctions) == 2
+    assert np.allclose(junctions, [(7, 30), (31, 30)], atol=1.0)
+    assert len(uncovered_mask_voxels(G, _support(mask))) <= before
+    assert diagnose_parallel_duplicates_in_lumen(G, mask)["duplicate_pair_count"] == 0
+
+
+def test_splitting_a_vessel_whose_path_runs_backwards_keeps_each_piece_on_its_nodes():
+    """Regression: a trunk whose voxels ran from v to u was split as if they
+    ran from u to v, so each new edge carried the other piece's path."""
+    mask = _trunk_mask()
+    _tube(mask, 1, (7, 0, 20), 2, 7, 35)
+    G = _trunk_graph()
+    G.edges[0, 1, 0]["voxels"] = G.edges[0, 1, 0]["voxels"][::-1]
+
+    G = recover_uncovered_mask_vessels(G, _support(mask))
+
+    assert G.number_of_edges() > 1
+    for u, v, data in G.edges(data=True):
+        path = np.asarray(data["voxels"], dtype=float)
+        ends = {tuple(np.round(path[0], 6)), tuple(np.round(path[-1], 6))}
+        assert ends == {
+            tuple(np.round(np.asarray(G.nodes[u]["pos"], dtype=float), 6)),
+            tuple(np.round(np.asarray(G.nodes[v]["pos"], dtype=float), 6)),
+        }
+        assert data["length"] == pytest.approx(
+            float(np.sum(np.linalg.norm(np.diff(path, axis=0), axis=1)))
+        )
+
+
+def test_a_vessel_behind_background_is_not_joined_across_it():
+    """A parallel vessel 3 um of background away from the trunk's wall:
+    the join to it would cross that background."""
+    mask = _trunk_mask()
+    _tube(mask, 2, (7, 16, 0), 2, 15, 45)
+
+    G = recover_uncovered_mask_vessels(_trunk_graph(), _support(mask))
+
+    assert G.number_of_edges() == 1
+
+
+def test_a_strand_with_no_join_is_not_left_as_an_island(monkeypatch):
+    """Two strands in one piece: only the one that joins is added.
+
+    The piece used to count as attached once any single end joined, so the
+    other strand stayed in the graph with no path to the network.
+    """
+    from haemolynx.graph.mask_recovery import _Piece
+
+    mask = _trunk_mask()
+    _tube(mask, 1, (7, 0, 30), 2, 8, 30)
+    _tube(mask, 2, (7, 35, 0), 2, 12, 40)
+    near = np.array([[7.0, float(y), 30.0] for y in range(11, 31)])
+    far = np.array([[7.0, 35.0, float(x)] for x in range(14, 38)])
+    calls = {"n": 0}
+
+    def both_strands(region, support, pad, skeleton=None):
+        calls["n"] += 1
+        if calls["n"] > 1:
+            return _Piece()
+        piece = _Piece()
+        piece.paths = [near, far]
+        piece.ends = [((7, 11, 30), (7, 30, 30)), ((7, 35, 14), (7, 35, 37))]
+        return piece
+
+    monkeypatch.setattr("haemolynx.graph.mask_recovery._trace_piece", both_strands)
+
+    G = recover_uncovered_mask_vessels(_trunk_graph(), _support(mask))
+
+    assert nx.number_connected_components(G) == 1
+    recovered = [d for *_, d in G.edges(data=True) if d.get("recovered")]
+    assert recovered
+    points = np.vstack([np.asarray(d["voxels"]) for d in recovered])
+    assert points[:, 1].max() < 32.0
+
+
+def test_a_ring_round_a_hole_in_the_mask_is_not_added_as_a_self_loop(monkeypatch):
+    """Regression: Lee thinning round a hole traces a path that ends where it
+    starts. It was added as a self-loop -- 193 on Stack A, 33 of them
+    left as islands once the stub prune took their tails -- and the flow
+    solve refused the graph."""
+    from haemolynx.graph.mask_recovery import _Piece
+
+    mask = _trunk_mask()
+    _tube(mask, 1, (7, 0, 30), 2, 8, 30)
+    branch = np.array([[7.0, float(y), 30.0] for y in range(11, 31)])
+    ring = np.array([[7.0, 26.0, 30.0], [7.0, 27.0, 31.0], [7.0, 28.0, 30.0],
+                     [7.0, 27.0, 29.0], [7.0, 26.0, 30.0]])
+    calls = {"n": 0}
+
+    def branch_and_ring(region, support, pad, skeleton=None):
+        calls["n"] += 1
+        if calls["n"] > 1:
+            return _Piece()
+        piece = _Piece()
+        piece.paths = [branch, ring]
+        piece.ends = [((7, 11, 30), (7, 30, 30)), ((7, 26, 30), (7, 26, 30))]
+        return piece
+
+    monkeypatch.setattr("haemolynx.graph.mask_recovery._trace_piece", branch_and_ring)
+
+    G = recover_uncovered_mask_vessels(_trunk_graph(), _support(mask))
+
+    assert nx.number_of_selfloops(G) == 0
+    assert any(d.get("recovered") for *_, d in G.edges(data=True))
+    assert nx.number_connected_components(G) == 1
+
+
+def test_a_join_that_cannot_be_made_does_not_leave_the_strand(monkeypatch):
+    """Paths used to be added before the join, so a failed attach left them."""
+    mask = _trunk_mask()
+    _tube(mask, 1, (7, 0, 30), 2, 7, 35)
+    monkeypatch.setattr(
+        "haemolynx.graph.mask_recovery._Attachments.attach_node",
+        lambda self, owner, point_um, reserved: None,
+    )
+
+    G = recover_uncovered_mask_vessels(_trunk_graph(), _support(mask))
+
+    assert G.number_of_edges() == 1
+    assert nx.number_connected_components(G) == 1
+    assert not any(data.get("recovered") for *_, data in G.edges(data=True))
+
+
+def test_a_piece_whose_centreline_is_only_isolated_voxels_traces_nothing():
+    """Cut to an uncovered region, the mask's centreline can be a scatter of
+    lone voxels, which skan cannot build a skeleton from at all."""
+    from haemolynx.graph.mask_recovery import _trace_piece
+
+    mask = np.zeros((5, 5, 12), dtype=bool)
+    mask[2, 2, 1:11:3] = True
+    region = np.argwhere(mask)
+
+    piece = _trace_piece(region, _support(mask), pad=1)
+
+    assert piece.paths == [] and piece.ends == []
+
+
+def test_a_piece_whose_centreline_is_a_tiny_ring_traces_nothing(monkeypatch):
+    """Lee thinning of a small blob can leave a three-voxel ring, for which
+    skan's path buffer is too small ("index pointer size 1 should be 2").
+    Its one path would be a self-loop, which recovery drops anyway."""
+    from haemolynx.graph.mask_recovery import _trace_piece
+
+    mask = np.zeros((5, 6, 6), dtype=bool)
+    mask[2, 2, 2] = mask[2, 2, 3] = mask[2, 3, 2] = True
+    monkeypatch.setattr("skimage.morphology.skeletonize", lambda image, method=None: image.copy())
+
+    piece = _trace_piece(np.argwhere(mask), _support(mask), pad=1)
+
+    assert piece.paths == [] and piece.ends == []
+
+
+def test_a_tiny_ring_beside_a_centreline_goes_and_the_centreline_stays(monkeypatch):
+    from haemolynx.graph.mask_recovery import _trace_piece
+
+    mask = np.zeros((5, 8, 12), dtype=bool)
+    mask[2, 2, 1:11] = True
+    mask[2, 5, 1] = mask[2, 5, 2] = mask[2, 6, 1] = True
+    monkeypatch.setattr("skimage.morphology.skeletonize", lambda image, method=None: image.copy())
+
+    piece = _trace_piece(np.argwhere(mask), _support(mask), pad=1)
+
+    assert piece.ends == [((2, 2, 1), (2, 2, 10))]
+
+
+# --- loops: round tissue, or inside one lumen ---------------------------------
+
+
+def _square_loop(z, lo, hi):
+    """A closed square in the plane *z* with corners (lo, lo) and (hi, hi) in (y, x)."""
+    corners = [(lo, lo), (lo, hi), (hi, hi), (hi, lo), (lo, lo)]
+    return np.array([[z, y, x] for y, x in corners], dtype=float)
+
+
+def _slab():
+    mask = np.zeros((9, 30, 30), dtype=bool)
+    mask[2:7, 2:28, 2:28] = True
+    return mask
+
+
+def test_a_ring_inside_one_lumen_loses_a_path_and_one_round_tissue_keeps_both():
+    """Lee thinning of a blob traces rings: two paths between the same ends."""
+    from haemolynx.graph.mask_recovery import _without_loops_in_one_lumen
+
+    loop = _square_loop(4.0, 6.0, 22.0)
+    a, b = (4, 6, 6), (4, 22, 22)
+    strand = [(loop[:3], a, b, 0.0), (loop[2:][::-1], a, b, 0.0)]
+    round_tissue = _slab()
+    round_tissue[:, 9:20, 9:20] = False
+
+    kept, dropped = _without_loops_in_one_lumen(strand, _support(_slab()))
+    assert dropped == 1 and len(kept) == 1
+    kept, dropped = _without_loops_in_one_lumen(strand, _support(round_tissue))
+    assert dropped == 0 and len(kept) == 2
+
+
+def _arch_off_the_trunk(filled: bool):
+    """A vessel leaving the trunk at x = 20, running along y = 20 and back
+    down to the trunk at x = 40, and its centreline. *filled* segments the
+    tissue it encloses too, as a blob joined to the trunk."""
+    mask = _trunk_mask()
+    _tube(mask, 1, (7, 0, 20), 2, 8, 20)
+    _tube(mask, 1, (7, 0, 40), 2, 8, 20)
+    _tube(mask, 2, (7, 20, 0), 2, 20, 40)
+    if filled:
+        mask[5:10, 7:21, 20:41] = True
+    path = np.array(
+        [[7.0, float(y), 20.0] for y in range(11, 20)]
+        + [[7.0, 20.0, float(x)] for x in range(20, 41)]
+        + [[7.0, float(y), 40.0] for y in range(19, 10, -1)]
+    )
+    return mask, path
+
+
+def _recover_one_strand(monkeypatch, mask, path):
+    from haemolynx.graph.mask_recovery import _Piece
+
+    calls = {"n": 0}
+
+    def the_strand(region, support, pad, skeleton=None):
+        calls["n"] += 1
+        piece = _Piece()
+        if calls["n"] == 1:
+            piece.paths = [path]
+            piece.ends = [((7, 11, 20), (7, 11, 40))]
+        return piece
+
+    monkeypatch.setattr("haemolynx.graph.mask_recovery._trace_piece", the_strand)
+    return recover_uncovered_mask_vessels(_trunk_graph(), _support(mask))
+
+
+def _joins(G):
+    return [d for *_, d in G.edges(data=True) if d.get("reconnected")]
+
+
+def test_a_strand_in_a_blob_beside_its_vessel_is_not_left_as_a_spur(monkeypatch):
+    """A strand lying in a blob round the vessel it came off used to be
+    joined once and left as a dead end. That join closes a loop inside the
+    lumen, so the dead end is taken back and the split it opened collapses."""
+    mask, path = _arch_off_the_trunk(filled=True)
+
+    G = _recover_one_strand(monkeypatch, mask, path)
+
+    assert not any(d.get("recovered") for *_, d in G.edges(data=True))
+    assert G.number_of_edges() == 1
+    assert set(G.nodes) == {0, 1}
+    assert nx.cycle_basis(nx.Graph(G)) == []
+
+
+def test_a_vessel_leaving_and_rejoining_round_tissue_keeps_both_joins(monkeypatch):
+    mask, path = _arch_off_the_trunk(filled=False)
+
+    G = _recover_one_strand(monkeypatch, mask, path)
+
+    assert len(_joins(G)) == 2
+    assert len(nx.cycle_basis(nx.Graph(G))) == 1
+
+
+def test_a_split_vessel_is_searched_without_the_joins_hanging_off_it():
+    """Regression: a point on a vessel already split by a join could be taken
+    to lie on that join, and the next strand was attached to the join -- 206
+    times on Stack A -- instead of to the vessel."""
+    from haemolynx.graph.mask_recovery import _Attachments
+
+    G = nx.MultiGraph()
+    G.add_node(0, pos=np.array([7.0, 7.0, 0.0]))
+    G.add_node(1, pos=np.array([7.0, 7.0, 20.0]))
+    G.add_node(2, pos=np.array([7.0, 7.0, 10.0]), _recovery_split=True)
+    G.add_node(3, pos=np.array([7.0, 12.0, 14.0]))
+    G.add_edge(0, 2, voxels=[[7.0, 7.0, float(x)] for x in range(0, 11)])
+    G.add_edge(2, 1, voxels=[[7.0, 7.0, float(x)] for x in range(10, 21)])
+    point = np.array([7.0, 7.4, 10.6])
+    G.add_edge(2, 3, voxels=[[7.0, 7.0, 10.0], point.tolist(), [7.0, 12.0, 14.0]],
+               recovered=True, reconnected=True)
+    attachments = _Attachments(G, None, np.zeros(0), 4.0)
+
+    u, v, _key = attachments._sub_edge(0, 1, point)
+
+    assert {u, v} == {1, 2}
+
+
+def test_a_second_join_onto_a_split_graph_building_bridge_lands_where_it_was_aimed():
+    """Regression: the search for the piece now holding a point passed over
+    every reconnected edge, meaning recovery's own joins. A bridge graph
+    building drew carries that mark too, so once one join had split it, the
+    next join aimed at it went to the bridge's far end, 3 um off."""
+    from haemolynx.graph._helpers import EdgeSampleIndex
+    from haemolynx.graph.mask_recovery import _Attachments, _NodeIds
+
+    G = nx.MultiGraph()
+    for node, pos in {0: (0, 0, 0), 1: (0, 0, 10), 2: (0, 0, 20), 3: (0, 10, 0)}.items():
+        G.add_node(node, pos=np.array(pos, dtype=float))
+    line = lambda a, b: [list(p) for p in np.linspace(a, b, 11)]  # noqa: E731
+    G.add_edge(0, 1, voxels=line((0, 0, 0), (0, 0, 10)), length=10.0, reconnected=True)
+    G.add_edge(1, 2, voxels=line((0, 0, 10), (0, 0, 20)), length=10.0)
+    G.add_edge(0, 3, voxels=line((0, 0, 0), (0, 10, 0)), length=10.0)
+    index = EdgeSampleIndex(G, step_um=1.0)
+    attachments = _Attachments(G, index, np.full(len(index.points), 2.0), 5.0)
+    ids = _NodeIds(G)
+
+    first = attachments.attach_node((0, 1, 0), np.array([0.0, 0.0, 3.0]), ids)
+    second = attachments.attach_node((0, 1, 0), np.array([0.0, 0.0, 7.0]), ids)
+
+    assert np.allclose(G.nodes[first]["pos"], (0, 0, 3))
+    assert np.allclose(G.nodes[second]["pos"], (0, 0, 7))
+    assert second not in (0, 1)
+
+
+def test_new_node_ids_follow_on_from_the_graph_and_are_never_reused():
+    from haemolynx.graph._helpers import next_node_id
+    from haemolynx.graph.mask_recovery import _NodeIds
+
+    G = nx.MultiGraph()
+    G.add_nodes_from([0, 5, "a"])
+    ids = _NodeIds(G)
+
+    first = ids.take()
+    assert first == next_node_id(G, set()) == 6
+    G.add_node(first)
+    G.remove_node(first)
+    assert ids.take() == 7
+
+
+def _trace(monkeypatch, paths, ends):
+    from haemolynx.graph.mask_recovery import _Piece
+
+    calls = {"n": 0}
+
+    def the_piece(region, support, pad, skeleton=None):
+        calls["n"] += 1
+        piece = _Piece()
+        if calls["n"] == 1:
+            piece.paths = paths
+            piece.ends = ends
+        return piece
+
+    monkeypatch.setattr("haemolynx.graph.mask_recovery._trace_piece", the_piece)
+
+
+def test_a_tip_within_reach_joins_across_a_short_dropout_at_a_new_node():
+    """The circled case, scaled down: one voxel of background between the
+    tip and the trunk, inside today's reach, lands on a new node."""
+    mask = _trunk_mask()
+    _tube(mask, 1, (7, 0, 30), 2, 12, 35)
+
+    G = recover_uncovered_mask_vessels(_trunk_graph(), _support(mask))
+
+    junctions = [n for n in G.nodes if G.degree[n] == 3]
+    assert len(junctions) == 1
+    assert junctions[0] not in (0, 1)
+    assert np.allclose(np.asarray(G.nodes[junctions[0]]["pos"])[[0, 2]], (7.0, 30.0), atol=2.0)
+    tips = [n for n in G.nodes if G.degree[n] == 1 and n not in (0, 1)]
+    assert len(tips) == 1
+    assert np.asarray(G.nodes[tips[0]]["pos"])[1] > 25.0
+    assert diagnose_parallel_duplicates_in_lumen(G, mask)["duplicate_pair_count"] == 0
+
+
+def test_a_joined_branch_whose_tip_stops_inside_the_mask_is_kept(monkeypatch):
+    """The far tip can see the trunk, but the route back to it folds along
+    the branch. That is not a spur: the branch stays, joined at the near end."""
+    mask = _trunk_mask()
+    _tube(mask, 1, (7, 0, 30), 2, 8, 35)
+    path = np.array([[7.0, float(y), 30.0] for y in range(11, 22)])
+    _trace(monkeypatch, [path], [((7, 11, 30), (7, 21, 30))])
+
+    G = recover_uncovered_mask_vessels(_trunk_graph(), _support(mask))
+
+    recovered = [d for *_, d in G.edges(data=True) if d.get("recovered") and not d.get("reconnected")]
+    assert recovered
+    tips = [n for n in G.nodes if G.degree[n] == 1 and n not in (0, 1)]
+    assert len(tips) == 1
+    assert float(np.asarray(G.nodes[tips[0]]["pos"])[1]) > 18.0
+    assert G.graph["recovered_dead_ends_removed"] == 0
+    assert G.graph["recovered_joins"] >= 1
+
+
+def test_a_later_piece_joins_the_branch_recovered_ahead_of_it():
+    """Two lengths of one vessel with a one-voxel dropout between them. The
+    far length is out of reach of the trunk, and joins the length recovered
+    first."""
+    mask = np.zeros((15, 20, 80), dtype=bool)
+    _tube(mask, 2, (7, 7, 0), 3, 0, 15)
+    _tube(mask, 2, (7, 7, 0), 2, 16, 40)
+    _tube(mask, 2, (7, 7, 0), 2, 42, 70)
+    G = nx.MultiGraph()
+    G.add_node(0, pos=np.array([7.0, 7.0, 0.0]))
+    G.add_node(1, pos=np.array([7.0, 7.0, 15.0]))
+    G.add_edge(0, 1, voxels=[[7.0, 7.0, float(x)] for x in range(16)], length=15.0)
+
+    G = recover_uncovered_mask_vessels(G, _support(mask))
+
+    far = [
+        n for n in G.nodes
+        if float(np.asarray(G.nodes[n]["pos"])[2]) > 60.0
+    ]
+    assert far
+    assert nx.number_connected_components(G) == 1
+
+
+def test_an_edge_through_empty_space_is_removed_and_one_in_the_mask_stays():
+    """A centreline in the gap is not a vessel. The trunk stays, and so does
+    a vessel that only clips outside the mask. The floating edge's nodes go
+    with it."""
+    mask = _trunk_mask()
+    G = _trunk_graph()
+    G.add_node(2, pos=np.array([2.0, 30.0, 10.0]))
+    G.add_node(3, pos=np.array([2.0, 30.0, 25.0]))
+    G.add_edge(2, 3, voxels=[[2.0, 30.0, float(x)] for x in range(10, 26)], length=15.0)
+    clip = [[7.0, 7.0, float(x)] for x in range(0, 20)]
+    clip += [[7.0, 12.0, float(x)] for x in range(20, 25)]
+    clip += [[7.0, 7.0, float(x)] for x in range(25, 45)]
+    G.add_node(4, pos=np.array([7.0, 7.0, 0.0]))
+    G.add_node(5, pos=np.array([7.0, 7.0, 44.0]))
+    G.add_edge(4, 5, voxels=clip, length=44.0)
+
+    remove_edges_off_the_mask(G, _support(mask))
+
+    assert G.has_edge(0, 1)
+    assert G.has_edge(4, 5)
+    assert not G.has_node(2) and not G.has_node(3)
+    assert G.graph["edges_off_mask_removed"] == 1
+
+
+def test_a_recovered_end_on_the_image_face_is_kept(monkeypatch):
+    """The far tip lies on the volume face. A vessel beside it is in reach,
+    but the join would fold back, and the end is kept anyway."""
+    mask = np.zeros((15, 40, 60), dtype=bool)
+    _tube(mask, 2, (7, 7, 0), 3, 0, 59)
+    _tube(mask, 2, (7, 36, 0), 2, 0, 59)
+    _tube(mask, 1, (7, 0, 30), 2, 10, 39)
+    G = _trunk_graph()
+    G.add_node(2, pos=np.array([7.0, 36.0, 0.0]))
+    G.add_node(3, pos=np.array([7.0, 36.0, 59.0]))
+    G.add_edge(2, 3, voxels=[[7.0, 36.0, float(x)] for x in range(60)], length=59.0)
+    path = np.array([[7.0, float(y), 30.0] for y in range(12, 40)])
+    _trace(monkeypatch, [path], [((7, 12, 30), (7, 39, 30))])
+
+    G = recover_uncovered_mask_vessels(G, _support(mask))
+
+    face = [n for n in G.nodes if G.degree[n] == 1 and np.asarray(G.nodes[n]["pos"])[1] > 38.0]
+    assert len(face) == 1
+    assert any(d.get("recovered") and not d.get("reconnected") for *_, d in G.edges(data=True))
+    assert len(_joins(G)) == 1
+
+
+def test_a_strand_with_two_joins_loses_only_its_spur(monkeypatch):
+    """Two ends meet two trunks. A third end, in reach of the lower trunk,
+    would close a loop inside that lumen and is the only part removed."""
+    mask = np.zeros((15, 40, 60), dtype=bool)
+    _tube(mask, 2, (7, 7, 0), 3, 0, 59)
+    _tube(mask, 2, (7, 31, 0), 3, 0, 59)
+    _tube(mask, 1, (7, 0, 30), 2, 8, 28)
+    mask[5:10, 7:21, 20:50] = True
+    lower = np.array([[7.0, float(y), 30.0] for y in range(11, 20)])
+    upper = np.array([[7.0, float(y), 30.0] for y in range(19, 28)])
+    spur = np.array([[7.0, 19.0 - i * 0.5, 30.0 + i] for i in range(13)])
+    G = _trunk_graph()
+    G.add_node(2, pos=np.array([7.0, 31.0, 0.0]))
+    G.add_node(3, pos=np.array([7.0, 31.0, 59.0]))
+    G.add_edge(2, 3, voxels=[[7.0, 31.0, float(x)] for x in range(60)], length=59.0)
+    _trace(
+        monkeypatch,
+        [lower, upper, spur],
+        [((7, 11, 30), (7, 19, 30)), ((7, 19, 30), (7, 27, 30)), ((7, 19, 30), (7, 13, 42))],
+    )
+
+    G = recover_uncovered_mask_vessels(G, _support(mask))
+
+    assert len(_joins(G)) == 2
+    assert G.graph["recovered_dead_ends_removed"] == 1
+    assert not any(
+        abs(float(np.asarray(G.nodes[n]["pos"])[1]) - 13.0) < 1.0
+        and float(np.asarray(G.nodes[n]["pos"])[2]) > 35.0
+        for n in G.nodes
+    )
+    assert nx.number_connected_components(G) == 1
+
+
+def test_parallel_edges_in_one_lumen_lose_the_wall_side_and_a_tissue_loop_stays():
+    from haemolynx.graph.lumen_loops import remove_loops_inside_one_lumen, remove_parallel_edges_in_lumen
+
+    wide = np.zeros((15, 15, 60), dtype=bool)
+    idx = np.indices(wide.shape)
+    wide |= (idx[0] - 7) ** 2 + (idx[1] - 7) ** 2 <= 36
+    G = nx.MultiGraph()
+    for name, y in (("middle", 7.0), ("wall", 2.0)):
+        a, b = f"{name}-a", f"{name}-b"
+        path = [[7.0, y, float(x)] for x in range(5, 55)]
+        G.add_node(a, pos=np.array([7.0, y, 5.0]))
+        G.add_node(b, pos=np.array([7.0, y, 54.0]))
+        G.add_edge(a, b, voxels=path, length=49.0)
+    support = _support(wide)
+
+    remove_parallel_edges_in_lumen(G, support)
+
+    assert G.number_of_edges() == 1
+    assert G.has_node("middle-a") and not G.has_node("wall-a")
+    assert G.graph["parallel_lumen_edges_removed"] == 1
+
+    tube = np.zeros((15, 20, 60), dtype=bool)
+    idx = np.indices(tube.shape)
+    tube |= (idx[0] - 7) ** 2 + (idx[1] - 7) ** 2 <= 9
+    ring = nx.MultiGraph()
+    ring.add_node("u", pos=np.array([7.0, 7.0, 20.0]))
+    ring.add_node("v", pos=np.array([7.0, 7.0, 40.0]))
+    for row in (4, 9):
+        path = [[7.0, 7.0, 20.0]] + [[7.0, float(row), float(x)] for x in range(22, 39)] + [[7.0, 7.0, 40.0]]
+        ring.add_edge("u", "v", voxels=path, length=24.0, row=row)
+    holed = tube.copy()
+    holed[:, 6:9, 22:39] = False
+
+    remove_loops_inside_one_lumen(ring, _support(tube))
+    assert [d["row"] for *_, d in ring.edges(data=True)] == [9]
+
+    around = nx.MultiGraph()
+    around.add_node("u", pos=np.array([7.0, 7.0, 20.0]))
+    around.add_node("v", pos=np.array([7.0, 7.0, 40.0]))
+    for row in (4, 9):
+        path = [[7.0, 7.0, 20.0]] + [[7.0, float(row), float(x)] for x in range(22, 39)] + [[7.0, 7.0, 40.0]]
+        around.add_edge("u", "v", voxels=path, length=24.0, row=row)
+    remove_loops_inside_one_lumen(around, _support(holed))
+    assert sorted(d["row"] for *_, d in around.edges(data=True)) == [4, 9]
+
+
+def _ribbon():
+    """A flattened lumen along x: 3 um thick in z, 16 um wide in y, with one
+    centreline down its middle. Its radius there is the 2 um to the nearest
+    (flat) wall, far short of the 8 um to either side edge."""
+    mask = np.zeros((15, 20, 60), dtype=bool)
+    mask[6:9, 2:18, :] = True
+    G = nx.MultiGraph()
+    G.add_node(0, pos=np.array([7.0, 10.0, 0.0]))
+    G.add_node(1, pos=np.array([7.0, 10.0, 59.0]))
+    G.add_edge(0, 1, voxels=[[7.0, 10.0, float(x)] for x in range(60)], length=59.0)
+    return G, mask
+
+
+def test_the_far_sides_of_a_flattened_lumen_are_covered_by_its_cross_section():
+    G, mask = _ribbon()
+    by_radius = uncovered_mask_voxels(G, _support(mask), cross_section_reach_radii=0.0)
+    by_section = uncovered_mask_voxels(G, _support(mask))
+    assert len(by_radius) > 0.3 * mask.sum()  # the radius rule leaves both side edges
+    assert len(by_section) < 0.03 * mask.sum()
+
+
+def test_recovery_draws_no_second_strand_along_a_flattened_lumen():
+    G, mask = _ribbon()
+    G = recover_uncovered_mask_vessels(G, _support(mask))
+    assert G.number_of_edges() == 1
+    assert not any(d.get("recovered") for *_, d in G.edges(data=True))
+
+
+def test_a_lost_branch_narrower_than_its_vessel_stays_uncovered_past_the_wall():
+    """Its base lies in the trunk's cross-section, but it is not there a trunk
+    radius ahead and behind, so the outline stops at the trunk's wall."""
+    mask = _trunk_mask()
+    _tube(mask, 1, (7, 0, 30), 2, 7, 35)
+    uncovered = uncovered_mask_voxels(_trunk_graph(), _support(mask))
+    branch_past_wall = mask[:, 12:36, :].sum()
+    assert len(uncovered) >= 0.9 * branch_past_wall
+    assert int(np.min(uncovered[:, 1])) <= 12
+
+
+def _segment_distance(points, a, b):
+    ab = b - a
+    t = np.clip(((points - a) @ ab) / (ab @ ab), 0.0, 1.0)
+    return np.linalg.norm(points - (a + t[..., None] * ab), axis=-1)
+
+
+def _flat_junction():
+    """Six vessels meeting in a flattened lumen: a disc 3 um thick and 9 um
+    round in the z = 12 plane, one vessel running on along +x in it and five
+    leaving it away from +y. Each vessel's centreline starts at the junction,
+    so the junction holds six samples at one point. Across the disc towards
+    +y those six are a voxel's nearest, tied, and only the +x vessel's cross-
+    section -- the disc's own plane -- reaches it."""
+    shape = (25, 41, 41)
+    points = np.stack(np.indices(shape), axis=-1).astype(float)
+    centre = np.array([12.0, 20.0, 20.0])
+    offset = points - centre
+    mask = (np.abs(offset[..., 0]) <= 1.0) & (np.hypot(offset[..., 1], offset[..., 2]) <= 9.0)
+    G = nx.MultiGraph()
+    G.add_node(0, pos=centre.copy())
+    away = [(1, -1, 0), (-1, -1, 0), (1, -1, 1), (-1, -1, -1), (0, -1, -1)]
+    directions = [np.array([0.0, 0.0, 1.0])] + [np.asarray(d, dtype=float) / np.linalg.norm(d) for d in away]
+    for k, direction in enumerate(directions, start=1):
+        end = centre + 11.0 * direction
+        mask |= _segment_distance(points, centre, end) <= 2.0
+        G.add_node(k, pos=end)
+        path = [(centre + s * direction).tolist() for s in np.arange(0.0, 11.5, 1.0)]
+        G.add_edge(0, k, voxels=path, length=11.0)
+    return G, mask
+
+
+def _reordered(G, *, reverse_nodes=False, reverse_edges=False):
+    H = nx.MultiGraph()
+    nodes = list(G.nodes(data=True))
+    for n, data in nodes[::-1] if reverse_nodes else nodes:
+        H.add_node(n, **data)
+    edges = list(G.edges(data=True))
+    for u, v, data in edges[::-1] if reverse_edges else edges:
+        H.add_edge(u, v, **data)
+    return H
+
+
+@pytest.mark.parametrize(
+    "order", [{"reverse_edges": True}, {"reverse_nodes": True}], ids=["edges_reversed", "nodes_reversed"]
+)
+def test_the_mask_left_uncovered_does_not_depend_on_edge_order(order):
+    """A voxel was judged by its 4 nearest centreline samples, and which of
+    six tied junction samples cKDTree handed back depended on how it split
+    every sample -- on the order the edges came in, here, and on Stack A on
+    edges 280 um away (PLAN_dale_review_fixes.md, item 2). Either order
+    changed 33 of this junction's uncovered voxels; every tied sample is
+    judged now."""
+    G, mask = _flat_junction()
+    plain = {tuple(v) for v in uncovered_mask_voxels(G, _support(mask))}
+    other = {tuple(v) for v in uncovered_mask_voxels(_reordered(G, **order), _support(mask))}
+    assert other == plain
+
+
+def test_a_tied_junction_sample_reaching_across_a_flattened_lumen_covers_it():
+    """Across the disc from the vessels leaving it, the voxels' nearest
+    samples are the junction's six, tied; the one on the vessel running on in
+    the disc covers them, whichever five others there are."""
+    G, mask = _flat_junction()
+    uncovered = {tuple(v) for v in uncovered_mask_voxels(G, _support(mask))}
+    across = [(12, y, 20) for y in range(24, 29)]  # 4-8 um towards +y, in the disc
+    assert all(mask[v] for v in across)
+    assert not uncovered & set(across)
+
+
+def test_nearest_samples_include_every_one_tied_with_the_last():
+    from scipy.spatial import cKDTree
+
+    from haemolynx.graph.mask_recovery import _nearest_with_ties
+
+    rng = np.random.default_rng(0)
+    copies = np.zeros((30, 3))  # one point 30 times, as at a 30-way junction
+    others = rng.uniform(5.0, 9.0, size=(40, 3))
+    samples = np.vstack([others, copies])
+    points = np.array([[0.0, 0.0, 2.0], [7.0, 7.0, 7.0]])
+    found = {}
+    for order in (np.arange(len(samples)), np.arange(len(samples))[::-1]):
+        tree = cKDTree(samples[order])
+        for rows, distance, index in _nearest_with_ties(tree, points, 4, 50.0):
+            for row, d, i in zip(rows, distance, index):
+                kept = i < tree.n
+                found.setdefault(int(row), []).append(
+                    sorted(map(tuple, np.round(samples[order][i[kept]], 9)))
+                )
+    # Beside the junction: all 30 copies, not 4 of them, either order.
+    assert found[0][0] == found[0][1] == [(0.0, 0.0, 0.0)] * 30
+    # Among scattered samples, no tie: the 4 nearest.
+    assert len(found[1][0]) == 4 and found[1][0] == found[1][1]
+
+
+# --- uncovered_mask_regions: what recovery would trace, for review ----------
+
+
+def test_the_regions_left_to_trace_are_listed_largest_first_without_changing_the_graph():
+    mask = _trunk_mask()
+    _tube(mask, 1, (7, 0, 30), 2, 7, 35)  # a branch along y off the trunk
+    _tube(mask, 1, (7, 0, 50), 2, 7, 20)  # a shorter one
+    G = _trunk_graph()
+
+    regions = uncovered_mask_regions(G, _support(mask))
+
+    assert G.number_of_edges() == 1
+    assert len(regions) == 2
+    assert regions[0].volume_um3 > regions[1].volume_um3
+    assert regions[0].centre_um[2] == pytest.approx(30.0, abs=1.0)
+    assert regions[1].centre_um[2] == pytest.approx(50.0, abs=1.0)
+    assert regions[0].radius_um >= 1.5
+    assert 0 < len(regions[0].sample_um) <= REGION_SAMPLE_VOXELS
+    assert regions[0].voxel_count == len(regions[0].sample_um) or len(regions[0].sample_um) == REGION_SAMPLE_VOXELS
+
+
+def test_specks_and_wall_slivers_are_not_listed():
+    mask = _trunk_mask()
+    mask[7, 30:32, 10:12] = True  # 4 um^3 of speck
+    mask[3, 12:20, 10:40] = True  # one voxel thick, beside the trunk
+
+    assert uncovered_mask_regions(_trunk_graph(), _support(mask)) == []
+
+
+def test_a_z_range_reads_only_those_slices():
+    mask = np.zeros((40, 15, 60), dtype=bool)
+    _tube(mask, 2, (7, 7, 0), 3, 0, 59)
+    _tube(mask, 2, (30, 7, 0), 3, 0, 59)  # a second vessel, deeper, untraced
+    G = nx.MultiGraph()
+    G.add_node(0, pos=np.array([7.0, 7.0, 0.0]))
+    G.add_node(1, pos=np.array([7.0, 7.0, 59.0]))
+    G.add_edge(0, 1, voxels=[[7.0, 7.0, float(x)] for x in range(60)], length=59.0)
+
+    assert len(uncovered_mask_regions(G, _support(mask))) == 1
+    assert uncovered_mask_regions(G, _support(mask), z_range=(0, 15)) == []
+    (deep,) = uncovered_mask_regions(G, _support(mask), z_range=(20, 40))
+    assert deep.centre_um[0] == pytest.approx(30.0, abs=0.5)
+
+
+# --- the cross-section outline ---------------------------------------------
+
+
+def _reference_reach(inside, points, t, e1, e2, radii, caps, step, rays):
+    """The outline as it was first computed: every distance up to the chunk's
+    widest cap evaluated for every ray, then the first one out read off."""
+    angles = np.linspace(0.0, 2.0 * np.pi, rays, endpoint=False)
+    distances = np.arange(1, int(np.ceil(float(caps.max()) / step)) + 1) * step
+    directions = np.cos(angles)[None, :, None] * e1[:, None, :] + np.sin(angles)[None, :, None] * e2[:, None, :]
+    pts = points[:, None, None, :] + distances[None, None, :, None] * directions[:, :, None, :]
+    shape = (len(points), rays, len(distances))
+    held = inside(pts.reshape(-1, 3)).reshape(shape)
+    along = (radii[:, None] * t)[:, None, None, :]
+    for sign in (1.0, -1.0):
+        held &= inside((pts + sign * along).reshape(-1, 3)).reshape(shape)
+    held &= distances[None, None, :] <= caps[:, None, None]
+    out = ~held
+    first_out = np.argmax(out, axis=2)
+    never_out = ~out.any(axis=2)
+    return np.where(never_out, caps[:, None], np.where(first_out > 0, distances[np.maximum(first_out - 1, 0)], 0.0))
+
+
+def _random_samples(rng, n):
+    points = rng.uniform(2.0, 28.0, size=(n, 3))
+    t = rng.normal(size=(n, 3))
+    t /= np.linalg.norm(t, axis=1, keepdims=True)
+    helper = np.eye(3)[np.argmin(np.abs(t), axis=1)]
+    e1 = np.cross(t, helper)
+    e1 /= np.linalg.norm(e1, axis=1, keepdims=True)
+    e2 = np.cross(t, e1)
+    radii = rng.uniform(0.3, 4.0, size=n)
+    return points, t, e1, e2, radii
+
+
+def test_following_each_ray_to_its_first_voxel_out_gives_the_outline_evaluating_every_distance_did():
+    from haemolynx.graph import mask_recovery as module
+
+    rng = np.random.default_rng(11)
+    mask = rng.random((30, 30, 30)) > 0.35
+    support = _support(mask)
+    points, t, e1, e2, radii = _random_samples(rng, 400)
+    caps = module.CROSS_SECTION_REACH_RADII * radii + 1.0
+    step = 0.5
+    asked = []
+
+    def counting(p):
+        asked.append(len(np.asarray(p).reshape(-1, 3)))
+        return support.inside(p)
+
+    reach = module._follow_rays(counting, points, t, e1, e2, radii, caps, step)
+    followed = sum(asked)
+    asked.clear()
+    expected = _reference_reach(counting, points, t, e1, e2, radii, caps, step, module._CROSS_SECTION_RAYS)
+    assert np.array_equal(reach, expected)
+    assert followed < 0.5 * sum(asked)
+
+
+def test_the_outline_does_not_depend_on_which_samples_are_followed_together(monkeypatch):
+    from haemolynx.graph import mask_recovery as module
+
+    # Chunks of 16 samples, sorted by reach inside _cross_sections, against
+    # every sample followed as one chunk in the order the index holds them.
+    monkeypatch.setattr(module, "_CROSS_SECTION_CHUNK", 16)
+    rng = np.random.default_rng(12)
+    mask = rng.random((30, 30, 30)) > 0.35
+    support = _support(mask)
+    index, radii = module._centreline_samples(_trunk_graph(), support)
+    radii = rng.uniform(0.3, 4.0, size=len(radii))  # mixed caps in every chunk
+    assert len(radii) > 2 * 16
+    chunked = module._cross_sections(
+        index, radii, support, reach_radii=module.CROSS_SECTION_REACH_RADII, margin_um=1.0, workers=1
+    )
+    whole = module._follow_rays(
+        support.inside, index.points, chunked.t, chunked.e1, chunked.e2, radii,
+        module.CROSS_SECTION_REACH_RADII * radii + 1.0, 0.5,
+    )
+    assert np.array_equal(chunked.reach, whole)
+    assert chunked.reach.any() and not chunked.reach.all()
+
+
+def test_worker_processes_follow_the_same_outline_as_this_one(monkeypatch):
+    from haemolynx.graph import mask_recovery as module
+
+    monkeypatch.setattr(module, "_CROSS_SECTION_CHUNK", 16)
+    rng = np.random.default_rng(13)
+    mask = rng.random((30, 30, 30)) > 0.35
+    support = _support(mask)
+    index, radii = module._centreline_samples(_trunk_graph(), support)
+    radii = rng.uniform(0.3, 4.0, size=len(radii))
+    kw = dict(reach_radii=module.CROSS_SECTION_REACH_RADII, margin_um=1.0)
+    alone = module._cross_sections(index, radii, support, workers=1, **kw)
+    pooled = module._cross_sections(index, radii, support, workers=2, **kw)
+    assert np.array_equal(alone.reach, pooled.reach)
+    assert len(radii) > 16 and alone.reach.any()
+
+
+def _pair_search_components(coords):
+    """The 26-connected grouping _components replaced: every neighbouring
+    pair from a KD-tree, then connected components over the voxels."""
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components
+    from scipy.spatial import cKDTree
+
+    if len(coords) == 0:
+        return []
+    pairs = cKDTree(coords).query_pairs(r=np.sqrt(3.0) + 1e-6, output_type="ndarray")
+    n = len(coords)
+    graph = coo_matrix((np.ones(len(pairs)), (pairs[:, 0], pairs[:, 1])), shape=(n, n))
+    _, labels = connected_components(graph, directed=False)
+    order = np.argsort(labels, kind="stable")
+    return np.split(coords[order], np.flatnonzero(np.diff(labels[order])) + 1)
+
+
+def _same_groups(a, b):
+    return len(a) == len(b) and all(np.array_equal(x, y) for x, y in zip(a, b))
+
+
+def test_slab_labelled_components_are_the_pair_searchs_whatever_the_slab_and_the_order():
+    from haemolynx.graph import mask_recovery as module
+
+    rng = np.random.default_rng(21)
+    cases = 0
+    for trial in range(24):
+        shape = rng.integers(3, 20, 3)
+        coords = np.argwhere(rng.random(shape) > rng.uniform(0.55, 0.9))
+        if trial % 2:
+            coords = coords[rng.permutation(len(coords))]
+        expected = _pair_search_components(coords)
+        # Slabs of one slice, a few slices, and the whole volume at once.
+        for block_voxels in (1, 5 * int(shape[1] * shape[2]), 10**9):
+            assert _same_groups(module._components(coords, block_voxels=block_voxels), expected)
+            cases += 1
+    assert cases == 72
+    assert module._components(np.empty((0, 3), dtype=int)) == []
+
+
+def test_components_come_in_the_order_their_first_voxel_does_and_keep_each_voxels_order():
+    from haemolynx.graph import mask_recovery as module
+
+    # Two groups: a diagonal chain across slab boundaries, given before a
+    # lone voxel, with the chain's voxels interleaved in the input.
+    chain = np.array([[0, 0, 0], [1, 1, 1], [2, 2, 2], [3, 3, 3], [4, 3, 4]])
+    lone = np.array([[2, 7, 7]])
+    coords = np.vstack([chain[[4]], lone, chain[[0, 2, 1, 3]]])
+    groups = module._components(coords, block_voxels=64)  # one slice a slab
+    assert len(groups) == 2
+    assert np.array_equal(groups[0], chain[[4, 0, 2, 1, 3]])
+    assert np.array_equal(groups[1], lone)
+
+
+def test_recovered_samples_rank_as_one_tree_over_all_of_them_would(monkeypatch):
+    from scipy.spatial import cKDTree
+
+    from haemolynx.graph import mask_recovery as module
+
+    monkeypatch.setattr(module, "_LOOSE_SAMPLES", 16)  # trees of 16, 32, 64, ...
+    rng = np.random.default_rng(22)
+    attachments = module._Attachments(nx.MultiGraph(), _EmptyIndex(), np.zeros(0), 4.0)
+    points, radii, owners = np.empty((0, 3)), np.empty(0), []
+    for step in range(120):
+        m = int(rng.integers(1, 12))
+        p, r = rng.random((m, 3)) * 60.0, rng.uniform(0.5, 3.0, m)
+        o = [(step, j) for j in range(m)]
+        attachments.recovered.add(p, r, o)
+        points, radii, owners = np.vstack([points, p]), np.concatenate([radii, r]), owners + o
+        query = rng.random(3) * 60.0
+        # The attachment's own ranking over one tree holding every sample.
+        expected = module._Attachments._ranked(cKDTree(points), points, radii, owners, query, 16.0)
+        got = attachments._ranked_recovered(query, 16.0)
+        assert [(round(s, 9), o) for s, _p, o in got] == [(round(s, 9), o) for s, _p, o in expected]
+        assert all(np.array_equal(a[1], b[1]) for a, b in zip(got, expected))
+    assert len(attachments.recovered._trees) >= 2 and attachments.recovered.count == len(points)
+
+
+class _EmptyIndex:
+    """An EdgeSampleIndex stand-in with no samples, for _Attachments."""
+
+    tree = None
+    points = np.empty((0, 3))
+    owners: list = []
+
+
+def test_remembering_a_path_no_longer_rebuilds_a_tree_over_everything(monkeypatch):
+    from scipy.spatial import cKDTree
+
+    from haemolynx.graph import mask_recovery as module
+
+    built = []
+
+    class Counting(cKDTree):
+        def __init__(self, data, *args, **kwargs):
+            built.append(len(data))
+            super().__init__(data, *args, **kwargs)
+
+    monkeypatch.setattr(module, "cKDTree", Counting)
+    support = _support(_trunk_mask())
+    attachments = module._Attachments(nx.MultiGraph(), _EmptyIndex(), np.zeros(0), 4.0)
+    for i in range(300):
+        path = np.array([[7.0, 7.0, 1.0 + 0.1 * i], [7.0, 7.0, 5.0 + 0.1 * i]])
+        attachments.remember(path, (i, i + 1, 0), support)
+    # 300 paths of 5 samples: one tree per path before, none yet at 1,500 loose.
+    assert attachments.recovered.count == 1500 and built == []
+    assert len(attachments.targets(np.array([7.0, 7.0, 8.0]), 16.0)) == module._JOIN_TARGETS
+    monkeypatch.setattr(module, "_LOOSE_SAMPLES", 50)
+    for i in range(300, 600):
+        path = np.array([[7.0, 7.0, 1.0 + 0.1 * i], [7.0, 7.0, 5.0 + 0.1 * i]])
+        attachments.remember(path, (i, i + 1, 0), support)
+    # Packed every ten paths, the trees merging as they double: far fewer
+    # builds than paths, and every sample still found.
+    assert 0 < len(built) < 100
+    assert attachments.recovered.count == 3000
+    assert len(attachments.targets(np.array([7.0, 7.0, 40.0]), 16.0)) == module._JOIN_TARGETS
+
+
+class _CountingEdges:
+    """A graph's edge view that counts the whole-graph scans made through it."""
+
+    def __init__(self, view, scans):
+        self._view, self._scans = view, scans
+
+    def __call__(self, nbunch=None, data=False, *args, **kwargs):
+        if nbunch is None and data:
+            self._scans.append(1)
+        return self._view(nbunch, data, *args, **kwargs)
+
+    def __getitem__(self, item):
+        return self._view[item]
+
+    def __iter__(self):
+        return iter(self._view)
+
+    def __len__(self):
+        return len(self._view)
+
+    def __contains__(self, item):
+        return item in self._view
+
+
+class _ScanCountingGraph(nx.MultiGraph):
+    scans: list = []
+
+    @property
+    def edges(self):
+        prop = nx.MultiGraph.edges  # a cached_property in networkx 3, a property before
+        return _CountingEdges(getattr(prop, "func", getattr(prop, "fget", None))(self), self.scans)
+
+
+def test_the_join_loop_reads_each_strands_edges_from_its_own_nodes_not_the_whole_graph():
+    """Two pieces of one vessel are recovered one after the other. The two
+    scans of every edge are the sample indexes built before the loop (one
+    by the coverage pass, one by recovery); the loop itself used to make
+    another per strand."""
+    mask = np.zeros((15, 20, 80), dtype=bool)
+    _tube(mask, 2, (7, 7, 0), 3, 0, 15)
+    _tube(mask, 2, (7, 7, 0), 2, 16, 40)
+    _tube(mask, 2, (7, 7, 0), 2, 42, 70)
+    G = _ScanCountingGraph()
+    G.scans = []
+    G.add_node(0, pos=np.array([7.0, 7.0, 0.0]))
+    G.add_node(1, pos=np.array([7.0, 7.0, 15.0]))
+    G.add_edge(0, 1, voxels=[[7.0, 7.0, float(x)] for x in range(16)], length=15.0)
+
+    G = recover_uncovered_mask_vessels(G, _support(mask))
+    scans = len(G.scans)
+
+    recovered = [d for _u, _v, d in G.edges(data=True) if d.get("recovered") and not d.get("reconnected")]
+    assert len(recovered) >= 2 and nx.number_connected_components(G) == 1
+    assert scans == 2
+
+
+def _branch_mask_and_skeleton(branch_x: int):
+    """The trunk with a branch along y at x = 30 the graph lost, and a
+    skeleton through the trunk and, at *branch_x*, along the branch."""
+    mask = _trunk_mask()
+    _tube(mask, 1, (7, 0, 30), 2, 7, 35)
+    skeleton = np.zeros_like(mask)
+    skeleton[7, 7, :] = True
+    skeleton[7, 8:35, branch_x] = True
+    return mask, skeleton
+
+
+def test_with_the_run_skeleton_the_recovered_vessel_follows_it():
+    """The skeleton runs one voxel off the branch's middle, where Lee
+    thinning of the mask would not: the recovered centreline is the
+    skeleton's, not a second thinning of the mask."""
+    mask, skeleton = _branch_mask_and_skeleton(branch_x=31)
+
+    G = recover_uncovered_mask_vessels(_trunk_graph(), _support(mask), skeleton=skeleton)
+
+    strands = [d for *_, d in G.edges(data=True) if d.get("recovered") and not d.get("reconnected")]
+    assert sum(d["length"] for d in strands) > 15.0
+    points = np.concatenate([np.asarray(d["voxels"], dtype=float) for d in strands])
+    assert np.all(points[:, 2] == 31.0)
+    assert nx.number_connected_components(G) == 1
+
+
+def test_a_piece_the_run_skeleton_does_not_run_through_is_left_alone():
+    """Recovery from the skeleton puts back what the skeleton has: mask
+    the skeleton never traced is not thinned again. (Without a skeleton the
+    same branch is recovered: the test above this file's first ones.)"""
+    mask, skeleton = _branch_mask_and_skeleton(branch_x=30)
+    skeleton[7, 8:35, 30] = False
+
+    G = recover_uncovered_mask_vessels(_trunk_graph(), _support(mask), skeleton=skeleton)
+
+    assert G.number_of_edges() == 1
+    assert not any(d.get("recovered") for *_, d in G.edges(data=True))
+
+
+def test_recovery_leaves_the_run_skeleton_as_it_was():
+    mask, skeleton = _branch_mask_and_skeleton(branch_x=30)
+    before = skeleton.copy()
+
+    recover_uncovered_mask_vessels(_trunk_graph(), _support(mask), skeleton=skeleton)
+
+    assert np.array_equal(skeleton, before)
+
+
+def test_a_skeleton_of_another_shape_than_the_mask_is_refused():
+    mask, skeleton = _branch_mask_and_skeleton(branch_x=30)
+
+    with pytest.raises(ValueError, match="shape"):
+        recover_uncovered_mask_vessels(_trunk_graph(), _support(mask), skeleton=skeleton[:, :, :-1])
+
+
+# --- tracing a piece along the run's skeleton, without a window (2026-10-18) ---
+
+
+def _trace_in_a_window(region, skeleton, voxel_size, pad):
+    """``_trace_piece`` along a skeleton as it was: the skeleton read in the
+    region's box padded by *pad*, cut to the region, rings dropped, then
+    skan's own Skeleton of that window."""
+    from scipy.ndimage import convolve, label
+    from skan import csr
+
+    shape = np.asarray(skeleton.shape)
+    lo = np.maximum(region.min(axis=0) - pad, 0)
+    hi = np.minimum(region.max(axis=0) + pad + 1, shape)
+    window = tuple(slice(int(a), int(b)) for a, b in zip(lo, hi))
+    window_skeleton = np.array(skeleton[window], dtype=bool)
+    inside = np.zeros_like(window_skeleton)
+    inside[tuple((region - lo).T)] = True
+    window_skeleton &= inside
+    neighbours = convolve(window_skeleton.astype(np.uint8), np.ones((3, 3, 3), np.uint8), mode="constant")
+    labels, n_components = label(window_skeleton, structure=np.ones((3, 3, 3), bool))
+    if n_components:
+        not_ring = np.zeros(n_components + 1, dtype=bool)
+        not_ring[labels[window_skeleton & (neighbours != 3)]] = True
+        window_skeleton &= not_ring[labels]
+    if not np.any(window_skeleton & (neighbours > 1)):
+        return [], []
+    sk = csr.Skeleton(window_skeleton)
+    paths, ends = [], []
+    for i in range(sk.n_paths):
+        coords = np.rint(sk.path_coordinates(i)).astype(int) + lo
+        if len(coords) < 2:
+            continue
+        paths.append(coords * np.asarray(voxel_size, dtype=float))
+        ends.append((tuple(coords[0].tolist()), tuple(coords[-1].tolist())))
+    return paths, ends
+
+
+def _speckled_skeleton(seed, shape=(12, 30, 30)):
+    """Lines that cross, branch and end, a ring, and isolated voxels."""
+    rng = np.random.default_rng(seed)
+    skeleton = np.zeros(shape, dtype=bool)
+    for _ in range(6):
+        a = rng.integers(0, shape)
+        b = rng.integers(0, shape)
+        count = int(np.abs(b - a).max()) + 1
+        line = np.rint(np.linspace(a, b, count)).astype(int)
+        skeleton[tuple(line.T)] = True
+    ring = [(6, 3, 3), (6, 3, 4), (6, 4, 5), (6, 5, 5), (6, 6, 4), (6, 6, 3), (6, 5, 2), (6, 4, 2)]
+    skeleton[tuple(np.array(ring).T)] = True
+    skeleton |= rng.random(shape) > 0.995
+    return skeleton
+
+
+@pytest.mark.parametrize("seed", range(8))
+def test_a_piece_traced_from_its_own_voxels_is_the_piece_traced_in_a_window(seed):
+    """The same paths, in the same order, with the same ends: rings dropped,
+    isolated voxels and voxels outside the region left out, whatever order
+    the region's voxels come in."""
+    from haemolynx.graph.mask_recovery import _trace_piece
+
+    rng = np.random.default_rng(100 + seed)
+    skeleton = _speckled_skeleton(seed)
+    region_mask = np.zeros_like(skeleton)
+    region_mask[1:11, 2 + seed % 3:28, 1:27] = True
+    region_mask &= rng.random(skeleton.shape) > 0.05
+    region = np.argwhere(region_mask)
+    rng.shuffle(region)
+    voxel_size = (1.0, 0.98, 0.98)
+    support = MaskSupport(region_mask, voxel_size)
+
+    piece = _trace_piece(region, support, 4, skeleton=skeleton)
+    paths, ends = _trace_in_a_window(region, skeleton, voxel_size, 4)
+
+    assert piece.ends == ends
+    assert len(piece.paths) == len(paths) and all(
+        np.array_equal(a, b) for a, b in zip(piece.paths, paths)
+    )
+
+
+def test_a_ring_alone_and_isolated_voxels_alone_trace_to_nothing():
+    from haemolynx.graph.mask_recovery import _trace_piece
+
+    skeleton = np.zeros((10, 10, 10), dtype=bool)
+    ring = [(5, 3, 3), (5, 3, 4), (5, 4, 5), (5, 5, 5), (5, 6, 4), (5, 6, 3), (5, 5, 2), (5, 4, 2)]
+    skeleton[tuple(np.array(ring).T)] = True
+    skeleton[1, 1, 1] = skeleton[8, 8, 8] = True
+    region = np.argwhere(np.ones_like(skeleton))
+    support = MaskSupport(np.ones_like(skeleton), (1.0, 1.0, 1.0))
+
+    piece = _trace_piece(region, support, 2, skeleton=skeleton)
+
+    assert piece.paths == [] and piece.ends == []
+    assert _trace_in_a_window(region, skeleton, (1.0, 1.0, 1.0), 2) == ([], [])
+
+
+def test_tracing_along_the_skeleton_reads_only_the_regions_voxels(monkeypatch):
+    """A long thin region on a large skeleton: nothing the size of its box."""
+    from haemolynx.graph.mask_recovery import _trace_piece
+
+    skeleton = np.zeros((40, 200, 200), dtype=bool)
+    diagonal = np.arange(5, 195)
+    skeleton[20, diagonal, diagonal] = True
+    region = np.argwhere(skeleton)
+    reads = []
+
+    class Counting(np.ndarray):
+        def __getitem__(self, key):
+            reads.append(key)
+            return super().__getitem__(key)
+
+    piece = _trace_piece(region, MaskSupport(skeleton, (1.0, 1.0, 1.0)), 4, skeleton=skeleton.view(Counting))
+
+    assert len(piece.paths) == 1 and piece.ends == [((20, 5, 5), (20, 194, 194))]
+    (key,) = reads
+    assert all(np.shape(k) == (len(region),) for k in key), "one value a voxel of the region, no box"
+
+
+# --- two-ended recovery, for a graph whose interior dead ends were removed ------
+
+
+def test_two_ended_recovery_keeps_a_vessel_joined_at_both_ends():
+    G, mask = _two_trunks_and_a_lost_capillary()
+
+    G = recover_uncovered_mask_vessels(G, _support(mask), coverage_reach_radii=0.0, two_ended=True)
+
+    recovered = [d for *_, d in G.edges(data=True) if d.get("recovered")]
+    assert sum(d["length"] for d in recovered) == pytest.approx(24.0, rel=0.1)
+    assert sum(1 for n in G if G.degree(n) == 1) == 4, "the trunks' own ends only"
+    assert G.graph.get("recovered_one_ended_removed", 0) == 0
+
+
+def test_two_ended_recovery_takes_back_a_branch_joined_at_one_end():
+    """Recovery as it is draws the branch as a dead end; two-ended it is
+    taken out again, and so is the node its join split the trunk at."""
+    mask = _trunk_mask()
+    _tube(mask, 1, (7, 0, 30), 2, 7, 35)
+
+    one_ended = recover_uncovered_mask_vessels(_trunk_graph(), _support(mask))
+    G = recover_uncovered_mask_vessels(_trunk_graph(), _support(mask), coverage_reach_radii=0.0, two_ended=True)
+
+    assert any(d.get("recovered") for *_, d in one_ended.edges(data=True))
+    assert not any(d.get("recovered") for *_, d in G.edges(data=True))
+    assert sorted(G.degree(n) for n in G) in ([1, 1], [1, 1, 2])
+    assert G.graph["recovered_one_ended_removed"] >= 1
+
+
+def test_vessels_an_earlier_recovery_drew_keep_their_mark_when_the_interior_recovery_splits_them():
+    """build_network's interior recovery sets the build's own ``recovered``
+    mark aside, so only its own edges are judged two-ended, and puts it back
+    after. Its joins split the trunks: kept as (u, v, key), the mark came back
+    on neither piece of a split trunk."""
+    from haemolynx.pipeline.stages import (
+        _RECOVERED_BEFORE,
+        _restore_earlier_recovery,
+        _set_aside_earlier_recovery,
+    )
+
+    G, mask = _two_trunks_and_a_lost_capillary()
+    for *_edge, data in G.edges(keys=True, data=True):
+        data["recovered"] = True  # as if the build's own recovery drew both trunks
+
+    _set_aside_earlier_recovery(G)
+    assert not any(d.get("recovered") for *_, d in G.edges(data=True))
+    G = recover_uncovered_mask_vessels(G, _support(mask), coverage_reach_radii=0.0, two_ended=True)
+    drawn = [d for *_, d in G.edges(data=True) if d.get("recovered")]
+    _restore_earlier_recovery(G)
+
+    assert sum(d["length"] for d in drawn) == pytest.approx(24.0, rel=0.1), "the capillary alone is new"
+    assert sum(1 for n in G if G.degree(n) == 3) == 2, "each trunk was split where the capillary joins"
+    trunk_pieces = [d for *_, d in G.edges(data=True) if not any(d is e for e in drawn)]
+    assert len(trunk_pieces) == 4
+    assert all(d.get("recovered") is True for d in trunk_pieces)
+    assert sum(d["length"] for d in trunk_pieces) == pytest.approx(118.0, abs=2.0)
+    assert not any(_RECOVERED_BEFORE in d for *_, d in G.edges(data=True))
+
+
+def test_the_coverage_reach_is_handed_to_the_uncovered_mask(monkeypatch):
+    import haemolynx.graph.mask_recovery as module
+
+    seen = []
+    real = module.uncovered_mask_voxels
+
+    def spy(G, support, **kwargs):
+        seen.append(kwargs.get("cross_section_reach_radii"))
+        return real(G, support, **kwargs)
+
+    monkeypatch.setattr(module, "uncovered_mask_voxels", spy)
+    recover_uncovered_mask_vessels(_trunk_graph(), _support(_trunk_mask()), coverage_reach_radii=0.0)
+    recover_uncovered_mask_vessels(_trunk_graph(), _support(_trunk_mask()))
+
+    assert seen[0] == 0.0
+    assert seen[1] == module.CROSS_SECTION_REACH_RADII
+
+
+def test_keeping_two_ended_recovery_prunes_hanging_recovered_chains_only():
+    from haemolynx.graph.mask_recovery import keep_two_ended_recovery
+
+    G = nx.MultiGraph()
+    for node in range(7):
+        G.add_node(node, pos=np.array([0.0, float(node), 0.0]))
+    G.add_edge(0, 1, length=10.0)                     # a vessel
+    G.add_edge(1, 2, length=10.0)                     # a vessel ending blind: stays
+    G.add_edge(0, 3, length=4.0, recovered=True)      # recovered, joined at both ends
+    G.add_edge(3, 1, length=4.0, recovered=True)
+    G.add_edge(1, 4, length=5.0, recovered=True)      # recovered, hanging: two edges
+    G.add_edge(4, 5, length=6.0, recovered=True)
+    G.add_node(6, pos=np.array([0.0, 6.0, 0.0]))
+
+    removed, length = keep_two_ended_recovery(G)
+
+    assert (removed, length) == (2, pytest.approx(11.0))
+    assert sorted(G.nodes) == [0, 1, 2, 3]
+    assert G.has_edge(1, 2) and G.has_edge(0, 3) and G.has_edge(3, 1)

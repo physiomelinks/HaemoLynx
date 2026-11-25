@@ -1,0 +1,874 @@
+"""Pre-skeletonization cleanup of the raw segmented binary vessel mask."""
+from __future__ import annotations
+
+import numpy as np
+import pytest
+
+from haemolynx.preprocessing import segmentation_cleanup as sc
+
+
+def _cylinder_along_x(
+    shape: tuple[int, int, int], *, z: float, y: float, radius: float, x0: int, x1: int
+) -> np.ndarray:
+    zz, yy, xx = np.indices(shape, dtype=float)
+    radial = np.sqrt((zz - float(z)) ** 2 + (yy - float(y)) ** 2)
+    return (radial <= float(radius)) & (xx >= int(x0)) & (xx <= int(x1))
+
+
+def _sphere(
+    shape: tuple[int, int, int], center: tuple[float, float, float], radius: float
+) -> np.ndarray:
+    zz, yy, xx = np.indices(shape, dtype=float)
+    cz, cy, cx = center
+    return (zz - cz) ** 2 + (yy - cy) ** 2 + (xx - cx) ** 2 <= radius ** 2
+
+
+# --- fill_enclosed_cavities ---------------------------------------------------
+
+
+def test_fill_cavities_fills_an_internal_void_but_not_outside_background():
+    shape = (10, 10, 10)
+    mask = np.zeros(shape, dtype=bool)
+    mask[2:8, 2:8, 2:8] = True
+    mask[4:6, 4:6, 4:6] = False  # an enclosed cavity, imaging-noise-style
+
+    filled = sc.fill_enclosed_cavities(mask)
+
+    assert filled[5, 5, 5]  # the cavity itself
+    assert np.array_equal(filled[2:8, 2:8, 2:8], np.ones((6, 6, 6), dtype=bool))
+    assert not filled[0, 0, 0]  # true background, outside the shell entirely
+
+
+def test_fill_cavities_leaves_a_solid_mask_unchanged():
+    shape = (10, 10, 10)
+    mask = np.zeros(shape, dtype=bool)
+    mask[2:8, 2:8, 2:8] = True
+
+    filled = sc.fill_enclosed_cavities(mask)
+
+    assert np.array_equal(filled, mask)
+
+
+def test_fill_cavities_does_not_fill_a_cavity_open_to_the_background():
+    """A void that reaches the mask's own boundary is not "enclosed" -- it
+    is background, and must stay background."""
+    shape = (10, 10, 10)
+    mask = np.zeros(shape, dtype=bool)
+    mask[2:8, 2:8, 2:8] = True
+    mask[4:6, 4:6, 2:6] = False  # channel from the cavity out through a face
+
+    filled = sc.fill_enclosed_cavities(mask)
+
+    assert not filled[5, 5, 3]
+    assert np.array_equal(filled, mask)
+
+
+def test_fill_cavities_empty_mask_is_a_no_op():
+    mask = np.zeros((5, 5, 5), dtype=bool)
+    assert np.array_equal(sc.fill_enclosed_cavities(mask), mask)
+
+
+# --- reconnect_vessel_like_components ----------------------------------------
+
+
+def test_reconnect_bridges_two_collinear_tube_fragments_with_a_gap():
+    shape = (10, 10, 40)
+    mask = _cylinder_along_x(shape, z=5, y=5, radius=1.0, x0=0, x1=14)
+    mask |= _cylinder_along_x(shape, z=5, y=5, radius=1.0, x0=20, x1=34)
+
+    cleaned, stats = sc.reconnect_vessel_like_components(
+        mask, voxel_size_zyx=(1.0, 1.0, 1.0), max_bridge_distance_um=10.0
+    )
+
+    assert stats["accepted_bridges"] == 1
+    labeled, count = sc._connected_components(cleaned)
+    assert count == 1
+
+
+def test_reconnect_does_not_bridge_a_perpendicular_fragment_pair():
+    shape = (20, 20, 20)
+    mask = _cylinder_along_x(shape, z=10, y=10, radius=1.0, x0=0, x1=8)
+    # A second fragment near the first's end, running along z instead of x.
+    zz, yy, xx = np.indices(shape, dtype=float)
+    radial = np.sqrt((yy - 10.0) ** 2 + (xx - 12.0) ** 2)
+    mask |= (radial <= 1.0) & (zz >= 0) & (zz <= 8)
+
+    _cleaned, stats = sc.reconnect_vessel_like_components(
+        mask, voxel_size_zyx=(1.0, 1.0, 1.0), max_bridge_distance_um=10.0,
+        max_axis_angle_degrees=30.0,
+    )
+
+    assert stats["accepted_bridges"] == 0
+    assert stats["rejected_reasons"]
+
+
+def test_reconnect_does_not_bridge_two_blob_shaped_components():
+    shape = (20, 20, 20)
+    mask = np.zeros(shape, dtype=bool)
+    mask[2:8, 2:8, 2:8] = True
+    mask[2:8, 2:8, 10:16] = True
+
+    _cleaned, stats = sc.reconnect_vessel_like_components(
+        mask, voxel_size_zyx=(1.0, 1.0, 1.0), max_bridge_distance_um=10.0
+    )
+
+    assert stats["accepted_bridges"] == 0
+    assert "source_not_cylindrical" in stats["rejected_reasons"] or (
+        "target_not_cylindrical" in stats["rejected_reasons"]
+    )
+
+
+def test_reconnect_leaves_a_lone_tube_with_no_neighbor_unchanged():
+    shape = (10, 10, 30)
+    mask = _cylinder_along_x(shape, z=5, y=5, radius=1.0, x0=0, x1=25)
+
+    cleaned, stats = sc.reconnect_vessel_like_components(
+        mask, voxel_size_zyx=(1.0, 1.0, 1.0), max_bridge_distance_um=10.0
+    )
+
+    assert stats["attempted_bridges"] == 0
+    assert np.array_equal(cleaned, mask)
+
+
+def test_reconnect_gates_bridge_distance_in_physical_microns_not_voxels():
+    """A voxel-count gap that is far in microns along a coarse axis must not
+    bridge, while the same voxel-count gap along a fine axis (a shorter
+    physical distance) does -- proving the gate reads voxel_size_zyx, not
+    raw voxel counts."""
+    shape = (30, 10, 10)
+    voxel_size_zyx = (2.0, 0.4, 0.4)
+
+    far = np.zeros(shape, dtype=bool)
+    far[0:10, 4:6, 4:6] = True
+    far[15:25, 4:6, 4:6] = True  # 5-voxel gap along z * 2.0um = 10um
+    _cleaned_far, stats_far = sc.reconnect_vessel_like_components(
+        far, voxel_size_zyx=voxel_size_zyx, max_bridge_distance_um=8.0
+    )
+    assert stats_far["accepted_bridges"] == 0
+
+    near = np.zeros(shape, dtype=bool)
+    near[0:10, 4:6, 4:6] = True
+    near[13:23, 4:6, 4:6] = True  # 3-voxel gap along z * 2.0um = 6um
+    _cleaned_near, stats_near = sc.reconnect_vessel_like_components(
+        near, voxel_size_zyx=voxel_size_zyx, max_bridge_distance_um=8.0
+    )
+    assert stats_near["accepted_bridges"] == 1
+
+
+# --- split_narrow_neck_components ---------------------------------------------
+
+
+def _dumbbell(shape, *, sphere_radius, neck_radius, x_a, x_b):
+    sphere_a = _sphere(shape, (10, 10, x_a), sphere_radius)
+    sphere_b = _sphere(shape, (10, 10, x_b), sphere_radius)
+    neck = _cylinder_along_x(shape, z=10, y=10, radius=neck_radius, x0=x_a, x1=x_b)
+    return sphere_a | sphere_b | neck
+
+
+def test_split_cuts_a_dumbbell_at_its_genuine_pinch():
+    shape = (20, 20, 35)
+    mask = _dumbbell(shape, sphere_radius=5.0, neck_radius=1.5, x_a=6, x_b=26)
+    _labeled, before = sc._connected_components(mask)
+    assert before == 1
+
+    cleaned, stats = sc.split_narrow_neck_components(mask, voxel_size_zyx=(1.0, 1.0, 1.0))
+
+    assert stats["cuts_made"] == 1
+    _labeled, after = sc._connected_components(cleaned)
+    assert after == 2
+
+
+def _dumbbell_along_z_on_anisotropic_voxels(spacing=(2.0, 0.5, 0.5)):
+    """Two 5 um-radius bodies 20 um apart in z, joined by a 1.5 um neck."""
+    z, y, x = np.indices((30, 40, 40)) * np.asarray(spacing).reshape(3, 1, 1, 1)
+    radial = (y - 10.0) ** 2 + (x - 10.0) ** 2
+    body_a = radial + (z - 20.0) ** 2 <= 5.0**2
+    body_b = radial + (z - 40.0) ** 2 <= 5.0**2
+    neck = (radial <= 1.5**2) & (z >= 20.0) & (z <= 40.0)
+    return body_a | body_b | neck
+
+
+def test_split_cuts_a_neck_between_bodies_stacked_in_z():
+    """Regression (audit): the 10 um marker separation became one voxel count
+    for every axis -- 20 voxels of 0.5 um, so 40 um along a 2 um z -- and two
+    bodies 20 um apart in z got one marker between them and were never cut."""
+    mask = _dumbbell_along_z_on_anisotropic_voxels()
+
+    cleaned, stats = sc.split_narrow_neck_components(mask, voxel_size_zyx=(2.0, 0.5, 0.5))
+
+    assert stats["cuts_made"] == 1
+    assert sc._connected_components(cleaned)[1] == 2
+
+
+def test_markers_closer_than_the_separation_on_any_axis_merge():
+    edt = np.zeros((20, 30, 30))
+    mask = np.ones_like(edt, dtype=bool)
+    edt[5, 15, 15] = 3.0
+    edt[9, 15, 15] = 2.5  # 8 um above the first on a 2 um z
+    edt[5, 15, 25] = 2.0  # 5 um across on a 0.5 um x
+
+    kept = sc._marker_peaks(edt, mask, sampling=(2.0, 0.5, 0.5), min_marker_separation_um=10.0)
+    assert kept.tolist() == [[5, 15, 15]]
+    kept = sc._marker_peaks(edt, mask, sampling=(2.0, 0.5, 0.5), min_marker_separation_um=4.0)
+    assert sorted(kept.tolist()) == [[5, 15, 15], [5, 15, 25], [9, 15, 15]]
+
+
+def test_split_leaves_a_uniform_radius_tube_as_one_component():
+    """Watershed may still seed multiple markers along a flat ridge, but a
+    uniform vessel has no narrowing at any interface, so nothing is cut."""
+    shape = (20, 20, 35)
+    mask = _cylinder_along_x(shape, z=10, y=10, radius=4.0, x0=2, x1=32)
+
+    cleaned, stats = sc.split_narrow_neck_components(mask, voxel_size_zyx=(1.0, 1.0, 1.0))
+
+    assert stats["cuts_made"] == 0
+    _labeled, after = sc._connected_components(cleaned)
+    assert after == 1
+    assert np.array_equal(cleaned, mask)
+
+
+def test_split_leaves_already_separate_bodies_untouched():
+    shape = (20, 20, 35)
+    mask = _sphere(shape, (10, 10, 6), 5.0) | _sphere(shape, (10, 10, 26), 5.0)
+
+    cleaned, stats = sc.split_narrow_neck_components(mask, voxel_size_zyx=(1.0, 1.0, 1.0))
+
+    assert stats["adjacent_pairs"] == 0
+    assert stats["cuts_made"] == 0
+    assert np.array_equal(cleaned, mask)
+
+
+def test_split_min_body_radius_guard_skips_a_body_too_thin_to_judge():
+    shape = (20, 20, 35)
+    # An asymmetric dumbbell: one normal-sized sphere, one tiny one -- too
+    # thin to trust as a real "second vessel body" rather than noise.
+    big_sphere = _sphere(shape, (10, 10, 6), 5.0)
+    tiny_sphere = _sphere(shape, (10, 10, 26), 0.8)
+    neck = _cylinder_along_x(shape, z=10, y=10, radius=0.6, x0=6, x1=26)
+    mask = big_sphere | tiny_sphere | neck
+    # neck_radius=0.6 alone (lenient ratio) would otherwise cut -- isolate the
+    # size guard by asking for a body radius the tiny end cannot reach.
+    cleaned, stats = sc.split_narrow_neck_components(
+        mask,
+        voxel_size_zyx=(1.0, 1.0, 1.0),
+        min_pinch_radius_ratio=0.99,
+        min_body_radius_um=2.0,
+    )
+
+    assert stats["cuts_made"] == 0
+    assert "body_too_thin" in stats["rejected_reasons"]
+    assert np.array_equal(cleaned, mask)
+
+
+def test_split_pinch_radius_ratio_gates_how_much_narrowing_counts():
+    """The same mild narrowing is rejected under a strict ratio and accepted
+    under a lenient one -- proving the ratio, not a fixed radius, decides."""
+    shape = (20, 20, 35)
+    mask = _dumbbell(shape, sphere_radius=5.0, neck_radius=3.5, x_a=6, x_b=26)
+
+    _cleaned_strict, stats_strict = sc.split_narrow_neck_components(
+        mask, voxel_size_zyx=(1.0, 1.0, 1.0), min_pinch_radius_ratio=0.5
+    )
+    assert stats_strict["cuts_made"] == 0
+
+    _cleaned_lenient, stats_lenient = sc.split_narrow_neck_components(
+        mask, voxel_size_zyx=(1.0, 1.0, 1.0), min_pinch_radius_ratio=0.9
+    )
+    assert stats_lenient["cuts_made"] == 1
+
+
+def test_split_cuts_both_necks_of_a_three_body_chain():
+    """Three bodies in a row (A-B and B-C each pinched) exercises more than
+    one adjacent pair sharing a body -- each pair is only ever cropped to
+    its own local bounding box, so this catches a crop that clips off part
+    of a body, or a cut written to the wrong place when two pairs' padded
+    boxes overlap around the shared middle body."""
+    shape = (20, 20, 55)
+    sphere_a = _sphere(shape, (10, 10, 6), 5.0)
+    sphere_b = _sphere(shape, (10, 10, 26), 5.0)
+    sphere_c = _sphere(shape, (10, 10, 46), 5.0)
+    neck_ab = _cylinder_along_x(shape, z=10, y=10, radius=1.5, x0=6, x1=26)
+    neck_bc = _cylinder_along_x(shape, z=10, y=10, radius=1.5, x0=26, x1=46)
+    mask = sphere_a | sphere_b | sphere_c | neck_ab | neck_bc
+    _labeled, before = sc._connected_components(mask)
+    assert before == 1
+
+    cleaned, stats = sc.split_narrow_neck_components(mask, voxel_size_zyx=(1.0, 1.0, 1.0))
+
+    assert stats["cuts_made"] == 2
+    _labeled, after = sc._connected_components(cleaned)
+    assert after == 3
+    # Each sphere survives whole -- a mis-cropped cut could not just sever
+    # the neck but also bite into the sphere it was seeded from.
+    for sphere in (sphere_a, sphere_b, sphere_c):
+        assert (cleaned & sphere).sum() == sphere.sum()
+
+
+def test_split_empty_mask_is_a_no_op():
+    mask = np.zeros((10, 10, 10), dtype=bool)
+    cleaned, stats = sc.split_narrow_neck_components(mask, voxel_size_zyx=(1.0, 1.0, 1.0))
+    assert np.array_equal(cleaned, mask)
+    assert stats["bodies_found"] == 0
+
+
+# --- remove_surface_whiskers ---------------------------------------------------
+
+
+def test_remove_whiskers_strips_a_thin_attached_spike_but_keeps_the_body():
+    shape = (20, 20, 20)
+    body = _cylinder_along_x(shape, z=10, y=10, radius=4.0, x0=2, x1=17)
+    # A single-voxel-wide spike attached to the body's own surface (y=14),
+    # sticking straight out to y=18.
+    spike = np.zeros(shape, dtype=bool)
+    spike[10, 14:19, 9] = True
+    mask = body | spike
+    assert mask[10, 18, 9] and not body[10, 18, 9]
+
+    out = sc.remove_surface_whiskers(mask, voxel_size_zyx=(1.0, 1.0, 1.0), whisker_radius_um=1.0)
+
+    assert not out[10, 18, 9]
+    assert _iou(out, body) > 0.9
+
+
+def test_remove_whiskers_leaves_a_thick_clean_tube_nearly_unchanged():
+    shape = (20, 20, 20)
+    body = _cylinder_along_x(shape, z=10, y=10, radius=5.0, x0=2, x1=17)
+
+    out = sc.remove_surface_whiskers(body, voxel_size_zyx=(1.0, 1.0, 1.0), whisker_radius_um=1.0)
+
+    assert _iou(out, body) > 0.9
+
+
+def test_remove_whiskers_radius_zero_is_a_no_op():
+    mask = np.zeros((5, 5, 5), dtype=bool)
+    mask[2, 2, :] = True
+    out = sc.remove_surface_whiskers(mask, voxel_size_zyx=(1.0, 1.0, 1.0), whisker_radius_um=0.0)
+    assert np.array_equal(out, mask)
+    assert out is mask
+
+
+def test_remove_whiskers_converts_physical_radius_per_axis_anisotropically(monkeypatch):
+    """The structuring element must reach the same physical distance on every
+    axis -- none at all along a z coarser than the radius, not the one voxel
+    (2 um) every axis used to be rounded up to."""
+    captured = {}
+
+    def fake_opening(mask, structure=None):
+        captured["structure"] = structure
+        return mask
+
+    monkeypatch.setattr(sc, "binary_opening", fake_opening)
+
+    mask = np.zeros((5, 5, 5), dtype=bool)
+    mask[2, 2, 2] = True
+    sc.remove_surface_whiskers(mask, voxel_size_zyx=(2.0, 0.5, 0.25), whisker_radius_um=1.0)
+
+    assert captured["structure"].shape == (1, 5, 9)
+
+
+def test_the_physical_ball_is_the_offsets_within_the_radius():
+    structure, reach = sc._physical_ball(1.0, (2.0, 0.5, 0.25))
+    assert structure.shape == (1, 5, 9) and reach == 4
+    assert structure[0, 2, 4] and structure[0, 0, 4] and structure[0, 2, 0]
+    assert not structure[0, 0, 0]  # (1.0, 1.0) um away: outside the 1 um ball
+    # A radius under the finest voxel still reaches one voxel, as it did.
+    assert sc._physical_ball(0.5, (1.0, 1.0, 1.0))[0].shape == (3, 3, 3)
+
+
+def test_whisker_removal_keeps_a_capillary_two_z_slices_thick():
+    """Regression (audit): the default 1 um whisker radius, rounded up to one
+    2 um slice along z, eroded a 4 um capillary lying two slices thick clean
+    away -- 0 of its voxels were left."""
+    mask = np.zeros((6, 24, 60), dtype=bool)
+    y, x = np.ogrid[:24, :60]
+    mask[2:4] = ((y - 12) * 0.5) ** 2 <= 2.0**2  # 4 um across, two 2 um slices deep
+    mask[:, :, :5] = mask[:, :, 55:] = False
+
+    kept = sc.remove_surface_whiskers(mask, voxel_size_zyx=(2.0, 0.5, 0.5), whisker_radius_um=1.0)
+
+    assert kept.sum() >= 0.7 * mask.sum()
+
+
+# --- close_small_gaps -----------------------------------------------------
+
+
+def test_close_small_gaps_bridges_a_single_voxel_dropout():
+    shape = (20, 20, 20)
+    tube = _cylinder_along_x(shape, z=10, y=10, radius=4.0, x0=2, x1=17)
+    gapped = tube.copy()
+    gapped[:, :, 9] = False  # a single dropped cross-section slice
+
+    closed = sc.close_small_gaps(
+        gapped, voxel_size_zyx=(1.0, 1.0, 1.0), closing_radius_um=0.5
+    )
+
+    assert closed[10, 10, 9]
+    _, count = sc._connected_components(closed)
+    assert count == 1
+
+
+def test_close_small_gaps_does_not_bridge_a_large_gap():
+    """Deliberately indiscriminate but small-scoped: a gap wide enough to be
+    a genuine separation, not a dropout, must stay separate -- that is
+    reconnect_vessel_like_components's job, with its own shape gating."""
+    shape = (20, 20, 20)
+    tube = _cylinder_along_x(shape, z=10, y=10, radius=4.0, x0=2, x1=17)
+    gapped = tube.copy()
+    gapped[:, :, 7:13] = False  # a 6-voxel-wide gap
+
+    closed = sc.close_small_gaps(
+        gapped, voxel_size_zyx=(1.0, 1.0, 1.0), closing_radius_um=0.5
+    )
+
+    _, count = sc._connected_components(closed)
+    assert count == 2
+
+
+def test_close_small_gaps_leaves_a_clean_tube_nearly_unchanged():
+    shape = (20, 20, 20)
+    tube = _cylinder_along_x(shape, z=10, y=10, radius=4.0, x0=2, x1=17)
+
+    closed = sc.close_small_gaps(
+        tube, voxel_size_zyx=(1.0, 1.0, 1.0), closing_radius_um=0.5
+    )
+
+    assert _iou(closed, tube) > 0.9
+
+
+def test_close_small_gaps_radius_zero_is_a_no_op():
+    mask = np.zeros((5, 5, 5), dtype=bool)
+    mask[2, 2, :] = True
+    out = sc.close_small_gaps(mask, voxel_size_zyx=(1.0, 1.0, 1.0), closing_radius_um=0.0)
+    assert np.array_equal(out, mask)
+    assert out is mask
+
+
+def test_close_small_gaps_converts_physical_radius_per_axis_anisotropically(monkeypatch):
+    """The structuring element must reach the same physical distance on every
+    axis: at the default 0.5 um, a 2 um z gap used to be bridged."""
+    captured = {}
+
+    def fake_closing(mask, structure=None):
+        captured["structure"] = structure
+        return mask
+
+    monkeypatch.setattr(sc, "binary_closing", fake_closing)
+
+    mask = np.zeros((5, 5, 5), dtype=bool)
+    mask[2, 2, 2] = True
+    sc.close_small_gaps(mask, voxel_size_zyx=(2.0, 0.5, 0.25), closing_radius_um=1.0)
+
+    assert captured["structure"].shape == (1, 5, 9)
+
+
+def test_close_small_gaps_does_not_bridge_a_z_gap_wider_than_its_radius():
+    mask = np.zeros((11, 12, 12), dtype=bool)
+    mask[:5, 2:10, 2:10] = mask[6:, 2:10, 2:10] = True  # one 2 um slice apart
+
+    closed = sc.close_small_gaps(mask, voxel_size_zyx=(2.0, 0.5, 0.5), closing_radius_um=0.5)
+
+    assert not closed[5].any()
+
+
+# --- smooth_vessel_surfaces ---------------------------------------------------
+
+
+def _iou(a: np.ndarray, b: np.ndarray) -> float:
+    a = np.asarray(a, dtype=bool)
+    b = np.asarray(b, dtype=bool)
+    union = int((a | b).sum())
+    return float((a & b).sum()) / union if union else 1.0
+
+
+def test_smooth_reduces_surface_roughness_of_a_jagged_tube():
+    shape = (20, 20, 20)
+    clean = _cylinder_along_x(shape, z=10, y=10, radius=4.0, x0=2, x1=17)
+    rng = np.random.default_rng(0)
+    noisy = clean.copy()
+    flip = rng.random(shape) < 0.05
+    noisy[flip] = ~noisy[flip]
+
+    smoothed = sc.smooth_vessel_surfaces(noisy, voxel_size_zyx=(1.0, 1.0, 1.0), sigma_um=1.5)
+
+    assert _iou(smoothed, clean) > _iou(noisy, clean)
+
+
+def test_smooth_leaves_a_clean_tube_nearly_unchanged():
+    shape = (20, 20, 20)
+    clean = _cylinder_along_x(shape, z=10, y=10, radius=4.0, x0=2, x1=17)
+
+    smoothed = sc.smooth_vessel_surfaces(clean, voxel_size_zyx=(1.0, 1.0, 1.0), sigma_um=0.6)
+
+    assert _iou(smoothed, clean) > 0.9
+
+
+def test_smooth_sigma_zero_is_a_no_op():
+    mask = np.zeros((5, 5, 5), dtype=bool)
+    mask[2, 2, :] = True
+    out = sc.smooth_vessel_surfaces(mask, voxel_size_zyx=(1.0, 1.0, 1.0), sigma_um=0.0)
+    assert np.array_equal(out, mask)
+    assert out is mask
+
+
+def test_smooth_unknown_method_raises_value_error():
+    mask = np.zeros((5, 5, 5), dtype=bool)
+    mask[2, 2, :] = True
+    with pytest.raises(ValueError, match="Unknown smoothing method"):
+        sc.smooth_vessel_surfaces(mask, voxel_size_zyx=(1.0, 1.0, 1.0), method="bogus")
+
+
+def test_smooth_morphological_reduces_surface_roughness_of_a_jagged_tube():
+    shape = (20, 20, 20)
+    clean = _cylinder_along_x(shape, z=10, y=10, radius=4.0, x0=2, x1=17)
+    rng = np.random.default_rng(0)
+    noisy = clean.copy()
+    flip = rng.random(shape) < 0.05
+    noisy[flip] = ~noisy[flip]
+
+    smoothed = sc.smooth_vessel_surfaces(
+        noisy, voxel_size_zyx=(1.0, 1.0, 1.0), method="morphological", morphological_radius_um=1.5
+    )
+
+    assert _iou(smoothed, clean) > _iou(noisy, clean)
+
+
+def test_smooth_morphological_leaves_a_clean_tube_nearly_unchanged():
+    shape = (20, 20, 20)
+    clean = _cylinder_along_x(shape, z=10, y=10, radius=4.0, x0=2, x1=17)
+
+    smoothed = sc.smooth_vessel_surfaces(
+        clean, voxel_size_zyx=(1.0, 1.0, 1.0), method="morphological", morphological_radius_um=0.6
+    )
+
+    assert _iou(smoothed, clean) > 0.9
+
+
+def test_smooth_morphological_radius_zero_is_a_no_op():
+    mask = np.zeros((5, 5, 5), dtype=bool)
+    mask[2, 2, :] = True
+    out = sc.smooth_vessel_surfaces(
+        mask, voxel_size_zyx=(1.0, 1.0, 1.0), method="morphological", morphological_radius_um=0.0
+    )
+    assert np.array_equal(out, mask)
+    assert out is mask
+
+
+def test_smooth_morphological_preserves_cross_section_better_than_gaussian_on_a_thin_vessel():
+    """The curvature bias this feature exists to avoid: gaussian
+    blur-then-rethreshold shrinks a round vessel's cross-section (a
+    threshold-driven effect that grows with curvature, i.e. worse the
+    thinner the vessel), while morphological closing-then-opening -- no
+    threshold step -- shrinks it markedly less at the same physical scale."""
+    shape = (30, 30, 30)
+    tube = _cylinder_along_x(shape, z=15, y=15, radius=5.0, x0=2, x1=27)
+    mid_x = 14  # well inside the tube body, away from its flat end caps
+    original_area = int(tube[:, :, mid_x].sum())
+
+    gaussian = sc.smooth_vessel_surfaces(
+        tube, voxel_size_zyx=(1.0, 1.0, 1.0), sigma_um=1.5, method="gaussian"
+    )
+    morphological = sc.smooth_vessel_surfaces(
+        tube,
+        voxel_size_zyx=(1.0, 1.0, 1.0),
+        method="morphological",
+        morphological_radius_um=1.5,
+    )
+
+    gaussian_area = int(gaussian[:, :, mid_x].sum())
+    morphological_area = int(morphological[:, :, mid_x].sum())
+
+    assert gaussian_area < original_area  # the bias this feature exists to avoid
+    assert morphological_area > gaussian_area
+    assert abs(morphological_area - original_area) < abs(gaussian_area - original_area)
+
+
+# --- remove_small_segmented_volumes -------------------------------------------
+
+
+def test_remove_small_drops_a_speck_below_threshold_and_keeps_the_vessel():
+    shape = (10, 10, 10)
+    vessel = np.zeros(shape, dtype=bool)
+    vessel[2:8, 4:6, 4:6] = True  # 6*2*2 = 24 voxels
+    speck = np.zeros(shape, dtype=bool)
+    speck[0, 0, 0] = True  # 1 voxel
+    combo = vessel | speck
+
+    out = sc.remove_small_segmented_volumes(
+        combo, voxel_size_zyx=(1.0, 1.0, 1.0), min_volume_um3=5.0
+    )
+
+    assert not out[0, 0, 0]
+    assert np.array_equal(out & vessel, vessel)
+
+
+def test_remove_small_keeps_a_component_just_above_threshold():
+    shape = (10, 10, 10)
+    mask = np.zeros(shape, dtype=bool)
+    mask[0:2, 0:3, 0:1] = True  # 6 voxels, above a 5-voxel threshold
+
+    out = sc.remove_small_segmented_volumes(
+        mask, voxel_size_zyx=(1.0, 1.0, 1.0), min_volume_um3=5.0
+    )
+
+    assert np.array_equal(out, mask)
+
+
+def test_remove_small_min_volume_zero_is_a_no_op():
+    mask = np.zeros((5, 5, 5), dtype=bool)
+    mask[0, 0, 0] = True
+    out = sc.remove_small_segmented_volumes(
+        mask, voxel_size_zyx=(1.0, 1.0, 1.0), min_volume_um3=0.0
+    )
+    assert out is mask
+
+
+# --- clean_segmented_mask_for_skeletonisation (orchestrator) -----------------
+
+
+def test_clean_segmented_mask_all_off_returns_input_unchanged_and_calls_nothing(
+    monkeypatch,
+):
+    calls: list[str] = []
+    monkeypatch.setattr(
+        sc, "fill_enclosed_cavities",
+        lambda *a, **k: calls.append("fill_cavities") or None,
+    )
+    monkeypatch.setattr(
+        sc, "remove_surface_whiskers",
+        lambda *a, **k: calls.append("remove_whiskers") or None,
+    )
+    monkeypatch.setattr(
+        sc, "split_narrow_neck_components",
+        lambda *a, **k: calls.append("split_narrow_necks") or (None, {}),
+    )
+    monkeypatch.setattr(
+        sc, "close_small_gaps",
+        lambda *a, **k: calls.append("close_gaps") or None,
+    )
+    monkeypatch.setattr(
+        sc, "reconnect_vessel_like_components",
+        lambda *a, **k: calls.append("reconnect") or (None, {}),
+    )
+    monkeypatch.setattr(
+        sc, "smooth_vessel_surfaces", lambda *a, **k: calls.append("smooth") or None
+    )
+    monkeypatch.setattr(
+        sc, "remove_small_segmented_volumes",
+        lambda *a, **k: calls.append("remove_small") or None,
+    )
+
+    image = np.zeros((4, 4, 4), dtype=bool)
+    cleaned, raw = sc.clean_segmented_mask_for_skeletonisation(
+        image, voxel_size_zyx=(1.0, 1.0, 1.0)
+    )
+
+    assert calls == []
+    assert cleaned is image
+    assert raw is None
+
+
+def test_clean_segmented_mask_runs_every_step_in_order(monkeypatch):
+    order: list[str] = []
+
+    def fake_fill_cavities(mask, **kwargs):
+        order.append("fill_cavities")
+        return mask
+
+    def fake_whiskers(mask, **kwargs):
+        order.append("remove_whiskers")
+        return mask
+
+    def fake_split(mask, **kwargs):
+        order.append("split_narrow_necks")
+        return mask, {}
+
+    def fake_close_gaps(mask, **kwargs):
+        order.append("close_gaps")
+        return mask
+
+    def fake_reconnect(mask, **kwargs):
+        order.append("reconnect")
+        return mask, {}
+
+    def fake_smooth(mask, **kwargs):
+        order.append("smooth")
+        return mask
+
+    def fake_remove_small(mask, **kwargs):
+        order.append("remove_small")
+        return mask
+
+    monkeypatch.setattr(sc, "fill_enclosed_cavities", fake_fill_cavities)
+    monkeypatch.setattr(sc, "remove_surface_whiskers", fake_whiskers)
+    monkeypatch.setattr(sc, "split_narrow_neck_components", fake_split)
+    monkeypatch.setattr(sc, "close_small_gaps", fake_close_gaps)
+    monkeypatch.setattr(sc, "reconnect_vessel_like_components", fake_reconnect)
+    monkeypatch.setattr(sc, "smooth_vessel_surfaces", fake_smooth)
+    monkeypatch.setattr(sc, "remove_small_segmented_volumes", fake_remove_small)
+
+    image = np.zeros((4, 4, 4), dtype=bool)
+    sc.clean_segmented_mask_for_skeletonisation(
+        image,
+        voxel_size_zyx=(1.0, 1.0, 1.0),
+        fill_cavities=True,
+        remove_whiskers=True,
+        split_narrow_necks=True,
+        close_gaps=True,
+        reconnect_gaps=True,
+        smooth_surfaces=True,
+        remove_small_volumes=True,
+    )
+
+    assert order == [
+        "fill_cavities",
+        "remove_whiskers",
+        "split_narrow_necks",
+        "close_gaps",
+        "reconnect",
+        "smooth",
+        "remove_small",
+    ]
+
+
+def test_clean_segmented_mask_returns_raw_only_when_a_step_ran():
+    shape = (10, 10, 10)
+    mask = np.zeros(shape, dtype=bool)
+    mask[2:8, 4:6, 4:6] = True
+    speck = mask.copy()
+    speck[0, 0, 0] = True
+
+    cleaned, raw = sc.clean_segmented_mask_for_skeletonisation(
+        speck, voxel_size_zyx=(1.0, 1.0, 1.0), remove_small_volumes=True,
+        remove_small_min_volume_um3=5.0,
+    )
+
+    assert raw is not None
+    assert np.array_equal(raw, speck)
+    assert not cleaned[0, 0, 0]
+
+
+# --- reconnect: local tip geometry, physical units, wide bridges --------------
+
+
+def _tube_along(shape, spacing, start_um, end_um, radius_um):
+    """Voxels within *radius_um* of the segment *start_um*-*end_um* (microns)."""
+    spacing = np.asarray(spacing, dtype=float)
+    grid = np.indices(shape).reshape(3, -1).T.astype(float) * spacing
+    start = np.asarray(start_um, dtype=float)
+    segment = np.asarray(end_um, dtype=float) - start
+    t = np.clip(((grid - start) * segment).sum(axis=1) / float((segment * segment).sum()), 0.0, 1.0)
+    distance = np.linalg.norm(grid - (start + t[:, None] * segment), axis=1)
+    return (distance <= radius_um).reshape(shape)
+
+
+def _arc_tube(shape, *, center_yx, arc_radius, tube_radius, z, degrees):
+    """A tube bent round *degrees* of a circle in the y-x plane, from angle 0."""
+    zz, yy, xx = np.indices(shape, dtype=float)
+    dy, dx = yy - center_yx[0], xx - center_yx[1]
+    angle = np.degrees(np.arctan2(dy, dx)) % 360.0
+    radial = np.sqrt(dy**2 + dx**2) - arc_radius
+    return (radial**2 + (zz - z) ** 2 <= tube_radius**2) & (angle <= degrees)
+
+
+def test_reconnect_bridges_a_curved_fragment_by_its_own_end_not_its_overall_shape():
+    """Regression: a U-bend read as a blob-like or sideways-pointing whole,
+    so its ends never faced the vessel they had been cut from."""
+    shape = (9, 50, 60)
+    # A half circle from (y=25, x=45) round to (y=25, x=15), its ends pointing
+    # along -y there -- continued by a straight tube after a 6-voxel gap.
+    arc = _arc_tube(shape, center_yx=(25, 30), arc_radius=15, tube_radius=1.6, z=4, degrees=180)
+    zz, yy, xx = np.indices(shape, dtype=float)
+    straight = ((zz - 4) ** 2 + (xx - 45) ** 2 <= 1.6**2) & (yy >= 3) & (yy <= 18)
+    mask = arc | straight
+
+    cleaned, stats = sc.reconnect_vessel_like_components(
+        mask, voxel_size_zyx=(1.0, 1.0, 1.0), max_bridge_distance_um=10.0
+    )
+
+    assert stats["accepted_bridges"] == 1
+    assert sc._connected_components(cleaned)[1] == 1
+
+
+def test_reconnect_reads_directions_in_microns_on_an_anisotropic_grid():
+    """Two pieces of one vessel bending 25 degrees across a gap, in physical
+    space, on 2 x 0.5 x 0.5 um voxels. In voxel indices z is squashed 4x, so
+    the same two axes are ~47 degrees apart -- past the 30 degree limit --
+    and the angle used to be measured there."""
+    spacing = (2.0, 0.5, 0.5)
+    shape = (30, 8, 50)
+
+    def heading(degrees_from_x):
+        return np.asarray([np.sin(np.radians(degrees_from_x)), 0.0, np.cos(np.radians(degrees_from_x))])
+
+    start = np.asarray([2.0, 2.0, 2.0])
+    first_end = start + 16.0 * heading(60.0)
+    second_start = first_end + 5.0 * heading(72.5)
+    mask = _tube_along(shape, spacing, start, first_end, 1.2)
+    mask |= _tube_along(shape, spacing, second_start, second_start + 16.0 * heading(85.0), 1.2)
+    assert sc._connected_components(mask)[1] == 2
+
+    cleaned, stats = sc.reconnect_vessel_like_components(
+        mask, voxel_size_zyx=spacing, max_bridge_distance_um=10.0, max_axis_angle_degrees=30.0
+    )
+
+    assert stats["accepted_bridges"] == 1
+    assert sc._connected_components(cleaned)[1] == 1
+
+
+def test_reconnect_bridges_the_arm_of_a_branched_fragment():
+    """A Y-shaped fragment has three ends; only two were ever looked at."""
+    shape = (9, 60, 70)
+    zz, yy, xx = np.indices(shape, dtype=float)
+    # Stem along x, two arms off its end -- one arm points (along +y) at a
+    # separate straight fragment continuing it after a 6-voxel gap.
+    stem = ((zz - 4) ** 2 + (yy - 20) ** 2 <= 2.0) & (xx >= 5) & (xx <= 35)
+    arm_up = ((zz - 4) ** 2 + (xx - 35) ** 2 <= 2.0) & (yy >= 20) & (yy <= 36)
+    arm_down = ((zz - 4) ** 2 + (xx - 35) ** 2 <= 2.0) & (yy >= 8) & (yy <= 20)
+    continuation = ((zz - 4) ** 2 + (xx - 35) ** 2 <= 2.0) & (yy >= 43) & (yy <= 58)
+    mask = stem | arm_up | arm_down | continuation
+
+    cleaned, stats = sc.reconnect_vessel_like_components(
+        mask, voxel_size_zyx=(1.0, 1.0, 1.0), max_bridge_distance_um=10.0
+    )
+
+    assert stats["accepted_bridges"] == 1
+    assert sc._connected_components(cleaned)[1] == 1
+
+
+def test_reconnect_makes_a_wide_vessels_bridge_as_wide_as_the_vessel():
+    """Regression: every bridge was capped at 3 voxels of radius, so a gap
+    in a wide vessel became a thin neck -- which then skeletonised and
+    measured as a narrowing that is not there."""
+    shape = (21, 21, 60)
+    radius = 7.0
+    mask = _cylinder_along_x(shape, z=10, y=10, radius=radius, x0=0, x1=26)
+    mask |= _cylinder_along_x(shape, z=10, y=10, radius=radius, x0=33, x1=59)
+
+    cleaned, stats = sc.reconnect_vessel_like_components(
+        mask, voxel_size_zyx=(1.0, 1.0, 1.0), max_bridge_distance_um=12.0
+    )
+
+    assert stats["accepted_bridges"] == 1
+    full_section = int(mask[:, :, 10].sum())
+    for x in range(27, 33):
+        assert int(cleaned[:, :, x].sum()) >= 0.8 * full_section
+
+
+def test_clean_segmented_mask_logs_what_reconnect_did(caplog):
+    """The bridge and rejection counts used to be computed and thrown away."""
+    import logging
+
+    shape = (10, 10, 40)
+    mask = _cylinder_along_x(shape, z=5, y=5, radius=1.0, x0=0, x1=14)
+    mask |= _cylinder_along_x(shape, z=5, y=5, radius=1.0, x0=20, x1=34)
+
+    with caplog.at_level(logging.INFO, logger="haemolynx.preprocessing.segmentation_cleanup"):
+        sc.clean_segmented_mask_for_skeletonisation(
+            mask,
+            voxel_size_zyx=(1.0, 1.0, 1.0),
+            reconnect_gaps=True,
+            reconnect_max_bridge_distance_um=10.0,
+        )
+
+    (line,) = [r.getMessage() for r in caplog.records if "reconnect gaps" in r.getMessage()]
+    assert "accepted_bridges=1" in line

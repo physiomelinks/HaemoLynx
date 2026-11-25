@@ -78,21 +78,61 @@ def test_the_branch_order_tables_are_derived_when_the_config_leaves_them_unset(p
     constrictions = settings["constriction_by_branch_order"]
 
     assert diameters["B01"] > 0
-    assert constrictions["B01"] == 1.0
-    assert constrictions["B02"] == 0.8
+    # Empty override map: global pericyte_constriction_factor alone applies.
+    assert constrictions == {}
+    assert settings["pericyte_constriction_factor"] == 1.0
     assert f"B{settings['max_branch_order']:02d}" in diameters
+
+
+def test_empty_constriction_map_leaves_global_factor_alone(pipeline):
+    """None and {} are the same: no per-order rewrite of the global factor."""
+    from_none = pipeline.resolve_settings()
+    from_empty = pipeline.resolve_settings(
+        overrides={"constriction_by_branch_order": {}}
+    )
+    assert from_none["constriction_by_branch_order"] == {}
+    assert from_empty["constriction_by_branch_order"] == {}
+    assert from_none["pericyte_constriction_factor"] == from_empty[
+        "pericyte_constriction_factor"
+    ]
 
 
 def test_an_explicit_diameter_table_is_left_alone(pipeline):
     settings = pipeline.resolve_settings(
-        overrides={"diameter_by_branch_order": {"B01": 3.0}}
+        overrides={"all_diams_const": False, "diameter_by_branch_order": {"B01": 3.0}}
     )
     assert settings["diameter_by_branch_order"] == {"B01": 3.0}
 
 
+def test_a_ticked_constant_box_replaces_an_explicit_diameter_table(pipeline):
+    """The committed config ticks "all diameters constant", which hides the
+    table's row: every order then takes the default diameter."""
+    settings = pipeline.resolve_settings(
+        overrides={"diameter_by_branch_order": {"B01": 3.0}}
+    )
+    assert settings["all_diams_const"] is True
+    table = settings["diameter_by_branch_order"]
+    assert set(table.values()) == {settings["default_diameter"]}
+    assert len(table) > 1
+
+
 def test_the_plot_directory_is_derived_from_the_base_plot_directory(pipeline):
+    """A folder per image under it: the plot files carry no stem of their own,
+    and every run's went into one ``nerve`` folder, overwriting the last."""
+    from haemolynx.pipeline.naming import run_stem
+
     settings = pipeline.resolve_settings(overrides={"base_plot_dir": "somewhere/plots"})
-    assert settings["plot_dir"] == Path("somewhere/plots/nerve")
+    assert settings["plot_dir"] == Path("somewhere/plots") / run_stem(settings)
+    other = pipeline.resolve_settings(
+        overrides={"base_plot_dir": "somewhere/plots", "input_path": "images/other_image.tif"}
+    )
+    assert other["plot_dir"] == Path("somewhere/plots/other_image")
+
+
+def test_a_run_naming_no_image_plots_into_the_base_plot_directory():
+    from haemolynx.pipeline.settings import plot_folder
+
+    assert plot_folder({"base_plot_dir": "plots", "input_path": None}) == Path("plots")
 
 
 def test_an_explicit_plot_directory_wins(pipeline):
@@ -112,8 +152,15 @@ STAGES = [
     ("assign_diameters", "HaemodynamicModel"),
     ("build_haemodynamic_model", "HaemodynamicModel"),
     ("solve", "Solution"),
+    ("run_perturbations", "PerturbationRun"),
     ("export_results", "Solution"),
 ]
+
+#: How each stage's call reads in the example. The last two are called for what
+#: they write rather than for a value the script goes on to use.
+CALL_MARKERS = {name: f"= {name}(" for name, _ in STAGES}
+CALL_MARKERS["run_perturbations"] = "run_perturbations("
+CALL_MARKERS["export_results"] = "export_results("
 
 
 @pytest.mark.parametrize("stage_name,_returns", STAGES)
@@ -126,11 +173,25 @@ def test_every_stage_takes_the_settings_dict_first(stage_name, _returns):
 
 
 def test_the_example_calls_the_stages_in_order():
-    """The example is the eight stages, so a reader sees the shape of a run."""
+    """The example is the stages, in order, so a reader sees the shape of a run."""
     example = (REPO_ROOT / "examples" / "resistance_network_pipeline.py").read_text()
-    positions = [example.index(f"= {name}(") for name, _ in STAGES[:-1]]
+    positions = [example.index(CALL_MARKERS[name]) for name, _ in STAGES]
     assert positions == sorted(positions), "stages are called out of order"
-    assert "export_results(" in example
+
+
+def test_the_example_perturbs_the_baseline_before_exporting_it():
+    """Order matters here: the export must write the baseline, not a perturbed copy.
+
+    `run_perturbations` comes after `solve`, so each perturbation has solved
+    pressures to difference against, and before `export_results`, which writes
+    out the one graph every perturbation was started from.
+    """
+    example = (REPO_ROOT / "examples" / "resistance_network_pipeline.py").read_text()
+    assert (
+        example.index("= solve(")
+        < example.index("run_perturbations(settings")
+        < example.index("export_results(settings")
+    )
 
 
 def test_the_constants_module_is_gone():
@@ -246,6 +307,34 @@ def test_preflight_accepts_a_runnable_configuration(pipeline, tmp_path):
     assert preflight(settings, pipeline.SCHEMA).ok
 
 
+def test_preflight_stops_a_run_whose_outputs_windows_would_refuse(pipeline, tmp_path, monkeypatch):
+    """Before any work starts: a Stack A run with a long output folder ran for
+    8 minutes, then died at Export writing a 266-character path."""
+    from haemolynx.pipeline import batch, preflight
+
+    image = tmp_path / "mask.tif"
+    image.write_bytes(b"x")
+    settings = pipeline.resolve_settings(
+        overrides={
+            "input_path": image,
+            "statistics": True,
+            "output_dir": tmp_path / ("o" * 200),
+        }
+    )
+    limits = (batch.WINDOWS_MAX_FILE_PATH, batch.WINDOWS_MAX_FOLDER_PATH)
+    monkeypatch.setattr(batch, "path_length_limits", lambda: limits)
+    report = preflight(settings, pipeline.SCHEMA, echo=False)
+    assert any(
+        "mask_betweenness_communities_edge_length.json" in error and "long paths" in error
+        for error in report.errors
+    )
+    with pytest.raises(SystemExit):
+        pipeline._preflight_or_exit(settings)
+    # Long paths on: nothing to refuse.
+    monkeypatch.setattr(batch, "path_length_limits", lambda: None)
+    assert preflight(settings, pipeline.SCHEMA, echo=False).ok
+
+
 def test_preflight_rejects_a_missing_input_image(pipeline, tmp_path):
     from haemolynx.pipeline import preflight
 
@@ -256,17 +345,21 @@ def test_preflight_rejects_a_missing_input_image(pipeline, tmp_path):
 
 
 def test_preflight_demands_the_masks_a_toggle_turns_on(pipeline, tmp_path):
-    """Turning on large-vessel masks makes their paths required."""
+    """Turning on large-vessel masks makes their paths required -- under
+    automated vessel assignment, which the masks sit under. Left ticked
+    under it unticked, the switch is hidden and asks for nothing."""
     from haemolynx.pipeline import preflight
 
     image = tmp_path / "mask.tif"
     image.write_bytes(b"x")
-    settings = pipeline.resolve_settings(
-        overrides={"input_path": image, "use_large_vessel_masks": True}
-    )
-    report = preflight(settings, pipeline.SCHEMA)
+    on = {"input_path": image, "automated_vessel_assignment": True, "use_large_vessel_masks": True}
+    report = preflight(pipeline.resolve_settings(overrides=on), pipeline.SCHEMA)
     assert not report.ok
     assert any("large_arteriole_mask_path" in message for message in report.errors)
+
+    hidden = {**on, "automated_vessel_assignment": False}
+    report = preflight(pipeline.resolve_settings(overrides=hidden), pipeline.SCHEMA)
+    assert not any("large_arteriole_mask_path" in message for message in report.errors)
 
 
 def test_preflight_requires_a_cached_graph_when_graph_building_is_off(pipeline, tmp_path):
@@ -278,8 +371,35 @@ def test_preflight_requires_a_cached_graph_when_graph_building_is_off(pipeline, 
         overrides={
             "input_path": image,
             "do_graph_building": False,
-            "vtk_output_prefix": tmp_path / "outputs" / "network",
+            "output_dir": tmp_path / "outputs",
         }
     )
     report = preflight(settings, pipeline.SCHEMA)
     assert any("do_graph_building" in message for message in report.errors)
+
+
+def test_preflight_looks_for_the_cached_graph_the_run_loads_with_ilastik_on_and_no_raw_image(tmp_path):
+    """Regression: with use_ilastik_segmentation on and no raw image set,
+    ilastik segments nothing and the run loads ``{input stem}_graph.pkl``,
+    but preflight looked for ``input_graph.pkl``. With a raw image it is
+    ilastik's output's: ``{raw stem}_segmented_graph.pkl``."""
+    from haemolynx.pipeline import default_schema
+    from haemolynx.pipeline.checks import check_cached_artefacts
+
+    out = tmp_path / "outputs"
+    out.mkdir()
+    (out / "vessels_graph.pkl").write_bytes(b"x")
+    values = {
+        **default_schema().defaults(),
+        "input_path": tmp_path / "vessels.tif",
+        "output_dir": out,
+        "do_graph_building": False,
+        "use_ilastik_segmentation": True,
+        "raw_image_path": None,
+    }
+    assert check_cached_artefacts(values).ok
+
+    values["raw_image_path"] = tmp_path / "stack.tif"
+    report = check_cached_artefacts(values)
+    assert not report.ok
+    assert any("stack_segmented_graph.pkl" in message for message in report.errors)

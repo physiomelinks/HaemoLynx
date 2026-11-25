@@ -71,12 +71,11 @@ def test_nerve_pipeline_on_cropped_last_z_quarter_bottom_y_half():
     plot_dir.mkdir(parents=True, exist_ok=True)
     output_dir = REPO_ROOT / "tests" / "outputs" / "nerve_pipeline"
     output_dir.mkdir(parents=True, exist_ok=True)
-    vtk_prefix = output_dir / "nerve_pipeline_test"
     pipeline = _load_pipeline_module()
     solved_graph = pipeline.image_to_model_pipeline(
         input_path=cropped_tiff,
         plot_dir=plot_dir,
-        vtk_output_prefix=vtk_prefix,
+        output_dir=output_dir,
         verbose_logging=False,
         do_skeletonize=True,
         do_graph_building=True,

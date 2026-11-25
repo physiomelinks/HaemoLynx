@@ -3,17 +3,63 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from dataclasses import dataclass, field
+from typing import Any
 import networkx as nx
 import numpy as np
 from skan import csr
 
-from .build import build_graph_segment_skan_stitched_loops
+from haemolynx.preprocessing.bridge_mask_support import (
+    DEFAULT_MAX_BACKGROUND_GAP_UM,
+    DEFAULT_MIN_MASK_FRACTION,
+    MaskSupport,
+    check_mask_shape,
+)
+
+from ._helpers import points_inside_mask
+from ._platform import skan_numba_warmup_skeleton
+from .build import (
+    MAX_GAP_BRIDGE_TURN_DEG,
+    build_graph_segment_skan_stitched_loops,
+    skan_skeleton,
+)
 from .collapse import collapse_node_clusters
+from .direction_aware_collapse import (
+    DEFAULT_MAX_RADIAL_DISPERSION,
+    DEFAULT_MIN_DEGREE_FOR_DISPERSION_CHECK,
+    collapse_node_clusters_direction_aware,
+)
+from .cartwheel_guard import DEFAULT_TANGENT_LENGTH_UM
+from .persistence_collapse import (
+    DEFAULT_SEARCH_RADIUS_MULTIPLE,
+    collapse_node_clusters_persistence,
+)
 from .degree2 import smart_multigraph_degree2_removal
-from .diagnostics import diagnose_degree2_nodes, format_degree2_diagnostics_report
+from .diagnostics import (
+    diagnose_degree2_nodes,
+    diagnose_lumen_artefacts,
+    format_degree2_diagnostics_report,
+    format_lumen_artefacts_report,
+)
+from .mask_recovery import (
+    DEFAULT_MIN_LENGTH_UM,
+    DEFAULT_MIN_REGION_VOLUME_UM3,
+    recover_uncovered_mask_vessels as _recover_uncovered_mask_vessels,
+    remove_edges_off_the_mask,
+)
+from .facing_ends import DEFAULT_FACING_MAX_GAP_UM, join_facing_dead_ends
+from .lumen_loops import (
+    DEFAULT_SHORT_LOOP_KEEP_HOLE_UM,
+    REWIRE_PAIRS,
+    remove_loops_inside_one_lumen,
+    remove_parallel_edges_in_lumen,
+    remove_short_loops,
+)
 from .optimise import optimise_graph_topology_fixed, reconnect_orphan_and_dangling_nodes
 from .prune import prune_vascular_stubs, remove_edges_for_self_connected_nodes
 from .reconnect import reconnect_secondary_loop_edges
+from .doubled_stretches import GUARD_REJOINS, resolve_doubled_stretches
+from .thick_vessel_junctions import remove_dangling_bridges
 
 logger = logging.getLogger(__name__)
 
@@ -35,8 +81,34 @@ STEP_LABELS: tuple[str, ...] = (
     "smart_multigraph_degree2_removal_post_prune",
     "remove_edges_for_self_connected_nodes",
     "reconnect_orphan_and_dangling_nodes",
-    "smart_multigraph_degree2_removal_post_orphan_reconnect",
+    "recover_uncovered_mask_vessels",
+    "join_facing_dead_ends",
+    "consolidate_lumen",
 )
+
+#: At most this many rounds of :func:`consolidate_lumen`. Every round that
+#: changes anything takes nodes or edges away, so it always settles. On the
+#: Stack A stack it takes 9: after the first three, each round's pair removal
+#: leaves a degree-2 node whose merge shows the next pair (6, 3, 1, 1 of them),
+#: one pass of the pair search -- about 7 s there -- a round.
+CONSOLIDATION_MAX_ROUNDS = 12
+
+
+#: Where each label comes in the run, for the line every step logs. A step
+#: names itself in that line, and `collapse_node_clusters` names itself in its
+#: own summary too, so the `Step n/13` prefix is what tells the two apart.
+_STEP_POSITIONS: dict[str, int] = {
+    label: position for position, label in enumerate(STEP_LABELS, start=1)
+}
+
+
+def step_after(label: str) -> str | None:
+    """The topology step that starts once *label* finishes: ``None`` after
+    the last step, or for a label that is not one of :data:`STEP_LABELS`."""
+    position = _STEP_POSITIONS.get(label)
+    if position is None or position >= len(STEP_LABELS):
+        return None
+    return STEP_LABELS[position]
 
 
 def _notify_step(
@@ -44,8 +116,121 @@ def _notify_step(
     label: str,
     step_callback: StepCallback | None,
 ) -> None:
+    # Thirteen lines a run, ungated: what a step left behind is the answer to
+    # "how many branches does the pipeline think there are", and asking for it
+    # should not mean asking for the per-node detail as well. The line names
+    # the step starting next: it is the last line until that step ends, and
+    # read alone it blamed the step just finished for the next one's time.
+    following = step_after(label)
+    logger.info(
+        "Step %d/%d %s: %d nodes / %d edges%s",
+        _STEP_POSITIONS.get(label, 0),
+        len(STEP_LABELS),
+        label,
+        G.number_of_nodes(),
+        G.number_of_edges(),
+        f"; running {following}" if following else "",
+    )
     if step_callback is not None:
         step_callback(G, label)
+
+
+def mask_radius_sampler(
+    mask: np.ndarray | None,
+    voxel_size: tuple[float, float, float],
+    radius_multiple: float,
+    *,
+    low_memory: bool = False,
+) -> Callable[[np.ndarray], float] | None:
+    """``radius(position_um)``: the mask's distance to background, in microns,
+    at the voxel nearest a physical ``(z, y, x)`` position -- or ``None`` when
+    there is no mask to read, or nothing will read it.
+
+    Built on the mask's surface voxels rather than a whole-volume distance
+    transform, so it costs a KD-tree over the surface, not ~70 bytes a voxel;
+    *low_memory* (the low-RAM option) holds a few tiles' trees instead of
+    one over the whole surface, with the same radii
+    (``FeatureDistance(by_block=True)``).
+    """
+    if mask is None or radius_multiple <= 0:
+        return None
+    from haemolynx.preprocessing.pointwise_distance import (
+        LUMEN_RADII_REMEMBERED,
+        FeatureDistance,
+    )
+
+    binary = np.asanyarray(mask, dtype=bool)
+    # Remembering: the end-of-build clean-up reads the same voxels each round.
+    distance = FeatureDistance(
+        binary, feature_value=False, sampling=voxel_size, remember=LUMEN_RADII_REMEMBERED,
+        by_block=low_memory,
+    )
+    if not distance.has_surface:
+        return None
+    spacing = np.asarray(voxel_size, dtype=float)
+    upper = np.asarray(binary.shape) - 1
+
+    def radius(position_um: np.ndarray) -> float:
+        index = np.clip(np.rint(np.asarray(position_um, dtype=float) / spacing), 0, upper)
+        return float(distance.at(index.astype(np.intp).reshape(1, -1))[0])
+
+    # Shared with the mask-support checks, so one mask's surface tree is built once.
+    radius.feature_distance = distance
+    return radius
+
+
+def mask_continues_past(support: MaskSupport) -> Callable[[np.ndarray, np.ndarray], bool]:
+    """``continues(tip_um, outward)``: whether the mask runs on past a stub's
+    tip -- one and two voxels of the finest axis beyond the tip's own lumen
+    radius, along *outward*, both in the mask. A blind end does not."""
+    finest = float(min(support.voxel_size_zyx))
+
+    def continues(tip_um: np.ndarray, outward: np.ndarray) -> bool:
+        tip = np.asarray(tip_um, dtype=float).reshape(1, 3)
+        reach = float(support.radius(tip)[0]) + finest * np.array([1.0, 2.0])
+        return bool(np.all(support.inside(tip + reach[:, None] * np.asarray(outward, dtype=float))))
+
+    return continues
+
+
+def _scalar_radius(support: MaskSupport) -> Callable[[np.ndarray], float]:
+    return lambda position_um: float(support.radius(np.asarray(position_um, dtype=float).reshape(1, 3))[0])
+
+
+def mask_lumen_test(
+    mask: np.ndarray | None,
+    voxel_size: tuple[float, float, float],
+    *,
+    support: MaskSupport | None = None,
+) -> Callable[[np.ndarray], np.ndarray] | None:
+    """``inside(points_um)``: whether each physical ``(z, y, x)`` point falls in
+    the mask's lumen (a True voxel; outside the volume is background) -- or
+    ``None`` when there is no mask to read.
+
+    What degree-2 merging and direction-aware collapse ask when two edges
+    join the same two nodes: one vessel, or two with background between
+    (``_helpers.loop_separated_by_background``,
+    ``_helpers.paths_separated_by_background``). With *support*, a
+    ``MaskSupport`` over the same mask, the points are read through it
+    (``MaskSupport.lookup_volume``): the same answers, from its bits once it
+    has packed the mask, rather than a memmap a voxel at a time.
+    """
+    if mask is None:
+        return None
+    if support is not None:
+        def inside(points_um: np.ndarray) -> np.ndarray:
+            points = np.asarray(points_um, dtype=float)
+            return points_inside_mask(
+                points, support.lookup_volume(len(points)), voxel_size_zyx=voxel_size
+            )
+
+        return inside
+    binary = np.asanyarray(mask, dtype=bool)
+
+    def inside(points_um: np.ndarray) -> np.ndarray:
+        return points_inside_mask(points_um, binary, voxel_size_zyx=voxel_size)
+
+    return inside
 
 
 def _log_degree2_diagnostics(G: nx.MultiGraph, max_degree: int, debug: bool) -> None:
@@ -53,6 +238,271 @@ def _log_degree2_diagnostics(G: nx.MultiGraph, max_degree: int, debug: bool) -> 
         return
     degree2_diag = diagnose_degree2_nodes(G, max_degree=max_degree)
     logger.debug(format_degree2_diagnostics_report(degree2_diag))
+
+
+def _with_lumen_artefact_report(
+    step_callback: StepCallback | None,
+    support: MaskSupport,
+    stub_radius_multiple: float,
+) -> StepCallback:
+    """*step_callback*, after the lumen-artefact report (``diagnostics.
+    diagnose_lumen_artefacts``) is logged at DEBUG on the graph each topology
+    step leaves: which step makes a pair in one lumen, a loop inside one
+    lumen or a dead end, in the build's own log. Read-only; under ``debug``
+    only, since it measures the whole graph thirteen times.
+    ``scripts/graph_artefacts.py --steps`` tabulates the same report."""
+
+    def report_then_call(G: nx.MultiGraph, label: str) -> None:
+        found = diagnose_lumen_artefacts(
+            G, support.mask, voxel_size_zyx=support.voxel_size_zyx, mask_support=support,
+            stub_radius_multiple=stub_radius_multiple,
+        )
+        logger.debug("After %s: %s", label, format_lumen_artefacts_report(found))
+        if step_callback is not None:
+            step_callback(G, label)
+
+    return report_then_call
+
+
+@dataclass(frozen=True)
+class LumenCleanup:
+    """What :func:`consolidate_lumen` reads.
+
+    *support* is the mask the clean-up judges by, or ``None`` without one
+    (or with mask-supported bridging off), when only degree-2 merging runs;
+    *inside_lumen* is the lumen test degree-2 merging judges a duplicate
+    route by; *prune* is the stub prune with the build's thresholds.
+    """
+
+    support: MaskSupport | None
+    inside_lumen: Callable[[np.ndarray], np.ndarray] | None
+    prune: Callable[[nx.MultiGraph], nx.MultiGraph]
+    max_degree: int = 4
+    debug: bool = False
+    #: Evidence beyond the mask that two centrelines in one lumen are two
+    #: vessels: called with a ``DoubledStretch`` (``graph.doubled_stretches``)
+    #: or a pair of edge keys (``lumen_loops.remove_parallel_edges_in_lumen``),
+    #: and what it returns True for is left alone. None: the mask decides.
+    keep_apart: Callable[[Any], bool] | None = None
+    #: Loops up to this long round are broken whatever the mask says of them
+    #: (``lumen_loops.remove_short_loops``); 0 leaves them to the review list.
+    max_short_loop_um: float = 0.0
+    #: ...except a loop round a tissue hole wider than this (grids Q and Q2),
+    #: left to the review list; 0 breaks every short loop.
+    short_loop_keep_hole_um: float = DEFAULT_SHORT_LOOP_KEEP_HOLE_UM
+    #: How much of a polyline (µm) lies on a thick vessel's centreline tree
+    #: (``thick_vessel_junctions.ThickCentreline.along_um``): of two strands
+    #: in one lumen the pair, in-lumen loop and stretch rules keep the one on
+    #: it, unless the other is a vessel of its own beside it
+    #: (``lumen_loops.VESSEL_BESIDE_THICK_RADIUS_UM``). None: the wall decides.
+    #: The short-loop rule and the stub prune are not given it: on Harvey's
+    #: grid W (2026-10-15) every place they decided by it was marked wrong.
+    along_centreline: Callable[[np.ndarray], float] | None = None
+    #: The most rounds :func:`consolidate_lumen` runs before it stops,
+    #: settled or not (``lumen_cleanup_max_rounds``).
+    max_rounds: int = CONSOLIDATION_MAX_ROUNDS
+    #: Whether the pair rule takes the edge that goes out by rewiring it
+    #: (``doubled_stretches.rewire_pair``) rather than deleting it whole
+    #: (``lumen_cleanup_rewire_pairs``).
+    rewire_pairs: bool = REWIRE_PAIRS
+    #: Whether the stretch step's rejoin makes no join that would close a loop
+    #: inside one lumen (``lumen_cleanup_guard_rejoins``).
+    guard_rejoins: bool = GUARD_REJOINS
+    #: The pair rule's and the stretch finder's verdicts, kept from round to
+    #: round and from one consolidate_lumen call to the next on the same
+    #: object: build_network cleans up after smoothing and again after the
+    #: thick-vessel split, and the split changes only the edges near the
+    #: thick region, so the second clean-up judges only those again.
+    memos: dict = field(default_factory=dict)
+
+
+def lumen_cleanup(
+    segmentation_mask: np.ndarray | None,
+    voxel_size: tuple[float, float, float],
+    *,
+    image_shape: tuple[int, ...],
+    min_stub_length: float = 10.0,
+    min_stub_length_radius_multiple: float = 0.0,
+    stub_radius_at: Callable[[np.ndarray], float] | None = None,
+    protect_image_face_stubs: bool = True,
+    bridge_require_mask_support: bool = True,
+    bridge_max_background_gap_um: float = DEFAULT_MAX_BACKGROUND_GAP_UM,
+    bridge_min_mask_fraction: float = DEFAULT_MIN_MASK_FRACTION,
+    mask_support: MaskSupport | None = None,
+    max_degree: int = 4,
+    debug: bool = False,
+    stub_face_protection: str = "threshold",
+    keep_apart: Callable[[Any], bool] | None = None,
+    remove_short_loops_under_um: float = 0.0,
+    short_loop_keep_hole_over_um: float = DEFAULT_SHORT_LOOP_KEEP_HOLE_UM,
+    along_thick_centreline: Callable[[np.ndarray], float] | None = None,
+    max_rounds: int = CONSOLIDATION_MAX_ROUNDS,
+    rewire_pairs: bool = REWIRE_PAIRS,
+    guard_rejoins: bool = GUARD_REJOINS,
+) -> LumenCleanup:
+    """The clean-up the end of graph building runs, built from the same
+    settings :func:`build_graph_from_skeleton` takes -- so a caller that
+    changes the graph afterwards (the pipeline smooths its centrelines) can
+    run it again and save a graph that was judged.
+
+    *image_shape* is the skeleton's: the stub prune keeps a short stub at an
+    image face. *mask_support*, a ``MaskSupport`` over the mask, is used in
+    place of building one. *along_thick_centreline*: see
+    ``LumenCleanup.along_centreline``. *rewire_pairs* and *guard_rejoins*:
+    see ``LumenCleanup``; each off is how the clean-up ran before
+    PLAN_clean_graph.md 1d.
+    """
+    support = None
+    if segmentation_mask is not None and bridge_require_mask_support:
+        support = mask_support if mask_support is not None else MaskSupport(
+            np.asanyarray(segmentation_mask, dtype=bool),
+            voxel_size,
+            max_background_gap_um=bridge_max_background_gap_um,
+            min_mask_fraction=bridge_min_mask_fraction,
+            feature_distance=getattr(stub_radius_at, "feature_distance", None),
+        )
+    inside_lumen = mask_lumen_test(
+        segmentation_mask, voxel_size, support=support if support is not None else mask_support
+    )
+    stub_mask_rules = {}
+    if support is not None:
+        stub_mask_rules = dict(
+            inside_lumen=inside_lumen,
+            mask_continues_at=mask_continues_past(support),
+            lumen_radius_at=support.radius,
+        )
+    radius_at = stub_radius_at
+    if radius_at is None and support is not None:
+        radius_at = _scalar_radius(support)
+    image_extent_um = (
+        (np.asarray(image_shape, dtype=float) - 1.0) * np.asarray(voxel_size, dtype=float)
+        if protect_image_face_stubs
+        else None
+    )
+    if stub_face_protection not in ("threshold", "leaves_image"):
+        raise ValueError(f"stub_face_protection must be 'threshold' or 'leaves_image', got {stub_face_protection!r}")
+    if stub_face_protection == "leaves_image" and support is not None and image_extent_um is not None:
+        from .dead_ends import leaves_image, tip_heading
+
+        def image_face_test(_node, path_from_junction: np.ndarray) -> bool:
+            path = np.asarray(path_from_junction, dtype=float)[::-1]
+            tip = path[0]
+            return leaves_image(
+                tip, image_extent_um, heading=tip_heading(path), support=support,
+                tip_radius_um=float(support.radius(tip.reshape(1, 3))[0]), voxel_size_zyx=voxel_size,
+            )[0]
+
+        stub_mask_rules["image_face_test"] = image_face_test
+
+    # The prune's centreline index, kept between the clean-up's rounds: an
+    # edge unchanged since the last round reads no lumen radius again.
+    index_memo: dict = {}
+
+    def prune(G: nx.MultiGraph) -> nx.MultiGraph:
+        return prune_vascular_stubs(
+            G,
+            debug=debug,
+            min_stub_length=min_stub_length,
+            radius_at=radius_at,
+            radius_multiple=float(min_stub_length_radius_multiple),
+            image_extent_um=image_extent_um,
+            index_memo=index_memo,
+            **stub_mask_rules,
+        )
+
+    return LumenCleanup(
+        support, inside_lumen, prune, max_degree=max_degree, debug=debug, keep_apart=keep_apart,
+        max_short_loop_um=float(remove_short_loops_under_um or 0.0),
+        short_loop_keep_hole_um=float(short_loop_keep_hole_over_um or 0.0),
+        along_centreline=along_thick_centreline,
+        max_rounds=max(1, int(max_rounds)),
+        rewire_pairs=bool(rewire_pairs),
+        guard_rejoins=bool(guard_rejoins),
+    )
+
+
+def consolidate_lumen(
+    G: nx.MultiGraph,
+    cleanup: LumenCleanup,
+    *,
+    max_rounds: int | None = None,
+) -> nx.MultiGraph:
+    """The clean-up that ends graph building, repeated until a round changes
+    nothing: degree-2 merging and then, with the mask, edges lying mostly off
+    it (``mask_recovery.remove_edges_off_the_mask``), two edges in one lumen
+    (``lumen_loops.remove_parallel_edges_in_lumen``), loops inside one lumen
+    (``lumen_loops.remove_loops_inside_one_lumen``) and the stub prune.
+
+    Each of them leaves work for the others -- a duplicate taken out leaves
+    a dead end, a pruned stub leaves a degree-2 node whose merge makes a
+    longer edge to judge again -- and run once, in a fixed order, what the
+    later ones left was never judged: on Stack A the last merge alone raised
+    the pairs of edges in one lumen from 94 to 126. Merging first in every
+    round also means each is judged on whole vessels, not on the pieces mask
+    recovery split them into. The graph that comes back is merged.
+    """
+    if max_rounds is None:
+        max_rounds = cleanup.max_rounds
+    rounds = 0
+    # The pair check's verdicts, kept from round to round: a round changes a
+    # few places, and only the edges near them are judged again.
+    pairs_memo: dict = cleanup.memos.setdefault("pairs", {})
+    stretch_memo: dict = cleanup.memos.setdefault("stretches", {})
+    # And each loop's mask measures, which read only its points.
+    loops_memo: dict = cleanup.memos.setdefault("loops", {})
+    def state(G):
+        # A rewired stretch can leave the counts as they were and shorten
+        # the centreline: the length is part of what "changed" means.
+        return (G.number_of_nodes(), G.number_of_edges(),
+                round(sum(float(d.get("length") or 0.0) for *_e, d in G.edges(data=True)), 3))
+
+    for rounds in range(1, max_rounds + 1):
+        before = state(G)
+        G = smart_multigraph_degree2_removal(
+            G, None, max_degree=cleanup.max_degree, debug=cleanup.debug,
+            inside_lumen=cleanup.inside_lumen,
+        )
+        if cleanup.support is None:
+            return G
+        G = remove_edges_off_the_mask(G, cleanup.support)
+        G = remove_parallel_edges_in_lumen(
+            G, cleanup.support, memo=pairs_memo, keep_apart=cleanup.keep_apart,
+            along_centreline=cleanup.along_centreline, rewire=cleanup.rewire_pairs,
+        )
+        G = remove_loops_inside_one_lumen(
+            G, cleanup.support, along_centreline=cleanup.along_centreline, memo=loops_memo
+        )
+        if cleanup.max_short_loop_um > 0:
+            # Grids I and I2: nine in ten short loops close inside one vessel,
+            # and the in-lumen rule above found none of them.
+            # Not given the thick centreline: keeping its side, the rule
+            # took the capillary beside it instead (grid W, 2 and 22).
+            G = remove_short_loops(G, cleanup.support, max_length_um=cleanup.max_short_loop_um,
+                                   keep_hole_over_um=cleanup.short_loop_keep_hole_um, memo=loops_memo)
+        # What the whole-edge pair rule leaves: a stretch of an edge beside
+        # another, rewired rather than deleted (graph.doubled_stretches).
+        G = resolve_doubled_stretches(
+            G, cleanup.support, keep_apart=cleanup.keep_apart, memo=stretch_memo,
+            along_centreline=cleanup.along_centreline, guard_joins=cleanup.guard_rejoins,
+        )
+        # After the thick-vessel split the clean-up runs again, and a strand
+        # it takes out can leave the bridge that joined it to the thick
+        # centreline with a free end: a bridge is never a dead end.
+        remove_dangling_bridges(G)
+        G = cleanup.prune(G)
+        if state(G) == before:
+            break
+    else:
+        G = smart_multigraph_degree2_removal(
+            G, None, max_degree=cleanup.max_degree, debug=cleanup.debug,
+            inside_lumen=cleanup.inside_lumen,
+        )
+        logger.info("Lumen clean-up stopped after its limit of %d rounds", max_rounds)
+    logger.info(
+        "Lumen clean-up settled after %d round(s): %d nodes / %d edges",
+        rounds, G.number_of_nodes(), G.number_of_edges(),
+    )
+    return G
 
 
 def build_graph_from_skeleton(
@@ -64,11 +514,40 @@ def build_graph_from_skeleton(
     min_stub_length: float = 10.0,
     debug: bool = False,
     step_callback: StepCallback | None = None,
+    cluster_collapse_method: str = "distance_only",
+    cluster_collapse_max_radial_dispersion: float = DEFAULT_MAX_RADIAL_DISPERSION,
+    cluster_collapse_persistence_search_multiple: float = DEFAULT_SEARCH_RADIUS_MULTIPLE,
+    cluster_collapse_direction_aware_min_degree: int = DEFAULT_MIN_DEGREE_FOR_DISPERSION_CHECK,
+    cluster_collapse_direction_aware_tangent_length_um: float = DEFAULT_TANGENT_LENGTH_UM,
+    use_memmap: bool = False,
+    segmentation_mask: np.ndarray | None = None,
+    min_stub_length_radius_multiple: float = 0.0,
+    protect_image_face_stubs: bool = True,
+    stub_radius_at: Callable[[np.ndarray], float] | None = None,
+    gap_bridge_max_turn_deg: float | None = MAX_GAP_BRIDGE_TURN_DEG,
+    bridge_require_mask_support: bool = True,
+    bridge_max_background_gap_um: float = DEFAULT_MAX_BACKGROUND_GAP_UM,
+    bridge_min_mask_fraction: float = DEFAULT_MIN_MASK_FRACTION,
+    recover_uncovered_mask_vessels: bool = True,
+    recovery_min_region_volume_um3: float = DEFAULT_MIN_REGION_VOLUME_UM3,
+    recovery_min_length_um: float = DEFAULT_MIN_LENGTH_UM,
+    facing_dead_end_max_gap_um: float = DEFAULT_FACING_MAX_GAP_UM,
+    extend_dead_ends_to_faces: bool = False,
+    trace_on_dead_ends: bool = False,
+    join_dead_ends_to_vessel_sides: bool = False,
+    stub_face_protection: str = "threshold",
+    remove_short_loops_under_um: float = 0.0,
+    short_loop_keep_hole_over_um: float = DEFAULT_SHORT_LOOP_KEEP_HOLE_UM,
+    along_thick_centreline: Callable[[np.ndarray], float] | None = None,
+    mask_support: MaskSupport | None = None,
+    lumen_cleanup_max_rounds: int = CONSOLIDATION_MAX_ROUNDS,
+    lumen_cleanup_rewire_pairs: bool = REWIRE_PAIRS,
+    lumen_cleanup_guard_rejoins: bool = GUARD_REJOINS,
 ) -> nx.MultiGraph:
     """
     Build and clean a vascular NetworkX graph from a binary 3D skeleton.
 
-    Runs the full topology pipeline: skan extraction, loop stitching, secondary
+    Runs the full topology pipeline: skan extraction with gap bridges, secondary
     loop reconnection, topology optimisation, degree-2 removal passes, cluster
     collapse, stub pruning, self-edge removal, and orphan reconnection.
 
@@ -87,31 +566,218 @@ def build_graph_from_skeleton(
     cluster_collapse_distance
         Distance threshold for collapsing nearby node clusters.
     min_stub_length
-        Minimum stub length (microns) retained before pruning.
+        Minimum stub length (microns) retained before pruning, wherever the
+        stub is not judged by its parent vessel's radius instead.
     debug
-        When True, print degree-2 diagnostic reports after cleanup passes.
+        When True, print degree-2 diagnostic reports after cleanup passes and,
+        with a segmentation mask, the lumen-artefact report after every
+        topology step (``diagnose_lumen_artefacts``, at DEBUG).
     step_callback
         Optional ``callback(G, step_label)`` invoked after each topology step.
+    cluster_collapse_method
+        ``"distance_only"`` (default) collapses each node within
+        ``cluster_collapse_distance`` of a representative into it, clusters
+        bounded by that distance (see ``collapse.collapse_node_clusters``). ``"direction_
+        aware"`` additionally refuses a merge that would turn the collapsed
+        node's incident edges into a cartwheel shape -- see
+        ``direction_aware_collapse`` for why and how. ``"persistence"`` cuts
+        each local cluster at its own 0-dimensional-persistence gap instead
+        of one global distance -- see ``persistence_collapse`` for the cited
+        mathematics and why it can leave more than one representative node
+        where ``distance_only`` would merge everything into one.
+    cluster_collapse_max_radial_dispersion
+        Only read when *cluster_collapse_method* is ``"direction_aware"`` --
+        see ``direction_aware_collapse.collapse_node_clusters_direction_aware``.
+    cluster_collapse_persistence_search_multiple
+        Only read when *cluster_collapse_method* is ``"persistence"`` -- see
+        ``persistence_collapse.collapse_node_clusters_persistence``.
+    cluster_collapse_direction_aware_min_degree, cluster_collapse_direction_aware_tangent_length_um
+        Only read when *cluster_collapse_method* is ``"direction_aware"`` --
+        deliberately the same ``cartwheel_hub_min_degree`` /
+        ``cartwheel_hub_tangent_length_um`` settings the cartwheel hub guard
+        itself uses, since this collapse method gates merges with that
+        guard's own geometry: tuning one without the other would silently
+        decouple the diagnostic from the corrective gate it is modelled on.
+    use_memmap
+        The low-RAM option. Builds skan's paths from the skeleton's foreground
+        coordinates instead of from whole-volume copies of it, and keeps the
+        secondary-loop reconnection to bounded windows -- see
+        ``build.skan_skeleton`` and ``reconnect.reconnect_secondary_loop_edges``.
+        The graph is the same either way.
+    segmentation_mask, min_stub_length_radius_multiple
+        With the binary mask the skeleton came from and a positive multiple,
+        a stub is pruned when shorter than that many radii of the vessel it
+        leaves (the mask's distance to background at the junction), instead
+        of *min_stub_length* -- see ``prune.prune_vascular_stubs``. Whatever
+        the multiple, the mask also decides when two edges joining the same
+        two nodes are one vessel: degree-2 merging and direction-aware
+        collapse keep both only where background separates them
+        (:func:`mask_lumen_test`), not wherever they are more than 3-5 um
+        apart -- Lee thinning leaves strands 5-10 um apart through one wide
+        vessel. Without a mask, distance alone decides.
+    stub_radius_at
+        A ready-made ``radius(position_um)`` (see :func:`mask_radius_sampler`)
+        used in place of building one from *segmentation_mask* -- for a
+        caller building many graphs from one mask.
+    protect_image_face_stubs
+        Keep a short stub whose end lies within its pruning threshold of an
+        image face: a vessel cut by the image, the open ends inlets and
+        outlets are chosen from.
+    gap_bridge_max_turn_deg
+        A straight bridge between two terminals (*graph_reconnect_threshold*,
+        *final_orphan_reconnect_threshold*) is refused when it turns more than
+        this from a terminal's own end direction, i.e. folds back on the
+        vessel it should continue, or when a terminal ends less than
+        ``build.MIN_GAP_BRIDGE_END_LENGTH_UM`` of centreline -- see
+        ``build.MAX_GAP_BRIDGE_TURN_DEG``. ``None`` bridges regardless.
+    bridge_require_mask_support, bridge_max_background_gap_um, bridge_min_mask_fraction
+        With a *segmentation_mask* and *bridge_require_mask_support* on, the
+        gap, optimise and orphan reconnects draw a bridge only along a route
+        through the mask crossing at most *bridge_max_background_gap_um* of
+        background in one run, with at least *bridge_min_mask_fraction* of it
+        in the mask, and not beside another edge in the same lumen
+        (``reconnect.MaskBridges``); the stub prunes also drop stubs mostly
+        off the mask or inside their parent's lumen, and hold one whose tip
+        the mask runs on past to *min_stub_length* as well
+        (``prune.prune_vascular_stubs``); and the last step,
+        :func:`consolidate_lumen`, takes out edges lying mostly off the mask,
+        the second of two edges through one lumen, an arc of every loop lying
+        inside one lumen -- a Lee-thinning ring, round nothing or a dropout
+        rather than tissue -- and the stubs all of that leaves, round after
+        round until nothing changes. Without a mask, or off, none of it
+        happens and the last step only merges degree-2 nodes.
+    recover_uncovered_mask_vessels, recovery_min_region_volume_um3, recovery_min_length_um
+        With a *segmentation_mask*, trace the mask the graph does not cover
+        along *skeleton* -- the centreline the graph was built from, where an
+        earlier step dropped it -- and join it to the network through the mask -- see
+        ``mask_recovery.recover_uncovered_mask_vessels``. Without a mask, or
+        off, the step leaves the graph as it is.
+    facing_dead_end_max_gap_um
+        With a *segmentation_mask* and *bridge_require_mask_support* on, join
+        two dead ends pointing at each other across a gap in the segmentation
+        up to this long -- see ``facing_ends.join_facing_dead_ends``. 0, or
+        without a mask, leaves the graph as it is.
+    extend_dead_ends_to_faces, trace_on_dead_ends, join_dead_ends_to_vessel_sides
+        With a *segmentation_mask* and *bridge_require_mask_support* on, and
+        each off by default until marked grids calibrate it
+        (PLAN_dead_ends.md): draw a dead end that leaves the image on to the
+        face, draw the centreline on from a dead end the mask runs on past,
+        and join a dead end to the side of the vessel straight ahead across a
+        gap -- see ``dead_end_extension``. They run in the facing-join step.
+    remove_short_loops_under_um
+        With a *segmentation_mask* and *bridge_require_mask_support* on,
+        break every loop up to this long round in each clean-up round,
+        whatever the mask says of it -- see ``lumen_loops.remove_short_loops``
+        and grids I and I2. 0 leaves short loops to the review list.
+    short_loop_keep_hole_over_um
+        A short loop round a tissue hole wider than this
+        (``lumen_loops.loop_hole_um``) is left to the review list rather than
+        broken: grids Q and Q2 found most of those real. 0 breaks every short
+        loop.
+    lumen_cleanup_rewire_pairs, lumen_cleanup_guard_rejoins
+        Of two edges in one lumen, take the one that goes out by rewiring --
+        its stretch beside the other cut out, what is left joined where it
+        parts -- rather than deleting it whole; and let the stretch step make
+        no join that would close a loop inside one lumen (PLAN_clean_graph.md
+        1d). Both on by default; off is the clean-up as it was before.
+    along_thick_centreline
+        How much of a polyline (µm) follows the thick-vessel centreline tree
+        (``thick_vessel_junctions.ThickCentreline.along_um``), when the run
+        has a thick-vessel region: the clean-up then keeps the strand on the
+        tree, of two in one lumen, unless the other is a vessel of its own
+        beside it (``LumenCleanup.along_centreline``). None leaves the choice
+        to the wall alone.
+    stub_face_protection
+        Which short stubs the prune keeps at an image face: ``"threshold"``
+        (a tip within its own threshold of a face, as before) or
+        ``"leaves_image"`` (only a dead end that leaves the image, by
+        ``dead_ends.leaves_image``; a near-face spur is judged like any other).
+    mask_support
+        A ``preprocessing.MaskSupport`` over *segmentation_mask*, used in
+        place of building one (with this build's bridge limits:
+        ``MaskSupport.limited_to``) -- for a caller that reads the same mask
+        after the build, so it is packed and its surface tree built once
+        (``pipeline.build_network``). The graph is the same either way.
 
     Returns
     -------
     nx.MultiGraph
-        Cleaned vascular graph.
+        Cleaned vascular graph. Empty when no two skeleton voxels touch (an
+        empty skeleton, or isolated points): there is no vessel to trace.
     """
+    check_mask_shape(segmentation_mask, skeleton)
     degree2_pass1_max_degree = 4
     degree2_pass2_max_degree = 8
+    stub_radius_at = (
+        stub_radius_at
+        if stub_radius_at is not None
+        else mask_radius_sampler(
+            segmentation_mask, voxel_size, min_stub_length_radius_multiple, low_memory=use_memmap
+        )
+    )
+    given_support, mask_support = mask_support, None
+    if segmentation_mask is not None and (
+        bridge_require_mask_support or recover_uncovered_mask_vessels
+    ):
+        if given_support is not None:
+            check_mask_shape(given_support.mask, skeleton, "The mask support's mask")
+            mask_support = given_support.limited_to(bridge_max_background_gap_um, bridge_min_mask_fraction)
+        else:
+            mask_support = MaskSupport(
+                np.asanyarray(segmentation_mask, dtype=bool),
+                voxel_size,
+                max_background_gap_um=bridge_max_background_gap_um,
+                min_mask_fraction=bridge_min_mask_fraction,
+                feature_distance=getattr(stub_radius_at, "feature_distance", None),
+                low_memory=use_memmap,
+            )
+    inside_lumen = mask_lumen_test(
+        segmentation_mask, voxel_size,
+        support=mask_support if mask_support is not None else given_support,
+    )
+    bridge_support = mask_support if bridge_require_mask_support else None
+    cleanup = lumen_cleanup(
+        segmentation_mask,
+        voxel_size,
+        image_shape=skeleton.shape,
+        min_stub_length=min_stub_length,
+        min_stub_length_radius_multiple=min_stub_length_radius_multiple,
+        stub_radius_at=stub_radius_at,
+        protect_image_face_stubs=protect_image_face_stubs,
+        bridge_require_mask_support=bridge_require_mask_support,
+        mask_support=mask_support,
+        max_degree=degree2_pass1_max_degree,
+        debug=debug,
+        stub_face_protection=stub_face_protection,
+        remove_short_loops_under_um=remove_short_loops_under_um,
+        short_loop_keep_hole_over_um=short_loop_keep_hole_over_um,
+        along_thick_centreline=along_thick_centreline,
+        max_rounds=lumen_cleanup_max_rounds,
+        rewire_pairs=lumen_cleanup_rewire_pairs,
+        guard_rejoins=lumen_cleanup_guard_rejoins,
+    )
+    prune_stubs = cleanup.prune
+    if debug and mask_support is not None:
+        step_callback = _with_lumen_artefact_report(
+            step_callback, mask_support, float(min_stub_length_radius_multiple or 0.0)
+        )
 
     logger.info("Building skan Skeleton object...")
-    sk = csr.Skeleton(skeleton)
+    warmup = skan_numba_warmup_skeleton()
+    if warmup is not None:
+        csr.Skeleton(warmup)
+    sk = skan_skeleton(skeleton, use_memmap=use_memmap)
     logger.info(f"skan Skeleton built: {sk.n_paths} paths")
 
-    logger.info("Building graph (loop detection + segment extraction)...")
-    G, voxel_loops, loop_edges = build_graph_segment_skan_stitched_loops(
+    logger.info("Building graph (segment extraction + gap bridges)...")
+    G = build_graph_segment_skan_stitched_loops(
         sk,
         skeleton,
         debug=debug,
         voxel_size=voxel_size,
         reconnect_threshold=graph_reconnect_threshold,
+        max_bridge_turn_deg=gap_bridge_max_turn_deg,
+        mask_support=bridge_support,
     )
     _notify_step(G, "build_graph_segment_skan_stitched_loops", step_callback)
 
@@ -120,16 +786,17 @@ def build_graph_from_skeleton(
         skeleton,
         voxel_size=voxel_size,
         debug=debug,
+        use_memmap=use_memmap,
     )
     _notify_step(G, "reconnect_secondary_loop_edges", step_callback)
 
-    G, _ = optimise_graph_topology_fixed(
+    G = optimise_graph_topology_fixed(
         G,
-        voxel_loops,
-        loop_edges,
         skeleton_data=skeleton,
         debug=debug,
         reconnect_threshold=graph_reconnect_threshold,
+        max_bridge_turn_deg=gap_bridge_max_turn_deg,
+        mask_support=bridge_support,
     )
     _notify_step(G, "optimise_graph_topology_fixed", step_callback)
 
@@ -138,15 +805,39 @@ def build_graph_from_skeleton(
         skeleton,
         max_degree=degree2_pass1_max_degree,
         debug=debug,
+        inside_lumen=inside_lumen,
     )
     _notify_step(G, "smart_multigraph_degree2_removal_pass1", step_callback)
     _log_degree2_diagnostics(G, degree2_pass1_max_degree, debug)
 
-    G = collapse_node_clusters(
-        G,
-        distance_threshold=cluster_collapse_distance,
-        debug=debug,
-    )
+    if cluster_collapse_method == "direction_aware":
+        G = collapse_node_clusters_direction_aware(
+            G,
+            distance_threshold=cluster_collapse_distance,
+            max_radial_dispersion=cluster_collapse_max_radial_dispersion,
+            min_degree_for_dispersion_check=cluster_collapse_direction_aware_min_degree,
+            tangent_length_um=cluster_collapse_direction_aware_tangent_length_um,
+            debug=debug,
+            inside_lumen=inside_lumen,
+        )
+    elif cluster_collapse_method == "persistence":
+        G = collapse_node_clusters_persistence(
+            G,
+            distance_threshold=cluster_collapse_distance,
+            search_radius_multiple=cluster_collapse_persistence_search_multiple,
+            debug=debug,
+        )
+    elif cluster_collapse_method == "distance_only":
+        G = collapse_node_clusters(
+            G,
+            distance_threshold=cluster_collapse_distance,
+            debug=debug,
+        )
+    else:
+        raise ValueError(
+            f"cluster_collapse_method must be 'distance_only', 'direction_aware' "
+            f"or 'persistence', got {cluster_collapse_method!r}."
+        )
     _notify_step(G, "collapse_node_clusters", step_callback)
 
     G = smart_multigraph_degree2_removal(
@@ -154,10 +845,11 @@ def build_graph_from_skeleton(
         skeleton,
         max_degree=degree2_pass2_max_degree,
         debug=debug,
+        inside_lumen=inside_lumen,
     )
     _notify_step(G, "smart_multigraph_degree2_removal_post_collapse", step_callback)
 
-    G = prune_vascular_stubs(G, debug=debug, min_stub_length=min_stub_length)
+    G = prune_stubs(G)
     _notify_step(G, "prune_vascular_stubs", step_callback)
     _log_degree2_diagnostics(G, degree2_pass2_max_degree, debug)
 
@@ -166,6 +858,7 @@ def build_graph_from_skeleton(
         skeleton,
         max_degree=degree2_pass2_max_degree,
         debug=debug,
+        inside_lumen=inside_lumen,
     )
     _notify_step(G, "smart_multigraph_degree2_removal_post_prune", step_callback)
     _log_degree2_diagnostics(G, degree2_pass2_max_degree, debug)
@@ -181,16 +874,61 @@ def build_graph_from_skeleton(
         max_new_edges_per_node=1,
         validate_reconnections=True,
         debug=debug,
+        # Direction-aware collapse only guards its own step (above); without
+        # this, orphan/dangling reconnection -- which runs later in this
+        # same pipeline with no cartwheel-awareness of its own -- can
+        # independently attach many separate dangling stubs to the same
+        # nearby node and recreate the wheel shape the collapse step just
+        # spent its own pass preventing. Only turned on for the method that
+        # makes this same trade-off everywhere else in the graph.
+        direction_aware=cluster_collapse_method == "direction_aware",
+        max_radial_dispersion=cluster_collapse_max_radial_dispersion,
+        min_degree_for_dispersion_check=cluster_collapse_direction_aware_min_degree,
+        tangent_length_um=cluster_collapse_direction_aware_tangent_length_um,
+        max_bridge_turn_deg=gap_bridge_max_turn_deg,
+        mask_support=bridge_support,
     )
     _notify_step(G, "reconnect_orphan_and_dangling_nodes", step_callback)
 
-    G = smart_multigraph_degree2_removal(
-        G,
-        skeleton,
-        max_degree=degree2_pass1_max_degree,
-        debug=debug,
-    )
-    _notify_step(G, "smart_multigraph_degree2_removal_post_orphan_reconnect", step_callback)
+    if recover_uncovered_mask_vessels and mask_support is not None:
+        G = _recover_uncovered_mask_vessels(
+            G,
+            mask_support,
+            attach_reach_um=final_orphan_reconnect_threshold,
+            min_region_volume_um3=recovery_min_region_volume_um3,
+            min_length_um=recovery_min_length_um,
+            skeleton=skeleton,
+        )
+    _notify_step(G, "recover_uncovered_mask_vessels", step_callback)
+
+    # A vessel the segmentation broke leaves two dead ends heading for each
+    # other: joined here, before the loop breaker and the last stub prune.
+    if bridge_support is not None and facing_dead_end_max_gap_um > 0:
+        G = join_facing_dead_ends(G, bridge_support, max_gap_um=facing_dead_end_max_gap_um)
+    # The dead-end repairs PLAN_dead_ends.md calibrates on marked grids: off
+    # unless a run asks for them.
+    if bridge_support is not None and (
+        extend_dead_ends_to_faces or trace_on_dead_ends or join_dead_ends_to_vessel_sides
+    ):
+        from . import dead_end_extension
+
+        extent = (np.asarray(skeleton.shape, dtype=float) - 1.0) * np.asarray(voxel_size, dtype=float)
+        if extend_dead_ends_to_faces:
+            dead_end_extension.extend_dead_ends_to_faces(G, bridge_support, extent_um=extent)
+        if trace_on_dead_ends:
+            dead_end_extension.trace_on_dead_ends(G, bridge_support, extent_um=extent)
+        if join_dead_ends_to_vessel_sides:
+            dead_end_extension.join_dead_ends_to_vessel_sides(
+                G, bridge_support, extent_um=extent, max_gap_um=facing_dead_end_max_gap_um or None,
+            )
+    _notify_step(G, "join_facing_dead_ends", step_callback)
+
+    # One segmented vessel is drawn once: edges through empty space, a second
+    # edge through one lumen, loops round no tissue (Lee rings every tunnel
+    # through the mask) and the stubs all of that leaves go, round after
+    # round, until nothing changes -- see consolidate_lumen.
+    G = consolidate_lumen(G, cleanup)
+    _notify_step(G, "consolidate_lumen", step_callback)
     _log_degree2_diagnostics(G, degree2_pass2_max_degree, debug)
 
     return G

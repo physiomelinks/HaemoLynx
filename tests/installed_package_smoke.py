@@ -9,6 +9,14 @@ a wheel installed into an empty environment.
 import json
 from pathlib import Path
 
+if __name__ != "__main__":
+    # Imported -- pytest handed it by name -- it would write config.yaml and
+    # out_*.vtp into the working directory: on 2026-10-21 it overwrote the
+    # repository's own config.yaml with the defaults.
+    import pytest
+
+    pytest.skip("a script: run it directly, from outside the repository", allow_module_level=True)
+
 import networkx as nx
 import numpy as np
 

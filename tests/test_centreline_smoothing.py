@@ -15,6 +15,7 @@ came from.
 """
 from __future__ import annotations
 
+import copy
 from pathlib import Path
 
 import networkx as nx
@@ -230,7 +231,7 @@ def nerve_graph(tmp_path_factory):
     values.update(
         {
             "input_path": NERVE,
-            "vtk_output_prefix": output / "run",
+            "output_dir": output,
             "plot_dir": output / "plots",
             "statistics": False,
             "show_plots_in_ide": False,
@@ -238,54 +239,94 @@ def nerve_graph(tmp_path_factory):
         }
     )
     settings = resolve_settings(values, schema=schema, config_path=None)
+    traced = {}
+
+    def keep_the_graph_smoothing_is_given(label, graph):
+        if label == graph_tools.STEP_LABELS[-1]:
+            traced["graph"] = copy.deepcopy(graph)
+
     volume = skeletonise(settings, segment(settings))
-    network = build_network(settings, volume, schema)
-    return network.graph, volume.skeleton, volume.voxel_size_zyx
+    network = build_network(settings, volume, schema, on_step_graph=keep_the_graph_smoothing_is_given)
+    return network.graph, volume.skeleton, volume.voxel_size_zyx, traced["graph"]
 
 
 def _total_length(graph) -> float:
     return sum(float(data["length"]) for *_ids, data in graph.edges(keys=True, data=True))
 
 
-def _deviations(graph, skeleton, voxel_size_zyx) -> np.ndarray:
-    """How far every centreline point sits from the nearest skeleton voxel."""
+def _path_points(graph, step_um: float = 0.25) -> np.ndarray:
+    """Every edge's path, sampled every *step_um*."""
+    points = []
+    for *_ids, data in graph.edges(keys=True, data=True):
+        voxels = np.asarray(data.get("voxels", []), dtype=float)
+        for a, b in zip(voxels[:-1], voxels[1:]):
+            n = max(1, int(np.ceil(np.linalg.norm(b - a) / step_um)))
+            points.append(a + (b - a) * np.linspace(0.0, 1.0, n + 1)[:, None])
+    return np.concatenate(points)
+
+
+def _deviations(graph, skeleton, voxel_size_zyx, traced=None) -> np.ndarray:
+    """How far every centreline point sits from what smoothing was given: the
+    nearest skeleton voxel, or a point of the path the build drew (*traced*,
+    the graph before smoothing) where that path itself leaves the skeleton
+    -- a straight bridge across a gap in it, which is what smoothing measures
+    from too (graph/smoothing.py).
+
+    A mask continuation joined onto a vessel -- recovered, or a bridge merged
+    into it -- leaves the skeleton only at an end. That end is not what
+    smoothing traced, so it is left out; a point off the skeleton between two
+    points on it is kept.
+    """
     from scipy.spatial import cKDTree
 
     support = np.argwhere(skeleton).astype(float) * np.asarray(voxel_size_zyx)
+    if traced is not None:
+        support = np.vstack([support, _path_points(traced)])
     tree = cKDTree(support)
-    points = np.concatenate(
-        [
-            np.asarray(data["voxels"], dtype=float)
-            for *_ids, data in graph.edges(keys=True, data=True)
-            if data.get("voxels") is not None and len(data["voxels"]) >= 2
-        ]
-    )
-    return tree.query(points)[0]
+    kept = []
+    for *_ids, data in graph.edges(keys=True, data=True):
+        voxels = data.get("voxels")
+        if voxels is None or len(voxels) < 2:
+            continue
+        deviation = tree.query(np.asarray(voxels, dtype=float))[0]
+        on_it = np.flatnonzero(deviation < 1.6)
+        if len(on_it):
+            deviation = deviation[on_it[0] : on_it[-1] + 1]
+        kept.append(deviation)
+    return np.concatenate(kept)
 
 
 @pytest.mark.slow
 @pytest.mark.integration
 def test_the_nerve_total_length_is_smoothed_but_not_oversmoothed(nerve_graph):
-    """Bounded both ways, on real data.
+    """Bounded both ways, on real data, as a share of the path smoothing was
+    given (the graph before smoothing, measured in the same run).
 
-    The raw skeleton path totals about 5610 um on this fixture and the vessels
-    it traces are around 5170. Above the upper bound the staircase is still
-    being measured; below the lower bound the centrelines have been pulled
-    straighter than the vessels are.
+    The bounds were 4,900-5,400 um when that path was 5,847 um (smoothed
+    5,314, 0.909 of it). Since morphology stopped eroding the image faces
+    (b99758b) the build traces 186 um more vessel there and smoothing takes
+    out the same share (0.909), so the bounds are those shares: above the
+    upper one the staircase is still being measured; below the lower one the
+    centrelines have been pulled straighter than the vessels are.
     """
-    graph, _skeleton, _voxel_size = nerve_graph
-    total = _total_length(graph)
+    graph, _skeleton, _voxel_size, traced = nerve_graph
+    share = _total_length(graph) / _total_length(traced)
 
-    assert total < 5_400.0, f"{total:.0f} um: the voxel staircase is still in the length"
-    assert total > 4_900.0, f"{total:.0f} um: the centrelines have been oversmoothed"
+    assert share < 5_400.0 / 5_847.0, f"{share:.3f} of the path: the voxel staircase is still in the length"
+    assert share > 4_900.0 / 5_847.0, f"{share:.3f} of the path: the centrelines have been oversmoothed"
 
 
 @pytest.mark.slow
 @pytest.mark.integration
 def test_the_nerve_centrelines_stay_on_the_skeleton(nerve_graph):
-    """Smoothing must not move a vessel off the thing it was traced from."""
-    graph, skeleton, voxel_size = nerve_graph
-    deviations = _deviations(graph, skeleton, voxel_size)
+    """Smoothing must not move a vessel off the thing it was traced from.
+
+    Measured from the skeleton alone, a vessel lying in the z = 0 face
+    slice -- kept since b99758b -- read 4.5 um off it: Lee thinning left a
+    9 um gap there and the build bridged it straight through the mask.
+    """
+    graph, skeleton, voxel_size, traced = nerve_graph
+    deviations = _deviations(graph, skeleton, voxel_size, traced)
 
     assert deviations.mean() < 0.40, (
         f"mean deviation {deviations.mean():.3f} um: the centrelines have drifted"
@@ -299,7 +340,7 @@ def test_the_nerve_centrelines_stay_on_the_skeleton(nerve_graph):
 @pytest.mark.integration
 def test_every_vessel_says_what_happened_to_it(nerve_graph):
     """Provenance, so a surprising length can be traced to a decision."""
-    graph, _skeleton, _voxel_size = nerve_graph
+    graph, _skeleton, _voxel_size, _traced = nerve_graph
     outcomes = {
         data.get("centreline_smoothing")
         for *_ids, data in graph.edges(keys=True, data=True)
@@ -387,6 +428,82 @@ def test_a_path_that_would_leave_the_vessel_is_blended_back():
 
     assert counts["smoothed"] == 0
     assert counts["relaxed"] + counts["kept_raw"] == 1
+
+
+def test_a_chaikin_path_that_would_leave_the_vessel_is_blended_back_without_crashing():
+    """Regression: chaikin's own smoothed candidate has more points than the
+    original -- corner-cutting subdivision (`_chaikin_once`) roughly doubles
+    the point count each iteration, unlike Taubin, which perturbs the same
+    points it was given. When the direct chaikin candidate is rejected (as
+    here, the hairpin-corner case the Taubin version of this test uses) and
+    the relaxation loop tries to blend it back towards the original,
+    elementwise blending used to crash with a shape mismatch instead of
+    falling back cleanly.
+
+    Four times the size and three passes, so that the corner is cut by
+    nearly 2 um: one pass only places points along the hairpin's own legs,
+    which -- off the skeleton between its few voxels -- are what a path is
+    judged against there, so that candidate is accepted.
+    """
+    corner = 4.0 * np.array([[0, 0, 0], [5, 0, 0], [10, 0, 0], [10, 5, 0], [10, 10, 0]], dtype=float)
+    skeleton = np.zeros((44, 44, 4), dtype=bool)
+    for point in corner:
+        skeleton[int(point[0]), int(point[1]), int(point[2])] = True
+
+    graph = nx.MultiGraph()
+    graph.add_node(0, pos=corner[0])
+    graph.add_node(1, pos=corner[-1])
+    graph.add_edge(0, 1, key=0, voxels=corner.tolist(), length=80.0)
+
+    counts = smooth_graph_centrelines(
+        graph, skeleton, voxel_size_zyx=(1.0, 1.0, 1.0),
+        method="chaikin", iterations=3, max_deviation=0.5,
+    )
+
+    assert counts["smoothed"] == 0
+    assert counts["relaxed"] + counts["kept_raw"] == 1
+
+
+def test_resample_to_point_count_preserves_endpoints():
+    from haemolynx.graph.smoothing import _resample_to_point_count
+
+    points = np.array([[0, 0, 0], [1, 0, 0], [1, 1, 0], [1, 2, 0]], dtype=float)
+    resampled = _resample_to_point_count(points, 7)
+
+    assert resampled.shape == (7, 3)
+    assert np.allclose(resampled[0], points[0])
+    assert np.allclose(resampled[-1], points[-1])
+
+
+def test_resample_to_point_count_is_a_no_op_when_counts_already_match():
+    from haemolynx.graph.smoothing import _resample_to_point_count
+
+    points = np.array([[0, 0, 0], [1, 0, 0], [2, 0, 0]], dtype=float)
+    assert _resample_to_point_count(points, 3) is points
+
+
+def test_accept_relaxes_a_candidate_with_a_different_point_count_without_crashing():
+    """Direct unit test of the exact previously-crashing code path: _accept's
+    relaxation blend combines *original* and *smoothed* elementwise, which
+    requires a matching point count -- true for Taubin, false for any
+    method (chaikin included) whose output has a different number of
+    points than its input.
+    """
+    from scipy.spatial import cKDTree
+
+    from haemolynx.graph.smoothing import _accept
+
+    original = np.array([[0, 0, 0], [5, 0, 0], [10, 0, 0], [10, 5, 0], [10, 10, 0]], dtype=float)
+    # More points than original, and pushed off-vessel so the direct
+    # candidate is rejected and relaxation actually runs.
+    smoothed = np.linspace(original[0], original[-1], 9)
+    smoothed[4] = smoothed[4] + np.array([5.0, 5.0, 0.0])
+
+    tree = cKDTree(original)
+    accepted, outcome = _accept(original, smoothed, tree, max_deviation=0.5)
+
+    assert outcome in {"relaxed", "kept_raw"}
+    assert accepted.ndim == 2 and accepted.shape[1] == 3
 
 
 def test_smoothing_never_makes_a_centreline_longer():
@@ -648,3 +765,366 @@ def test_writes_the_length_error_against_known_truth(known_vessels, plot_subdir,
     assert output.stat().st_size > 0
     # The figure has to show what the tests above assert, or it is decoration.
     assert raw_error > 4.0 and abs(smoothed_error) < 2.0
+
+
+# --- the tolerance scales with the voxel and the vessel; every length re-measured ---
+
+
+def _zigzag_edge(amplitude: float):
+    """A path along x whose skeleton zigzags by *amplitude* in y -- a wide
+    vessel's centreline wandering inside its lumen."""
+    points = np.array([[0.0, amplitude * (i % 2), 2.0 * i] for i in range(11)])
+    skeleton = np.zeros((1, int(amplitude) + 2, 22), dtype=bool)
+    for point in points:
+        skeleton[int(point[0]), int(point[1]), int(point[2])] = True
+    graph = nx.MultiGraph()
+    graph.add_node(0, pos=points[0])
+    graph.add_node(1, pos=points[-1])
+    graph.add_edge(0, 1, key=0, voxels=points.tolist(), length=999.0)
+    return graph, skeleton
+
+
+def test_a_wide_vessels_wandering_centreline_is_smoothed_not_kept_raw():
+    """Regression: the fixed 1 um tolerance kept a wide vessel's zigzag as it
+    was -- the case where its extra length matters most."""
+    narrow, skeleton = _zigzag_edge(3.0)
+    wide, _ = _zigzag_edge(3.0)
+
+    smooth_graph_centrelines(narrow, skeleton, max_deviation=1.0)
+    smooth_graph_centrelines(wide, skeleton, max_deviation=1.0, radius_at=lambda _p: 10.0)
+
+    assert narrow.edges[0, 1, 0]["centreline_smoothing"] in {"relaxed", "kept_raw"}
+    assert wide.edges[0, 1, 0]["centreline_smoothing"] == "smoothed"
+    assert wide.edges[0, 1, 0]["length"] < narrow.edges[0, 1, 0]["length"]
+
+
+def test_the_tolerance_is_never_below_half_the_voxel_diagonal():
+    """On 2 x 0.5 x 0.5 um voxels a straight line lies up to ~1.06 um from
+    every voxel centre: a 1 um tolerance refused the staircase's own scale."""
+    from haemolynx.graph.smoothing import edge_tolerance_um
+
+    path = np.zeros((5, 3))
+    assert edge_tolerance_um(path, max_deviation=1.0, voxel_size_zyx=(2.0, 0.5, 0.5)) == pytest.approx(
+        0.5 * np.sqrt(4.0 + 0.25 + 0.25)
+    )
+    assert edge_tolerance_um(path, max_deviation=1.0, voxel_size_zyx=(0.5, 0.5, 0.5)) == 1.0
+    assert edge_tolerance_um(
+        path, max_deviation=1.0, voxel_size_zyx=(0.5, 0.5, 0.5), radius_at=lambda _p: 6.0
+    ) == pytest.approx(3.0)
+
+
+def test_every_edges_length_is_measured_from_its_path_smoothed_or_not():
+    """Regression: an edge kept raw, or too short to smooth, kept whatever
+    length it arrived with -- stale if an earlier step had moved its end."""
+    raw, skeleton = _zigzag_edge(3.0)
+    raw.add_node(2, pos=np.array([0.0, 0.0, 30.0]))
+    raw.add_edge(1, 2, key=0, voxels=[[0.0, 0.0, 20.0], [0.0, 0.0, 30.0]], length=999.0)
+
+    smooth_graph_centrelines(raw, skeleton, max_deviation=0.1)
+
+    for _u, _v, data in raw.edges(data=True):
+        assert data["length"] == pytest.approx(
+            float(np.linalg.norm(np.diff(np.asarray(data["voxels"]), axis=0), axis=1).sum())
+        )
+
+
+def _smoothed_wave_amplitude(along_axis: int) -> float:
+    """A centreline waving 1 um either side over a 16 um wavelength, 64 um
+    long, running along *along_axis* on 2 x 0.5 x 0.5 um voxels -- a vertex
+    every 2 um along z, every 0.5 um along x -- smoothed; its amplitude after."""
+    spacing = np.array([2.0, 0.5, 0.5])
+    s = np.arange(0.0, 64.0 + 1e-9, spacing[along_axis])
+    points = np.zeros((len(s), 3))
+    points[:, along_axis] = s
+    points[:, 1] = 10.0 + np.round(np.sin(2 * np.pi * s / 16.0) / 0.5) * 0.5
+    points[:, 2 if along_axis == 0 else 0] = 10.0
+    index = np.rint(points / spacing).astype(int)
+    skeleton = np.zeros(index.max(axis=0) + 3, dtype=bool)
+    skeleton[tuple(index.T)] = True
+    G = nx.MultiGraph()
+    G.add_node(0, pos=points[0])
+    G.add_node(1, pos=points[-1])
+    G.add_edge(0, 1, voxels=points.tolist())
+
+    smooth_graph_centrelines(G, skeleton, voxel_size_zyx=tuple(spacing), iterations=10, max_deviation=5.0)
+
+    out = np.asarray(G[0][1][0]["voxels"])
+    middle = out[(out[:, along_axis] > 8) & (out[:, along_axis] < 56)]
+    return float(np.abs(middle[:, 1] - 10.0).max())
+
+
+def _straight_staircase(start, end, spacing):
+    """A straight vessel from *start* to *end* (microns, both on voxel
+    centres) traced as the 26-connected voxel staircase a skeleton gives on
+    *spacing*: the one-edge graph, its skeleton, and its true length."""
+    spacing = np.asarray(spacing, dtype=float)
+    a, b = np.asarray(start, dtype=float) / spacing, np.asarray(end, dtype=float) / spacing
+    steps = int(np.ceil(np.abs(b - a).max()))
+    index = []
+    for t in np.linspace(0.0, 1.0, steps + 1):
+        voxel = tuple(int(i) for i in np.rint(a + t * (b - a)))
+        if not index or index[-1] != voxel:
+            index.append(voxel)
+    index = np.asarray(index)
+    skeleton = np.zeros(index.max(axis=0) + 3, dtype=bool)
+    skeleton[tuple(index.T)] = True
+    path = index * spacing
+    G = nx.MultiGraph()
+    G.add_node(0, pos=path[0])
+    G.add_node(1, pos=path[-1])
+    G.add_edge(0, 1, key=0, voxels=path.tolist())
+    return G, skeleton, float(np.linalg.norm(np.subtract(end, start)))
+
+
+@pytest.mark.parametrize("spacing", [(1.0, 1.0, 1.0), (2.0, 0.5, 0.5), (3.0, 0.5, 0.5), (0.5, 1.0, 1.0)])
+@pytest.mark.parametrize("end", [(30.0, 26.0, 30.0), (30.0, 14.0, 27.0)])
+def test_an_oblique_vessel_on_anisotropic_voxels_comes_back_its_own_length(spacing, end):
+    """Regression: on anisotropic voxels the path was resampled at the finest
+    step, so the passes smoothed over about 1.5 um while the coarse axis's
+    staircase is a voxel of it high: a 41.6 um oblique vessel measured
+    47.1 um on 2 x 0.5 x 0.5 um voxels and 50.5 um on 3 x 0.5 x 0.5."""
+    G, skeleton, true_length = _straight_staircase((6.0, 2.0, 6.0), end, spacing)
+    raw_length = float(np.linalg.norm(np.diff(np.asarray(G.edges[0, 1, 0]["voxels"]), axis=0), axis=1).sum())
+
+    smooth_graph_centrelines(G, skeleton, voxel_size_zyx=spacing)
+
+    edge = G.edges[0, 1, 0]
+    assert edge["centreline_smoothing"] in ("smoothed", "relaxed")
+    assert edge["length"] == pytest.approx(true_length, rel=0.02), f"raw {raw_length:.2f} um"
+    assert np.allclose(edge["voxels"][0], G.nodes[0]["pos"]) and np.allclose(edge["voxels"][-1], G.nodes[1]["pos"])
+
+
+def test_chaikin_smooths_an_oblique_vessel_on_anisotropic_voxels_too():
+    """The coarse axis is smoothed by the run's own method: Chaikin's corner
+    cutting, which makes points of its own, as well as Taubin."""
+    spacing = (2.0, 0.5, 0.5)
+    G, skeleton, true_length = _straight_staircase((6.0, 2.0, 6.0), (30.0, 26.0, 30.0), spacing)
+    raw_length = float(np.linalg.norm(np.diff(np.asarray(G.edges[0, 1, 0]["voxels"]), axis=0), axis=1).sum())
+
+    smooth_graph_centrelines(G, skeleton, voxel_size_zyx=spacing, method="chaikin", iterations=2)
+
+    edge = G.edges[0, 1, 0]
+    assert edge["centreline_smoothing"] in ("smoothed", "relaxed")
+    assert true_length - 1e-9 <= edge["length"] < raw_length
+
+
+@pytest.mark.parametrize(
+    "spacing, always_resample, length, points",
+    [
+        ((1.0, 1.0, 1.0), False, 36.75446337706389, 25),
+        ((1.0, 1.0, 1.0), True, 37.01087473854225, 40),
+        ((2.0, 2.0, 2.0), False, 37.43312882725514, 13),
+        ((2.0, 2.0, 2.0), True, 37.72279352428807, 21),
+    ],
+)
+def test_isotropic_voxels_are_smoothed_exactly_as_before(spacing, always_resample, length, points):
+    """Pinned to the output before anisotropic paths were resampled at the
+    coarsest step: on cube voxels nothing changed."""
+    G, skeleton, _true = _straight_staircase((6.0, 2.0, 6.0), (30.0, 20.0, 27.0), spacing)
+
+    smooth_graph_centrelines(G, skeleton, voxel_size_zyx=spacing, always_resample=always_resample)
+
+    edge = G.edges[0, 1, 0]
+    assert edge["centreline_smoothing"] == "smoothed"
+    assert len(edge["voxels"]) == points
+    assert edge["length"] == pytest.approx(length, rel=1e-12, abs=0.0)
+
+
+def test_a_vessel_running_along_z_is_smoothed_over_the_same_distance_as_one_in_plane():
+    """Regression (audit): each pass averaged neighbouring vertices, a voxel
+    apart -- four times further along a 2 um z than in-plane -- so the same
+    wave was flattened to 0.74 um running along z but kept 1.04 um in-plane."""
+    along_z = _smoothed_wave_amplitude(0)
+    along_x = _smoothed_wave_amplitude(2)
+
+    assert along_z / along_x > 0.85
+
+
+# --- a path the graph build bridged across a gap in the skeleton ------------
+
+
+def _bridged_staircase(spacing):
+    """A straight vessel running 1 in 2 across the y-x plane, traced as a voxel
+    staircase with a gap in the middle that graph building has bridged: a
+    straight 10-voxel step with no skeleton along it. The path in microns, the
+    skeleton, and the bridge's two ends."""
+    first = [(0, x // 2, x) for x in range(0, 15)]
+    second = [(0, x // 2, x) for x in range(24, 39)]
+    index = np.array(first + second)
+    skeleton = np.zeros((1, 21, 40), dtype=bool)
+    skeleton[tuple(index.T)] = True
+    path = index * np.asarray(spacing, dtype=float)
+    return path, skeleton, (path[len(first) - 1], path[len(first)])
+
+
+def _distance_to_segment(points, start, end):
+    along = np.clip((points - start) @ (end - start) / np.dot(end - start, end - start), 0.0, 1.0)
+    return np.linalg.norm(points - (start + along[:, None] * (end - start)), axis=1)
+
+
+@pytest.mark.parametrize("spacing", [(1.0, 0.98, 0.98), (1.0, 1.0, 1.0), (2.0, 0.5, 0.5)])
+def test_a_staircase_with_a_bridge_across_a_gap_is_smoothed_and_shorter(spacing):
+    """Regression: a straight step the graph build added across a gap in the
+    skeleton has no voxel along it, so its points -- resampled every voxel on
+    anisotropic voxels, slid into it by the filter on isotropic ones -- lay up
+    to half the gap from the skeleton. Nothing passed, not even the original:
+    an edge with a bridge kept its staircase (1137 of 3305 edges, 31 of 61 mm,
+    on the Stack A graph), or on isotropic voxels was only relaxed."""
+    from scipy.spatial import cKDTree
+
+    from haemolynx.graph.smoothing import edge_tolerance_um
+
+    path, skeleton, (start, end) = _bridged_staircase(spacing)
+    graph = nx.MultiGraph()
+    graph.add_node(0, pos=path[0])
+    graph.add_node(1, pos=path[-1])
+    graph.add_edge(0, 1, key=0, voxels=path.tolist())
+    raw_length = float(np.linalg.norm(np.diff(path, axis=0), axis=1).sum())
+
+    smooth_graph_centrelines(graph, skeleton, voxel_size_zyx=spacing)
+
+    edge = graph.edges[0, 1, 0]
+    assert edge["centreline_smoothing"] == "smoothed"
+    # The staircase is 6% longer than the straight vessel it traces.
+    assert edge["length"] < 0.96 * raw_length
+    smoothed = np.asarray(edge["voxels"])
+    assert np.allclose(smoothed[0], path[0]) and np.allclose(smoothed[-1], path[-1])
+    # Still on the vessel: near the skeleton, or near the bridge where there is none.
+    tolerance = edge_tolerance_um(path, max_deviation=1.0, voxel_size_zyx=spacing)
+    off_skeleton = cKDTree(np.argwhere(skeleton) * np.asarray(spacing)).query(smoothed)[0] > tolerance
+    assert np.all(_distance_to_segment(smoothed[off_skeleton], start, end) <= tolerance)
+
+
+def test_a_candidate_bowed_off_the_bridge_is_pulled_back():
+    """Along a bridge the path itself is the reference, with the same
+    tolerance: a candidate bowed 2 um off it -- shorter than the original, so
+    only the distance can refuse it -- is blended back to within 1 um."""
+    from scipy.spatial import cKDTree
+
+    from haemolynx.geometry import resample_at_step
+    from haemolynx.graph.smoothing import _accept, _polyline_length
+
+    spacing = (1.0, 0.98, 0.98)
+    path, skeleton, (start, end) = _bridged_staircase(spacing)
+    original = resample_at_step(path, min(spacing))
+    candidate = graph_tools.taubin_smooth_polyline(original)
+    across = np.array([0.0, 2.0, -1.0]) / np.sqrt(5.0)
+    from_middle = np.linalg.norm(candidate - 0.5 * (start + end), axis=1)
+    candidate = candidate + 2.0 * np.clip(1.0 - from_middle / 5.0, 0.0, None)[:, None] * across
+    assert _polyline_length(candidate) < _polyline_length(original)
+    tree = cKDTree(np.argwhere(skeleton) * np.asarray(spacing))
+
+    accepted, outcome = _accept(original, candidate, tree, 1.0)
+
+    assert outcome == "relaxed"
+    off_skeleton = tree.query(accepted)[0] > 1.0
+    assert off_skeleton.any()
+    assert np.all(_distance_to_segment(accepted[off_skeleton], start, end) <= 1.0)
+
+
+def test_a_bridge_widens_nothing_where_the_path_is_on_the_skeleton():
+    """Where the path is on the skeleton it is judged against the skeleton
+    alone: a candidate cutting a real corner 2 um short is pulled back, though
+    the same path bridges a gap further on."""
+    from scipy.spatial import cKDTree
+
+    from haemolynx.graph.smoothing import _accept, edge_tolerance_um
+
+    leg_a = [(0, 0, x) for x in range(0, 11)]
+    leg_b = [(0, y, 10) for y in range(1, 11)]
+    beyond_the_gap = [(0, y, 10) for y in range(20, 26)]
+    path = np.array(leg_a + leg_b + beyond_the_gap, dtype=float)
+    skeleton = np.zeros((1, 26, 11), dtype=bool)
+    skeleton[tuple(path.astype(int).T)] = True
+    tree = cKDTree(np.argwhere(skeleton).astype(float))
+    candidate = path.copy()
+    candidate[6:15] = np.linspace(path[6], path[14], 9)   # a chord across the corner at (0, 0, 10)
+    tolerance = edge_tolerance_um(path, max_deviation=0.5, voxel_size_zyx=(1.0, 1.0, 1.0))
+
+    accepted, outcome = _accept(path, candidate, tree, tolerance)
+
+    assert outcome == "relaxed"
+    near_corner = np.linalg.norm(accepted - np.array([0.0, 0.0, 10.0]), axis=1) < 5.0
+    assert tree.query(accepted[near_corner])[0].max() <= tolerance
+
+
+@pytest.mark.parametrize("spacing", [(2.0, 0.5, 0.5), (1.0, 1.0, 1.0), (1.0, 0.98, 0.98)])
+def test_a_staircase_on_its_own_skeleton_has_no_off_skeleton_stretch(spacing):
+    """The tolerance is often exactly half the voxel diagonal, how far a
+    diagonal step's midpoint is from the two voxels it joins: those midpoints
+    sit on the tolerance, and must not round their way past it into the
+    stretches a smoothed path may be judged against instead of the skeleton."""
+    from scipy.spatial import cKDTree
+
+    from haemolynx.geometry import resample_at_step
+    from haemolynx.graph.smoothing import _off_skeleton_stretches, edge_tolerance_um
+
+    path = np.array([[i, i, i] for i in range(12)], dtype=float) * np.asarray(spacing)
+    tolerance = edge_tolerance_um(path, max_deviation=0.5, voxel_size_zyx=spacing)
+    assert tolerance == pytest.approx(0.5 * np.linalg.norm(spacing))
+
+    for original in (path, resample_at_step(path, min(spacing))):
+        assert len(_off_skeleton_stretches(original, cKDTree(path), tolerance)) == 0
+
+
+# --- chords the clean-ups draw after smoothing (PLAN_bridging.md 6b) -----------
+
+
+def _arc_with_a_chord():
+    """A quarter circle 15 um round on cube voxels, as a skeleton, and an edge
+    along it whose path cuts one 6 um stretch with a straight chord -- what
+    the doubled-stretch rewiring leaves after the smoothing pass."""
+    angles = np.linspace(0.0, np.pi / 2, 400)
+    arc = np.column_stack([np.full_like(angles, 5.0), 20 + 15 * np.sin(angles), 5 + 15 * np.cos(angles)])
+    voxels = np.unique(np.rint(arc).astype(int), axis=0)
+    skeleton = np.zeros((11, 40, 40), dtype=bool)
+    skeleton[tuple(voxels.T)] = True
+    order = np.argsort(np.arctan2(voxels[:, 1] - 20, voxels[:, 2] - 5))
+    path = voxels[order].astype(float)
+    arc_length = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(path, axis=0), axis=1))])
+    cut = (arc_length > 8.0) & (arc_length < 17.0)
+    chorded = path[~cut]
+    G = nx.MultiGraph()
+    G.add_node("A", pos=tuple(chorded[0]))
+    G.add_node("B", pos=tuple(chorded[-1]))
+    G.add_edge("A", "B", voxels=[tuple(p) for p in chorded], length=float(
+        np.sum(np.linalg.norm(np.diff(chorded, axis=0), axis=1))))
+    return G, skeleton
+
+
+def test_a_chord_drawn_after_smoothing_is_smoothed_and_nothing_else_moves():
+    from haemolynx.graph.smoothing import smooth_straight_steps
+    from haemolynx.graph.thick_vessel_junctions import IS_ZERO_RESISTANCE
+
+    G, skeleton = _arc_with_a_chord()
+    straight = [(5.0, 2.0, float(x)) for x in range(2, 30)]
+    G.add_node("C", pos=straight[0]); G.add_node("D", pos=straight[-1])
+    G.add_edge("C", "D", voxels=list(straight), length=27.0)
+    bridge = [(5.0, 35.0, 2.0), (5.0, 35.0, 3.0), (5.0, 35.0, 12.0)]
+    G.add_node("E", pos=bridge[0]); G.add_node("F", pos=bridge[-1])
+    G.add_edge("E", "F", voxels=list(bridge), length=10.0, **{IS_ZERO_RESISTANCE: True})
+    before = float(G.edges["A", "B", 0]["length"])
+    steps_before = np.linalg.norm(np.diff(np.asarray(G.edges["A", "B", 0]["voxels"]), axis=0), axis=1).max()
+
+    assert steps_before > 5.0
+    assert smooth_straight_steps(G, skeleton) == 1
+
+    path = np.asarray(G.edges["A", "B", 0]["voxels"])
+    assert np.linalg.norm(np.diff(path, axis=0), axis=1).max() <= 3.0
+    assert G.edges["A", "B", 0]["length"] <= before + 1e-9
+    assert G.edges["C", "D", 0]["voxels"] == straight, "a vessel with no long step is left exactly as it was"
+    assert G.edges["E", "F", 0]["voxels"] == bridge, "a bridge is straight by design"
+
+
+def test_a_long_step_on_cube_voxels_is_resampled_before_it_is_smoothed():
+    """The filter moves vertices, and a chord is two vertices far apart: on
+    cube voxels (not resampled otherwise) it only pulls the chord's ends in.
+    Resampled first, the chord is smoothed as evenly as the rest."""
+    G, skeleton = _arc_with_a_chord()
+    plain = copy.deepcopy(G)
+    smooth_graph_centrelines(plain, skeleton)
+    smooth_graph_centrelines(G, skeleton, always_resample=True)
+
+    longest = lambda H: np.linalg.norm(np.diff(np.asarray(H.edges["A", "B", 0]["voxels"]), axis=0), axis=1).max()
+    assert longest(plain) > 2.0
+    assert longest(G) <= 1.5

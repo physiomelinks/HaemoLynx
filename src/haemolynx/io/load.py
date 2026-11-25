@@ -1,21 +1,36 @@
 """Load 3D images from TIFF or HDF5 and produce skeleton."""
 from __future__ import annotations
 
+import json
 import logging
 import zipfile
 from pathlib import Path
+from xml.etree import ElementTree
 
 import numpy as np
 import tifffile
 from skimage.util import img_as_bool
-from skimage.morphology import skeletonize
-from ..preprocessing.skeleton import fill_binary_holes
+from ..preprocessing.skeleton import fill_binary_holes, skeletonize_by_component
+from ..preprocessing.memmap_support import (
+    LOW_MEMORY_BLOCK_VOXELS,
+    new_memmap_array,
+    release_memmap_array,
+    slab_step,
+    release_superseded,
+)
 try:
     import h5py
 except ImportError:
     h5py = None
 
-from .axis_order import CANONICAL_AXIS_ORDER, apply_axis_order
+from .axis_order import (
+    CANONICAL_AXIS_ORDER,
+    apply_axis_order,
+    axis_order_for_file,
+    axis_order_transpose,
+    normalize_axis_order,
+    voxel_size_xyz_from_file_axes,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -49,19 +64,46 @@ def _coerce_triplet(value) -> tuple[float, float, float] | None:
     return None
 
 
-def _extract_h5_voxel_size(dataset, h5_file) -> tuple[tuple[float, float, float], dict[str, object]]:
-    """Extract (x, y, z) voxel size and metadata status from HDF5 attrs."""
+def _extract_h5_voxel_size(
+    dataset,
+    h5_file,
+    axis_order: str = CANONICAL_AXIS_ORDER,
+    dropped_axes: tuple[int, ...] = (),
+) -> tuple[tuple[float, float, float], dict[str, object]]:
+    """Extract (x, y, z) voxel size and metadata status from HDF5 attrs.
+
+    ``element_size_um`` gives the spacing along each of the dataset's own
+    axes, which *axis_order* says the meaning of (see
+    :func:`haemolynx.io.axis_order.voxel_size_xyz_from_file_axes`); the named
+    keys below are physical by name. *dropped_axes* are the dataset's axes the
+    loader left out (:func:`_h5_axes_to_drop`), whose entries an
+    ``element_size_um`` with one per dataset axis leaves out too."""
     attrs = {}
     for source in (h5_file.attrs, dataset.attrs):
         for key in source.keys():
             attrs[str(key).lower()] = source[key]
 
-    # Most common in microscopy exports: element_size_um is usually stored as (z, y, x).
+    # Most common in microscopy exports: element_size_um, one per dataset axis.
     if "element_size_um" in attrs:
-        zyx = _coerce_triplet(attrs["element_size_um"])
-        if zyx is not None:
-            z, y, x = zyx
-            voxel_size_xyz = (x, y, z)
+        element_size = attrs["element_size_um"]
+        if dropped_axes and np.asarray(element_size).size == len(dataset.shape):
+            element_size = np.delete(np.asarray(element_size).ravel(), dropped_axes)
+        plane = np.asarray(element_size, dtype=float).ravel()
+        if plane.size == 2 and len(dataset.shape) - len(dropped_axes) == 2:
+            # A 2D image's (y, x): read as its TIFF is, z missing. Taken as a
+            # triplet it was nothing, and both axes read as 1 um.
+            voxel_size_xyz = (float(plane[1]), float(plane[0]), 1.0)
+            if _is_valid_voxel_size_triplet(voxel_size_xyz):
+                return voxel_size_xyz, _default_voxel_meta_status(
+                    source="h5_attributes",
+                    status="partial",
+                    key_used="element_size_um",
+                    missing_axes=["z"],
+                    fallback_applied=True,
+                )
+        per_axis = _coerce_triplet(element_size)
+        if per_axis is not None:
+            voxel_size_xyz = voxel_size_xyz_from_file_axes(per_axis, axis_order)
             if _is_valid_voxel_size_triplet(voxel_size_xyz):
                 return voxel_size_xyz, _default_voxel_meta_status(
                     source="h5_attributes",
@@ -161,56 +203,302 @@ def simplify_to_3d(image: np.ndarray) -> np.ndarray:
     raise ValueError(f"Expected 3D or 4D image, got shape {image.shape}")
 
 
-def _to_binary_volume_for_skeletonization(image: np.ndarray) -> np.ndarray:
+def _unique_with_counts(arr: np.ndarray, *, use_memmap: bool) -> tuple[np.ndarray, np.ndarray]:
+    """``np.unique(arr, return_counts=True)`` without flattening *arr* whole.
+
+    ``np.unique`` sorts a flattened copy of its input to find distinct
+    values -- for a ``use_memmap_loading`` volume, that copy is a fresh,
+    plain-RAM, full-volume buffer regardless of how the source pixels are
+    stored, exactly what ``use_memmap_loading`` exists to avoid (and large
+    enough on its own to be the allocation that fails, before skeletonize
+    ever runs). With *use_memmap* False, this is the plain call, unchanged.
+    With it True, tallies are accumulated one slab of axis-0 slices at a
+    time instead, each slab's own count bounded to that slab's size rather
+    than the whole volume's -- for 8- and 16-bit integers without a sort
+    (:func:`_small_integer_tally`), by ``np.unique`` otherwise.
+    """
+    if not use_memmap:
+        return np.unique(arr, return_counts=True)
+    tally: dict[object, int] = {}
+    small_int = np.issubdtype(arr.dtype, np.integer) and arr.dtype.itemsize <= 2
+    step = slab_step(arr.shape)
+    for start in range(0, arr.shape[0], step):
+        slab = np.asarray(arr[start:start + step])
+        if small_int:
+            slab_values, slab_counts = _small_integer_tally(slab)
+        else:
+            slab_values, slab_counts = np.unique(slab, return_counts=True)
+        for value, count in zip(slab_values.tolist(), slab_counts.tolist()):
+            tally[value] = tally.get(value, 0) + count
+    ordered = sorted(tally)
+    values = np.array(ordered, dtype=arr.dtype)
+    counts = np.array([tally[value] for value in ordered], dtype=np.int64)
+    return values, counts
+
+
+#: Value spans :func:`_small_integer_tally` counts one comparison at a time:
+#: a label mask's (ilastik's 1/2, a 0/255 mask) rather than a grey image's.
+_TALLY_BY_COMPARISON_SPAN = 16
+
+
+def _small_integer_tally(slab: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """The distinct values of *slab* (8- or 16-bit integers), ascending, and
+    how many of each. Where they span a few values, one ``count_nonzero`` per
+    value between the slab's minimum and maximum: a 1/2 mask is counted at
+    ~1.1 G voxels/s, where ``np.bincount`` of an int32 copy managed 113 M
+    (12_2_f's intermediate mask, 2026-10-20). Otherwise that bincount."""
+    if slab.size == 0:
+        return np.empty(0, dtype=np.int64), np.empty(0, dtype=np.int64)
+    low, high = int(slab.min()), int(slab.max())
+    if high - low < _TALLY_BY_COMPARISON_SPAN:
+        values = np.arange(low, high + 1, dtype=np.int64)
+        counts = np.array([np.count_nonzero(slab == value) for value in values.tolist()], dtype=np.int64)
+    else:
+        counts = np.bincount((slab.astype(np.int32) - low).ravel())
+        values = np.arange(low, low + len(counts), dtype=np.int64)
+    present = counts > 0
+    return values[present], counts[present]
+
+
+def _finite_range(arr: np.ndarray, *, use_memmap: bool) -> tuple[float, float] | None:
+    """``(min, max)`` of *arr*'s finite values, or None if it has none.
+
+    With *use_memmap*, accumulated one axis-0 slice at a time: the plain
+    ``arr[np.isfinite(arr)]`` builds a full-volume mask and then a copy of
+    every finite value -- two volume-sized plain-RAM arrays.
+    """
+    if not use_memmap:
+        finite = arr[np.isfinite(arr)]
+        if finite.size == 0:
+            return None
+        return float(finite.min()), float(finite.max())
+    low, high = np.inf, -np.inf
+    step = slab_step(arr.shape)
+    for start in range(0, arr.shape[0], step):
+        slab = np.asarray(arr[start:start + step])
+        finite = slab[np.isfinite(slab)]
+        if finite.size:
+            low = min(low, float(finite.min()))
+            high = max(high, float(finite.max()))
+    return None if low > high else (low, high)
+
+
+#: The value an ilastik "Simple Segmentation" export gives its background
+#: when label 1 is the vessel: a volume holding only this value is empty.
+ILASTIK_BACKGROUND_LABEL = 2
+
+
+#: The label sets :func:`_warn_minority_guess` has warned about, so a mask
+#: read by several steps of a run is warned about once.
+_MINORITY_GUESSES_WARNED: set[tuple] = set()
+
+
+def _warn_minority_guess(values: np.ndarray, counts: np.ndarray, fg_value) -> None:
+    """Say that a mask of several labels was read with its rarest label as
+    vessel: a guess, wrong wherever vessels are the majority (a crop inside a
+    large vessel, or a dense bed). ilastik's own outputs never reach it, being
+    binarised at their named vessel label (``io.ilastik``)."""
+    key = (tuple(values.tolist()), tuple(counts.tolist()))
+    if key in _MINORITY_GUESSES_WARNED:
+        return
+    _MINORITY_GUESSES_WARNED.add(key)
+    total = max(int(counts.sum()), 1)
+    held = ", ".join(
+        f"{value} ({100.0 * count / total:.1f}%)" for value, count in zip(values.tolist(), counts.tolist())
+    )
+    logger.warning(
+        "A mask holding the labels %s was read with the rarest, %s, as vessel: a guess. "
+        "If vessels are the majority the mask is inside out; save it as 0 for background "
+        "and 1 for vessel.",
+        held,
+        fg_value,
+    )
+
+
+def _single_value_rule(value, shape: tuple[int, ...]):
+    """The rule for an integer volume holding one value only: empty for 0 and
+    for :data:`ILASTIK_BACKGROUND_LABEL` (an ilastik export that found no
+    vessel -- read as ``> 0`` it was solid vessel, and every vessel of the run
+    lay in the large-vessel mask), every voxel for any other value."""
+    value = int(value)
+    empty = value in (0, ILASTIK_BACKGROUND_LABEL)
+    logger.warning(
+        "A volume of shape %s holds the one value %d throughout: read as %s.",
+        tuple(int(n) for n in shape), value,
+        "empty (no vessel)" if empty else "vessel everywhere",
+    )
+    if empty:
+        return lambda a: np.zeros(np.shape(a), dtype=bool)
+    return lambda a: np.asarray(a) == value
+
+
+def mask_binarization_rule(volume: np.ndarray):
+    """The rule :func:`_to_binary_volume_for_skeletonization` would binarise
+    the whole of *volume* by, its values counted a slab at a time (so in
+    bounded memory whether *volume* is in RAM or on disk). Applied to a box
+    cut from *volume*, it reads that box as the whole volume reads it: decided
+    from the box alone, an ilastik 1/2 box holding only background (one value)
+    came back solid vessel, and one where vessel is the majority came back
+    inside out. None for a boolean *volume*, which needs no rule."""
+    arr = np.asanyarray(volume)
+    if arr.dtype == bool:
+        return None
+    return _binarization_rule(arr, use_memmap=True)
+
+
+def _binarization_rule(arr: np.ndarray, *, use_memmap: bool, objects: bool = False):
+    """The elementwise rule that turns *arr* into a foreground mask.
+
+    Decided from the whole volume (its distinct values, or its finite
+    range), but applied elementwise -- so the same rule gives the same
+    answer whether it is applied to the whole array at once or to one
+    slice at a time.
+
+    A floating volume holding whole numbers only (a label mask saved as
+    float) is read by the integer rule: by its range alone a float 1/2 mask
+    was all vessel where the same mask in uint8 was its minority label.
+
+    *objects*: a mask of objects (pericytes, cells, blocks), binary or
+    labelled one number per object. With a 0 background, every other value
+    is an object; the integer rule kept only the rarest label of three or
+    four, and of more thresholded at half the dtype's range (300 labelled
+    objects in uint16 read as none). Without a 0 (ilastik's 1/2) the
+    integer rule decides, as for any mask.
+    """
+    if np.issubdtype(arr.dtype, np.floating):
+        labels = _whole_number_values(arr, use_memmap=use_memmap)
+        if labels is None:
+            return _floating_rule(_finite_range(arr, use_memmap=use_memmap))
+        values, counts = labels
+    elif np.issubdtype(arr.dtype, np.integer):
+        values, counts = _unique_with_counts(arr, use_memmap=use_memmap)
+    else:
+        return lambda a: a.astype(bool)
+    if objects and values.size > 1 and np.any(values == 0):
+        return lambda a: a != 0
+    return _integer_rule(values, counts, shape=arr.shape)
+
+
+#: The most distinct values a floating volume may hold and still be read as
+#: a label mask (:func:`_whole_number_values`).
+_MAX_FLOAT_LABELS = 256
+
+
+def _whole_number_values(arr: np.ndarray, *, use_memmap: bool) -> tuple[np.ndarray, np.ndarray] | None:
+    """``(values, counts)`` of a floating *arr* holding only finite whole
+    numbers, at most :data:`_MAX_FLOAT_LABELS` of them; None otherwise (a
+    probability or intensity map), found a slab at a time and given up at
+    the first slab that rules it out."""
+    if arr.ndim == 0 or arr.size == 0:
+        return None
+    tally: dict[float, int] = {}
+    step = slab_step(arr.shape)
+    for start in range(0, arr.shape[0], step):
+        slab = np.asarray(arr[start:start + step])
+        if not np.all(np.isfinite(slab)) or np.any(slab != np.round(slab)):
+            return None
+        slab_values, slab_counts = np.unique(slab, return_counts=True)
+        for value, count in zip(slab_values.tolist(), slab_counts.tolist()):
+            tally[value] = tally.get(value, 0) + count
+        if len(tally) > _MAX_FLOAT_LABELS:
+            return None
+    if not tally:
+        return None
+    ordered = sorted(tally)
+    return (
+        np.array(ordered, dtype=np.int64),
+        np.array([tally[value] for value in ordered], dtype=np.int64),
+    )
+
+
+def _integer_rule(values: np.ndarray, counts: np.ndarray, *, shape: tuple[int, ...]):
+    """:func:`_binarization_rule` of an integer volume of *shape* holding
+    *values* (ascending) *counts* times each."""
+    if values.size == 1:
+        return _single_value_rule(values[0], shape)
+    # Common binary-mask conventions (e.g., 0/1 or 0/255).
+    if values.size == 2 and 0 in values:
+        fg_value = values[values != 0][0]
+        return lambda a: a == fg_value
+    # Two non-zero labels often mean background/foreground without 0.
+    # Use the minority class as foreground (e.g. 1/2 encoded masks).
+    if values.size == 2:
+        fg_value = values[int(np.argmin(counts))]
+        _warn_minority_guess(values, counts, fg_value)
+        return lambda a: a == fg_value
+    # For very small integer label sets, pick the least frequent non-zero
+    # class as foreground and treat zero as background when present.
+    if values.size <= 4:
+        nonzero_values = values[values != 0]
+        if nonzero_values.size > 0:
+            nonzero_counts = np.array(
+                [counts[np.where(values == v)[0][0]] for v in nonzero_values]
+            )
+            fg_value = nonzero_values[int(np.argmin(nonzero_counts))]
+            _warn_minority_guess(values, counts, fg_value)
+            return lambda a: a == fg_value
+    arr_min = int(values.min())
+    arr_max = int(values.max())
+    if arr_min >= 0 and arr_max <= 1:
+        return lambda a: a > 0
+    # A threshold at half the dtype's range -- elementwise and
+    # independent of the data, so it is the same per slice.
+    return img_as_bool
+
+
+def _floating_rule(finite_range: tuple[float, float] | None):
+    """:func:`_binarization_rule` of a floating volume whose finite values
+    span *finite_range* (None: it has none)."""
+    if finite_range is None:
+        return lambda a: np.zeros(a.shape, dtype=bool)
+    if finite_range[0] >= 0.0 and finite_range[1] <= 1.0:
+        return lambda a: a > 0.5
+    return lambda a: a > 0.0
+
+
+def _to_binary_volume_for_skeletonization(
+    image: np.ndarray,
+    *,
+    use_memmap: bool = False,
+    memmap_directory: str | Path | None = None,
+    objects: bool = False,
+) -> np.ndarray:
     """Convert loaded image volume to a boolean mask for skeletonization.
 
     - Preserve low-cardinality integer label masks (e.g., 0/1, 0/255, 1/2).
     - Keep prior skimage conversion behavior for grayscale integer images.
     - For normalized floating masks (0..1), threshold at 0.5.
     - For other floating data, use ``> 0`` as a conservative fallback.
+
+    Uses ``asanyarray``, not ``asarray``, for the already-bool pass-through
+    case specifically: an ``np.memmap`` loaded with ``use_memmap_loading``
+    would otherwise come back demoted to a plain in-RAM-looking ``ndarray``
+    (same underlying disk-backed buffer, since this is still a view rather
+    than a copy, but the wrong type for anything downstream that checks
+    ``isinstance(x, np.memmap)``) -- the same reasoning as
+    ``io.axis_order.apply_axis_order``.
+
+    *use_memmap*, when True, finds the volume's distinct values (see
+    :func:`_unique_with_counts`) or finite range (:func:`_finite_range`)
+    one slice at a time, and writes the mask itself one slice at a time
+    into a new memmap in *memmap_directory* -- otherwise the final
+    comparison alone is a fresh, plain-RAM boolean array the size of the
+    whole volume. The already-bool pass-through is unaffected either way.
+
+    *objects* reads a labelled mask of objects as every object
+    (:func:`_binarization_rule`).
     """
-    arr = np.asarray(image)
+    arr = np.asanyarray(image)
     if arr.dtype == bool:
         return arr
-
-    if np.issubdtype(arr.dtype, np.integer):
-        values, counts = np.unique(arr, return_counts=True)
-        if values.size == 1:
-            return arr > 0
-        # Common binary-mask conventions (e.g., 0/1 or 0/255).
-        if values.size == 2 and 0 in values:
-            fg_value = values[values != 0][0]
-            return arr == fg_value
-        # Two non-zero labels often mean background/foreground without 0.
-        # Use the minority class as foreground (e.g. 1/2 encoded masks).
-        if values.size == 2:
-            fg_value = values[int(np.argmin(counts))]
-            return arr == fg_value
-        # For very small integer label sets, pick the least frequent non-zero
-        # class as foreground and treat zero as background when present.
-        if values.size <= 4:
-            nonzero_values = values[values != 0]
-            if nonzero_values.size > 0:
-                nonzero_counts = np.array(
-                    [counts[np.where(values == v)[0][0]] for v in nonzero_values]
-                )
-                fg_value = nonzero_values[int(np.argmin(nonzero_counts))]
-                return arr == fg_value
-        arr_min = int(values.min())
-        arr_max = int(values.max())
-        if arr_min >= 0 and arr_max <= 1:
-            return arr > 0
-        return img_as_bool(arr)
-
-    if np.issubdtype(arr.dtype, np.floating):
-        finite = arr[np.isfinite(arr)]
-        if finite.size == 0:
-            return np.zeros(arr.shape, dtype=bool)
-        if float(finite.min()) >= 0.0 and float(finite.max()) <= 1.0:
-            return arr > 0.5
-        return arr > 0.0
-
-    return arr.astype(bool)
+    rule = _binarization_rule(arr, use_memmap=use_memmap, objects=objects)
+    if not use_memmap:
+        return rule(arr)
+    result = new_memmap_array(arr.shape, bool, directory=memmap_directory)
+    step = slab_step(arr.shape)
+    for start in range(0, arr.shape[0], step):
+        result[start:start + step] = rule(np.asarray(arr[start:start + step]))
+    return result
 
 
 def resolve_image_path_with_optional_zip(image_path: str | Path) -> Path:
@@ -308,60 +596,177 @@ def crop_tiff_volume_from_corners(
     }
 
 
-def _voxel_size_xyz_from_tiff(tif) -> tuple[float, float, float, dict[str, object]]:
-    """Voxel size (x, y, z) and its provenance, from an open TIFF's tags.
+#: Microns per unit, for the OME ``UnitsLength`` values a voxel size is
+#: written in. A size in any other unit (``pixel``, ``reference frame``, ...)
+#: is not a physical length the pipeline can run on.
+_OME_LENGTH_UNIT_UM = {
+    "m": 1e6,
+    "dm": 1e5,
+    "cm": 1e4,
+    "mm": 1e3,
+    "\u00b5m": 1.0,  # MICRO SIGN, as the OME schema spells it
+    "\u03bcm": 1.0,  # GREEK SMALL LETTER MU, which some writers use instead
+    "um": 1.0,
+    "nm": 1e-3,
+    "pm": 1e-6,
+    "\u00c5": 1e-4,
+}
+
+
+def _ome_physical_sizes_um(ome_xml: str | None) -> dict[str, float]:
+    """``PhysicalSizeX/Y/Z`` of an OME-XML header's first image, in microns.
+
+    Keyed ``"x"``, ``"y"``, ``"z"`` as OME names them: the file's width, height
+    and planes, the same axes the TIFF tags describe. An axis the header gives
+    no size for is left out, and so is one it gives in a unit that is not a
+    length or as anything but a positive number -- with a warning, since the
+    tags it falls back to then say 1.0 whatever the voxels are.
+    """
+    if not ome_xml:
+        return {}
+    try:
+        root = ElementTree.fromstring(ome_xml)
+    except ElementTree.ParseError:
+        logger.warning("Could not parse the file's OME-XML header; not reading a voxel size from it.")
+        return {}
+    pixels = root.find("{*}Image/{*}Pixels")
+    if pixels is None:
+        return {}
+    sizes: dict[str, float] = {}
+    for axis in "xyz":
+        name = f"PhysicalSize{axis.upper()}"
+        value = pixels.get(name)
+        if value is None:
+            continue
+        unit = pixels.get(f"{name}Unit", "\u00b5m").strip()
+        microns_per_unit = _OME_LENGTH_UNIT_UM.get(unit)
+        try:
+            size = float(value) * microns_per_unit if microns_per_unit else float("nan")
+        except ValueError:
+            size = float("nan")
+        if not (np.isfinite(size) and size > 0):
+            logger.warning(
+                "The OME header gives %s=%r %s, which is not a voxel size; ignoring it.",
+                name, value, unit,
+            )
+            continue
+        sizes[axis] = size
+    return sizes
+
+
+#: Microns per unit for ImageJ's ``unit`` (the unit of its resolution tags
+#: and its ``spacing``), beside the OME names: ImageJ spells microns several
+#: ways, and writes the micro sign escaped.
+_IMAGEJ_LENGTH_UNIT_UM = {
+    **_OME_LENGTH_UNIT_UM,
+    "micron": 1.0,
+    "microns": 1.0,
+    "\\u00b5m": 1.0,
+}
+
+#: TIFF's ResolutionUnit CENTIMETER: the resolution tags are pixels per cm.
+#: INCH is read as microns, as it always was: tifffile writes INCH for any
+#: ``resolution=`` given without a unit, so it says nothing about the unit.
+_RESOLUTION_UNIT_CENTIMETER = 3
+
+
+def _tiff_tag_unit_um(meta: dict, tags) -> float:
+    """Microns per unit of a TIFF's resolution tags (and ImageJ's ``spacing``):
+    ImageJ's ``unit`` when it names a length, else 1e4 for a ResolutionUnit of
+    centimetres, else 1 -- the tags read as microns."""
+    unit = meta.get("unit")
+    if unit is not None:
+        per_unit = _IMAGEJ_LENGTH_UNIT_UM.get(str(unit).strip().lower()) or _IMAGEJ_LENGTH_UNIT_UM.get(
+            str(unit).strip()
+        )
+        if per_unit:
+            return float(per_unit)
+        return 1.0
+    resolution_unit = tags.get("ResolutionUnit")
+    try:
+        if resolution_unit is not None and int(resolution_unit.value) == _RESOLUTION_UNIT_CENTIMETER:
+            return 1e4
+    except (TypeError, ValueError):
+        pass
+    return 1.0
+
+
+def _voxel_size_xyz_from_tiff(
+    tif, axis_order: str = CANONICAL_AXIS_ORDER
+) -> tuple[float, float, float, dict[str, object]]:
+    """Voxel size (x, y, z) and its provenance, from an open TIFF's header.
 
     Split out from :func:`load_3d_tif_with_voxel_size` so the size can be read
     without the pixels: the tags are in the first page's header, and a caller
     that only wants to know how big a voxel is should not have to read a
     300 MB stack to find out. See :func:`read_voxel_size_xyz`.
+
+    An OME-TIFF's header (``PhysicalSizeX/Y/Z``) is read first: tifffile writes
+    one pixel per unit into the resolution tags of a file it was given no
+    resolution for, so an OME file's tags say 1.0 whatever its voxels are. The
+    tags -- ``XResolution`` and ``YResolution``, and ImageJ's ``spacing`` --
+    are read for an axis the OME header gives no size for. The status's
+    ``axis_sources`` says which each value came from, and ``source`` is
+    ``"ome_metadata"`` when the OME header gave any of them.
+
+    OME's X, Y and Z and the tags all describe the file's own axes -- its
+    width, height and pages -- and *axis_order* says which physical axis each
+    of those is (see :func:`haemolynx.io.axis_order.voxel_size_xyz_from_file_axes`).
     """
+    ome_sizes = _ome_physical_sizes_um(tif.ome_metadata) if tif.is_ome else {}
     meta = tif.imagej_metadata or {}
     tags = tif.pages[0].tags
+    # The tags and ImageJ's spacing are in ImageJ's unit, or the tags' own:
+    # a stack calibrated in nm read 1000 times too coarse, "complete".
+    unit_um = _tiff_tag_unit_um(meta, tags)
 
-    x_res_tag = tags.get("XResolution")
-    y_res_tag = tags.get("YResolution")
+    # Keyed by file axis: "x" the width, "y" the height, "z" the pages.
+    spacing: dict[str, float] = {}
+    sources: dict[str, str] = {}
+    # A missing tag is only debug here: the status says which axes defaulted,
+    # and resolve_voxel_size_xyz warns if a default is what the run ends up on
+    # (not when voxel_size_override_xyz replaces it).
     missing_axes: list[str] = []
     invalid_axes: list[str] = []
+    for axis in "xyz":
+        if axis in ome_sizes:
+            spacing[axis] = ome_sizes[axis]
+            sources[axis] = "ome_metadata"
+            continue
+        sources[axis] = "tiff_metadata"
+        if axis == "z":
+            if "spacing" in meta:
+                spacing[axis] = float(meta.get("spacing")) * unit_um
+                if spacing[axis] <= 0:
+                    invalid_axes.append(axis)
+            else:
+                logger.debug("No z resolution (spacing) found; defaulting to 1.0")
+                spacing[axis] = 1.0
+                missing_axes.append(axis)
+            continue
+        res_tag = tags.get(f"{axis.upper()}Resolution")
+        if res_tag:
+            numerator, denominator = res_tag.value[0], res_tag.value[1]
+            res = numerator / denominator if denominator else 0.0
+        else:
+            logger.debug("No %s resolution tag found; defaulting to 1.0", axis)
+            res = 1.0
+            missing_axes.append(axis)
+            spacing[axis] = 1.0
+            continue
+        spacing[axis] = unit_um / res if res else 1.0
+        if res <= 0:
+            invalid_axes.append(axis)
+    invalid_axes.extend(axis for axis in "xyz" if not np.isfinite(spacing[axis]))
 
-    if x_res_tag:
-        x_res = x_res_tag.value[0] / x_res_tag.value[1]
-    else:
-        logger.warning("No x resolution tag found; defaulting to 1.0")
-        x_res = 1.0
-        missing_axes.append("x")
-
-    if y_res_tag:
-        y_res = y_res_tag.value[0] / y_res_tag.value[1]
-    else:
-        logger.warning("No y resolution tag found; defaulting to 1.0")
-        y_res = 1.0
-        missing_axes.append("y")
-
-    if "spacing" in meta:
-        z_res = float(meta.get("spacing"))
-    else:
-        logger.warning("No z resolution (spacing) found; defaulting to 1.0")
-        z_res = 1.0
-        missing_axes.append("z")
-
-    voxel_size_x = 1.0 / x_res if x_res else 1.0
-    voxel_size_y = 1.0 / y_res if y_res else 1.0
-    voxel_size_z = z_res
-
-    if x_res <= 0:
-        invalid_axes.append("x")
-    if y_res <= 0:
-        invalid_axes.append("y")
-    if z_res <= 0:
-        invalid_axes.append("z")
-    if not np.isfinite(voxel_size_x):
-        invalid_axes.append("x")
-    if not np.isfinite(voxel_size_y):
-        invalid_axes.append("y")
-    if not np.isfinite(voxel_size_z):
-        invalid_axes.append("z")
-    invalid_axes = sorted(set(invalid_axes))
+    voxel_size_x, voxel_size_y, voxel_size_z = voxel_size_xyz_from_file_axes(
+        (spacing["z"], spacing["y"], spacing["x"]), axis_order
+    )
+    # Named for the file's axes so far; report the physical axis each is.
+    physical = dict(zip("zyx", str(axis_order).strip().lower()))
+    missing_axes = [physical[axis] for axis in missing_axes]
+    invalid_axes = sorted({physical[axis] for axis in invalid_axes})
+    axis_sources = dict(sorted((physical[axis], sources[axis]) for axis in "xyz"))
 
     if invalid_axes and len(invalid_axes) == 3:
         status = "invalid"
@@ -375,31 +780,36 @@ def _voxel_size_xyz_from_tiff(tif) -> tuple[float, float, float, dict[str, objec
         status = "complete"
 
     voxel_meta_status = _default_voxel_meta_status(
-        source="tiff_metadata",
+        source="ome_metadata" if ome_sizes else "tiff_metadata",
         status=status,
         missing_axes=sorted(set(missing_axes)),
         invalid_axes=invalid_axes,
         fallback_applied=bool(missing_axes or invalid_axes),
+        axis_sources=axis_sources,
     )
     return voxel_size_x, voxel_size_y, voxel_size_z, voxel_meta_status
 
 
 def read_voxel_size_xyz(
     filepath: str | Path,
+    axis_order: str = CANONICAL_AXIS_ORDER,
 ) -> tuple[tuple[float, float, float], dict[str, object]] | None:
     """Physical voxel size ``(x, y, z)`` of a TIFF, without reading the pixels.
 
     Returns ``None`` for a file that is not a readable TIFF, and for one whose
-    tags say nothing -- a size of all ones is the absence of an answer, not an
-    answer. The panel uses this to give an opened layer the scale its own file
+    header (OME metadata or tags) says nothing -- a size of all ones is the
+    absence of an answer, not an answer. The panel uses this to give an opened layer the scale its own file
     describes, which is a header read rather than a second copy of the stack.
+    *axis_order* is what the file's axes are, as for
+    :func:`load_3d_tif_with_voxel_size`.
     """
     path = Path(filepath)
     if path.suffix.lower() not in {".tif", ".tiff"}:
         return None
+    axis_order = axis_order_for_file(axis_order, path)
     try:
         with tifffile.TiffFile(path) as tif:
-            x, y, z, status = _voxel_size_xyz_from_tiff(tif)
+            x, y, z, status = _voxel_size_xyz_from_tiff(tif, axis_order)
     except Exception:  # noqa: BLE001 - an unreadable file simply has no size
         logger.debug("Could not read a voxel size from %s", path, exc_info=True)
         return None
@@ -412,20 +822,244 @@ def load_3d_tif_with_voxel_size(
     filepath: str,
     *,
     axis_order: str = CANONICAL_AXIS_ORDER,
+    allow_2d: bool = False,
+    use_memmap: bool = False,
+    memmap_directory: str | Path | None = None,
+    memmap_path: str | Path | None = None,
 ) -> tuple[np.ndarray, float, float, float, dict[str, object]]:
     """Load 3D TIFF image and return image + voxel size (x, y, z) + metadata status.
 
-    *axis_order* names what the file's array axes mean (default ``"zyx"``); the
+    *axis_order* names what the file's array axes mean (default ``"zyx"``), or
+    is ``"auto"`` for the file's own labels' (:func:`axis_order_for_file`); the
     volume is transposed into the canonical ``(z, y, x)`` order on load. The
     returned voxel size is always physical ``(x, y, z)`` — use
     :func:`haemolynx.io.voxel_size_zyx_from_xyz` before scaling array indices.
+
+    *allow_2d*, when True, returns a genuinely 2D image as-is instead of
+    letting :func:`apply_axis_order` raise for a non-default *axis_order* --
+    a 2-axis array has no ``(z, y, x)`` to reorder, so it is returned
+    untransposed and the caller is responsible for turning it into a volume.
+    Mirrors :func:`load_3d_h5_with_voxel_size`'s own *allow_2d*;
+    :mod:`haemolynx.io.load_2d` is what actually sets this. Every other
+    caller leaves it False, unchanged from before this parameter existed.
+
+    *use_memmap*, when True, decompresses the pixel data into a disk-backed
+    ``numpy.memmap`` (a temporary file, cleaned up by tifffile itself once
+    the returned array is garbage-collected) instead of a plain in-RAM
+    array -- for a volume too large to hold in memory outright. Compression
+    on the file does not change what this needs: every voxel still has to
+    be materialised somewhere to be indexed at all, this only chooses disk
+    over RAM for where. *memmap_directory*, when given, is where that
+    temporary file is created (tifffile's own ``"memmap:<dir>"`` syntax)
+    instead of the OS default temp directory. *memmap_path*, when given,
+    takes precedence over *memmap_directory* and writes to that exact file
+    instead of a randomly-named one -- a persistent file at a caller-chosen
+    path, e.g. for :mod:`haemolynx.io.raw_volume_cache` to reopen on a later
+    run, rather than a temp file tifffile deletes once nothing references it.
+    Both are ignored when *use_memmap* is False.
     """
+    axis_order = axis_order_for_file(axis_order, filepath)
     with tifffile.TiffFile(filepath) as tif:
-        image = apply_axis_order(tif.asarray(), axis_order)
+        if use_memmap:
+            if memmap_path:
+                Path(memmap_path).parent.mkdir(parents=True, exist_ok=True)
+                out = str(memmap_path)
+            elif memmap_directory:
+                Path(memmap_directory).mkdir(parents=True, exist_ok=True)
+                out = f"memmap:{memmap_directory}"
+            else:
+                out = "memmap"
+        else:
+            out = None
+        raw = tif.asarray(out=out)
+        flat = allow_2d and raw.ndim == 2
+        if flat:
+            image = raw
+        else:
+            image = apply_axis_order(
+                raw, axis_order, use_memmap=use_memmap, memmap_directory=memmap_directory
+            )
+        # A 2D image is not reordered, so its tags keep their own meaning.
         voxel_size_x, voxel_size_y, voxel_size_z, voxel_meta_status = (
-            _voxel_size_xyz_from_tiff(tif)
+            _voxel_size_xyz_from_tiff(tif, CANONICAL_AXIS_ORDER if flat else axis_order)
         )
     return image, voxel_size_x, voxel_size_y, voxel_size_z, voxel_meta_status
+
+
+_NON_SPATIAL_H5_AXES = frozenset({"c", "t"})
+
+
+def _h5_axis_keys(dataset) -> list[str] | None:
+    """What each of *dataset*'s axes is (``"z"``, ``"y"``, ``"x"``, ``"c"``,
+    ``"t"``), from the ``axistags`` ilastik and vigra write, else h5py's
+    dimension labels; None when the file does not say."""
+    keys = None
+    tags = dataset.attrs.get("axistags")
+    if tags is not None:
+        try:
+            if isinstance(tags, bytes):
+                tags = tags.decode("utf-8")
+            keys = [str(axis["key"]) for axis in json.loads(str(tags))["axes"]]
+        except (ValueError, KeyError, TypeError):
+            keys = None
+    if keys is None:
+        labels = [str(dim.label) for dim in dataset.dims]
+        if labels and all(labels):
+            keys = labels
+    if keys is None or len(keys) != len(dataset.shape):
+        return None
+    return [key.lower() for key in keys]
+
+
+def _h5_axes_to_drop(dataset) -> tuple[int, ...]:
+    """The size-1 channel and time axes of *dataset*, which the loader reads
+    past: an ilastik export keeps a channel axis even for a Simple
+    Segmentation (``zyxc``, one channel). Read from the file's own axis names
+    when it has them; without them, only a dataset of more than three axes
+    loses size-1 axes, trailing ones first, until three are left."""
+    shape = dataset.shape
+    keys = _h5_axis_keys(dataset)
+    if keys is not None:
+        return tuple(
+            axis for axis, key in enumerate(keys)
+            if key in _NON_SPATIAL_H5_AXES and shape[axis] == 1
+        )
+    drop: list[int] = []
+    for axis in reversed(range(len(shape))):
+        if len(shape) - len(drop) <= 3:
+            break
+        if shape[axis] == 1:
+            drop.append(axis)
+    return tuple(sorted(drop))
+
+
+def _select_h5_dataset(f, filepath, dataset_name: str | None) -> str:
+    """The name of the dataset in the open H5 file *f* (*filepath*) the
+    loader reads: *dataset_name*, or the one it finds by itself."""
+    available = list(f.keys())
+    selected_name = dataset_name
+
+    if selected_name is None:
+        # Robust autodetection for common H5 layouts:
+        # 1) stem-matching dataset, 2) common canonical names,
+        # 3) single top-level dataset fallback.
+        candidates = [Path(filepath).stem, "data", "image", "volume"]
+        for candidate in candidates:
+            if candidate in f:
+                selected_name = candidate
+                break
+        if selected_name is None and len(available) == 1:
+            selected_name = available[0]
+        if selected_name is None:
+            raise KeyError(
+                f"Could not auto-select dataset in {filepath}. "
+                f"Available datasets: {available}. "
+                "Please pass dataset_name explicitly."
+            )
+        logger.debug("Auto-selected H5 dataset name: %s", selected_name)
+
+    if selected_name not in f:
+        raise KeyError(
+            f"Dataset '{selected_name}' not found in {filepath}. "
+            f"Available datasets: {available}"
+        )
+    return selected_name
+
+
+def h5_volume_shape(
+    filepath: str | Path,
+    dataset_name: str | None = None,
+    *,
+    axis_order: str = CANONICAL_AXIS_ORDER,
+) -> tuple[int, ...]:
+    """The shape :func:`load_3d_h5_with_voxel_size` gives the dataset --
+    its size-1 channel and time axes dropped, a 3D one in canonical
+    ``(z, y, x)`` order -- read from the file's header alone."""
+    if h5py is None:
+        raise ImportError("h5py is required to load .h5 files. Install with `pip install h5py`.")
+    path = Path(filepath)
+    with h5py.File(path, "r") as f:
+        dataset = f[_select_h5_dataset(f, filepath, dataset_name)]
+        dropped = _h5_axes_to_drop(dataset)
+        shape = tuple(size for axis, size in enumerate(dataset.shape) if axis not in dropped)
+    if len(shape) != 3:
+        return shape
+    order = axis_order_transpose(axis_order_for_file(axis_order, path, dataset_name=dataset_name))
+    return tuple(shape[axis] for axis in order)
+
+
+def h5_binarization_rule(filepath: str | Path, dataset_name: str | None = None):
+    """The rule :func:`_to_binary_volume_for_skeletonization` gives the H5
+    dataset's whole volume -- decided from its distinct values and counts,
+    or its finite range -- read from the file a block of whole chunks at a
+    time, without a copy of the volume. None for a boolean dataset, which it
+    takes as it is."""
+    if h5py is None:
+        raise ImportError("h5py is required to load .h5 files. Install with `pip install h5py`.")
+    path = Path(filepath)
+    with h5py.File(path, "r") as f:
+        dataset = f[_select_h5_dataset(f, filepath, dataset_name)]
+        dtype = dataset.dtype
+        if dtype == bool:
+            return None
+        integer = np.issubdtype(dtype, np.integer)
+        if not integer and not np.issubdtype(dtype, np.floating):
+            return lambda a: a.astype(bool)
+        dropped = _h5_axes_to_drop(dataset)
+        kept = [axis for axis in range(len(dataset.shape)) if axis not in dropped]
+        kept_shape = tuple(int(dataset.shape[axis]) for axis in kept)
+        selection = [0 if axis in dropped else slice(None) for axis in range(len(dataset.shape))]
+        chunks = dataset.chunks or (1,) * len(dataset.shape)
+        lead, second = kept[0], kept[1] if len(kept) > 1 else None
+        plane = int(np.prod([dataset.shape[axis] for axis in kept[1:]], dtype=np.int64))
+        depth = max(1, int(chunks[lead]))
+        rows = dataset.shape[second] if second is not None else 1
+        if second is not None and depth * plane > LOW_MEMORY_BLOCK_VOXELS:
+            # Whole chunks along the second axis too, as many as fit a block.
+            row_chunk = max(1, int(chunks[second]))
+            fit = LOW_MEMORY_BLOCK_VOXELS // max(1, depth * (plane // max(rows, 1)))
+            rows = max(row_chunk, fit - fit % row_chunk)
+        small_int = integer and dtype.itemsize <= 2
+        tally: dict[object, int] = {}
+        low, high = np.inf, -np.inf
+        # A float dataset of whole numbers is a label mask, read by the
+        # integer rule as the whole volume in RAM is (_whole_number_values):
+        # by its range alone a float 1/2 mask cut by a box was solid vessel.
+        whole = not integer
+        for start in range(0, dataset.shape[lead], depth):
+            selection[lead] = slice(start, start + depth)
+            for row in range(0, dataset.shape[second] if second is not None else 1, rows):
+                if second is not None:
+                    selection[second] = slice(row, row + rows)
+                block = np.asarray(dataset[tuple(selection)])
+                if integer:
+                    values, counts = (
+                        _small_integer_tally(block) if small_int
+                        else np.unique(block, return_counts=True)
+                    )
+                    for value, count in zip(values.tolist(), counts.tolist()):
+                        tally[value] = tally.get(value, 0) + count
+                else:
+                    finite = block[np.isfinite(block)]
+                    if finite.size:
+                        low = min(low, float(finite.min()))
+                        high = max(high, float(finite.max()))
+                    if whole:
+                        if finite.size != block.size or np.any(block != np.round(block)):
+                            whole = False
+                        else:
+                            values, counts = np.unique(block, return_counts=True)
+                            for value, count in zip(values.tolist(), counts.tolist()):
+                                tally[value] = tally.get(value, 0) + count
+                            whole = len(tally) <= _MAX_FLOAT_LABELS
+    if integer or (whole and tally):
+        ordered = sorted(tally)
+        return _integer_rule(
+            np.array(ordered, dtype=dtype if integer else np.int64),
+            np.array([tally[v] for v in ordered], dtype=np.int64),
+            shape=kept_shape,
+        )
+    return _floating_rule(None if low > high else (low, high))
 
 
 def load_3d_h5_with_voxel_size(
@@ -433,59 +1067,124 @@ def load_3d_h5_with_voxel_size(
     dataset_name: str | None = None,
     *,
     axis_order: str = CANONICAL_AXIS_ORDER,
+    allow_2d: bool = False,
+    use_memmap: bool = False,
+    memmap_directory: str | Path | None = None,
+    memmap_path: str | Path | None = None,
+    box: tuple[slice, slice, slice] | None = None,
 ) -> tuple[np.ndarray, float, float, float, dict[str, object]]:
     """Load 3D H5 image and return image + voxel size (x, y, z) + metadata status.
 
-    *axis_order* names what the dataset's array axes mean (default ``"zyx"``);
+    *box*, three slices in the canonical ``(z, y, x)`` order with their start
+    and stop given (``io.crop.CropBox.slices``), reads only that box of the
+    volume: the voxels ``image[box]`` would hold, without reading the rest of
+    the file. A crop_on_import box of 1024 x 1024 x 512 is 5% of a Batch E
+    stack's 9.4 GB.
+
+    *axis_order* names what the dataset's array axes mean (default ``"zyx"``),
+    or is ``"auto"`` for its own ``axistags``' (:func:`axis_order_for_file`);
     the volume is transposed into the canonical ``(z, y, x)`` order on load.
+
+    *allow_2d*, when True, returns a genuinely 2D dataset as-is instead of
+    raising -- *axis_order* is not applied to it, since a 2-axis array has
+    no ``(z, y, x)`` to reorder; the caller is responsible for turning it
+    into a volume. :mod:`haemolynx.io.load_2d` is what actually sets this
+    and does that promotion. Every other caller leaves it False, unchanged
+    from before this parameter existed.
+
+    *use_memmap*, when True, copies the dataset into a disk-backed
+    ``numpy.memmap`` one slice (along axis 0) at a time, instead of
+    ``h5py``'s own ``[...]`` reading the whole thing into a fresh in-RAM
+    array in one call -- unlike tifffile's own memmap support, h5py has no
+    built-in equivalent, so this bounds the *copy's* own peak memory too,
+    not just where the final array ends up. The caller owns the returned
+    array's backing file (see :func:`haemolynx.preprocessing.new_memmap_array`)
+    the same way it would own a plain array. *memmap_directory* is forwarded
+    to :func:`haemolynx.preprocessing.new_memmap_array`. *memmap_path*, when
+    given, takes precedence and copies the dataset into that exact
+    persistent file instead of a randomly-named one -- see
+    :func:`load_3d_tif_with_voxel_size`'s own *memmap_path*. Both are
+    ignored when *use_memmap* is False.
     """
     if h5py is None:
         raise ImportError("h5py is required to load .h5 files. Install with `pip install h5py`.")
     path = Path(filepath)
-    if dataset_name is None and path.suffix not in {".h5", ".hdf5"}:
+    if dataset_name is None and path.suffix.lower() not in {".h5", ".hdf5"}:
         raise ValueError(f"Expected a .h5/.hdf5 file, got: {filepath}")
+    axis_order = axis_order_for_file(axis_order, path, dataset_name=dataset_name)
 
     with h5py.File(filepath, "r") as f:
-        available = list(f.keys())
-        selected_name = dataset_name
-
-        if selected_name is None:
-            # Robust autodetection for common H5 layouts:
-            # 1) stem-matching dataset, 2) common canonical names,
-            # 3) single top-level dataset fallback.
-            candidates = [path.stem, "data", "image", "volume"]
-            for candidate in candidates:
-                if candidate in f:
-                    selected_name = candidate
-                    break
-            if selected_name is None and len(available) == 1:
-                selected_name = available[0]
-            if selected_name is None:
-                raise KeyError(
-                    f"Could not auto-select dataset in {filepath}. "
-                    f"Available datasets: {available}. "
-                    "Please pass dataset_name explicitly."
-                )
-            logger.debug("Auto-selected H5 dataset name: %s", selected_name)
-
-        if selected_name not in f:
-            raise KeyError(
-                f"Dataset '{selected_name}' not found in {filepath}. "
-                f"Available datasets: {available}"
-            )
+        selected_name = _select_h5_dataset(f, filepath, dataset_name)
         dataset = f[selected_name]
-        image = np.array(dataset)
+        dropped = _h5_axes_to_drop(dataset)
+        if dropped:
+            logger.info(
+                "Reading %s's dataset %r of shape %s without its size-1 axes %s.",
+                path.name, selected_name, dataset.shape, list(dropped),
+            )
+        kept = [axis for axis in range(len(dataset.shape)) if axis not in dropped]
+        selection = [0 if axis in dropped else slice(None) for axis in range(len(dataset.shape))]
+        if box is not None:
+            if len(kept) != 3:
+                raise ValueError(f"A box can be read only from a 3D dataset, not {dataset.shape}.")
+            # Canonical axis i is the file's kept axis order[i].
+            order = axis_order_transpose(normalize_axis_order(axis_order))
+            for canonical, file_axis in enumerate(order):
+                selection[kept[file_axis]] = box[canonical]
+        shape = tuple(
+            len(range(*selection[axis].indices(dataset.shape[axis]))) for axis in kept
+        )
+        if use_memmap:
+            if memmap_path:
+                Path(memmap_path).parent.mkdir(parents=True, exist_ok=True)
+                image = np.memmap(
+                    memmap_path, dtype=dataset.dtype, mode="w+", shape=shape
+                )
+            else:
+                image = new_memmap_array(
+                    shape, dataset.dtype, directory=memmap_directory
+                )
+            # Slabs of whole HDF5 chunks along the first axis kept: read a
+            # slice at a time, a chunk spanning 16 slices is decompressed 16 times.
+            lead = kept[0]
+            chunk_depth = int(dataset.chunks[lead]) if dataset.chunks else 1
+            step = slab_step(shape)
+            step = max(chunk_depth, step - step % chunk_depth)
+            first = selection[lead].indices(dataset.shape[lead])[0]
+            start, end = first, first + shape[0]
+            while start < end:
+                stop = min(end, (start // step + 1) * step)
+                selection[lead] = slice(start, stop)
+                image[start - first:stop - first] = dataset[tuple(selection)]
+                start = stop
+        elif dropped or box is not None:
+            image = dataset[tuple(selection)]
+        else:
+            image = np.array(dataset)
         (
             (voxel_size_x, voxel_size_y, voxel_size_z),
             voxel_meta_status,
-        ) = _extract_h5_voxel_size(dataset, f)
+        ) = _extract_h5_voxel_size(dataset, f, axis_order, dropped)
+
+    if image.ndim == 2 and allow_2d:
+        return image, voxel_size_x, voxel_size_y, voxel_size_z, voxel_meta_status
 
     if image.ndim != 3:
-        raise ValueError(f"Expected 3D image after simplification, got shape: {image.shape}")
+        raise ValueError(
+            f"Expected 3D image after simplification, got shape: {image.shape}. "
+            "Only size-1 channel and time axes are dropped; export one channel "
+            "(e.g. ilastik's Simple Segmentation, not Probabilities)."
+        )
 
-    image = apply_axis_order(image, axis_order)
+    reordered = apply_axis_order(
+        image, axis_order, use_memmap=use_memmap, memmap_directory=memmap_directory
+    )
+    if use_memmap and not memmap_path and reordered is not image:
+        # The untransposed copy was this function's own temp file, and
+        # nothing else will ever hold it now that the reordered copy exists.
+        release_memmap_array(image)
 
-    return image, voxel_size_x, voxel_size_y, voxel_size_z, voxel_meta_status
+    return reordered, voxel_size_x, voxel_size_y, voxel_size_z, voxel_meta_status
 
 
 def load_volume_and_voxel_size(
@@ -494,33 +1193,97 @@ def load_volume_and_voxel_size(
     h5_dataset_name: str | None = None,
     axis_order: str = CANONICAL_AXIS_ORDER,
     description: str = "mask",
+    use_memmap: bool = False,
+    memmap_directory: str | Path | None = None,
 ) -> tuple[np.ndarray, tuple[float, float, float]]:
     """Load a TIFF/H5 volume in canonical ``(z, y, x)`` order with its voxel size.
 
     The returned voxel size is image-metadata order ``(x, y, z)``; convert with
     :func:`voxel_size_zyx_from_xyz` before scaling array indices. ``description``
     names the volume in the unsupported-format error, so callers can say what the
-    user actually passed ("pericyte mask", "cell mask", ...).
+    user actually passed ("pericyte mask", "cell mask", ...). ``use_memmap`` and
+    ``memmap_directory`` are forwarded to whichever of
+    :func:`load_3d_tif_with_voxel_size` / :func:`load_3d_h5_with_voxel_size`
+    actually reads the file.
     """
+    image, voxel_size_xyz, _status = _load_volume_voxel_size_and_status(
+        volume_path,
+        h5_dataset_name=h5_dataset_name,
+        axis_order=axis_order,
+        description=description,
+        use_memmap=use_memmap,
+        memmap_directory=memmap_directory,
+    )
+    return image, voxel_size_xyz
+
+
+def _load_volume_voxel_size_and_status(
+    volume_path: str | Path,
+    *,
+    h5_dataset_name: str | None = None,
+    axis_order: str = CANONICAL_AXIS_ORDER,
+    description: str = "mask",
+    use_memmap: bool = False,
+    memmap_directory: str | Path | None = None,
+) -> tuple[np.ndarray, tuple[float, float, float], dict[str, object]]:
+    """:func:`load_volume_and_voxel_size`, plus the voxel size's metadata status.
+    A 2D file is read as a stack of one, as the main image is
+    (:func:`haemolynx.io.load_2d.load_image_with_voxel_size_2d_aware`): a mask
+    beside a 2D image was refused."""
+    from haemolynx.io.load_2d import load_image_with_voxel_size_2d_aware
+
     path = Path(volume_path)
     suffix = path.suffix.lower()
-    if suffix in {".tif", ".tiff"}:
-        image, voxel_x, voxel_y, voxel_z, _voxel_meta_status = load_3d_tif_with_voxel_size(
+    if suffix in {".tif", ".tiff", ".h5"}:
+        image, voxel_x, voxel_y, voxel_z, voxel_meta_status = load_image_with_voxel_size_2d_aware(
             str(path),
+            input_format=suffix[1:],
             axis_order=axis_order,
-        )
-    elif suffix == ".h5":
-        image, voxel_x, voxel_y, voxel_z, _voxel_meta_status = load_3d_h5_with_voxel_size(
-            str(path),
-            dataset_name=h5_dataset_name,
-            axis_order=axis_order,
+            h5_dataset_name=h5_dataset_name,
+            use_memmap=use_memmap,
+            memmap_directory=memmap_directory,
         )
     else:
         raise ValueError(
             f"Unsupported {description} format '{suffix}'. "
             "Expected .tif, .tiff, or .h5."
         )
-    return image, (float(voxel_x), float(voxel_y), float(voxel_z))
+    return image, (float(voxel_x), float(voxel_y), float(voxel_z)), voxel_meta_status
+
+
+def load_binary_mask_voxel_size_and_status(
+    mask_path: str | Path,
+    *,
+    h5_dataset_name: str | None = None,
+    axis_order: str = CANONICAL_AXIS_ORDER,
+    description: str = "mask",
+    use_memmap: bool = False,
+    memmap_directory: str | Path | None = None,
+    objects: bool = False,
+) -> tuple[np.ndarray, tuple[float, float, float], dict[str, object]]:
+    """:func:`load_binary_mask_and_voxel_size`, plus how complete the file's
+    voxel-size metadata was -- what
+    :func:`haemolynx.io.voxel_validation.resolve_voxel_size_xyz` needs to apply
+    the run's override and policy to it, as it does to the main image. The one
+    place a binary mask is read; :func:`load_binary_mask_and_voxel_size` is
+    this without the status. *objects*: a mask of objects (pericytes, cells,
+    blocks), binary or labelled, every labelled object kept
+    (:func:`_binarization_rule`)."""
+    path = resolve_image_path_with_optional_zip(Path(mask_path))
+    image, voxel_size_xyz, status = _load_volume_voxel_size_and_status(
+        path,
+        h5_dataset_name=h5_dataset_name,
+        axis_order=axis_order,
+        description=description,
+        use_memmap=use_memmap,
+        memmap_directory=memmap_directory,
+    )
+    if image.ndim != 3:
+        raise ValueError(f"Expected a 3D {description}, got shape {image.shape}.")
+    binary = _to_binary_volume_for_skeletonization(
+        image, use_memmap=use_memmap, memmap_directory=memmap_directory, objects=objects
+    )
+    return binary, voxel_size_xyz, status
 
 
 def load_binary_mask_and_voxel_size(
@@ -529,25 +1292,102 @@ def load_binary_mask_and_voxel_size(
     h5_dataset_name: str | None = None,
     axis_order: str = CANONICAL_AXIS_ORDER,
     description: str = "mask",
+    use_memmap: bool = False,
+    memmap_directory: str | Path | None = None,
 ) -> tuple[np.ndarray, tuple[float, float, float]]:
     """Load a 3D binary mask and return ``(mask_bool, voxel_size_xyz)``.
 
-    Any strictly positive voxel is foreground. The path may point at a file
-    inside a sibling zip archive; see :func:`resolve_image_path_with_optional_zip`.
+    Uses the same binarisation as skeletonisation inputs: ``0/1``, ``0/255``,
+    and two-label encodings without a zero background (e.g. ``1/2``) all become
+    a sparse boolean foreground. A raw ``> 0`` cast is *not* used -- on a
+    ``1/2`` mask it would mark every voxel True and poison every downstream
+    consumer (dilation, volume filters, terminal assignment, napari display).
+
+    The path may point at a file inside a sibling zip archive; see
+    :func:`resolve_image_path_with_optional_zip`. ``use_memmap`` reads the
+    file disk-backed and, via :func:`_to_binary_volume_for_skeletonization`,
+    writes the boolean mask a slice at a time into a new disk-backed array
+    in *memmap_directory*, which the caller releases; the mask is the same
+    either way.
     """
-    path = resolve_image_path_with_optional_zip(Path(mask_path))
-    image, voxel_size_xyz = load_volume_and_voxel_size(
-        path,
+    mask_bool, voxel_size_xyz, _status = load_binary_mask_voxel_size_and_status(
+        mask_path,
         h5_dataset_name=h5_dataset_name,
         axis_order=axis_order,
         description=description,
+        use_memmap=use_memmap,
+        memmap_directory=memmap_directory,
     )
-    if image.ndim != 3:
-        raise ValueError(f"Expected a 3D {description}, got shape {image.shape}.")
-    return np.asarray(image) > 0, voxel_size_xyz
+    return mask_bool, voxel_size_xyz
 
 
-def load_and_skeletonize_3d_tif(filepath: str, *, axis_order: str = CANONICAL_AXIS_ORDER):
+def _skeletonize_loaded_volume(
+    image: np.ndarray,
+    *,
+    use_memmap: bool = False,
+    memmap_directory: str | Path | None = None,
+    tile_large_components: bool = False,
+    tile_max_voxels: int = 200_000_000,
+    tile_halo_voxels: int = 0,
+) -> np.ndarray:
+    """Binarize, skeletonize and fill holes: what every loader must do.
+
+    One function because the TIFF and H5 loaders drifted apart -- the TIFF one
+    filled holes and the H5 one did not, so the same volume produced a
+    different skeleton depending on the file it was saved in. The hole fill was
+    added deliberately to the TIFF path (issue #4) and the graph builder has
+    been tuned against skeletons that have it, so the H5 path was the one that
+    was wrong. It is no no-op: a thin 3D curve encloses no background
+    (``test_fill_binary_holes_on_a_sparse_skeleton_changes_nothing``), but
+    Lee thinning can leave closed surfaces where the mask holds fat or hollow
+    vessels, and the fill makes each solid -- on Stack A's cleaned Claudin mask
+    with plain Lee it added 49% to the skeleton (PLAN_optimisers.md, A10).
+
+    *use_memmap* is forwarded to :func:`skeletonize_by_component` (whose
+    per-component splitting, when it actually shrinks what skimage's own
+    Lee thinning is called on, is the widest lever this path has for a
+    volume too large to skeletonize as one piece) and to
+    :func:`fill_binary_holes`, whose own connected-component labelling is a
+    full-volume, wider-than-boolean buffer this path can also redirect to
+    disk. *tile_large_components*, *tile_max_voxels* and
+    *tile_halo_voxels* are also forwarded to
+    :func:`skeletonize_by_component`, for the residual case where a single
+    connected component is still too large after the per-component split
+    -- see its own docstring.
+
+    Neither ``_to_binary_volume_for_skeletonization``'s result nor
+    ``fill_binary_holes``'s is ever re-cast with ``.astype(bool)`` here --
+    both already guarantee a boolean return, and ``.astype()`` defaults to
+    ``copy=True`` even when the dtype already matches, which would silently
+    materialise a second full-volume plain-RAM copy of whichever one, memmap
+    or not, use_memmap_loading just avoided making one for.
+    """
+    binary = _to_binary_volume_for_skeletonization(
+        image, use_memmap=use_memmap, memmap_directory=memmap_directory
+    )
+    skeleton = skeletonize_by_component(
+        binary,
+        use_memmap=use_memmap,
+        memmap_directory=memmap_directory,
+        tile_large_components=tile_large_components,
+        tile_max_voxels=tile_max_voxels,
+        tile_halo_voxels=tile_halo_voxels,
+    )
+    # Each of these is a volume-sized temp file under use_memmap; neither is
+    # needed once the step after it has run. `image` itself is the caller's.
+    release_superseded(binary, skeleton, keep=image)
+    filled = fill_binary_holes(skeleton, use_memmap=use_memmap, memmap_directory=memmap_directory)
+    release_superseded(skeleton, filled, keep=image)
+    return filled
+
+
+def load_and_skeletonize_3d_tif(
+    filepath: str,
+    *,
+    axis_order: str = CANONICAL_AXIS_ORDER,
+    use_memmap: bool = False,
+    memmap_directory: str | Path | None = None,
+):
     """Load a TIFF in canonical ``(z, y, x)`` order and skeletonize it."""
     logger.info("Loading and skeletonizing TIFF...")
     (
@@ -556,13 +1396,18 @@ def load_and_skeletonize_3d_tif(filepath: str, *, axis_order: str = CANONICAL_AX
         voxel_size_y,
         voxel_size_z,
         voxel_meta_status,
-    ) = load_3d_tif_with_voxel_size(filepath, axis_order=axis_order)
+    ) = load_3d_tif_with_voxel_size(
+        filepath,
+        axis_order=axis_order,
+        use_memmap=use_memmap,
+        memmap_directory=memmap_directory,
+    )
 
     logger.info("Voxel size — x: %s, y: %s, z: %s", voxel_size_x, voxel_size_y, voxel_size_z)
-    binary = _to_binary_volume_for_skeletonization(image)
-    skeleton = skeletonize(binary.astype(bool), method="lee")
-    skeleton = fill_binary_holes(skeleton)
-    return image, skeleton.astype(bool), voxel_size_x, voxel_size_y, voxel_size_z, voxel_meta_status
+    skeleton = _skeletonize_loaded_volume(
+        image, use_memmap=use_memmap, memmap_directory=memmap_directory
+    )
+    return image, skeleton, voxel_size_x, voxel_size_y, voxel_size_z, voxel_meta_status
 
 
 def load_and_skeletonize_3d_h5(
@@ -570,6 +1415,8 @@ def load_and_skeletonize_3d_h5(
     dataset_name: str | None = None,
     *,
     axis_order: str = CANONICAL_AXIS_ORDER,
+    use_memmap: bool = False,
+    memmap_directory: str | Path | None = None,
 ):
     """Load an H5 volume in canonical ``(z, y, x)`` order and skeletonize it."""
     logger.debug("Loading and skeletonizing H5...")
@@ -583,6 +1430,8 @@ def load_and_skeletonize_3d_h5(
         filepath,
         dataset_name=dataset_name,
         axis_order=axis_order,
+        use_memmap=use_memmap,
+        memmap_directory=memmap_directory,
     )
 
     logger.debug("Original image shape: %s", image.shape)
@@ -591,7 +1440,8 @@ def load_and_skeletonize_3d_h5(
     if image.ndim != 3:
         raise ValueError(f"Expected 3D image after simplification, got shape: {image.shape}")
 
-    binary = _to_binary_volume_for_skeletonization(image)
-    skeleton = skeletonize(binary.astype(bool), method="lee")
+    skeleton = _skeletonize_loaded_volume(
+        image, use_memmap=use_memmap, memmap_directory=memmap_directory
+    )
     return image, skeleton, voxel_size_x, voxel_size_y, voxel_size_z, voxel_meta_status
 

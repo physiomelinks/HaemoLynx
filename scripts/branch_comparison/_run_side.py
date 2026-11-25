@@ -165,19 +165,22 @@ def _apply_settings(module, spec) -> dict:
 
     for name, value in spec["settings"].items():
         aliases = spec.get("aliases", {}).get(name) or [name]
+        # An older name may have meant a different value (the output folder
+        # was a prefix inside it).
+        under = spec.get("alias_values", {}).get(name, {})
 
         # Arguments first, across every alias. A module constant of the same
         # name is usually just that argument's default, evaluated at import
         # time, so setting it would change nothing while looking like success.
         for alias in aliases:
             if alias in named:
-                kwargs[alias] = as_path_if_needed(name, alias, value)
+                kwargs[alias] = as_path_if_needed(name, alias, under.get(alias, value))
                 applied[name] = f"keyword argument '{alias}'"
                 break
             if has_var_keyword and (
                 _schema_accepts(schema, alias) or alias in derived
             ):
-                kwargs[alias] = value
+                kwargs[alias] = under.get(alias, value)
                 applied[name] = f"settings override '{alias}'"
                 break
         if name in applied:
@@ -188,7 +191,7 @@ def _apply_settings(module, spec) -> dict:
         for alias in aliases:
             constant = alias.upper()
             if hasattr(module, constant):
-                globals_to_set[constant] = as_path_if_needed(name, alias, value)
+                globals_to_set[constant] = as_path_if_needed(name, alias, under.get(alias, value))
                 applied[name] = f"module constant '{constant}'"
                 break
         else:

@@ -1,6 +1,7 @@
 """I/O utilities for loading and simplifying image data."""
 from .load import (
     crop_tiff_volume_from_corners,
+    h5_volume_shape,
     load_3d_h5_with_voxel_size,
     load_3d_tif_with_voxel_size,
     read_voxel_size_xyz,
@@ -11,27 +12,60 @@ from .load import (
     resolve_image_path_with_optional_zip,
     simplify_to_3d,
 )
+from .load_2d import (
+    load_image_with_voxel_size_2d_aware,
+    promote_2d_to_single_slice_volume,
+)
+from .raw_volume_cache import discard_cached_raw_volume, load_raw_volume_reusing_cache
 from .ilastik import run_ilastik_headless_segmentation
-from .automated_vessel_assignment import (
+from .vessel_masks import (
+    as_global_vessel_mask,
+    clear_vessel_mask_cache,
+    global_vessel_mask_roles,
     load_and_validate_vessel_masks,
     vessel_mask_arguments,
     load_large_vessel_masks,
+    vessel_mask_role_is_global,
+    vessel_masks_are_global,
+)
+from .vessel_mask_discovery import FoundVesselMasks, find_vessel_masks
+from .vessel_mask_split import split_large_vessel_masks_by_diameter, wide_part_of_mask
+from .batch_matching import BatchFolders, BatchMatch, batch_inputs, match_batch
+from .downsample import (
+    DOWNSAMPLE_CHOICES,
+    Downsample,
+    downsample_factor,
+    downsample_from_settings,
+    downsample_volume,
+    mask_volume_like_graph,
+    raw_volume_like_graph,
 )
 from .voxel_validation import resolve_voxel_size_xyz, validate_voxel_size_xyz
+from .channels import TiffChannel, tiff_channel_axis, tiff_channels
 from .axis_order import (
+    AUTO_AXIS_ORDER,
     CANONICAL_AXIS_ORDER,
     VALID_AXIS_ORDERS,
     apply_axis_order,
+    axis_order_for_file,
+    axis_order_for_run,
     axis_order_transpose,
+    stated_axis_order,
+    file_axis_spacing_from_xyz,
     normalize_axis_order,
+    voxel_size_xyz_from_file_axes,
     voxel_size_xyz_from_zyx,
     voxel_size_zyx_from_xyz,
 )
 from ..preprocessing import bridge_gaps
 
 __all__ = [
+    "TiffChannel",
+    "tiff_channel_axis",
+    "tiff_channels",
     "load_3d_tif_with_voxel_size",
     "read_voxel_size_xyz",
+    "h5_volume_shape",
     "load_3d_h5_with_voxel_size",
     "load_and_skeletonize_3d_tif",
     "load_and_skeletonize_3d_h5",
@@ -40,16 +74,39 @@ __all__ = [
     "load_volume_and_voxel_size",
     "resolve_image_path_with_optional_zip",
     "simplify_to_3d",
+    "load_image_with_voxel_size_2d_aware",
+    "promote_2d_to_single_slice_volume",
+    "load_raw_volume_reusing_cache",
+    "discard_cached_raw_volume",
     "bridge_gaps",
     "run_ilastik_headless_segmentation",
+    "clear_vessel_mask_cache",
     "load_large_vessel_masks",
     "load_and_validate_vessel_masks",
     "vessel_mask_arguments",
+    "as_global_vessel_mask",
+    "global_vessel_mask_roles",
+    "vessel_mask_role_is_global",
+    "vessel_masks_are_global",
+    "FoundVesselMasks",
+    "find_vessel_masks",
+    "split_large_vessel_masks_by_diameter",
+    "wide_part_of_mask",
+    "BatchFolders",
+    "BatchMatch",
+    "batch_inputs",
+    "match_batch",
     "validate_voxel_size_xyz",
     "resolve_voxel_size_xyz",
+    "AUTO_AXIS_ORDER",
     "CANONICAL_AXIS_ORDER",
     "VALID_AXIS_ORDERS",
+    "axis_order_for_file",
+    "axis_order_for_run",
+    "stated_axis_order",
     "normalize_axis_order",
+    "voxel_size_xyz_from_file_axes",
+    "file_axis_spacing_from_xyz",
     "axis_order_transpose",
     "apply_axis_order",
     "voxel_size_zyx_from_xyz",

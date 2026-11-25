@@ -13,7 +13,13 @@ from haemolynx.haemodynamics import (
     solve_flow_from_conductance_matrix,
 )
 
-MODEL = PoiseuilleModel(constriction_length=40.0, constriction_spacing=100.0)
+# Named rather than defaulted: these pin the capillary power law's own
+# calibration, and the default law is `pries` now.
+MODEL = PoiseuilleModel(
+    constriction_length=40.0,
+    constriction_spacing=100.0,
+    viscosity_law="capillary_power_law",
+)
 
 
 def test_calculate_viscosity():
@@ -86,6 +92,37 @@ def test_set_poiseuille_resistances_with_constrictions_fwhm_fallback(multigraph_
     assert np.isclose(r_fallback, G2[0][1][0]["resistance"])
 
 
+def test_constriction_centres_sit_mid_window_every_spacing_to_the_vessel_end():
+    assert MODEL.constriction_centres(400.0) == [20.0, 120.0, 220.0, 320.0]
+    assert MODEL.constriction_centres(320.0) == [20.0, 120.0, 220.0, 320.0]
+    assert MODEL.constriction_centres(10.0) == []  # ends before its first middle
+    assert MODEL.constriction_centres(0.0) == []
+    # The middle of the narrowest stretch of the diameter profile itself.
+    assert MODEL.get_diameter_at_position(120.0, 400.0, 6.0, 3.0) == 3.0
+
+
+def test_periodic_constrictions_record_where_they_narrow_the_vessel():
+    """Regression: the default strategy integrated its constrictions but
+    recorded none, so the viewer had no pericytes to draw for it."""
+    G = nx.MultiGraph()
+    G.add_edge(0, 1, length=400.0, branch_order="B01")
+    G.add_edge(1, 2, length=400.0, branch_order="Art1")
+
+    G, _results = MODEL.set_poiseuille_resistances_with_constrictions(
+        G,
+        {"B01": 6.0, "Art1": 6.0},
+        prefer_edge_fwhm_baseline=True,
+        constriction_factor_by_branch_order={"B01": 0.5, "Art1": 1.0},
+    )
+
+    capillary, arteriole = G[0][1][0], G[1][2][0]
+    assert capillary["pericyte_centers_um"] == [20.0, 120.0, 220.0, 320.0]
+    assert capillary["pericyte_count_assigned"] == 4
+    # A factor of 1 narrows nothing, so there is nothing there to draw.
+    assert arteriole["pericyte_centers_um"] == []
+    assert arteriole["pericyte_count_assigned"] == 0
+
+
 def test_set_poiseuille_edge_resistances(multigraph_with_branch_order):
     G = multigraph_with_branch_order.copy()
     out_graph, res = MODEL.set_poiseuille_edge_resistances(
@@ -122,6 +159,68 @@ def test_build_conductance_matrix_from_graph():
     assert np.isclose(C[i0, i1], 4.0)
     assert np.isclose(C[i1, i2], 1.0)
     assert np.isclose(C[i0, i2], 0.0)
+
+
+@pytest.mark.parametrize("solver", ["dense", "sparse"])
+def test_a_self_loop_carries_no_flow_and_does_not_break_the_laplacian(solver):
+    """Regression: a recovered ring left a self-loop in the graph, its
+    conductance landed on the diagonal and every run stopped with
+    "Conductance matrix diagonal must be zero"."""
+    G = nx.MultiGraph()
+    G.add_nodes_from([0, 1])
+    G.add_edge(0, 1, conductance=2.0)
+    G.add_edge(1, 1, conductance=5.0)
+
+    C, node_list = build_conductance_matrix_from_graph(G, solver=solver)
+    dense = C.toarray() if hasattr(C, "toarray") else C
+    L = calc_laplacian_from_conductance_matrix(C)
+    L = L.toarray() if hasattr(L, "toarray") else L
+
+    assert np.all(np.diagonal(dense) == 0)
+    assert np.allclose(L, [[2.0, -2.0], [-2.0, 2.0]])
+
+
+def test_build_conductance_matrix_from_graph_reuses_a_caller_supplied_array():
+    """A repeat caller that already knows the node ordering (the haematocrit
+    distribution loop, once per outer iteration) can pass node_list/
+    node_to_idx/out back in and get exactly the matrix a fresh call would
+    build -- this is what lets it skip reallocating and re-indexing every
+    pass without changing the answer."""
+    G = nx.MultiGraph()
+    G.add_nodes_from([0, 1, 2])
+    G.add_edge(0, 1, conductance=1.5)
+    G.add_edge(0, 1, conductance=2.5)
+    G.add_edge(1, 2, conductance=1.0)
+
+    fresh, fresh_node_list = build_conductance_matrix_from_graph(G)
+
+    node_list = list(G.nodes())
+    node_to_idx = {node_id: idx for idx, node_id in enumerate(node_list)}
+    out = np.full((3, 3), fill_value=99.0)  # Garbage, to prove fill(0) runs.
+    reused, reused_node_list = build_conductance_matrix_from_graph(
+        G, node_list=node_list, node_to_idx=node_to_idx, out=out,
+    )
+
+    assert reused_node_list == fresh_node_list == node_list
+    assert reused is out  # Filled in place, not replaced.
+    np.testing.assert_array_equal(reused, fresh)
+
+    # Edge conductances change (as they do between outer iterations); the
+    # same out array, reused a second time, must reflect only the new
+    # values, not a mix with the first call's.
+    G[0][1][0]["conductance"] = 10.0
+    updated, _ = build_conductance_matrix_from_graph(
+        G, node_list=node_list, node_to_idx=node_to_idx, out=out,
+    )
+    expected, _ = build_conductance_matrix_from_graph(G)
+    np.testing.assert_array_equal(updated, expected)
+
+
+def test_build_conductance_matrix_from_graph_rejects_a_mismatched_out_shape():
+    G = nx.MultiGraph()
+    G.add_nodes_from([0, 1, 2])
+    with pytest.raises(ValueError, match="shape"):
+        build_conductance_matrix_from_graph(G, out=np.zeros((2, 2)))
 
 
 def test_calc_two_point_from_laplacian_matrix_nodeID():
@@ -309,7 +408,6 @@ def test_singular_network_does_not_fall_back_to_lstsq(monkeypatch):
 def test_solve_warns_when_boundaries_pin_only_one_pressure(caplog):
     """Boundary nodes that all land outside the conductive part (or on one
     side of it) leave a component with a single imposed pressure: zero flow."""
-    import logging
 
     G = nx.MultiGraph()
     G.add_edge(0, 1, conductance=SI_CONDUCTANCE)
@@ -317,8 +415,8 @@ def test_solve_warns_when_boundaries_pin_only_one_pressure(caplog):
     G.add_edge(3, 4)  # the outlet (3) hangs off a non-conductive edge
 
     conductance, node_list = build_conductance_matrix_from_graph(G)
-    with caplog.at_level(logging.WARNING, logger="haemolynx.haemodynamics.resistance"):
-        flow = solve_flow_from_conductance_matrix(
+    with pytest.raises(ValueError, match="not connected by conductance-carrying edges"):
+        solve_flow_from_conductance_matrix(
             conductance,
             node_list,
             inlet_p_bc=1000.0,
@@ -326,12 +424,78 @@ def test_solve_warns_when_boundaries_pin_only_one_pressure(caplog):
             inlet_nodes=[0],
             outlet_nodes=[3],
         )
-    assert any("only" in rec.message and "zero" in rec.message for rec in caplog.records)
 
-    set_edge_flows(G, node_list, flow["pressure"])
-    for u, v, data in G.edges(data=True):
-        if "conductance" in data:
-            assert data["flow_signed"] == pytest.approx(0.0, abs=1e-30)
+
+def test_disconnected_inlet_outlet_raises():
+    G = nx.MultiGraph()
+    G.add_edge(0, 1, conductance=SI_CONDUCTANCE)
+    G.add_edge(2, 3, conductance=SI_CONDUCTANCE)
+    conductance, node_list = build_conductance_matrix_from_graph(G)
+    with pytest.raises(ValueError, match="not connected by conductance-carrying edges"):
+        solve_flow_from_conductance_matrix(
+            conductance,
+            node_list,
+            inlet_p_bc=1000.0,
+            outlet_p_bc=500.0,
+            inlet_nodes=[0],
+            outlet_nodes=[3],
+        )
+
+
+def test_nonfinite_conductance_raises():
+    G = nx.MultiGraph()
+    G.add_edge(0, 1, conductance=float("nan"))
+    G.add_edge(1, 2, conductance=SI_CONDUCTANCE)
+    conductance, node_list = build_conductance_matrix_from_graph(G)
+    with pytest.raises(ValueError, match="non-finite values"):
+        solve_flow_from_conductance_matrix(
+            conductance,
+            node_list,
+            inlet_p_bc=1000.0,
+            outlet_p_bc=500.0,
+            inlet_nodes=[0],
+            outlet_nodes=[2],
+        )
+
+
+def test_huge_equivalent_resistance_still_solves():
+    """A long weakly conductive path is ill-conditioned but must not abort."""
+    n = 200
+    G = nx.MultiGraph()
+    for i in range(n - 1):
+        G.add_edge(i, i + 1, conductance=SI_CONDUCTANCE)
+    conductance, node_list = build_conductance_matrix_from_graph(G)
+    L = calc_laplacian_from_conductance_matrix(conductance)
+    resistance = calc_two_point_from_laplacian_matrix_nodeID(L, G, 10, n - 11)
+    assert resistance > 1e16
+    flow = solve_flow_from_conductance_matrix(
+        conductance,
+        node_list,
+        inlet_p_bc=1000.0,
+        outlet_p_bc=500.0,
+        inlet_nodes=[10],
+        outlet_nodes=[n - 11],
+    )
+    assert np.all(np.isfinite(flow["pressure"]))
+
+
+def test_solve_flow_from_conductance_matrix_accepts_a_precomputed_node_to_idx():
+    """Regression: node_to_idx= must be usable in place of rebuilding it
+    from node_list, and produce the identical solve."""
+    G = _disconnected_network()
+    conductance, node_list = build_conductance_matrix_from_graph(G)
+    node_to_idx = {node_id: idx for idx, node_id in enumerate(node_list)}
+    kwargs = dict(
+        inlet_p_bc=1000.0,
+        outlet_p_bc=500.0,
+        inlet_nodes=[0],
+        outlet_nodes=[2],
+    )
+    baseline = solve_flow_from_conductance_matrix(conductance, node_list, **kwargs)
+    reused = solve_flow_from_conductance_matrix(
+        conductance, node_list, node_to_idx=node_to_idx, **kwargs
+    )
+    assert np.array_equal(baseline["pressure"], reused["pressure"])
 
 
 def test_set_edge_flows_writes_node_pressures():
@@ -341,6 +505,67 @@ def test_set_edge_flows_writes_node_pressures():
     idx = {n: i for i, n in enumerate(flow["node_list"])}
     for node in G.nodes():
         assert G.nodes[node]["pressure"] == flow["pressure"][idx[node]]
+
+
+def test_set_edge_flows_accepts_a_precomputed_node_to_idx():
+    """Regression: node_to_idx= must be usable in place of rebuilding it
+    from node_list, and write the identical edge/node values."""
+    baseline_graph = _disconnected_network()
+    flow = _solve_and_set_flows(baseline_graph)
+
+    reused_graph = _disconnected_network()
+    node_to_idx = {node_id: idx for idx, node_id in enumerate(flow["node_list"])}
+    set_edge_flows(reused_graph, flow["node_list"], flow["pressure"], node_to_idx=node_to_idx)
+
+    for node in baseline_graph.nodes():
+        assert (
+            reused_graph.nodes[node].get("pressure")
+            == baseline_graph.nodes[node].get("pressure")
+        )
+    for u, v, data in baseline_graph.edges(data=True):
+        assert reused_graph[u][v][0].get("flow_signed") == data.get("flow_signed")
+
+
+def test_set_edge_flows_writes_flow_abs_log10():
+    from haemolynx.haemodynamics.resistance import flow_abs_log10_value
+
+    G = _disconnected_network()
+    _solve_and_set_flows(G)
+    for _u, _v, data in G.edges(data=True):
+        if "flow_abs" not in data:
+            continue
+        assert data["flow_abs_log10"] == pytest.approx(
+            flow_abs_log10_value(data["flow_abs"])
+        )
+        assert np.isfinite(data["flow_abs_log10"])
+
+
+def test_flow_abs_log10_zero_flow_is_finite():
+    from haemolynx.haemodynamics.resistance import (
+        FLOW_ABS_LOG10_FLOOR,
+        flow_abs_log10_value,
+    )
+
+    G = nx.MultiGraph()
+    G.add_edge(0, 1, conductance=1.0)
+    set_edge_flows(G, [0, 1], np.array([100.0, 100.0]))
+    assert G.edges[(0, 1, 0)]["flow_abs"] == pytest.approx(0.0)
+    assert G.edges[(0, 1, 0)]["flow_abs_log10"] == pytest.approx(
+        flow_abs_log10_value(FLOW_ABS_LOG10_FLOOR)
+    )
+    assert np.isfinite(G.edges[(0, 1, 0)]["flow_abs_log10"])
+
+
+def test_flow_abs_log10_of_an_array_is_each_values_to_the_bit():
+    """A sweep's slider recolours every vessel by it at each step, so it is
+    computed at once; it must give what the one-value version gives."""
+    from haemolynx.haemodynamics.resistance import flow_abs_log10_value, flow_abs_log10_values
+
+    flows = np.array([0.0, -0.0, 3.2e-12, -3.2e-12, 1e-25, 1e-20, 7.5e-15, np.nan, np.inf, -np.inf])
+    expected = np.array([flow_abs_log10_value(value) for value in flows])
+
+    np.testing.assert_array_equal(flow_abs_log10_values(flows), expected)
+    np.testing.assert_array_equal(flow_abs_log10_values(list(flows[:3])), expected[:3])
 
 
 def test_flow_conservation_residuals_reports_an_imbalance():
@@ -354,3 +579,112 @@ def test_flow_conservation_residuals_reports_an_imbalance():
 
     residuals = flow_conservation_residuals(G, boundary_nodes=[0, 2])
     assert residuals[1] == pytest.approx(-2.0)
+
+
+def test_a_thick_vessel_bridge_is_not_reported_as_missing_its_branch_order(caplog):
+    """Regression: a bridge has no branch order (apply_final_resistance_overrides
+    gives it its resistance), and every resistance pass -- each haematocrit
+    iteration among them -- warned of it as an edge left without one."""
+    import logging
+
+    from haemolynx.graph.thick_vessel_junctions import IS_ZERO_RESISTANCE
+    from haemolynx.haemodynamics.poiseuille import PoiseuilleModel
+
+    G = nx.MultiGraph()
+    G.add_edge(0, 1, length=10.0, branch_order="B01")
+    G.add_edge(1, 2, length=5.0, **{IS_ZERO_RESISTANCE: True})
+    with caplog.at_level(logging.WARNING, logger="haemolynx.haemodynamics.poiseuille"):
+        _G, results = PoiseuilleModel(40.0, 100.0).set_poiseuille_resistances(G, {"B01": 5.0})
+    assert (results["edges_set"], results["zero_resistance_bridges"]) == (1, 1)
+    assert results["missing_branch_order"] == []
+    assert "missing branch_order" not in caplog.text
+    assert "resistance" not in G.edges[1, 2, 0]
+
+
+def test_the_boundary_pressures_grey_with_the_haemodynamics_and_preflight_checks_them():
+    """Regression: the two pressure rows were the only ones on the
+    Haemodynamics tab that stayed in effect with run_haemodynamics off,
+    though nothing reads them then. Preflight warns of pressures that drive
+    no flow, or drive it from the outlets."""
+    from haemolynx.gui.form import unmet_chain
+    from haemolynx.pipeline import default_schema
+    from haemolynx.pipeline.checks import check_haemodynamics
+
+    schema = default_schema()
+    on = dict(schema.defaults(), run_haemodynamics=True)
+    off = dict(on, run_haemodynamics=False)
+    for name in ("inlet_p_bc", "outlet_p_bc"):
+        assert unmet_chain(schema, name, off) == ("run_haemodynamics",)
+        assert unmet_chain(schema, name, on) == ()
+    report = check_haemodynamics(on)
+    assert not report.warnings and not report.errors
+    (level,) = check_haemodynamics(dict(on, inlet_p_bc=1000.0, outlet_p_bc=1000.0)).warnings
+    assert "no pressure difference drives any flow" in level
+    (backwards,) = check_haemodynamics(dict(on, inlet_p_bc=500.0, outlet_p_bc=1000.0)).warnings
+    assert "against the branch orders" in backwards
+    assert not check_haemodynamics(dict(off, inlet_p_bc=500.0, outlet_p_bc=1000.0)).warnings
+
+
+def test_the_model_reads_the_stain_the_diameters_stage_recorded(monkeypatch):
+    """build_haemodynamic_model built its config reading an auto stain as a
+    plasma column, though the Diameters stage had recorded the raw image as
+    endothelial, so the config preferred FWHM widths the run never measured.
+    It reads the recorded stain, as Diameters does."""
+    from haemolynx.pipeline import default_schema, stages
+
+    seen = []
+    real = stages.apply_poiseuille_resistances
+
+    def spy(G, config):
+        seen.append(config)
+        return real(G, config)
+
+    monkeypatch.setattr(stages, "apply_poiseuille_resistances", spy)
+    schema = default_schema()
+    G = nx.MultiGraph(raw_image_stain="endothelial", image_voxel_size_zyx=(1.0, 1.0, 1.0))
+    G.add_edge(0, 1, length=10.0, diameter_um=5.0, branch_order="B01")
+    settings = dict(
+        schema.defaults(), run_haemodynamics=True, raw_image_stain="auto", raw_image_path="raw.tif",
+        measure_diameters_from_raw_image=True, diameter_by_branch_order={"B01": 5.0},
+    )
+    stages.build_haemodynamic_model(settings, stages.HaemodynamicModel(graph=G), schema)
+    (config,) = seen
+    assert not config.use_fwhm_edge_diameters
+    assert config.endothelial["use_endothelial_diameters"] is True
+
+
+@pytest.mark.parametrize("basis, form", [("endothelial", "auto"), ("plasma_column", "in_vivo_1994")])
+def test_a_vessel_narrower_than_the_in_vivo_laws_floor_no_longer_stops_the_run(basis, form, caplog):
+    """Regression: the 1994 in vivo form is singular at 1.1 um, and raised for
+    any vessel at or under it, so one thin vessel (a mask width of a 1-2 voxel
+    capillary) stopped the whole Haemodynamics stage. A vessel narrower than
+    the law's fitted floor, 3.3 um, has its viscosity read there; its own
+    width still sets the d^4 of its resistance. The in vitro form is untouched."""
+    import logging
+
+    from haemolynx.haemodynamics.poiseuille import PoiseuilleModel
+    from haemolynx.haemodynamics.viscosity import PRIES_MIN_DIAMETER_UM, viscosity_for
+    from haemolynx.pipeline import default_schema, resolve_settings, stages
+
+    schema = default_schema()
+    values = {s.name: s.default for s in schema}
+    values.update(run_haemodynamics=True, segmentation_source=basis, pries_viscosity_form=form,
+                  all_diams_const=False, inlet_nodes=[0], outlet_nodes=[2],
+                  diameter_by_branch_order={"B01": 10.0})
+    settings = resolve_settings(values, schema=schema, config_path=None)
+    G = nx.MultiGraph(image_voxel_size_zyx=(1.0, 1.0, 1.0))
+    G.add_edge(0, 1, length=20.0, diameter_um=10.0, branch_order="B01")
+    G.add_edge(1, 2, length=20.0, diameter_um=1.0, branch_order="B01")
+    with caplog.at_level(logging.WARNING, logger="haemolynx.haemodynamics.poiseuille"):
+        stages.build_haemodynamic_model(settings, stages.HaemodynamicModel(graph=G), schema)
+
+    law = "pries" if form == "auto" else "pries_in_vivo_1994"
+    floor_viscosity = viscosity_for(PRIES_MIN_DIAMETER_UM, law=law, diameter_basis=basis)
+    expected = 128.0 * floor_viscosity * 20e-6 / (np.pi * (1.0e-6) ** 4)
+    assert G.edges[1, 2, 0]["resistance"] == pytest.approx(expected, rel=1e-12)
+    assert "fitted floor, with their viscosity read at it: 1" in caplog.text
+    # Above the floor, and on the in vitro form, nothing is read differently.
+    plasma = PoiseuilleModel(40.0, 100.0, viscosity_law="pries", diameter_basis="plasma_column")
+    assert plasma.calculate_viscosity(1.0) == viscosity_for(1.0, law="pries", diameter_basis="plasma_column")
+    wall = PoiseuilleModel(40.0, 100.0, viscosity_law="pries", diameter_basis="endothelial")
+    assert wall.calculate_viscosity(5.0) == viscosity_for(5.0, law="pries", diameter_basis="endothelial")

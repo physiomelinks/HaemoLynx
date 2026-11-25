@@ -44,9 +44,12 @@ def test_pipeline_tutorial_notebook_converts_and_runs(tmp_path):
     plot_dir.mkdir(parents=True, exist_ok=True)
 
     existing_pythonpath = __import__("os").environ.get("PYTHONPATH", "")
-    extra_paths = f"{TUTORIAL_DIR}:{REPO_ROOT / 'src'}:{REPO_ROOT / 'examples'}"
+    # os.pathsep, not ":": on Windows ":" left the subprocess without this
+    # tree's src, so it imported whatever haemolynx was installed instead.
+    paths = [str(TUTORIAL_DIR), str(REPO_ROOT / "src"), str(REPO_ROOT / "examples")]
     if existing_pythonpath:
-        extra_paths = f"{extra_paths}:{existing_pythonpath}"
+        paths.append(existing_pythonpath)
+    extra_paths = __import__("os").pathsep.join(paths)
     env = {
         **dict(__import__("os").environ),
         "HAEMOLYNX_REPO_ROOT": str(REPO_ROOT),
@@ -72,7 +75,6 @@ def test_pipeline_tutorial_notebook_converts_and_runs(tmp_path):
 
     stem = INPUT_TIFF.stem
     graph_path = output_dir / f"{stem}_graph.pkl"
-    vtk_prefix = output_dir / f"{stem}_tutorial"
 
     assert graph_path.exists(), f"Missing graph pickle: {graph_path}"
 
@@ -144,7 +146,7 @@ def test_the_tutorial_runs_without_the_repository(tmp_path):
     assert graph.number_of_nodes() == 8
     # The graph is pickled at Stage 2, before haemodynamics; the later stages
     # are evidenced by what they write.
-    assert (tmp_path / "outputs" / "tutorial_vessels.vtp").exists(), (
+    assert (tmp_path / "outputs" / "synthetic_vessels_vessels.vtp").exists(), (
         "the VTK export did not run on the synthetic network"
     )
     assert (tmp_path / "outputs" / "synthetic_vessels_statistics.csv").exists(), (

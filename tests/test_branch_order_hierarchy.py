@@ -1,10 +1,12 @@
 """Integration-style test and demo visualization for hierarchical branch orders."""
 import re
 import sys
+import warnings
 from pathlib import Path
 
 import networkx as nx
 import numpy as np
+import pytest
 
 # Ensure package import works when running this file directly.
 repo_root = Path(__file__).resolve().parents[1]
@@ -12,7 +14,17 @@ src_dir = repo_root / "src"
 if str(src_dir) not in sys.path:
     sys.path.insert(0, str(src_dir))
 
-from haemolynx.graph import assign_hierarchical_branch_orders
+from haemolynx.graph import (
+    BRANCH_ORDER_BASIS,
+    BRANCH_ORDER_CATEGORY_SEQUENCE,
+    LARGE_MASK_VESSEL_TYPE,
+    SMALL_MASK_VESSEL_TYPE,
+    VENOUS_SIDE,
+    BranchOrderLeakWarning,
+    MissingSmallVesselAssignmentWarning,
+    assign_hierarchical_branch_orders,
+    assign_vessel_branch_orders,
+)
 
 
 def _edge_id(u: int, v: int, key: int) -> tuple[int, int, int]:
@@ -302,6 +314,133 @@ def test_hierarchical_branch_order_pipeline_flow():
     assert G[2][4][0]["branch_order"].startswith("B")
 
 
+def _build_linear_capillary_chain() -> nx.MultiGraph:
+    """Four nodes in a line: inlet 0 → 1 → 2 → 3, for deterministic B01..B03.
+    A side branch leaves at 1 (to 4) and at 2 (to 5), so each is a junction:
+    a node where only two vessels meet is no step."""
+    G = nx.MultiGraph()
+    for node, (x, y) in enumerate(((0.0, 0.0), (1.0, 0.0), (2.0, 0.0), (3.0, 0.0), (1.0, 1.0), (2.0, 1.0))):
+        G.add_node(node, pos=np.asarray((x, y, 0.0), dtype=float))
+    for u, v in ((0, 1), (1, 2), (2, 3), (1, 4), (2, 5)):
+        G.add_edge(u, v, length=1.0)
+    return G
+
+
+def test_strict_without_small_vessels_assigns_capillary_orders_and_warns():
+    G = _build_linear_capillary_chain()
+
+    with pytest.warns(
+        MissingSmallVesselAssignmentWarning,
+        match="small arterioles and venules were not assigned",
+    ):
+        summary = assign_vessel_branch_orders(
+            G,
+            inlet_nodes=[0],
+            outlet_nodes=[3],
+            arteriole_boundary_nodes=[],
+            venule_boundary_nodes=[],
+            strict_hierarchical=True,
+            expects_hierarchical=False,
+        )
+
+    assert summary["mode"] == "capillary"
+    assert G[0][1][0]["branch_order"] == "B01"
+    assert G[1][2][0]["branch_order"] == "B02"
+    assert G[2][3][0]["branch_order"] == "B03"
+
+
+def test_strict_with_small_vessel_terminals_keeps_hierarchical_path_without_warning():
+    G, input_nodes, outlet_nodes, arteriole_boundary_nodes, venule_boundary_nodes = (
+        _build_demo_graph()
+    )
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", MissingSmallVesselAssignmentWarning)
+        summary = assign_vessel_branch_orders(
+            G,
+            inlet_nodes=input_nodes,
+            outlet_nodes=outlet_nodes,
+            arteriole_boundary_nodes=arteriole_boundary_nodes,
+            venule_boundary_nodes=venule_boundary_nodes,
+            strict_hierarchical=True,
+            expects_hierarchical=True,
+        )
+
+    assert summary["mode"] == "hierarchical"
+    assert G[0][1][0]["branch_order"] == "Art1"
+    assert G[1][2][0]["branch_order"] == "Art2"
+    assert G[2][3][0]["branch_order"] == "B01"
+    assert G[8][9][0]["branch_order"] == "Ven1"
+
+
+def test_hierarchical_branch_order_assigns_large_art_and_large_ven_tiers():
+    """A Large_Art/Large_Ven tier sits outside Art/Ven, handing off at the
+    existing arteriole/venule inlet-outlet nodes -- reusing those exact
+    nodes as the hand-off point means every pre-existing Art/B/Ven
+    assertion from test_hierarchical_branch_order_pipeline_flow must still
+    hold unchanged; only the two newly prepended edges are new territory."""
+    G, input_nodes, outlet_nodes, arteriole_boundary_nodes, venule_boundary_nodes = (
+        _build_demo_graph()
+    )
+    # True image-edge stumps, one hop upstream/downstream of the graph's
+    # existing inlet/outlet, which becomes the large-vessel boundary (the
+    # point where the large-vessel mask's own coverage ends).
+    true_inlet, true_outlet = 100, 101
+    G.add_node(true_inlet, pos=np.asarray((-1.0, 0.0, 0.0), dtype=float))
+    G.add_node(true_outlet, pos=np.asarray((8.0, 0.0, 0.0), dtype=float))
+    G.add_edge(
+        true_inlet, input_nodes[0], length=1.0, weight=1.0,
+        **{LARGE_MASK_VESSEL_TYPE: "arteriole"},
+    )
+    G.add_edge(
+        outlet_nodes[0], true_outlet, length=1.0, weight=1.0,
+        **{LARGE_MASK_VESSEL_TYPE: "venule"},
+    )
+    large_arteriole_boundary_nodes = list(input_nodes)
+    large_venule_boundary_nodes = list(outlet_nodes)
+
+    summary = assign_vessel_branch_orders(
+        G,
+        inlet_nodes=[true_inlet],
+        outlet_nodes=[true_outlet],
+        arteriole_boundary_nodes=arteriole_boundary_nodes,
+        venule_boundary_nodes=venule_boundary_nodes,
+        large_arteriole_boundary_nodes=large_arteriole_boundary_nodes,
+        large_venule_boundary_nodes=large_venule_boundary_nodes,
+    )
+
+    assert summary["mode"] == "hierarchical"
+    assert summary["large_arteriole_edge_count"] == 1
+    assert summary["large_venule_edge_count"] == 1
+    assert G[true_inlet][input_nodes[0]][0]["branch_order"] == "Large_Art1"
+    assert G[outlet_nodes[0]][true_outlet][0]["branch_order"] == "Large_Ven1"
+
+    # Every pre-existing Art/B/Ven assertion holds unchanged: the hand-off
+    # nodes are the same nodes the old inlet/outlet already were.
+    assert G[0][1][0]["branch_order"] == "Art1"
+    assert G[1][2][0]["branch_order"] == "Art2"
+    assert G[1][10][0]["branch_order"].startswith("Art")
+    assert G[2][3][0]["branch_order"].startswith("B")
+    assert G[2][4][0]["branch_order"].startswith("B")
+    assert G[8][9][0]["branch_order"] == "Ven1"
+    assert G[8][11][0]["branch_order"].startswith("Ven")
+
+
+def test_strict_when_small_vessel_assignment_expected_but_missing_still_raises():
+    G = _build_linear_capillary_chain()
+
+    with pytest.raises(ValueError, match="hierarchical assignment prerequisites"):
+        assign_vessel_branch_orders(
+            G,
+            inlet_nodes=[0],
+            outlet_nodes=[3],
+            arteriole_boundary_nodes=[],
+            venule_boundary_nodes=[],
+            strict_hierarchical=True,
+            expects_hierarchical=True,
+        )
+
+
 if __name__ == "__main__":
     G, input_nodes, outlet_nodes, arteriole_boundary_nodes, venule_boundary_nodes = (
         _build_demo_graph()
@@ -325,3 +464,1400 @@ if __name__ == "__main__":
         venule_boundary_nodes=venule_boundary_nodes,
     )
     print(f"Saved rotatable 3D vessel-type visualization to: {html_path}")
+
+
+# --- BRANCH_ORDER_CATEGORY_SEQUENCE is the one place this hierarchy lives --
+
+
+def test_branch_order_category_sequence_is_the_arterial_to_venous_hierarchy():
+    """Pins the exact hierarchy statistics.bifurcation and
+    visualization._helpers both derive their own sort-rank tables from --
+    see that constant's own docstring for why nothing should go back to
+    hand-copying this order."""
+    assert BRANCH_ORDER_CATEGORY_SEQUENCE == (
+        "large_arteriole",
+        "arteriole",
+        "capillary",
+        "venule",
+        "large_venule",
+    )
+
+
+def test_statistics_and_visualization_branch_order_ranks_agree():
+    """Regression: statistics.bifurcation and visualization._helpers used to
+    each keep an independent, hand-written copy of this ranking, with
+    nothing checking they agreed. Both now derive their rank tables from
+    BRANCH_ORDER_CATEGORY_SEQUENCE's own order, so this only re-confirms
+    the derivation -- a reversion to independent hardcoded dicts would show
+    up here as soon as one drifted from the other."""
+    from haemolynx.statistics.bifurcation import _BRANCH_ORDER_SORT_GROUPS as stats_groups
+    from haemolynx.visualization._helpers import _BRANCH_ORDER_SORT_GROUPS as viz_groups
+
+    shared_prefixes = ("large_art", "art", "bo", "ven", "large_ven")
+    assert all(prefix in stats_groups for prefix in shared_prefixes)
+    assert all(prefix in viz_groups for prefix in shared_prefixes)
+    for prefix in shared_prefixes:
+        assert stats_groups[prefix] == viz_groups[prefix], (
+            f"{prefix!r} ranks differently in statistics.bifurcation "
+            f"({stats_groups[prefix]}) and visualization._helpers "
+            f"({viz_groups[prefix]})"
+        )
+    # visualization._helpers additionally accepts the raw "b" prefix
+    # (statistics.bifurcation normalizes "B01" to "BO1" before ever
+    # consulting its own table -- see _normalize_branch_order_tag) -- it
+    # must rank the same as "bo", not a different category.
+    assert viz_groups["b"] == viz_groups["bo"]
+
+
+def test_a_bridge_is_no_order_and_no_step():
+    """A zero-resistance bridge is the radius of the thick vessel a vessel
+    opens into: it gets no branch order, and the vessel beyond it is one
+    order from the thick vessel, not two -- with or without the hierarchy."""
+    from haemolynx.graph import IS_ZERO_RESISTANCE
+
+    def network():
+        G = nx.MultiGraph()
+        G.add_edge(0, 1)  # thick vessel from the inlet
+        G.add_edge(1, 2)  # thick vessel on to the outlet side
+        G.add_edge(1, 3, **{IS_ZERO_RESISTANCE: True, "branch_order": "B02"})
+        G.add_edge(3, 4)  # the vessel opening into it
+        G.add_edge(4, 5)
+        G.add_edge(5, 2)
+        return G
+
+    G = network()
+    summary = assign_vessel_branch_orders(G, [0])
+    assert summary["mode"] == "capillary"
+    assert "branch_order" not in G.edges[1, 3, 0]
+    assert G.edges[0, 1, 0]["branch_order"] == "B01"
+    assert G.edges[3, 4, 0]["branch_order"] == "B02"
+    # 4 is no junction: 3-4-5 is one vessel.
+    assert G.edges[4, 5, 0]["branch_order"] == "B02"
+
+    G = network()
+    assign_hierarchical_branch_orders(
+        G, inlet_nodes=[0], outlet_nodes=[2], arteriole_boundary_nodes=[1],
+        venule_boundary_nodes=[5],
+    )
+    assert "branch_order" not in G.edges[1, 3, 0]
+    assert all(
+        d.get("branch_order") for u, v, d in G.edges(data=True) if not d.get(IS_ZERO_RESISTANCE)
+    )
+
+
+# --- The Large_Art/Large_Ven tier on a real large vessel ---------------------
+#
+# Found on a solved Stack A run (outputs/vessel_classes_check/REPORT.md, findings
+# 2 and 3): the Large tier stopped at the first side branch, and the Art tier
+# then crossed the capillary bed into the large vein.
+
+
+def _labels(G: nx.MultiGraph) -> dict[tuple, str]:
+    return {
+        _edge_id(u, v, k): d.get("branch_order") for u, v, k, d in G.edges(keys=True, data=True)
+    }
+
+
+def _tiered_graph(large_arteriole, large_venule, other) -> nx.MultiGraph:
+    """Edges given as node pairs; the first two groups tagged as lying in the
+    large arteriole and the large venule mask."""
+    G = nx.MultiGraph()
+    for edges, tag in ((large_arteriole, "arteriole"), (large_venule, "venule"), (other, None)):
+        for u, v in edges:
+            G.add_edge(u, v, length=1.0, **({LARGE_MASK_VESSEL_TYPE: tag} if tag else {}))
+    return G
+
+
+def _large_arteriole_with_side_branches():
+    """A large arteriole 0-1-2-3-4 (inlet 0) whose mask ends at 4. Small
+    arterioles leave it at 1 and 2 and carry on from 4, each meeting the
+    capillary bed at its arteriole boundary node (10, 20, 40). The bed drains
+    through a small venule (boundary 60) into a large vein 61-62-63 (outlet 63).
+
+    The large boundary nodes are what the large masks' labelling reports:
+    every labelled node with an edge outside its mask, here every junction on
+    the trunk where a side branch leaves (1, 2) and the mask's end (4).
+    """
+    G = _tiered_graph(
+        large_arteriole=[(0, 1), (1, 2), (2, 3), (3, 4)],
+        large_venule=[(61, 62), (62, 63)],
+        other=[
+            (1, 10), (2, 20), (4, 40),  # small arterioles
+            (10, 50), (20, 50), (40, 51), (50, 52), (51, 52), (52, 60),  # capillaries
+            (60, 61),  # small venule
+        ],
+    )
+    return G, dict(
+        inlet_nodes=[0],
+        outlet_nodes=[63],
+        arteriole_boundary_nodes=[10, 20, 40],
+        venule_boundary_nodes=[60],
+        large_arteriole_boundary_nodes=[1, 2, 4],
+        large_venule_boundary_nodes=[61],
+    )
+
+
+def _capillaries_from_large_arteriole_to_large_vein():
+    """A large arteriole 0-1-2 (inlet 0) and a large vein 8-9-10 (outlet 10).
+    A capillary leaves the arteriole at 1 and joins the vein at 8 with no small
+    vessel on either side; a small arteriole leaves at 2 and meets the bed at
+    3, which drains through a small venule (boundary 7) into the vein at 8.
+    """
+    G = _tiered_graph(
+        large_arteriole=[(0, 1), (1, 2)],
+        large_venule=[(8, 9), (9, 10)],
+        other=[(1, 5), (5, 8), (2, 3), (3, 4), (4, 7), (7, 8)],
+    )
+    return G, dict(
+        inlet_nodes=[0],
+        outlet_nodes=[10],
+        arteriole_boundary_nodes=[3],
+        venule_boundary_nodes=[7],
+        large_arteriole_boundary_nodes=[1, 2],
+        large_venule_boundary_nodes=[8],
+    )
+
+
+def test_the_large_tier_runs_along_the_large_vessel_past_its_side_branches():
+    """Regression: the Large_Art search from the inlet stopped at every large
+    boundary node, and every junction where a side branch leaves the large
+    arteriole is one -- so only the inlet's own vessel was Large_Art and the
+    rest of the trunk became Art (Stack A: 1 of 48 vessels)."""
+    G, nodes = _large_arteriole_with_side_branches()
+
+    summary = assign_vessel_branch_orders(G, **nodes)
+
+    labels = _labels(G)
+    assert summary["mode"] == "hierarchical"
+    # 3 is no junction (nothing leaves the trunk there): 2-3-4 is one vessel.
+    assert [labels[e] for e in [(0, 1, 0), (1, 2, 0), (2, 3, 0), (3, 4, 0)]] == [
+        "Large_Art1", "Large_Art2", "Large_Art3", "Large_Art3",
+    ]
+    assert summary["large_arteriole_edge_count"] == 4
+    # Each side branch is an arteriole of the first order from the large one.
+    assert labels[(1, 10, 0)] == labels[(2, 20, 0)] == labels[(4, 40, 0)] == "Art1"
+    assert [labels[e] for e in [(10, 50, 0), (20, 50, 0), (40, 51, 0)]] == ["B01"] * 3
+    # 50 is a junction, 51 is not: 40-51-52 is one capillary.
+    assert labels[(50, 52, 0)] == "B02"
+    assert labels[(51, 52, 0)] == "B01"
+    assert labels[(52, 60, 0)] == "B02"
+    assert labels[(60, 61, 0)] == "Ven1"
+    # 62 is no junction: 61-62-63 is one vessel.
+    assert labels[(62, 63, 0)] == labels[(61, 62, 0)] == "Large_Ven1"
+
+
+def test_the_arteriole_tier_does_not_cross_the_capillary_bed_into_the_large_vein():
+    """Regression: the Art search started at every large boundary node and was
+    stopped only by arteriole boundary nodes, so a capillary leaving the large
+    arteriole directly took it across the bed into the large vein before the
+    venous tiers ran (Stack A: the outlet's own vessel was Art11, Large_Ven had
+    no vessel). A capillary leaving a large vessel is a capillary."""
+    G, nodes = _capillaries_from_large_arteriole_to_large_vein()
+
+    summary = assign_vessel_branch_orders(G, **nodes)
+
+    labels = _labels(G)
+    assert labels[(0, 1, 0)] == "Large_Art1"
+    assert labels[(1, 2, 0)] == "Large_Art2"
+    assert labels[(2, 3, 0)] == "Art1"
+    # 9 is no junction: 8-9-10 is one vessel.
+    assert labels[(9, 10, 0)] == labels[(8, 9, 0)] == "Large_Ven1"
+    assert labels[(7, 8, 0)] == "Ven1"
+    # The capillary from the large arteriole to the large vein, counted from
+    # the arteriole it leaves; and the bed beyond the small arteriole. 5 and 4
+    # are no junctions, so each is one capillary.
+    assert labels[(1, 5, 0)] == labels[(5, 8, 0)] == "B01"
+    assert labels[(3, 4, 0)] == labels[(4, 7, 0)] == "B01"
+    assert summary["arteriole_edge_count"] == 1
+    assert summary["large_venule_edge_count"] == 2
+    venous_side = {7, 8, 9, 10}
+    assert not [
+        e for e, label in labels.items()
+        if label.startswith("Art") and set(e[:2]) & venous_side
+    ]
+
+
+def test_the_tiers_are_the_same_whichever_node_ids_the_vessels_carry():
+    """The tiers come from the graph's shape and tags, not from the order its
+    nodes were numbered or its edges added in."""
+    G, nodes = _capillaries_from_large_arteriole_to_large_vein()
+    assign_vessel_branch_orders(G, **nodes)
+    relabel = {n: 100 - n for n in G.nodes}
+    H = nx.MultiGraph()
+    for u, v, d in reversed(list(G.edges(data=True))):
+        H.add_edge(relabel[v], relabel[u], **{k: x for k, x in d.items() if k != "branch_order"})
+    renamed = {name: [relabel[n] for n in ids] for name, ids in nodes.items()}
+
+    assign_vessel_branch_orders(H, **renamed)
+
+    assert {
+        frozenset((u, v)): d["branch_order"] for u, v, d in G.edges(data=True)
+    } == {
+        frozenset((100 - u, 100 - v)): d["branch_order"] for u, v, d in H.edges(data=True)
+    }
+
+
+def test_a_large_vessel_mask_tag_alone_does_not_add_a_large_tier():
+    """With no large boundary nodes (no Large tier asked for) the orders are
+    what they were before the large-vessel tags existed, tags or not."""
+    untagged, nodes = _capillaries_from_large_arteriole_to_large_vein()
+    for data in untagged.edges.values():
+        data.pop(LARGE_MASK_VESSEL_TYPE, None)
+    tagged, _ = _capillaries_from_large_arteriole_to_large_vein()
+    plain = {k: v for k, v in nodes.items() if not k.startswith("large_")}
+
+    with pytest.warns(BranchOrderLeakWarning):
+        assign_vessel_branch_orders(untagged, **plain)
+    with pytest.warns(BranchOrderLeakWarning):
+        assign_vessel_branch_orders(tagged, **plain)
+
+    assert _labels(tagged) == _labels(untagged)
+    # Art from the inlet up to the arteriole boundary nodes, Ven from the
+    # outlet up to the venule boundary nodes. Without the Large tier the
+    # capillary 1-5-8 carries Art into the vein with no boundary node on the
+    # way, so the vein is Art up to the outlet and the venule boundary node 7,
+    # where it stops; the vessel beyond boundary node 3 used to be Art4/Art5
+    # as well, and is a capillary. Only 1 and 8 are junctions.
+    assert _labels(untagged) == {
+        (0, 1, 0): "Art1", (1, 2, 0): "Art2", (1, 5, 0): "Art2", (2, 3, 0): "Art2",
+        (5, 8, 0): "Art2", (8, 9, 0): "Art3", (9, 10, 0): "Art3", (7, 8, 0): "Art3",
+        (3, 4, 0): "B01", (4, 7, 0): "B01",
+    }
+
+
+def test_a_large_tier_with_no_tagged_vessel_at_the_inlet_falls_back_to_the_plain_tiers():
+    """Large boundary nodes but no vessel tagged in a large mask reaching the
+    inlet or outlet (a graph made before the tags, or an inlet off the large
+    vessel): there is no Large tier, and Art and Ven run from the inlets and
+    outlets as they do without one, with a warning."""
+    G, nodes = _large_arteriole_with_side_branches()
+    for data in G.edges.values():
+        data.pop(LARGE_MASK_VESSEL_TYPE, None)
+    expected, _ = _large_arteriole_with_side_branches()
+    assign_vessel_branch_orders(
+        expected, **{k: v for k, v in nodes.items() if not k.startswith("large_")}
+    )
+
+    with pytest.warns(UserWarning, match="no vessel tagged in the large"):
+        summary = assign_vessel_branch_orders(G, **nodes)
+
+    assert summary["large_arteriole_edge_count"] == summary["large_venule_edge_count"] == 0
+    assert _labels(G) == _labels(expected)
+
+
+def _segment(start, end) -> list[tuple[float, float, float]]:
+    """Points every micron from *start* to *end*, both included."""
+    start, end = np.asarray(start, dtype=float), np.asarray(end, dtype=float)
+    steps = max(int(np.ceil(np.linalg.norm(end - start))), 1)
+    return [tuple(start + (end - start) * t) for t in np.linspace(0.0, 1.0, steps + 1)]
+
+
+def _branching_large_vessel_network():
+    """1 um voxels, every vessel in the plane y = 4. A large arteriole runs
+    along z at x = 5 from the z = 0 face (a0-a1-a2-a3) and a large vein
+    along z at x = 25 (v0-v1-v2-v3), each in its own 5 x 5 um mask. A small
+    arteriole leaves the arteriole at a1 (z = 10) and its bed drains through
+    a small venule into the vein at v1; a capillary leaves the arteriole at
+    a2 (z = 20) and joins the vein at v2 directly."""
+    from haemolynx.pipeline.stages import SkeletonisedVolume, VesselNetwork
+
+    shape = (40, 9, 30)
+    pos = {
+        "a0": (0, 4, 5), "a1": (10, 4, 5), "a2": (20, 4, 5), "a3": (30, 4, 5),
+        "v0": (0, 4, 25), "v1": (10, 4, 25), "v2": (20, 4, 25), "v3": (30, 4, 25),
+        "s1": (10, 4, 12), "w1": (10, 4, 18), "c": (20, 4, 15),
+    }
+    ids = {name: index for index, name in enumerate(pos)}
+    G = nx.MultiGraph()
+    for name, p in pos.items():
+        G.add_node(ids[name], pos=tuple(float(c) for c in p))
+    for a, b in [
+        ("a0", "a1"), ("a1", "a2"), ("a2", "a3"), ("v0", "v1"), ("v1", "v2"), ("v2", "v3"),
+        ("a1", "s1"), ("s1", "w1"), ("w1", "v1"), ("a2", "c"), ("c", "v2"),
+    ]:
+        points = _segment(pos[a], pos[b])
+        G.add_edge(ids[a], ids[b], voxels=points, length=float(np.linalg.norm(
+            np.subtract(pos[b], pos[a]))))
+    large_art = np.zeros(shape, dtype=bool); large_art[0:32, 2:7, 3:8] = True
+    large_ven = np.zeros(shape, dtype=bool); large_ven[0:32, 2:7, 23:28] = True
+    small_art = np.zeros(shape, dtype=bool); small_art[9:12, 3:6, 8:13] = True
+    small_ven = np.zeros(shape, dtype=bool); small_ven[9:12, 3:6, 18:23] = True
+    image = np.zeros(shape, dtype=np.uint8)
+    volume = SkeletonisedVolume(
+        image=image, skeleton=image.copy(), voxel_size_xyz=(1.0, 1.0, 1.0),
+        voxel_size_zyx=(1.0, 1.0, 1.0), output_dir=Path("."),
+    )
+    network = VesselNetwork(
+        graph=G, volume=volume,
+        large_arteriole_mask=large_art, large_venule_mask=large_ven,
+        small_arteriole_mask=small_art, small_venule_mask=small_ven,
+    )
+    return network, ids
+
+
+def _large_tier_settings(tmp_path):
+    from haemolynx.pipeline import default_schema
+
+    settings = default_schema().defaults()
+    settings.update({
+        "automated_vessel_assignment": True,
+        "use_large_vessel_masks": True,
+        "cut_network_at_large_vessel_volumes": False,
+        "assign_large_vessel_branch_orders": True,
+        "automated_vessel_assignment_fast_mode": False,
+        "automated_vessel_assignment_enable_overlap_cleanup": False,
+        "use_small_vessel_masks_for_boundary_assignment": True,
+        # Arteriole/venule pairs: with no venule mask the masks are global.
+        "large_venule_mask_path": "large_venule_mask.tif",
+        "small_venule_mask_path": "small_venule_mask.tif",
+        "write_small_vessel_boundary_labelling_3d_html": False,
+        "visualize_results": False,
+        "plot_dir": tmp_path,
+    })
+    for name in (
+        "inlet_nodes", "outlet_nodes", "arteriole_boundary_nodes", "venule_boundary_nodes",
+        "large_arteriole_boundary_nodes", "large_venule_boundary_nodes",
+        "inlet_node_coordinates", "outlet_node_coordinates",
+        "arteriole_boundary_node_coordinates", "venule_boundary_node_coordinates",
+        "arteriole_boundary_node_volumes", "venule_boundary_node_volumes",
+    ):
+        settings[name] = []
+    return settings
+
+
+def test_the_large_tier_follows_the_large_masks_through_a_run(tmp_path):
+    """From the masks to the orders, as a run assigns them: the Boundaries
+    stage tags the vessels lying in the large masks, and the orders read
+    those tags. The arteriole's whole trunk is Large_Art and the vein's whole
+    trunk Large_Ven, though vessels leave both mid-way; the capillary from
+    the arteriole straight to the vein is a capillary."""
+    from haemolynx.pipeline.stages import _assign_branch_orders, assign_boundaries
+
+    network, ids = _branching_large_vessel_network()
+    settings = _large_tier_settings(tmp_path)
+
+    assign_boundaries(settings, network)
+    _assign_branch_orders(settings, network.graph)
+
+    G = network.graph
+    assert settings["inlet_nodes"] == [ids["a0"]]
+    assert settings["outlet_nodes"] == [ids["v0"]]
+
+    def label(a, b):
+        return G.edges[ids[a], ids[b], 0]["branch_order"]
+
+    assert [label("a0", "a1"), label("a1", "a2"), label("a2", "a3")] == [
+        "Large_Art1", "Large_Art2", "Large_Art3",
+    ]
+    assert [label("v0", "v1"), label("v1", "v2"), label("v2", "v3")] == [
+        "Large_Ven1", "Large_Ven2", "Large_Ven3",
+    ]
+    assert label("a1", "s1") == "Art1"
+    assert label("w1", "v1") == "Ven1"
+    assert label("s1", "w1") == "B01"
+    # c is no junction: a2-c-v2 is one capillary.
+    assert [label("a2", "c"), label("c", "v2")] == ["B01", "B01"]
+
+
+# --- The Art/Ven tier along a small vessel's own mask ------------------------
+#
+# The small masks' labelling makes every small-arteriole node with an edge
+# outside the mask a boundary node: every junction where a capillary leaves the
+# vessel, not only where its mask ends. The Art search stopped at the first of
+# them, and the rest of the small arteriole was counted as capillaries; Ven
+# likewise. The fix for the Large tier (above) did not cover it.
+
+
+def _mask_tagged_graph(
+    small_arteriole, small_venule, other, large_arteriole=(), large_venule=()
+) -> nx.MultiGraph:
+    """Edges given as node pairs, each group tagged as lying in that mask."""
+    G = nx.MultiGraph()
+    for edges, tags in (
+        (large_arteriole, {LARGE_MASK_VESSEL_TYPE: "arteriole"}),
+        (large_venule, {LARGE_MASK_VESSEL_TYPE: "venule"}),
+        (small_arteriole, {SMALL_MASK_VESSEL_TYPE: "arteriole"}),
+        (small_venule, {SMALL_MASK_VESSEL_TYPE: "venule"}),
+        (other, {}),
+    ):
+        for u, v in edges:
+            G.add_edge(u, v, length=1.0, **tags)
+    return G
+
+
+def _small_vessels_with_side_capillaries():
+    """A small arteriole 0-1-2-3-4 (inlet 0) and a small venule 13-14-15-16
+    (outlet 16), each wholly in its small mask. A capillary leaves the
+    arteriole at 2, mid-way, and its mask ends at 4; the bed drains into the
+    venule at 13, where its mask starts, and at 15, mid-way.
+
+    The boundary nodes are what the small masks' labelling reports: every
+    labelled node with an edge outside its mask -- the side-capillary
+    junctions (2, 15) as well as the masks' ends (4, 13).
+    """
+    G = _mask_tagged_graph(
+        small_arteriole=[(0, 1), (1, 2), (2, 3), (3, 4)],
+        small_venule=[(13, 14), (14, 15), (15, 16)],
+        other=[(2, 10), (4, 11), (10, 12), (11, 12), (12, 13), (12, 22), (22, 15)],
+    )
+    return G, dict(
+        inlet_nodes=[0],
+        outlet_nodes=[16],
+        arteriole_boundary_nodes=[2, 4],
+        venule_boundary_nodes=[13, 15],
+    )
+
+
+def test_the_art_and_ven_tiers_run_along_the_small_masks_past_side_capillaries():
+    """Regression: Art ended at 2, the first junction where a capillary leaves
+    the small arteriole, and 2-3-4 were counted as capillaries (B01); Ven ended
+    at 15 and 13-14-15 were B04-B05. Each tier now runs on along its small
+    mask; only the vessels leaving it are capillaries, counted from it."""
+    G, nodes = _small_vessels_with_side_capillaries()
+
+    summary = assign_vessel_branch_orders(G, **nodes)
+
+    assert summary["mode"] == "hierarchical"
+    assert summary["arteriole_edge_count"] == 4
+    assert summary["venule_edge_count"] == 3
+    # The orders step at the junctions 2, 12 and 15 alone.
+    assert _labels(G) == {
+        (0, 1, 0): "Art1", (1, 2, 0): "Art1", (2, 3, 0): "Art2", (3, 4, 0): "Art2",
+        (15, 16, 0): "Ven1", (14, 15, 0): "Ven2", (13, 14, 0): "Ven2",
+        (2, 10, 0): "B01", (4, 11, 0): "B01", (10, 12, 0): "B01", (11, 12, 0): "B01",
+        (12, 13, 0): "B02", (12, 22, 0): "B02", (15, 22, 0): "B02",
+    }
+
+
+def test_boundary_nodes_chosen_by_hand_still_end_the_tiers():
+    """With no small-mask tags -- boundary nodes picked by hand (coordinates,
+    volumes, node IDs) -- Art and Ven end at the boundary nodes, as before:
+    the user chose them as the tiers' ends."""
+    G, nodes = _small_vessels_with_side_capillaries()
+    for data in G.edges.values():
+        data.pop(SMALL_MASK_VESSEL_TYPE, None)
+
+    assign_vessel_branch_orders(G, **nodes)
+
+    assert _labels(G) == {
+        (0, 1, 0): "Art1", (1, 2, 0): "Art1", (15, 16, 0): "Ven1",
+        (2, 3, 0): "B01", (3, 4, 0): "B01", (2, 10, 0): "B01", (4, 11, 0): "B01",
+        (10, 12, 0): "B01", (11, 12, 0): "B01", (12, 13, 0): "B02", (12, 22, 0): "B02",
+        (13, 14, 0): "B02", (15, 22, 0): "B02", (14, 15, 0): "B02",
+    }
+
+
+def test_a_small_mask_piece_reached_only_through_capillaries_is_not_taken():
+    """The tier runs on along its small mask, never across a capillary: a
+    piece of the arteriole mask in the bed (12-30-31), joined to the small
+    arteriole only through capillaries, stays capillary."""
+    G, nodes = _small_vessels_with_side_capillaries()
+    G.add_edge(12, 30, length=1.0, **{SMALL_MASK_VESSEL_TYPE: "arteriole"})
+    G.add_edge(30, 31, length=1.0, **{SMALL_MASK_VESSEL_TYPE: "arteriole"})
+    nodes["arteriole_boundary_nodes"] = [2, 4, 12]
+
+    assign_vessel_branch_orders(G, **nodes)
+
+    labels = _labels(G)
+    # 30 is no junction: 12-30-31 is one capillary.
+    assert labels[(12, 30, 0)] == labels[(30, 31, 0)] == "B01"
+    assert sorted(e for e, label in labels.items() if label.startswith("Art")) == [
+        (0, 1, 0), (1, 2, 0), (2, 3, 0), (3, 4, 0),
+    ]
+
+
+def _small_vessels_beside_large_vessels():
+    """A large arteriole 0-1-2 (inlet 0) and a large vein 13-14-15 (outlet
+    15). A small arteriole leaves the large one at 1 through a vessel too
+    little in its mask to be tagged (1-3, as where it opens out of the large
+    mask), runs on in its mask 3-4-5, and has a capillary leave it at 4. A
+    small venule 9-10-11 takes a capillary at 10 and reaches the vein at 13
+    through 11-13, also untagged."""
+    G = _mask_tagged_graph(
+        large_arteriole=[(0, 1), (1, 2)],
+        large_venule=[(13, 14), (14, 15)],
+        small_arteriole=[(3, 4), (4, 5)],
+        small_venule=[(9, 10), (10, 11)],
+        other=[(1, 3), (4, 6), (5, 7), (6, 8), (7, 8), (8, 9), (8, 12), (12, 10), (11, 13)],
+    )
+    return G, dict(
+        inlet_nodes=[0],
+        outlet_nodes=[15],
+        arteriole_boundary_nodes=[3, 4, 5],
+        venule_boundary_nodes=[9, 10, 11],
+        large_arteriole_boundary_nodes=[1],
+        large_venule_boundary_nodes=[13],
+    )
+
+
+def test_beside_a_large_tier_the_small_tiers_run_on_along_their_masks():
+    """Regression: from the hand-off at 1, Art took the side branch only up
+    to the first boundary node (1-3) and 3-4-5 were capillaries (B01); Ven
+    likewise took 11-13 and left 10-11, 9-10 as B05, B04. The side branch up
+    to the small mask stays Art1/Ven1, and the tier runs on along it."""
+    G, nodes = _small_vessels_beside_large_vessels()
+
+    summary = assign_vessel_branch_orders(G, **nodes)
+
+    assert summary["arteriole_edge_count"] == 3
+    assert summary["venule_edge_count"] == 3
+    # The orders step at the junctions (1, 4, 8, 10) alone: 3, 6, 7, 9, 11,
+    # 12 and 14 each join two vessels into one.
+    assert _labels(G) == {
+        (0, 1, 0): "Large_Art1", (1, 2, 0): "Large_Art2",
+        (14, 15, 0): "Large_Ven1", (13, 14, 0): "Large_Ven1",
+        (1, 3, 0): "Art1", (3, 4, 0): "Art1", (4, 5, 0): "Art2",
+        (11, 13, 0): "Ven1", (10, 11, 0): "Ven1", (9, 10, 0): "Ven2",
+        (4, 6, 0): "B01", (5, 7, 0): "B01", (6, 8, 0): "B01", (7, 8, 0): "B01",
+        (8, 9, 0): "B02", (8, 12, 0): "B02", (10, 12, 0): "B02",
+    }
+
+
+def _small_vessel_network():
+    """1 um voxels, every vessel in the plane y = 4, no large masks. A small
+    arteriole runs along x at z = 10 from the inlet i (x = 0) through p to q
+    (x = 20), where its 5 x 5 um mask ends; a small venule runs in its own
+    mask from r (x = 30) through t to the outlet o (x = 49). A capillary
+    leaves the arteriole at p and joins the venule at t, round through c1 and
+    c3 at z = 20; another runs straight from q to r."""
+    from haemolynx.pipeline.stages import SkeletonisedVolume, VesselNetwork
+
+    shape = (30, 9, 50)
+    pos = {
+        "i": (10, 4, 0), "p": (10, 4, 10), "q": (10, 4, 20), "r": (10, 4, 30),
+        "t": (10, 4, 40), "o": (10, 4, 49), "c1": (20, 4, 10), "c3": (20, 4, 40),
+    }
+    ids = {name: index for index, name in enumerate(pos)}
+    G = nx.MultiGraph()
+    for name, p in pos.items():
+        G.add_node(ids[name], pos=tuple(float(c) for c in p))
+    for a, b in [
+        ("i", "p"), ("p", "q"), ("q", "r"), ("r", "t"), ("t", "o"),
+        ("p", "c1"), ("c1", "c3"), ("c3", "t"),
+    ]:
+        G.add_edge(ids[a], ids[b], voxels=_segment(pos[a], pos[b]), length=float(
+            np.linalg.norm(np.subtract(pos[b], pos[a]))))
+    small_art = np.zeros(shape, dtype=bool); small_art[8:13, 2:7, 0:22] = True
+    small_ven = np.zeros(shape, dtype=bool); small_ven[8:13, 2:7, 29:50] = True
+    image = np.zeros(shape, dtype=np.uint8)
+    volume = SkeletonisedVolume(
+        image=image, skeleton=image.copy(), voxel_size_xyz=(1.0, 1.0, 1.0),
+        voxel_size_zyx=(1.0, 1.0, 1.0), output_dir=Path("."),
+    )
+    network = VesselNetwork(
+        graph=G, volume=volume, small_arteriole_mask=small_art, small_venule_mask=small_ven,
+    )
+    return network, ids
+
+
+def _small_mask_settings(tmp_path, ids):
+    from haemolynx.pipeline import default_schema
+
+    settings = default_schema().defaults()
+    settings.update({
+        "automated_vessel_assignment": True,
+        "use_large_vessel_masks": False,
+        "use_small_vessel_masks_for_boundary_assignment": True,
+        "small_venule_mask_path": "small_venule_mask.tif",
+        "inlet_node_selection_method": "node_ids",
+        "inlet_node_ids": [ids["i"]],
+        "outlet_node_selection_method": "node_ids",
+        "outlet_node_ids": [ids["o"]],
+        "write_small_vessel_boundary_labelling_3d_html": False,
+        "visualize_results": False,
+        "plot_dir": tmp_path,
+    })
+    for name in (
+        "inlet_nodes", "outlet_nodes", "arteriole_boundary_nodes", "venule_boundary_nodes",
+        "large_arteriole_boundary_nodes", "large_venule_boundary_nodes",
+        "inlet_node_coordinates", "outlet_node_coordinates",
+        "arteriole_boundary_node_coordinates", "venule_boundary_node_coordinates",
+        "arteriole_boundary_node_volumes", "venule_boundary_node_volumes",
+    ):
+        settings[name] = []
+    return settings
+
+
+def test_the_small_tiers_follow_the_small_masks_through_a_run(tmp_path):
+    """From the masks to the orders, as a run assigns them: the Boundaries
+    stage tags the vessels lying in the small masks, and Art and Ven run on
+    along them past the capillaries leaving at p and t. A later run whose
+    boundary nodes are picked by hand clears the tags, and its tiers end at
+    the nodes picked."""
+    from haemolynx.pipeline.stages import _assign_branch_orders, assign_boundaries
+
+    network, ids = _small_vessel_network()
+    settings = _small_mask_settings(tmp_path, ids)
+    G = network.graph
+
+    def label(a, b):
+        return G.edges[ids[a], ids[b], 0]["branch_order"]
+
+    def tag(a, b):
+        return G.edges[ids[a], ids[b], 0].get(SMALL_MASK_VESSEL_TYPE)
+
+    assign_boundaries(settings, network)
+    _assign_branch_orders(settings, G)
+
+    assert sorted(settings["arteriole_boundary_nodes"]) == sorted([ids["p"], ids["q"]])
+    assert sorted(settings["venule_boundary_nodes"]) == sorted([ids["r"], ids["t"]])
+    assert [tag("i", "p"), tag("p", "q"), tag("r", "t"), tag("t", "o")] == [
+        "arteriole", "arteriole", "venule", "venule",
+    ]
+    assert tag("q", "r") is tag("p", "c1") is tag("c3", "t") is None
+    assert [label("i", "p"), label("p", "q")] == ["Art1", "Art2"]
+    assert [label("t", "o"), label("r", "t")] == ["Ven1", "Ven2"]
+    # c1 and c3 are no junctions: p-c1-c3-t is one capillary.
+    assert [label("p", "c1"), label("q", "r"), label("c1", "c3"), label("c3", "t")] == [
+        "B01", "B01", "B01", "B01",
+    ]
+
+    settings["use_small_vessel_masks_for_boundary_assignment"] = False
+    settings.update({
+        "arteriole_boundary_selection_method": "node_ids",
+        "arteriole_boundary_node_ids": [ids["p"], ids["q"]],
+        "venule_boundary_selection_method": "node_ids",
+        "venule_boundary_node_ids": [ids["r"], ids["t"]],
+    })
+    assign_boundaries(settings, network)
+    _assign_branch_orders(settings, G)
+
+    assert not [d for d in G.edges.values() if SMALL_MASK_VESSEL_TYPE in d]
+    assert [label("i", "p"), label("p", "q")] == ["Art1", "B01"]
+    # r is no junction: q-r-t is one capillary.
+    assert [label("t", "o"), label("r", "t")] == ["Ven1", "B01"]
+
+
+# --- A Large tier from the large masks alone -----------------------------------
+#
+# Hierarchical mode needs arteriole and venule boundary nodes, which only the
+# small masks or a hand pick give. A run with the large masks alone fell back
+# to B orders from the inlets, so its large arteriole was B01 and the
+# Large_Art/Large_Ven tags were computed and never read (Stack A, 2026-10-21).
+
+
+def _large_vessels_without_small_ones():
+    G, nodes = _capillaries_from_large_arteriole_to_large_vein()
+    return G, dict(nodes, arteriole_boundary_nodes=[], venule_boundary_nodes=[])
+
+
+def test_the_large_masks_alone_give_the_large_tiers_and_capillaries_beside_them():
+    G, nodes = _large_vessels_without_small_ones()
+
+    summary = assign_vessel_branch_orders(G, **nodes)
+
+    labels = _labels(G)
+    assert summary["mode"] == "large_tier"
+    assert summary["large_arteriole_edge_count"] == 2
+    assert summary["large_venule_edge_count"] == 2
+    assert [labels[(0, 1, 0)], labels[(1, 2, 0)]] == ["Large_Art1", "Large_Art2"]
+    # 9 is no junction: 8-9-10 is one vessel.
+    assert [labels[(9, 10, 0)], labels[(8, 9, 0)]] == ["Large_Ven1", "Large_Ven1"]
+    # No Art/Ven tier: every other vessel is a capillary counted from where it
+    # leaves the large arteriole. Only the large vessels branch, so each
+    # capillary (1-5-8, 2-3-4-7-8) is one vessel of the first order.
+    assert [labels[(1, 5, 0)], labels[(5, 8, 0)]] == ["B01", "B01"]
+    assert [labels[(2, 3, 0)], labels[(3, 4, 0)], labels[(4, 7, 0)], labels[(7, 8, 0)]] == [
+        "B01", "B01", "B01", "B01",
+    ]
+
+
+def test_strict_orders_do_not_complain_of_small_vessels_a_run_never_asked_for():
+    G, nodes = _large_vessels_without_small_ones()
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", MissingSmallVesselAssignmentWarning)
+        summary = assign_vessel_branch_orders(G, **nodes, strict_hierarchical=True)
+
+    assert summary["mode"] == "large_tier"
+
+
+def test_large_masks_alone_with_no_tagged_vessel_fall_back_to_capillary_orders():
+    from haemolynx.graph import MissingLargeVesselTierWarning
+
+    G, nodes = _large_vessels_without_small_ones()
+    for _u, _v, data in G.edges(data=True):
+        data.pop(LARGE_MASK_VESSEL_TYPE, None)
+
+    with pytest.warns(MissingLargeVesselTierWarning):
+        summary = assign_vessel_branch_orders(G, **nodes)
+
+    assert summary["mode"] == "capillary"
+    assert _labels(G)[(0, 1, 0)] == "B01"
+
+
+def test_the_capillary_beds_feed_from_the_large_arteriole_without_small_vessels():
+    from haemolynx.graph.branch_order import capillary_start_nodes
+
+    G, nodes = _large_vessels_without_small_ones()
+    assign_vessel_branch_orders(G, **nodes)
+
+    feeds, drains = capillary_start_nodes([0], [10], [], [], graph=G)
+
+    assert sorted(feeds) == [0, 1, 2], "the inlet and both places a capillary leaves the tier"
+    assert sorted(drains) == [8, 10]
+
+
+def test_the_large_tier_follows_the_large_masks_alone_through_a_run(tmp_path):
+    from haemolynx.pipeline.stages import _assign_branch_orders, assign_boundaries
+
+    network, ids = _branching_large_vessel_network()
+    network.small_arteriole_mask = network.small_venule_mask = None
+    settings = _large_tier_settings(tmp_path)
+    settings["use_small_vessel_masks_for_boundary_assignment"] = False
+
+    assign_boundaries(settings, network)
+    summary = _assign_branch_orders(settings, network.graph)
+
+    G = network.graph
+
+    def label(a, b):
+        return G.edges[ids[a], ids[b], 0]["branch_order"]
+
+    assert summary["mode"] == "large_tier"
+    assert settings["arteriole_boundary_nodes"] == settings["venule_boundary_nodes"] == []
+    assert [label("a0", "a1"), label("a1", "a2"), label("a2", "a3")] == [
+        "Large_Art1", "Large_Art2", "Large_Art3",
+    ]
+    assert [label("v0", "v1"), label("v1", "v2"), label("v2", "v3")] == [
+        "Large_Ven1", "Large_Ven2", "Large_Ven3",
+    ]
+    # s1, w1 and c are no junctions: each capillary is one vessel.
+    assert [label("a1", "s1"), label("s1", "w1"), label("w1", "v1")] == ["B01", "B01", "B01"]
+    assert [label("a2", "c"), label("c", "v2")] == ["B01", "B01"]
+
+
+def test_small_masks_finding_no_venule_boundary_node_warn_what_is_left():
+    """Without strict assignment the run fell back in silence, and lost the
+    Art tier the arteriole side had found too."""
+    G, nodes = _capillaries_from_large_arteriole_to_large_vein()
+    nodes = dict(nodes, venule_boundary_nodes=[])
+
+    with pytest.warns(MissingSmallVesselAssignmentWarning, match=r"venule_boundary_nodes came out empty.*Large_Art/Large_Ven"):
+        summary = assign_vessel_branch_orders(G, **nodes, expects_hierarchical=True)
+
+    assert summary["mode"] == "large_tier"
+
+
+def test_a_run_expecting_no_small_vessels_gets_no_such_warning():
+    G, nodes = _large_vessels_without_small_ones()
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", MissingSmallVesselAssignmentWarning)
+        assign_vessel_branch_orders(G, **nodes)
+
+
+# --- The B search keeps to the capillaries; tiers stop at the far side --------
+# PLAN_branch_orders.md Phase 1 (2026-11-01): F1, F2, F3 and F8.
+
+
+def _plain_graph(edges) -> nx.MultiGraph:
+    G = nx.MultiGraph()
+    for u, v in edges:
+        G.add_edge(u, v, length=1.0)
+    return G
+
+
+def test_capillary_orders_are_not_counted_back_through_a_venule():
+    """Regression (F1): the B search walked the Ven vessels, so the capillary
+    6-7 off venule boundary node 6 was B05 by way of the venule 3-4-6, though
+    through the capillaries it is B07. A side capillary leaves each of 10-14
+    and 7, so each is a junction."""
+    G = _plain_graph([
+        (0, 1), (1, 2), (2, 3), (3, 4), (4, 5), (4, 6), (6, 7),
+        (1, 10), (10, 11), (11, 12), (12, 13), (13, 14), (14, 7),
+        *((node, 100 + node) for node in (7, 10, 11, 12, 13, 14)),
+    ])
+
+    summary = assign_vessel_branch_orders(
+        G, [0], outlet_nodes=[5], arteriole_boundary_nodes=[1], venule_boundary_nodes=[3, 6]
+    )
+
+    labels = _labels(G)
+    assert [labels[(3, 4, 0)], labels[(4, 5, 0)], labels[(4, 6, 0)]] == ["Ven2", "Ven1", "Ven2"]
+    assert [labels[(13, 14, 0)], labels[(7, 14, 0)], labels[(6, 7, 0)]] == ["B05", "B06", "B07"]
+    assert summary["capillary_from_venous_side_count"] == 0
+    assert not [d for d in G.edges.values() if BRANCH_ORDER_BASIS in d]
+
+
+def test_a_capillary_reached_only_through_a_venule_is_counted_from_it():
+    """Regression (F1, D2): the capillaries 6-7-8 hang off venule boundary
+    node 6 alone, and were B05/B06 counted from the arteriole through the
+    venules. They are counted from the venule now, and marked so."""
+    G = _plain_graph([(0, 1), (1, 2), (2, 3), (3, 4), (4, 5), (4, 6), (6, 7), (7, 8)])
+    nodes = dict(outlet_nodes=[5], arteriole_boundary_nodes=[1], venule_boundary_nodes=[3, 6])
+
+    summary = assign_vessel_branch_orders(G, [0], **nodes)
+
+    labels = _labels(G)
+    # 2 and 7 are no junctions: 1-2-3 and 6-7-8 are one capillary each. The
+    # venule's count made 6-7 B02 (6 is one junction, 4, from the feed at 1).
+    assert [labels[(1, 2, 0)], labels[(2, 3, 0)]] == ["B01", "B01"]
+    assert [labels[(6, 7, 0)], labels[(7, 8, 0)]] == ["B01", "B01"]
+    assert summary["capillary_from_venous_side_count"] == 2
+    assert {
+        _edge_id(u, v, k) for u, v, k, d in G.edges(keys=True, data=True)
+        if d.get(BRANCH_ORDER_BASIS) == VENOUS_SIDE
+    } == {(6, 7, 0), (7, 8, 0)}
+
+    # Assigned again without the venules' boundary, the mark goes.
+    assign_vessel_branch_orders(G, [0])
+    assert not [d for d in G.edges.values() if BRANCH_ORDER_BASIS in d]
+
+
+def test_large_masks_alone_count_no_capillary_through_the_large_vein():
+    """Regression (F1): in large_tier mode the B search walked the large
+    vein, so a capillary 9-20-21 leaving it was counted from the large
+    arteriole through the vein (B03: 8 and 9 are junctions on the way)."""
+    G, nodes = _large_vessels_without_small_ones()
+    G.add_edge(9, 20, length=1.0)
+    G.add_edge(20, 21, length=1.0)
+
+    summary = assign_vessel_branch_orders(G, **nodes)
+
+    labels = _labels(G)
+    assert summary["mode"] == "large_tier"
+    assert [labels[(9, 20, 0)], labels[(20, 21, 0)]] == ["B01", "B01"]
+    assert G.edges[9, 20, 0][BRANCH_ORDER_BASIS] == VENOUS_SIDE
+    assert summary["capillary_from_venous_side_count"] == 2
+    # The capillaries reaching the vein from the arteriole are unchanged.
+    assert [labels[(1, 5, 0)], labels[(5, 8, 0)]] == ["B01", "B01"]
+    assert BRANCH_ORDER_BASIS not in G.edges[5, 8, 0]
+
+
+def _two_arterioles_joined_by_a_capillary():
+    """Inlet 0, an arteriole forking at 1 to its boundary nodes 2 and 3, which
+    a capillary 2-3 joins; the bed drains through venule boundary node 6 to
+    the outlet 7."""
+    G = _plain_graph([(0, 1), (1, 2), (1, 3), (2, 3), (2, 4), (3, 5), (4, 6), (5, 6), (6, 7)])
+    return G, dict(outlet_nodes=[7], arteriole_boundary_nodes=[2, 3], venule_boundary_nodes=[6])
+
+
+def test_a_capillary_between_two_arteriole_boundary_nodes_is_a_capillary():
+    """Regression (F2): both its ends were reached, so the capillary 2-3 was
+    Art3, though it lies beyond both boundary nodes (with a Large tier the
+    same vessel was already B)."""
+    G, nodes = _two_arterioles_joined_by_a_capillary()
+
+    summary = assign_vessel_branch_orders(G, [0], **nodes)
+
+    labels = _labels(G)
+    assert labels[(2, 3, 0)] == "B01"
+    assert summary["arteriole_edge_count"] == 3
+    assert [labels[(0, 1, 0)], labels[(1, 2, 0)], labels[(1, 3, 0)]] == ["Art1", "Art2", "Art2"]
+
+
+def test_a_small_arteriole_between_two_of_its_boundary_nodes_stays_an_arteriole():
+    """A vessel between two boundary nodes that lies in the small arteriole
+    mask is the arteriole running on past a capillary: the run-on keeps it."""
+    G, nodes = _two_arterioles_joined_by_a_capillary()
+    for edge in [(0, 1, 0), (1, 2, 0), (1, 3, 0), (2, 3, 0)]:
+        G.edges[edge][SMALL_MASK_VESSEL_TYPE] = "arteriole"
+
+    assign_vessel_branch_orders(G, [0], **nodes)
+
+    assert _labels(G)[(2, 3, 0)] == "Art3"
+
+
+def _arteriole_branch_without_a_boundary_node():
+    """Inlet 0, an arteriole forking at 1; one branch ends at its boundary
+    node 2, the other (1-3-5) runs into the bed with none. The bed drains
+    through venule boundary node 6 to the outlet 7."""
+    G = _plain_graph([(0, 1), (1, 2), (1, 3), (2, 4), (3, 5), (4, 6), (5, 6), (6, 7)])
+    return G, dict(outlet_nodes=[7], arteriole_boundary_nodes=[2], venule_boundary_nodes=[6])
+
+
+def test_an_arteriole_tier_missing_a_boundary_node_stops_at_the_venous_side():
+    """Regression (F3): with no boundary node on 1-3-5, the Art search ran on
+    through the bed to the outlet. Every vessel was Art, the outlet's own
+    vein included, the Ven tier came out empty, and nothing was said."""
+    G, nodes = _arteriole_branch_without_a_boundary_node()
+
+    with pytest.warns(BranchOrderLeakWarning, match=r"Art tier reached 1 venule boundary"):
+        summary = assign_vessel_branch_orders(G, [0], **nodes)
+
+    labels = _labels(G)
+    assert summary["arteriole_leaked_to"] == [6]
+    assert summary["venule_leaked_to"] == []
+    assert labels[(6, 7, 0)] == "Ven1"
+    assert [labels[(2, 4, 0)], labels[(4, 6, 0)]] == ["B01", "B01"]
+    # The leaking branch is Art up to the venule boundary node: nothing in
+    # the graph says where it should have ended. Only 1 branches on it.
+    assert [labels[(1, 3, 0)], labels[(3, 5, 0)], labels[(5, 6, 0)]] == ["Art2"] * 3
+
+
+def test_a_venule_tier_missing_a_boundary_node_stops_at_the_arterial_side():
+    """F3's mirror: the venule branch 6-5-3 has no boundary node, so Ven
+    crosses the bed to the arteriole boundary node 1 and stops there."""
+    G = _plain_graph([(0, 1), (1, 2), (1, 3), (2, 4), (3, 5), (4, 6), (5, 6), (6, 7)])
+
+    with pytest.warns(BranchOrderLeakWarning, match=r"Ven tier reached 1 arteriole boundary"):
+        summary = assign_vessel_branch_orders(
+            G, [0], outlet_nodes=[7], arteriole_boundary_nodes=[1], venule_boundary_nodes=[4]
+        )
+
+    labels = _labels(G)
+    assert summary["venule_leaked_to"] == [1]
+    assert labels[(0, 1, 0)] == "Art1"
+    assert [labels[(1, 2, 0)], labels[(2, 4, 0)]] == ["B01", "B01"]
+    assert [labels[(6, 7, 0)], labels[(5, 6, 0)], labels[(3, 5, 0)], labels[(1, 3, 0)]] == [
+        "Ven1", "Ven2", "Ven2", "Ven2",
+    ]
+
+
+def test_strict_orders_refuse_a_tier_that_crosses_the_bed():
+    G, nodes = _arteriole_branch_without_a_boundary_node()
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", BranchOrderLeakWarning)
+        with pytest.raises(ValueError, match=r"Art tier reached the other side .* \[6\]"):
+            assign_vessel_branch_orders(G, [0], **nodes, strict_hierarchical=True)
+
+
+def test_boundary_nodes_that_close_every_branch_give_no_leak_warning():
+    G, nodes = _two_arterioles_joined_by_a_capillary()
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", BranchOrderLeakWarning)
+        summary = assign_vessel_branch_orders(G, [0], **nodes, strict_hierarchical=True)
+
+    assert summary["arteriole_leaked_to"] == summary["venule_leaked_to"] == []
+
+
+def _four_way_bed(split: bool) -> nx.MultiGraph:
+    """Inlet 0, arteriole 0-1 to its boundary node 1, where three capillaries
+    leave (a junction of four vessels) for venule boundary node 5 and the
+    outlet 6 -- 1-2-5, 1-3-5, 1-4-5, with a side capillary off 2. *split*
+    cuts the capillary 1-2 at 9, a node of two vessels beside the junction of
+    four, as the degree-2 merge leaves it there (``degree2``'s *max_degree*)."""
+    first = [(1, 9), (9, 2)] if split else [(1, 2)]
+    return _plain_graph([
+        (0, 1), *first, (1, 3), (1, 4), (2, 5), (3, 5), (4, 5), (5, 6), (2, 8),
+    ])
+
+
+def test_a_node_where_only_two_vessels_meet_is_no_step():
+    """Regression (F4): each node counted as a step, so the capillary 1-2 cut
+    at 9 was B01 then B02, and everything past it an order more than the same
+    vessel uncut (Stack A: 54 such nodes, all beside a junction of four or
+    more; 322 vessels' orders)."""
+    nodes = dict(outlet_nodes=[6], arteriole_boundary_nodes=[1], venule_boundary_nodes=[5])
+    whole, cut = _four_way_bed(split=False), _four_way_bed(split=True)
+
+    assign_vessel_branch_orders(whole, [0], **nodes)
+    assign_vessel_branch_orders(cut, [0], **nodes)
+
+    uncut, pieces = _labels(whole), _labels(cut)
+    assert pieces[(1, 9, 0)] == pieces[(2, 9, 0)] == uncut[(1, 2, 0)] == "B01"
+    assert {e: label for e, label in pieces.items() if 9 not in e[:2]} == {
+        e: label for e, label in uncut.items() if e != (1, 2, 0)
+    }
+    # Past the junction at 2 the orders step as before.
+    assert pieces[(2, 8, 0)] == pieces[(2, 5, 0)] == "B02"
+
+
+def test_a_capillary_cut_at_a_node_keeps_its_order_without_the_hierarchy():
+    G = _plain_graph([(0, 1), (1, 2), (1, 3), (3, 4), (4, 5)])
+
+    assign_vessel_branch_orders(G, [0])
+
+    labels = _labels(G)
+    assert labels[(0, 1, 0)] == "B01"
+    assert labels[(1, 2, 0)] == labels[(1, 3, 0)] == labels[(3, 4, 0)] == labels[(4, 5, 0)] == "B02"
+
+
+def test_no_inlets_takes_every_order_off():
+    """Regression (F8): skipped for want of inlets, the orders an earlier
+    assignment wrote stayed on the graph."""
+    G, nodes = _two_arterioles_joined_by_a_capillary()
+    assign_vessel_branch_orders(G, [0], **nodes)
+
+    summary = assign_vessel_branch_orders(G, [], **nodes)
+
+    assert summary["mode"] == "skipped"
+    assert set(_labels(G).values()) == {None}
+
+
+# --- Tier orders by the tier's own branchings (PLAN_branch_orders.md D1) ------
+#
+# Harvey's choice (2026-11-02): an opt-in numbering (branch_order_steps=
+# tier_branchings) where a tier's count steps only where three or more of its
+# own vessels meet, as the pericyte literature counts from a penetrating
+# arteriole. Every junction stays the default: the synthetic generator reads
+# each tier order as one segment between side branches.
+
+
+def _forking_large_arteriole():
+    """A large arteriole 0-1-2 (inlet 0) that forks at 2 into two large
+    branches 2-3 and 2-4, with a capillary leaving the trunk at 1 and one
+    from each branch's end, all draining through 20-21 to the large vein
+    21-22 (outlet 22)."""
+    G = _tiered_graph(
+        large_arteriole=[(0, 1), (1, 2), (2, 3), (2, 4)],
+        large_venule=[(21, 22)],
+        other=[(1, 10), (3, 11), (4, 12), (10, 20), (11, 20), (12, 20), (20, 21)],
+    )
+    return G, dict(
+        inlet_nodes=[0], outlet_nodes=[22],
+        large_arteriole_boundary_nodes=[1, 3, 4], large_venule_boundary_nodes=[21],
+    )
+
+
+def test_tier_orders_can_step_only_where_the_tier_itself_branches():
+    from haemolynx.graph import BRANCH_ORDER_STEPS, TIER_BRANCHINGS
+
+    G, nodes = _forking_large_arteriole()
+    every = assign_vessel_branch_orders(G, **nodes)
+    by_junction = _labels(G)
+    assign_vessel_branch_orders(G, **nodes, steps=TIER_BRANCHINGS)
+    by_branching = _labels(G)
+
+    assert every["mode"] == "large_tier"
+    # Every junction: the capillary leaving at 1 steps the trunk.
+    assert [by_junction[e] for e in [(0, 1, 0), (1, 2, 0), (2, 3, 0), (2, 4, 0)]] == [
+        "Large_Art1", "Large_Art2", "Large_Art3", "Large_Art3",
+    ]
+    # The tier's own branchings: one order to the fork at 2, the next past it.
+    assert [by_branching[e] for e in [(0, 1, 0), (1, 2, 0), (2, 3, 0), (2, 4, 0)]] == [
+        "Large_Art1", "Large_Art1", "Large_Art2", "Large_Art2",
+    ]
+    assert G.graph[BRANCH_ORDER_STEPS] == TIER_BRANCHINGS
+    # The capillaries count every junction under both.
+    assert {e: label for e, label in by_branching.items() if label.startswith("B")} == {
+        e: label for e, label in by_junction.items() if label.startswith("B")
+    }
+
+
+def test_an_arteriole_running_on_past_its_capillaries_is_one_order():
+    """The small-mask run-on: the arteriole 0-1-2-3-4 has capillaries leave
+    it at 2 and 4, and the venule 13-14-15-16 takes one at 15. Neither tier
+    divides, so each is one order; every junction counts them Art1-Art2 and
+    Ven1-Ven2."""
+    from haemolynx.graph import TIER_BRANCHINGS
+
+    G, nodes = _small_vessels_with_side_capillaries()
+    assign_vessel_branch_orders(G, **nodes, steps=TIER_BRANCHINGS)
+
+    labels = _labels(G)
+    assert {labels[e] for e in [(0, 1, 0), (1, 2, 0), (2, 3, 0), (3, 4, 0)]} == {"Art1"}
+    assert {labels[e] for e in [(13, 14, 0), (14, 15, 0), (15, 16, 0)]} == {"Ven1"}
+
+
+def test_an_arteriole_that_divides_steps_under_both_numberings():
+    from haemolynx.graph import TIER_BRANCHINGS
+
+    for steps in ("every_junction", TIER_BRANCHINGS):
+        G, nodes = _two_arterioles_joined_by_a_capillary()
+        assign_vessel_branch_orders(G, [0], **nodes, steps=steps)
+        labels = _labels(G)
+        assert [labels[(0, 1, 0)], labels[(1, 2, 0)], labels[(1, 3, 0)]] == ["Art1", "Art2", "Art2"]
+
+
+def test_an_unknown_numbering_is_refused_and_the_record_follows_the_orders():
+    from haemolynx.graph import (
+        BRANCH_ORDER_STEPS,
+        EVERY_JUNCTION,
+        GLOBAL_MASK_CLASS,
+        assign_unknown_vessel_classes,
+    )
+
+    G, nodes = _two_arterioles_joined_by_a_capillary()
+    with pytest.raises(ValueError, match="steps must be one of"):
+        assign_vessel_branch_orders(G, [0], **nodes, steps="segments")
+
+    assign_vessel_branch_orders(G, [0], **nodes)
+    assert G.graph[BRANCH_ORDER_STEPS] == EVERY_JUNCTION
+    assign_vessel_branch_orders(G, [], **nodes)
+    assert BRANCH_ORDER_STEPS not in G.graph
+    assign_vessel_branch_orders(G, [0], **nodes)
+    G.edges[0, 1, 0][GLOBAL_MASK_CLASS] = "small"
+    assign_unknown_vessel_classes(G)
+    assert BRANCH_ORDER_STEPS not in G.graph
+
+
+def test_a_run_numbers_its_tiers_by_the_setting_and_a_synthetic_one_every_junction(tmp_path):
+    from haemolynx.pipeline.stages import (
+        _assign_branch_orders,
+        assign_boundaries,
+        branch_order_steps_in_effect,
+    )
+
+    network, ids = _branching_large_vessel_network()
+    network.small_arteriole_mask = network.small_venule_mask = None
+    settings = _large_tier_settings(tmp_path)
+    settings["use_small_vessel_masks_for_boundary_assignment"] = False
+    settings["branch_order_steps"] = "tier_branchings"
+    assign_boundaries(settings, network)
+
+    _assign_branch_orders(settings, network.graph)
+
+    G = network.graph
+
+    def label(a, b):
+        return G.edges[ids[a], ids[b], 0]["branch_order"]
+
+    # Side branches leave the trunks at a1, a2 and v1, v2; neither divides.
+    assert [label("a0", "a1"), label("a1", "a2"), label("a2", "a3")] == ["Large_Art1"] * 3
+    assert [label("v0", "v1"), label("v1", "v2"), label("v2", "v3")] == ["Large_Ven1"] * 3
+    assert branch_order_steps_in_effect(settings) == "tier_branchings"
+    assert branch_order_steps_in_effect(dict(settings, network_source="synthetic")) == "every_junction"
+    assert branch_order_steps_in_effect(dict(settings, network_source="synthetic_surround")) == "every_junction"
+
+
+def test_preflight_warns_of_a_tier_diameter_table_or_a_synthetic_run_under_branchings():
+    from haemolynx.pipeline import default_schema
+    from haemolynx.pipeline.checks import check_branch_order_steps
+
+    settings = default_schema().defaults()
+    table = {"manual_arteriole_diameter_by_branch_order": {"Art1": 12.0}, "all_diams_const": False}
+
+    assert not check_branch_order_steps(dict(settings, **table)).warnings
+    branchings = dict(settings, branch_order_steps="tier_branchings")
+    assert not check_branch_order_steps(branchings).warnings
+    (warning,) = check_branch_order_steps(dict(branchings, **table)).warnings
+    assert "manual_arteriole_diameter_by_branch_order" in warning
+    assert not check_branch_order_steps(dict(branchings, **dict(table, all_diams_const=True))).warnings
+    (warning,) = check_branch_order_steps(dict(branchings, network_source="synthetic")).warnings
+    assert "every_junction" in warning
+
+
+# --- capillaries an open end feeds (PLAN_branch_orders.md D3) ------------------------
+
+
+def _chain_with_an_open_end_by_the_outlet() -> nx.MultiGraph:
+    """Inlet 0 to outlet 6 along x, a blind twig at each of 1..4 (so each is a
+    junction), and an open end 9 leaving the y = 0 face off node 5, beside the
+    outlet. Every vessel 1e15 Pa.s/m^3."""
+    from haemolynx.graph.dead_ends import DEAD_END_KIND, LEAVES_IMAGE
+
+    resistance = 1.0e15
+    G = nx.MultiGraph()
+    pos = {i: (5.0, 5.0, 15.0 * i) for i in range(7)}
+    pos.update({10 + i: (5.0, 8.0, 15.0 * i) for i in range(1, 5)})
+    pos[9] = (5.0, 0.0, 75.0)
+    for n, p in pos.items():
+        G.add_node(n, pos=np.asarray(p))
+    for u, v in [(i, i + 1) for i in range(6)] + [(i, 10 + i) for i in range(1, 5)] + [(5, 9)]:
+        length = float(np.linalg.norm(np.subtract(pos[u], pos[v])))
+        G.add_edge(u, v, length=length, diameter_um=5.0, resistance=resistance, conductance=1.0 / resistance)
+    G.graph["image_extent_um"] = (10.0, 10.0, 90.0)
+    G.graph["image_voxel_size_zyx"] = (1.0, 1.0, 1.0)
+    for n in (0, 6, 9):
+        G.nodes[n][DEAD_END_KIND] = LEAVES_IMAGE
+    for n in range(11, 15):
+        G.nodes[n][DEAD_END_KIND] = "unknown"
+    return G
+
+
+def _solve_chain(G: nx.MultiGraph, open_end_model: str):
+    from haemolynx.pipeline import default_schema, stages
+
+    settings = default_schema().defaults()
+    settings.update(
+        run_haemodynamics=True, haematocrit_model="fixed", do_equiv_resistance_calculation=False,
+        inlet_p_bc=4500.0, outlet_p_bc=1000.0, inlet_nodes=[0], outlet_nodes=[6],
+        open_end_model=open_end_model, haemodynamics_solver="dense",
+    )
+    boundaries = stages.BoundaryNodes(inlet_nodes=[0], outlet_nodes=[6], graph=G)
+    return stages.solve(settings, stages.HaemodynamicModel(graph=G), boundaries)
+
+
+def _marked(G: nx.MultiGraph, basis: str) -> set:
+    from haemolynx.graph import BRANCH_ORDER_BASIS
+
+    return {tuple(sorted((u, v))) for u, v, d in G.edges(data=True) if d.get(BRANCH_ORDER_BASIS) == basis}
+
+
+def test_the_solve_marks_the_capillaries_an_open_end_feeds_in_fewer_steps(caplog):
+    """D3(b): blood enters the chain through open end 9 as well as inlet 0.
+    The capillaries 9 reaches in fewer steps than 0 are marked
+    open_end_nearer; their B orders, which key the diameters, stand. Twig
+    3-13 is three steps from either, and a tie keeps the count unmarked."""
+    from haemolynx.graph import OPEN_END_NEARER
+    from haemolynx.haemodynamics.open_ends import FEEDS, open_end_directions
+
+    G = _chain_with_an_open_end_by_the_outlet()
+    assign_vessel_branch_orders(G, [0], outlet_nodes=[6])
+    orders = {tuple(sorted((u, v))): d["branch_order"] for u, v, d in G.edges(data=True)}
+
+    with caplog.at_level("INFO", logger="haemolynx.pipeline.stages"):
+        _solve_chain(G, "estimated")
+
+    assert open_end_directions(G) == {9: FEEDS}
+    assert _marked(G, OPEN_END_NEARER) == {(3, 4), (4, 5), (4, 14), (5, 6), (5, 9)}
+    assert {tuple(sorted((u, v))): d["branch_order"] for u, v, d in G.edges(data=True)} == orders
+    assert "5 capillary vessel(s) are fewer steps from an open end" in caplog.text
+
+    # Solved again with the open end closed, no blood comes in through it.
+    _solve_chain(G, "closed")
+    assert _marked(G, OPEN_END_NEARER) == set()
+
+
+def test_an_open_end_draining_or_on_an_arteriole_marks_nothing_and_venous_side_stands():
+    """Only an open end in the bed feeds a capillary: one on an arteriole
+    feeds the arteriole, which counts its capillaries. A capillary counted
+    from the venous side keeps that mark, and tier vessels are never marked."""
+    from haemolynx.graph import (
+        BRANCH_ORDER_BASIS,
+        OPEN_END_NEARER,
+        VENOUS_SIDE,
+        mark_capillaries_nearer_open_end_feeds,
+    )
+
+    G = nx.MultiGraph()
+    labels = {
+        (0, 1): "Art1", (1, 2): "Art2",  # 2: an open end on the arteriole
+        (1, 3): "B01", (3, 4): "B02", (3, 5): "B02", (4, 6): "B03", (4, 7): "B03",
+        (8, 9): "Ven1", (9, 10): "B01",  # 10: an open end on a venous-side capillary
+    }
+    for (u, v), label in labels.items():
+        G.add_edge(u, v, branch_order=label)
+    G.edges[9, 10, 0][BRANCH_ORDER_BASIS] = VENOUS_SIDE
+
+    marked = mark_capillaries_nearer_open_end_feeds(G, [2, 10], feeds=[1], drains=[8])
+
+    assert marked == 0
+    assert _marked(G, OPEN_END_NEARER) == set()
+    assert _marked(G, VENOUS_SIDE) == {(9, 10)}
+
+    # A capillary end feeding the bed, beyond node 4: 4-6 and 4-7 are nearer
+    # it (0 and 1 steps) than the arteriole's hand-off at 1 (2 steps).
+    marked = mark_capillaries_nearer_open_end_feeds(G, [6], feeds=[1], drains=[8])
+    assert marked == 2
+    assert _marked(G, OPEN_END_NEARER) == {(4, 6), (4, 7)}
+    # Called again without it, the earlier marks go.
+    assert mark_capillaries_nearer_open_end_feeds(G, [], feeds=[1], drains=[8]) == 0
+    assert _marked(G, OPEN_END_NEARER) == set()
+    assert _marked(G, VENOUS_SIDE) == {(9, 10)}
+
+
+def test_the_marks_reach_the_vtk_the_connectivity_csv_and_the_branch_statistics(tmp_path):
+    """Each capillary whose B counts from elsewhere than an arteriole in the
+    image says so: the VTK's branch_order_basis, a note in the connectivity
+    CSV, and per order in the branch statistics, among its Edge Count."""
+    pv = pytest.importorskip("pyvista")
+    from haemolynx.graph import BRANCH_ORDER_BASES, BRANCH_ORDER_BASIS, OPEN_END_NEARER, VENOUS_SIDE
+    from haemolynx.graph.connectivity import BASIS_NOTES, connectivity_rows
+    from haemolynx.statistics.bifurcation import (
+        BASIS_COUNTS,
+        compute_branch_order_statistics,
+        export_branch_order_statistics_to_csv,
+    )
+    from haemolynx.statistics.batch_comparison import read_branch_statistics_csv
+    from haemolynx.visualization.vtk_io import graph_to_vtk
+
+    assert set(BASIS_NOTES) == set(BASIS_COUNTS) == set(BRANCH_ORDER_BASES)
+    G = _chain_with_an_open_end_by_the_outlet()
+    assign_vessel_branch_orders(G, [0], outlet_nodes=[6])
+    _solve_chain(G, "estimated")
+    G.edges[1, 11, 0][BRANCH_ORDER_BASIS] = VENOUS_SIDE  # as if reached only through a vein
+
+    vessels = pv.read(graph_to_vtk(G, tmp_path / "chain", inlet_nodes=[0], outlet_nodes=[6])["vessels_path"])
+    by_edge = {
+        tuple(sorted((int(u), int(v)))): str(basis)
+        for u, v, basis in zip(
+            vessels.cell_data["edge_u"], vessels.cell_data["edge_v"], vessels.cell_data["branch_order_basis"]
+        )
+    }
+    assert {e for e, basis in by_edge.items() if basis == OPEN_END_NEARER} == _marked(G, OPEN_END_NEARER)
+    assert {e for e, basis in by_edge.items() if basis == VENOUS_SIDE} == {(1, 11)}
+    assert {basis for e, basis in by_edge.items() if e not in {(1, 11)} | _marked(G, OPEN_END_NEARER)} == {""}
+
+    rows = connectivity_rows(G, [0], [6])
+    noted = {
+        tuple(sorted((int(row["Edge u"]), int(row["Edge v"])))): row["Notes"] for row in rows
+    }
+    for edge, notes in noted.items():
+        expected = (
+            BASIS_NOTES[OPEN_END_NEARER] if edge in _marked(G, OPEN_END_NEARER)
+            else BASIS_NOTES[VENOUS_SIDE] if edge == (1, 11)
+            else None
+        )
+        assert (expected in notes) if expected else not any(n in notes for n in BASIS_NOTES.values()), edge
+
+    stats = compute_branch_order_statistics(G)
+    nearer, venous = BASIS_COUNTS[OPEN_END_NEARER], BASIS_COUNTS[VENOUS_SIDE]
+    assert {tag: rec[nearer] for tag, rec in stats.items() if rec[nearer]} == {"BO4": 1, "BO5": 2, "BO6": 2}
+    assert {tag: rec[venous] for tag, rec in stats.items() if rec[venous]} == {"BO2": 1}
+    assert stats["BO5"]["Edge Count"] == 2
+    values = read_branch_statistics_csv(export_branch_order_statistics_to_csv(stats, tmp_path / "branch.csv"))
+    assert values[("Branch Order BO5", nearer, "")] == 2.0
+    assert values[("Branch Order BO2", venous, "")] == 1.0
+
+
+# --- generations from the bed, per vessel (PLAN_branch_orders.md Phase 4, F7) ----------
+
+
+def _trees_of_every_shape() -> nx.MultiGraph:
+    """Arterial trees of depth 3 (0-3) and 1 (10-11); one dividing into a
+    deep and a shallow branch (20-27); a trunk of one order past a capillary
+    side branch, as tier_branchings numbers it (30-37); a venous tree whose
+    Large_Ven hands off to Ven through a bridge (40-46)."""
+    from haemolynx.graph import IS_ZERO_RESISTANCE
+
+    G = nx.MultiGraph()
+    for (u, v), label in {
+        (0, 1): "Art1", (1, 2): "Art2", (2, 3): "Art3", (3, 4): "B01", (3, 5): "B01",
+        (10, 11): "Art1", (11, 12): "B01", (11, 13): "B01",
+        (20, 21): "Art1", (21, 22): "Art2", (21, 23): "Art2", (22, 24): "Art3",
+        (24, 25): "B01", (23, 26): "B01", (22, 27): "B01",
+        (30, 31): "Art1", (31, 32): "Art1", (31, 33): "B01", (32, 34): "Art2", (32, 35): "Art2",
+        (34, 36): "B01", (35, 37): "B01",
+        (40, 41): "Large_Ven1", (41, 42): "Large_Ven2", (46, 43): "Ven1", (43, 44): "Ven2",
+        (44, 45): "B01", (41, 47): "Unknown_Cap",
+    }.items():
+        G.add_edge(u, v, branch_order=label)
+    G.add_edge(42, 46, **{IS_ZERO_RESISTANCE: True})
+    return G
+
+
+def test_each_vessel_counts_its_own_generations_from_the_bed():
+    """F7: from the labels alone, a shallow tree's last arteriole read as
+    many generations from the bed as the deepest tree's first. Counted in
+    each vessel's own tree, the arteriole with nothing but capillaries beyond
+    it is -1 in every tree."""
+    from haemolynx.graph.branch_order import branch_order_generations, branch_order_signed_values
+
+    G = _trees_of_every_shape()
+    generations = dict(zip(((u, v) for u, v, _k in G.edges(keys=True)), branch_order_generations(G)))
+    labels = [G.edges[e]["branch_order"] if "branch_order" in G.edges[e] else None for e in G.edges(keys=True)]
+    by_labels = dict(zip(((u, v) for u, v, _k in G.edges(keys=True)), branch_order_signed_values(labels)))
+
+    assert [generations[e] for e in ((0, 1), (1, 2), (2, 3))] == [-3.0, -2.0, -1.0]
+    assert generations[(10, 11)] == -1.0
+    assert by_labels[(10, 11)] == -3.0
+    # The deep and the shallow branch of one division, and the vessel above both.
+    assert [generations[e] for e in ((20, 21), (21, 22), (21, 23), (22, 24))] == [-3.0, -2.0, -1.0, -1.0]
+    # One order past a capillary side branch is one vessel: both pieces -2.
+    assert [generations[e] for e in ((30, 31), (31, 32), (32, 34), (32, 35))] == [-2.0, -2.0, -1.0, -1.0]
+    # The venous side counts the same way, positive, across the bridge.
+    assert [generations[e] for e in ((43, 44), (46, 43), (41, 42), (40, 41))] == [1.0, 2.0, 3.0, 4.0]
+    assert all(generations[e] == 0.0 for e in G.edges() if G.edges[(*e, 0)].get("branch_order") == "B01")
+    assert np.isnan(generations[(42, 46)]) and np.isnan(generations[(41, 47)])
+
+
+def test_neighbouring_vessels_stand_in_the_order_their_labels_give():
+    """What the flow-against review compares -- a vessel against the one it
+    meets -- reads the same counted per vessel as from the labels."""
+    from haemolynx.graph.branch_order import branch_order_generations, branch_order_signed_values
+
+    G = _trees_of_every_shape()
+    edges = list(G.edges(keys=True))
+    generations = dict(zip(edges, branch_order_generations(G)))
+    by_labels = dict(zip(edges, branch_order_signed_values(G.edges[e].get("branch_order") for e in edges)))
+    compared = 0
+    for node in G:
+        meeting = [e for e in G.edges(node, keys=True) if np.isfinite(generations[_edge(e, edges)])]
+        for a in meeting:
+            for b in meeting:
+                a, b = _edge(a, edges), _edge(b, edges)
+                if G.edges[a]["branch_order"] != G.edges[b]["branch_order"]:
+                    compared += 1
+                    assert np.sign(generations[b] - generations[a]) == np.sign(by_labels[b] - by_labels[a]), (a, b)
+    assert compared > 20
+
+
+def _edge(edge, edges):
+    """*edge* as ``G.edges(keys=True)`` lists it."""
+    u, v, key = edge
+    return (u, v, key) if (u, v, key) in edges else (v, u, key)

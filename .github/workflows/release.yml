@@ -80,7 +80,7 @@ jobs:
       matrix:
         # The floor and a current one: a wheel that only works on the version
         # it was built with is the thing this is looking for.
-        python-version: ["3.9", "3.12"]
+        python-version: ["3.10", "3.12"]
     steps:
       - uses: actions/download-artifact@v4
         with:

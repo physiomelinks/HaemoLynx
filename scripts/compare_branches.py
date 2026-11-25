@@ -230,7 +230,7 @@ def per_side_settings(paths: runner.SidePaths, image: Path) -> dict:
         "input_path": str(image),
         "plot_dir": str(paths.plot_dir),
         "base_plot_dir": str(paths.plot_dir),
-        "vtk_output_prefix": str(paths.vtk_output_prefix),
+        "output_dir": str(paths.output_dir),
     }
 
 
@@ -284,7 +284,7 @@ def main(argv: list[str] | None = None) -> int:
     base_settings, required = run_settings.build_settings(
         image_path=str(image),
         plot_dir=str(current_paths.plot_dir),
-        vtk_output_prefix=str(current_paths.vtk_output_prefix),
+        output_dir=str(current_paths.output_dir),
         axis_order=args.axis_order,
         voxel_size_xyz=voxel_size,
         boundary_settings=(

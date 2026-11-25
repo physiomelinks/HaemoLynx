@@ -141,3 +141,131 @@ def test_infer_boundary_nodes_from_small_vessel_masks(tmp_path):
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+# --- one under-covered edge is not the arteriole ending twice -------------------
+
+
+def _arteriole_chain(middle_covered_from_x: int):
+    """Five nodes along x joined in a chain, then a capillary; the arteriole
+    mask covers the first four edges except the start of the middle one."""
+    shape = (5, 5, 60)
+    G = nx.MultiGraph()
+    xs = [0.0, 10.0, 20.0, 30.0, 40.0, 55.0]
+    for i, x in enumerate(xs):
+        G.add_node(i, pos=np.array([2.0, 2.0, x]))
+    for i in range(len(xs) - 1):
+        G.add_edge(i, i + 1, voxels=[[2.0, 2.0, float(x)] for x in range(int(xs[i]), int(xs[i + 1]) + 1)])
+    arteriole = np.zeros(shape, dtype=bool)
+    arteriole[:, :, 0:10] = True
+    arteriole[:, :, middle_covered_from_x:41] = True  # edge 1-2 spans x 10..20
+    venule = np.zeros(shape, dtype=bool)
+    return G, arteriole, venule
+
+
+def test_an_under_covered_edge_between_two_arteriole_edges_is_arteriole():
+    """Regression: 40% of edge 1-2 in the mask fell short of 50%, so the
+    arteriole read as meeting the capillary bed at nodes 1 and 2 -- in the
+    middle of the vessel -- as well as at node 4, where it really does."""
+    G, arteriole, venule = _arteriole_chain(middle_covered_from_x=16)  # x 16..20: 5 of 11 voxels
+
+    result = infer_boundary_nodes_from_small_vessel_masks(
+        G, arteriole, venule, voxel_size_zyx=(1.0, 1.0, 1.0), minimum_overlap_fraction=0.5
+    )
+
+    assert G.edges[1, 2, 0]["mask_vessel_type"] == "arteriole"
+    assert result["gap_filled_edge_count"] == 1
+    assert result["arteriole_boundary_nodes"] == [4]
+
+
+@pytest.mark.parametrize(
+    "names, first",
+    [(("arteriole", "venule"), "arteriole"), (("large", "small"), "large")],
+)
+def test_a_gap_equally_in_both_masks_goes_to_the_first_as_a_labelled_edge_does(names, first):
+    """Regression: the gap fill broke a tie by name, so the venule (and in the
+    global tagging the small mask) took an edge equally in both, where an edge
+    over the threshold in both goes to the arteriole (the large mask)."""
+    from haemolynx.graph.terminal_node_assignment import _fill_label_gaps
+
+    # 0-1 and 2-3 one type, 1-5 and 2-6 the other; the gap 1-2 between them.
+    edges = [(u, v, (u, v, 0), {}) for u, v in ((0, 1), (1, 5), (1, 2), (2, 3), (2, 6))]
+    labelled = {names[0]: {(0, 1, 0), (2, 3, 0)}, names[1]: {(1, 5, 0), (2, 6, 0)}}
+
+    _fill_label_gaps(edges, {(1, 2, 0): (0.4, 0.4)}, labelled, low_fraction=0.25, names=names)
+
+    assert edges[2][3]["mask_vessel_type"] == first
+    assert (1, 2, 0) in labelled[first]
+
+
+def test_a_parallel_edge_beside_one_labelled_edge_is_no_gap_to_fill():
+    """Regression: an edge parallel to a labelled one meets that one edge at
+    both its ends, which read as joining two edges of its type, so it took
+    the label at a quarter of the threshold with no gap to bridge."""
+    from haemolynx.graph.terminal_node_assignment import _fill_label_gaps
+
+    edges = [(1, 2, (1, 2, 0), {}), (1, 2, (1, 2, 1), {}), (0, 1, (0, 1, 0), {}), (2, 3, (2, 3, 0), {})]
+    labelled = {"arteriole": {(1, 2, 0)}, "venule": set()}
+
+    filled = _fill_label_gaps(edges, {(1, 2, 1): (0.3, 0.0)}, dict(labelled), low_fraction=0.25)
+
+    assert filled == 0 and "mask_vessel_type" not in edges[1][3]
+    # With the vessel going on at both ends, the same edge is a gap in it.
+    labelled = {"arteriole": {(1, 2, 0), (0, 1, 0), (2, 3, 0)}, "venule": set()}
+    assert _fill_label_gaps(edges, {(1, 2, 1): (0.3, 0.0)}, labelled, low_fraction=0.25) == 1
+
+
+def test_an_uncovered_edge_between_two_arteriole_edges_is_left_a_gap():
+    """Hysteresis, not a blanket fill: an edge with too little of itself in
+    the mask -- a capillary linking two arteriole branches -- keeps no type."""
+    G, arteriole, venule = _arteriole_chain(middle_covered_from_x=21)  # nothing of x 10..20
+
+    result = infer_boundary_nodes_from_small_vessel_masks(
+        G, arteriole, venule, voxel_size_zyx=(1.0, 1.0, 1.0), minimum_overlap_fraction=0.5
+    )
+
+    assert "mask_vessel_type" not in G.edges[1, 2, 0]
+    assert result["gap_filled_edge_count"] == 0
+    assert set(result["arteriole_boundary_nodes"]) == {1, 2, 4}
+
+
+def test_a_simple_graph_is_labelled_the_same_way_as_a_multigraph():
+    """The two used to be two copies of the same forty lines."""
+    multi, arteriole, venule = _arteriole_chain(middle_covered_from_x=16)
+    simple = nx.Graph(multi)
+
+    a = infer_boundary_nodes_from_small_vessel_masks(
+        multi, arteriole, venule, voxel_size_zyx=(1.0, 1.0, 1.0)
+    )
+    b = infer_boundary_nodes_from_small_vessel_masks(
+        simple, arteriole, venule, voxel_size_zyx=(1.0, 1.0, 1.0)
+    )
+
+    assert a == b
+
+
+def test_the_overlap_fraction_is_a_fraction_of_the_vessels_length():
+    """Regression (audit): the fraction counted centreline vertices, one per
+    voxel -- four times as dense per micron along a 0.5 um x as along a 2 um
+    z -- so the part of a vessel running in z carried a quarter of its weight.
+    Here an L-shaped edge runs 20 um in-plane (inside the arteriole mask) then
+    20 um along z (outside it): half its length is in the mask, but 41 of its
+    51 vertices were."""
+    from haemolynx.graph.terminal_node_assignment import (
+        _edge_sample_points_from_data,
+        _sample_overlap_fraction,
+    )
+
+    spacing = (2.0, 0.5, 0.5)
+    in_plane = [[0.0, 2.0, x * 0.5] for x in range(41)]  # 40 voxels, 20 um
+    along_z = [[z * 2.0, 2.0, 20.0] for z in range(1, 11)]  # 10 slices, 20 um
+    edge = {"voxels": in_plane + along_z}
+    mask = np.zeros((12, 6, 44), dtype=bool)
+    mask[0, 4, :41] = True  # the in-plane leg, at y = 2 um
+
+    vertices = _edge_sample_points_from_data(edge, (np.zeros(3), np.zeros(3)))
+    evenly = _edge_sample_points_from_data(edge, (np.zeros(3), np.zeros(3)), step_um=0.5)
+
+    assert _sample_overlap_fraction(vertices, mask, voxel_size_zyx=spacing) == pytest.approx(41 / 51)
+    # Half, to within the first micron of the z leg, which rounds into slice 0.
+    assert _sample_overlap_fraction(evenly, mask, voxel_size_zyx=spacing) == pytest.approx(0.5, abs=0.04)
