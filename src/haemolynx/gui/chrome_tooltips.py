@@ -1181,6 +1181,10 @@ CLASSIFIER_TRAINING_TOOLTIPS: dict[str, str] = {
         "The label your brush paints. Paint a few strokes of each, in several places: "
         "clear examples teach more than many"
     ),
+    "eraser": (
+        "Rub out strokes painted by mistake, whatever their label. The classifier "
+        "forgets them when it next trains"
+    ),
     "live": (
         "Train again and classify the plane in view after every stroke and every move "
         "through the image"

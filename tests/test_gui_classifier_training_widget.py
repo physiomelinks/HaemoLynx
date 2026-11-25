@@ -194,7 +194,7 @@ def test_saving_a_classifier_telling_large_from_small_makes_the_boundaries_masks
     window = widget._haemolynx_open_classifier_training("pixel_classifier_path", synchronous=True)
     window.job_box.setCurrentIndex(window.purposes.index("vessels_and_sized_classes"))
     assert window.job_box.currentText() == "Capillaries, large and small arterioles and venules"
-    assert [b.text() for b in window.label_group.buttons()] == list(window.labels)
+    assert [b.text() for b in window.label_group.buttons()] == [*window.labels, "Eraser"]
     points, classes = strokes(truth, per_class=60)
     window.live_box.setChecked(False)
     window.strokes.data[tuple(points.T)] = classes + 1  # Background and Capillary
@@ -767,3 +767,66 @@ def test_a_channel_read_only_whole_that_would_not_fit_is_left_out_and_said(two_c
     assert not window.display_rows[1].show.isChecked() and not window.display_rows[1].limits.isEnabled()
     assert "Not shown, as it would not fit in memory: C2." in window.status.text()
     assert not any(layer.name == "Classifier image C2 (vessels)" for layer in viewer.layers)
+
+
+# ------------------------------------------------------------ the eraser
+
+
+def test_the_eraser_is_napari_s_erase_tool_and_follows_it(panel):
+    _viewer, widget, *_ = panel
+    window = widget._haemolynx_open_classifier_training("pixel_classifier_large_vessel_path", synchronous=True)
+    group, strokes_layer = window.label_group, window.strokes
+    assert group.button(window.ERASER).text() == "Eraser" and group.button(window.ERASER).toolTip()
+    group.button(window.ERASER).click()
+    assert strokes_layer.mode == "erase"
+    group.button(3).click()  # Venule
+    assert strokes_layer.mode == "paint" and strokes_layer.selected_label == 3
+    # Chosen in napari's own layer controls, the Paint box follows.
+    strokes_layer.mode = "erase"
+    assert group.checkedId() == window.ERASER
+    strokes_layer.mode = "paint"
+    assert group.checkedId() == 3
+    # Another job: its labels, the eraser still under them, painting its second label.
+    group.button(window.ERASER).click()
+    window.job_box.setCurrentIndex(window.purposes.index("vessels_and_classes"))
+    assert [b.text() for b in group.buttons()] == ["Background", "Capillary", "Arteriole", "Venule", "Eraser"]
+    assert group.checkedId() == 2 and strokes_layer.mode == "paint" and strokes_layer.selected_label == 2
+
+
+@pytest.mark.parametrize("low_ram", [False, True])
+def test_strokes_rubbed_out_are_forgotten_when_it_trains_again(make_napari_viewer, tmp_path, low_ram):
+    from haemolynx.classifier.sparse import painted_points
+
+    viewer = make_napari_viewer()
+    widget = settings_widget(napari_viewer=viewer)
+    volume, truth = tube_volume()
+    rows = widget._haemolynx_rows()
+    rows["raw_image_path"].value = write_raw(tmp_path / "raw.tif", volume)
+    rows["use_memmap_loading"].value = low_ram
+    window = widget._haemolynx_open_classifier_training("pixel_classifier_path", synchronous=True)
+    points, classes = strokes(truth, per_class=60)
+    window.strokes.data[tuple(points.T.astype(np.int64))] = classes + 1
+    # A square painted Vessel by mistake, on plane 10, away from every other stroke there.
+    others = points[points[:, 0] == 10][:, 1:]
+    centre = max(((y, x) for y in range(6, 42) for x in range(6, 50)),
+                  key=lambda p: np.min(np.abs(others - p).max(axis=1)) if len(others) else 0)
+    square = np.array([(10, centre[0] + dy, centre[1] + dx) for dy in range(-2, 3) for dx in range(-2, 3)])
+    window.strokes.data[tuple(square.T)] = 2
+    viewer.dims.ndisplay = 2
+    viewer.dims.order = (0, 1, 2)
+    viewer.dims.set_point(0, 10 * VOXEL[0])
+    window.update(retrain=True)
+    trained = {tuple(p) for p in window.live.classifier.training.points_zyx.astype(int)}
+    assert {tuple(p) for p in square} <= trained
+    window.label_group.button(window.ERASER).click()
+    window.strokes.brush_size = 7
+    # One stroke of the eraser, as a drag makes it: napari says it painted once the stroke is done.
+    with window.strokes.block_history():
+        window.strokes.paint((10, *centre), window.strokes.colormap.background_value)
+    assert not np.asarray([window.strokes.data[tuple(p)] for p in square]).any()
+    # Trained again on the stroke, without what it rubbed out; the rest kept.
+    left, _values = painted_points(window.strokes.data)
+    trained = {tuple(p) for p in window.live.classifier.training.points_zyx.astype(int)}
+    assert trained == {tuple(p) for p in left.astype(int)}
+    assert not trained & {tuple(p) for p in square}
+    assert {tuple(p) for p in points} <= trained

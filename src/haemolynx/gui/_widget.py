@@ -10869,6 +10869,9 @@ class _ClassifierTrainingWindow:
     #: How long after the last stroke or move the preview starts (ms).
     DEBOUNCE_MS = 350
 
+    #: The Paint box's id for the eraser (a label's is its index + 1).
+    ERASER = 0
+
     def __init__(
         self,
         viewer,
@@ -11134,6 +11137,11 @@ class _ClassifierTrainingWindow:
             button.setToolTip(TIPS["labels"])
             self.label_group.addButton(button, index + 1)
             self.label_layout.addWidget(button, index // 3, index % 3)
+        # A line of its own under the labels: it takes strokes away, whatever their label.
+        eraser = QRadioButton("Eraser")
+        eraser.setToolTip(TIPS["eraser"])
+        self.label_group.addButton(eraser, self.ERASER)
+        self.label_layout.addWidget(eraser, (len(self.labels) + 2) // 3, 0)
         self.label_group.button(min(2, len(self.labels))).setChecked(True)
 
     def _set_enabled(self, enabled: bool) -> None:
@@ -11378,7 +11386,9 @@ class _ClassifierTrainingWindow:
             )
             self.strokes.brush_size = 3
             self.strokes.mode = "paint"
+            # Erasing is painting 0: it trains again too.
             self.strokes.events.paint.connect(lambda *_a: self._changed(retrain=True))
+            self.strokes.events.mode.connect(lambda *_a: self._brush_from_layer())
             self.viewer.dims.events.current_step.connect(lambda *_a: self._changed(retrain=False))
             self.viewer.dims.events.order.connect(lambda *_a: self._changed(retrain=False))
             camera = viewer_camera(self.viewer)
@@ -11390,7 +11400,7 @@ class _ClassifierTrainingWindow:
             self.viewer.layers.events.removed.connect(self._update_3d_guard)
             self.viewer.layers.events.inserted.connect(self._update_3d_guard)
         self._update_3d_guard()
-        self.strokes.selected_label = self.label_group.checkedId()
+        self._choose_label(self.label_group.checkedId())
         self.viewer.layers.selection.active = self.strokes
         self._set_enabled(True)
         from haemolynx.classifier.sparse import painted_points
@@ -11526,9 +11536,27 @@ class _ClassifierTrainingWindow:
         return layer
 
     def _choose_label(self, label: int) -> None:
-        if self.strokes is not None:
+        """The Paint box's choice, the strokes layer's brush: a label to
+        paint, or the eraser (`ERASER`), which takes strokes away."""
+        if self.strokes is None:
+            return
+        if int(label) == self.ERASER:
+            self.strokes.mode = "erase"
+        else:
             self.strokes.selected_label = int(label)
             self.strokes.mode = "paint"
+
+    def _brush_from_layer(self) -> None:
+        """napari's own tools chose paint or erase: the Paint box follows."""
+        mode = str(self.strokes.mode)
+        if mode == "erase":
+            button = self.label_group.button(self.ERASER)
+        elif mode == "paint":
+            button = self.label_group.button(int(self.strokes.selected_label))
+        else:
+            return
+        if button is not None and not button.isChecked():
+            button.setChecked(True)
 
     def _purpose_changed(self) -> None:
         """Another job (e.g. vessels, arterioles and venules together): the
@@ -11544,6 +11572,7 @@ class _ClassifierTrainingWindow:
         mapping = remap_strokes(self.purpose, purpose)
         self.purpose = purpose
         self._label_buttons()
+        self._choose_label(self.label_group.checkedId())  # the old job's label, or the eraser, no longer
         if self.strokes is not None:
             points, values = painted_points(self.strokes.data)
             if len(points):
