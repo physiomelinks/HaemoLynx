@@ -619,3 +619,151 @@ def test_the_object_mask_classifiers_keep_their_mask_rows_in_view_naming_their_m
     assert _same_file(block.value, out / "raw_blocks_segmented.tif")
     row = rows["pericyte_measurement_mask_path"]
     assert row.enabled and _same_file(widget._haemolynx_values()[row.name], out / "raw_pericytes_segmented.tif")
+
+
+# ------------------------------------------------------------ the display
+
+
+def _lut(colour):
+    """An ImageJ display LUT ending on *colour* (its channels' on/off)."""
+    table = np.zeros((3, 256), np.uint8)
+    for index, on in enumerate(colour):
+        if on:
+            table[index] = np.arange(256)
+    return table
+
+
+def _composite(path, channels, *, luts=None):
+    """A Z C Y X ImageJ composite of *channels*, as Fiji saves one."""
+    metadata = {"axes": "ZCYX", "spacing": VOXEL[0], "unit": "um", "mode": "composite"}
+    if luts is not None:
+        metadata["LUTs"] = luts
+    tifffile.imwrite(path, np.stack(channels, axis=1), imagej=True,
+                     resolution=(1 / VOXEL[2], 1 / VOXEL[1]), metadata=metadata)
+    return path
+
+
+@pytest.fixture
+def two_channels(make_napari_viewer, tmp_path):
+    viewer = make_napari_viewer()
+    widget = settings_widget(napari_viewer=viewer)
+    volume, truth = tube_volume()
+    other = np.random.default_rng(3).integers(100, 900, volume.shape).astype(np.uint16)
+    raw = _composite(tmp_path / "composite.tif", [other, volume])
+    rows = widget._haemolynx_rows()
+    rows["raw_image_path"].value = raw
+    return viewer, widget, rows, other, volume
+
+
+def test_each_channel_is_shown_in_its_own_colour_whichever_the_classifier_reads(two_channels):
+    from haemolynx.classifier.lazy import LazyTiffChannel
+
+    viewer, widget, _rows, other, volume = two_channels
+    window = widget._haemolynx_open_classifier_training("pixel_classifier_path", synchronous=True)
+    assert window.live.classifier.spec.channels == (0,)  # the classifier reads C1 alone
+    first, second = window.images[0], window.images[1]
+    assert window.image is first
+    assert [first.name, second.name] == ["Classifier image C1 (vessels)", "Classifier image C2 (vessels)"]
+    assert (first.colormap.name, second.colormap.name) == ("red", "green")  # Fiji's, the file giving none
+    assert (first.blending, second.blending) == ("translucent_no_depth", "additive")
+    assert first.visible and second.visible
+    assert np.array_equal(np.asarray(first.data), other)
+    # The channel only shown is read where it is looked at, never whole.
+    assert isinstance(second.data, LazyTiffChannel) and 1 not in window._volumes
+    assert np.array_equal(np.asarray(second.data[7]), volume[7])
+    rows = window.display_rows
+    assert [rows[c].show.text() for c in (0, 1)] == ["C1", "C2"]
+    assert [rows[c].colour.currentData() for c in (0, 1)] == ["red", "green"]
+    assert all(rows[c].limits.isEnabled() for c in (0, 1))
+    # Below what is painted and what is classified.
+    names = [layer.name for layer in viewer.layers]
+    assert names.index(second.name) < names.index(window.preview.name) < names.index(window.strokes.name)
+    # Opened again, the channels' layers are replaced, not doubled.
+    window.window.close()
+    again = widget._haemolynx_open_classifier_training("pixel_classifier_path", synchronous=True)
+    assert again is not window
+    assert sorted(layer.name for layer in viewer.layers if layer.name.startswith("Classifier image")) == [
+        "Classifier image C1 (vessels)", "Classifier image C2 (vessels)",
+    ]
+
+
+def test_a_channel_with_a_colour_of_its_own_is_shown_in_it(make_napari_viewer, tmp_path):
+    viewer = make_napari_viewer()
+    widget = settings_widget(napari_viewer=viewer)
+    volume, _truth = tube_volume()
+    raw = _composite(tmp_path / "lut.tif", [volume, volume], luts=[_lut((0, 1, 0)), _lut((1, 0, 1))])
+    widget._haemolynx_rows()["raw_image_path"].value = raw
+    window = widget._haemolynx_open_classifier_training("pixel_classifier_path", synchronous=True)
+    assert (window.images[0].colormap.name, window.images[1].colormap.name) == ("green", "magenta")
+    assert window.display_rows[0].show.text() == "C1 (green)"
+
+
+def test_the_display_box_sets_each_channels_range_colour_and_visibility_not_the_classifiers(two_channels):
+    from haemolynx.classifier.features import display_range
+
+    _viewer, widget, _rows, _other, volume = two_channels
+    window = widget._haemolynx_open_classifier_training("pixel_classifier_path", synchronous=True)
+    layer, row = window.images[1], window.display_rows[1]
+    limits, span = display_range(volume)
+    assert tuple(layer.contrast_limits) == pytest.approx(limits)
+    assert tuple(layer.contrast_limits_range) == pytest.approx(span)  # napari's own slider opens out too
+    assert row.limits.value() == pytest.approx(limits)
+    assert (row.limits.minimum(), row.limits.maximum()) == pytest.approx(span)
+    ranges, spec = window.live.ranges, window.live.classifier.spec
+    # Opened out past the range it was first shown at, then narrowed.
+    row.limits.setValue(span)
+    assert tuple(layer.contrast_limits) == pytest.approx(span)
+    row.limits.setValue((1000.0, 2000.0))
+    assert tuple(layer.contrast_limits) == pytest.approx((1000.0, 2000.0))
+    assert row.limits.edge_labels() == ("1000", "2000")
+    # Both handles at one place: still a range napari takes.
+    row.limits.setValue((1500.0, 1500.0))
+    low, high = layer.contrast_limits
+    assert low == pytest.approx(1500.0) and high > low
+    # napari's own layer controls move the box with them, and widen it.
+    layer.contrast_limits = (500.0, 900.0)
+    assert row.limits.value() == pytest.approx((500.0, 900.0))
+    assert row.limits.edge_labels() == ("500", "900")
+    layer.contrast_limits_range = (0.0, 65535.0)
+    assert (row.limits.minimum(), row.limits.maximum()) == (0.0, 65535.0)
+    # Colour and visibility, each way.
+    row.colour.setCurrentIndex(row.colour.findData("magenta"))
+    assert layer.colormap.name == "magenta"
+    row.show.setChecked(False)
+    assert not layer.visible
+    layer.visible = True
+    assert row.show.isChecked()
+    # None of it reaches the classifier, nor touches the other channel.
+    assert window.live.ranges == ranges and window.live.classifier.spec == spec
+    assert window.images[0].colormap.name == "red" and window.images[0].visible
+
+
+def test_an_image_of_one_channel_is_grey_and_its_range_opens_out(panel):
+    viewer, widget, _rows, volume, _truth, _raw = panel
+    window = widget._haemolynx_open_classifier_training("pixel_classifier_path", synchronous=True)
+    assert list(window.images) == [None] and window.image is window.images[None]
+    layer = window.image
+    assert layer.name == "Classifier image (vessels)" and layer.colormap.name == "gray"
+    assert window.display_rows[None].show.text() == "Raw image"
+    limits = window.live.ranges[0]
+    assert tuple(layer.contrast_limits) == pytest.approx(limits)
+    # napari's slider once spanned the limits alone: the range could only narrow.
+    low, high = layer.contrast_limits_range
+    assert (low, high) == (float(volume.min()), float(volume.max()))
+    assert low <= limits[0] < limits[1] < high  # the image is clipped at 0, its lowest percentile
+    window.display_rows[None].limits.setValue((float(volume.min()), float(volume.max())))
+    assert tuple(layer.contrast_limits) == pytest.approx((volume.min(), volume.max()))
+
+
+def test_a_channel_read_only_whole_that_would_not_fit_is_left_out_and_said(two_channels, monkeypatch):
+    from haemolynx.gui import classifier_training
+
+    viewer, widget, rows, *_ = two_channels
+    rows["image_axis_order"].value = "zxy"  # reordered: no channel can be read lazily
+    refusals = iter([None, "too large"])  # the classifier's channel fits; the other does not
+    monkeypatch.setattr(classifier_training, "memory_refusal", lambda *_a, **_k: next(refusals))
+    window = widget._haemolynx_open_classifier_training("pixel_classifier_path", synchronous=True)
+    assert window.live is not None and list(window.images) == [0]
+    assert not window.display_rows[1].show.isChecked() and not window.display_rows[1].limits.isEnabled()
+    assert "Not shown, as it would not fit in memory: C2." in window.status.text()
+    assert not any(layer.name == "Classifier image C2 (vessels)" for layer in viewer.layers)

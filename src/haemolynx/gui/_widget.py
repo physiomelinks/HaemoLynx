@@ -10898,8 +10898,10 @@ class _ClassifierTrainingWindow:
         from haemolynx.classifier import SCALE_CHOICES_UM, load_classifier
         from haemolynx.gui.chrome_tooltips import CLASSIFIER_TRAINING_TOOLTIPS as TIPS
         from haemolynx.gui.classifier_training import (
+            CHANNEL_COLOURS,
             JOB_TITLES,
             PURPOSE_TITLES,
+            channel_colour,
             default_channels,
             default_classifier_path,
             default_scales,
@@ -10927,8 +10929,16 @@ class _ClassifierTrainingWindow:
         self._retrain = True
         self._shown: tuple[int, int, Any] | None = None
         self.strokes = self.preview = self.segmentation = self.image = None
+        #: Each channel's image layer, lowest first; `image` is the lowest.
+        self.images: dict[int | None, Any] = {}
         self.segmentations: dict[str, Any] = {}
-        self.channel_count = max(1, len(tiff_channels(self.raw_path)))
+        file_channels = tiff_channels(self.raw_path)
+        self.channel_count = max(1, len(file_channels))
+        #: Every channel of the raw image, as the viewer shows it: its index
+        #: (None for an image of one), Fiji's name for it and its first colour.
+        self.display_channels: list[tuple[int | None, str | None, str]] = [
+            (c.index, c.label, channel_colour(c.index, len(file_channels), c.colour)) for c in file_channels
+        ] or [(None, None, channel_colour(0, 1))]
 
         existing = values.get(row)
         self.loaded = None
@@ -10989,6 +10999,34 @@ class _ClassifierTrainingWindow:
         preview_row.addWidget(self.live_box)
         preview_row.addWidget(self.update_button)
         layout.addLayout(preview_row)
+
+        # How each channel is shown (the view only): set once the image is read.
+        display_box = QGroupBox("Display")
+        display_box.setToolTip(TIPS["display"])
+        display_layout = QGridLayout(display_box)
+        display_layout.setColumnStretch(2, 1)
+        self.display_rows: dict[int | None, SimpleNamespace] = {}
+        for position, (channel, label, colour) in enumerate(self.display_channels):
+            show = QCheckBox(label or "Raw image")
+            show.setChecked(True)
+            show.setToolTip(TIPS["show_channel"])
+            colours = QComboBox()
+            for name in CHANNEL_COLOURS:
+                colours.addItem(name.capitalize(), name)
+            colours.setCurrentIndex(list(CHANNEL_COLOURS).index(colour))
+            colours.setToolTip(TIPS["channel_colour"])
+            limits = _double_range_pair(f"haemolynx_classifier_channel_range_{position}")
+            limits.setToolTip(TIPS["channel_range"])
+            for part in (show, colours, limits):
+                part.setEnabled(False)
+            show.toggled.connect(lambda on, c=channel: self._show_channel(c, on))
+            colours.currentIndexChanged.connect(lambda *_a, c=channel: self._colour_channel(c))
+            limits.valueChanged.connect(lambda value, c=channel: self._limit_channel(c, value))
+            display_layout.addWidget(show, position, 0)
+            display_layout.addWidget(colours, position, 1)
+            display_layout.addWidget(limits, position, 2)
+            self.display_rows[channel] = SimpleNamespace(show=show, colour=colours, limits=limits)
+        layout.addWidget(display_box)
 
         self.channel_boxes: dict[int, Any] = {}
         if self.channel_count > 1:
@@ -11213,7 +11251,55 @@ class _ClassifierTrainingWindow:
         return LiveClassifier(classifier, volumes, self.voxel_size_zyx, path=str(self.raw_path), workers=workers)
 
     def _load(self):
-        return self._make_live(*self._spec_choice())
+        live = self._make_live(*self._spec_choice())
+        return live, self._read_display()
+
+    def _read_display(self) -> dict:
+        """``{channel: (volume, limits, span)}`` for each channel the viewer
+        shows (``features.display_range``): every channel of the raw image,
+        but one that could only be read whole and would not fit in memory."""
+        from haemolynx.classifier.features import display_range
+
+        shown = {}
+        for channel, _label, _colour in self.display_channels:
+            try:
+                volume = self._display_volume(channel)
+                if volume is not None:
+                    shown[channel] = (volume, *display_range(volume))
+            except (OSError, ValueError, MemoryError):
+                continue
+        return shown
+
+    def _display_volume(self, channel):
+        """A channel to show: the classifier's own where it reads it, else
+        read where it is looked at (never whole) where the file allows; read
+        whole only when that fits (None when it would not)."""
+        from haemolynx.classifier.apply import load_channel
+        from haemolynx.classifier.lazy import LazyTiffChannel
+        from haemolynx.io.axis_order import CANONICAL_AXIS_ORDER, axis_order_for_run
+
+        if channel in self._volumes:
+            return self._volumes[channel]
+        try:
+            reader = LazyTiffChannel(self.raw_path, channel)
+        except (ValueError, OSError):
+            reader = None
+        if reader is not None and (self.axis_order == CANONICAL_AXIS_ORDER or reader.shape[0] == 1):
+            return reader
+        if reader is not None:
+            reader.close()
+        low_ram = bool(self.values.get("use_memmap_loading"))
+        if not low_ram:
+            from haemolynx.classifier.memory import memory_bytes, raw_image_memory_bytes
+            from haemolynx.gui.classifier_training import memory_refusal
+
+            needed = raw_image_memory_bytes(self.raw_path, [channel], axis_order_for_run(self.values))
+            if memory_refusal(needed, memory_bytes()[0], low_ram=False):
+                return None
+        return load_channel(
+            self.raw_path, channel, self.axis_order, use_memmap=low_ram,
+            memmap_directory=self.values.get("memmap_directory"),
+        )
 
     def _load_failed(self, error: BaseException) -> None:
         self.load_failed = True
@@ -11226,7 +11312,7 @@ class _ClassifierTrainingWindow:
         the low-RAM option) still in the viewer."""
         if not getattr(self, "sparse", False):
             return []
-        layers = [self.image, self.strokes, self.preview, *self.segmentations.values()]
+        layers = [*self.images.values(), self.strokes, self.preview, *self.segmentations.values()]
         return [layer for layer in layers if layer is not None and layer in self.viewer.layers]
 
     def _update_3d_guard(self, *_args) -> None:
@@ -11262,18 +11348,17 @@ class _ClassifierTrainingWindow:
             except Exception:  # noqa: BLE001 - the status line says it anyway
                 pass
 
-    def _loaded(self, live) -> None:
+    def _loaded(self, loaded) -> None:
         from haemolynx.classifier.sparse import SparseLabels
         from haemolynx.gui.classifier_training import (
-            IMAGE_LAYER,
             PREVIEW_LAYER,
             STROKES_LAYER,
             is_large,
-            layer_name,
             result_colours,
             stroke_colours,
         )
 
+        live, display = loaded
         self.live = live
         scale = tuple(float(v) for v in live.voxel_size_zyx)
         shape = live.shape
@@ -11281,14 +11366,8 @@ class _ClassifierTrainingWindow:
         if self.sparse and self.viewer.dims.ndisplay == 3:
             # A layer added in 3D is read whole at once.
             self.viewer.dims.ndisplay = 2
-        if self.image is None:
-            # Tagged as the panel's own: an untagged image layer is taken for
-            # one the user dropped in and made the run's input (written out
-            # whole, the raw image read in full).
-            self.image = self.viewer.add_image(
-                live.volumes[0], name=layer_name(IMAGE_LAYER, self.row), scale=scale, colormap="gray",
-                contrast_limits=list(live.ranges[0]), metadata={OURS: {"classifier_training": self.row}},
-            )
+        if not self.images:
+            self._add_channel_layers(display, scale)
         if self.preview is None:
             blank = SparseLabels(shape) if self.sparse else np.zeros(shape, np.uint8)
             self.preview = self._labels_layer(blank, PREVIEW_LAYER, result_colours(self.purpose), scale)
@@ -11318,6 +11397,9 @@ class _ClassifierTrainingWindow:
 
         painted = len(painted_points(self.strokes.data)[0])
         note = self._unfamiliar_note(live)
+        unshown = [label for channel, label, _c in self.display_channels if channel not in self.images]
+        if unshown:
+            note = " ".join(filter(None, (note, f"Not shown, as it would not fit in memory: {', '.join(unshown)}.")))
         self._say(
             f"Paint a few strokes of each label on {self.raw_path.name}"
             + (f" ({painted} voxels painted before)." if painted else ".")
@@ -11336,6 +11418,98 @@ class _ClassifierTrainingWindow:
         profiles = dict(zip(live.classifier.spec.channels, live.profile))
         found = unfamiliar_channels(self.loaded, profiles)
         return unfamiliar_note(self.raw_path.name, self.loaded_path.name, found) if found else ""
+
+    # ------------------------------------------------------------ display
+
+    def _add_channel_layers(self, display, scale) -> None:
+        """One image layer per channel of the raw image (*display*, from
+        `_read_display`), each in its own colour and blended as Fiji draws a
+        composite, below the strokes and the preview; the Display box's rows
+        set to them. What they show never reaches the classifier."""
+        from haemolynx.gui.classifier_training import CHANNEL_COLOURS, channel_blending, channel_layer_name
+
+        for channel, label, _colour in self.display_channels:
+            row = self.display_rows[channel]
+            if channel not in display:
+                row.show.setChecked(False)
+                continue
+            volume, limits, span = display[channel]
+            name = channel_layer_name(self.row, label)
+            if name in self.viewer.layers:
+                self.viewer.layers.remove(name)
+            # Tagged as the panel's own: an untagged image layer is taken for
+            # one the user dropped in and made the run's input (written out
+            # whole, the raw image read in full).
+            layer = self.viewer.add_image(
+                volume, name=name, scale=scale, colormap=CHANNEL_COLOURS[row.colour.currentData()],
+                blending=channel_blending(len(self.images)), contrast_limits=list(limits),
+                visible=row.show.isChecked(), metadata={OURS: {"classifier_training": self.row}},
+            )
+            # napari's own slider spans the limits it was given: widened, so
+            # the range can be opened out as well as narrowed.
+            layer.contrast_limits_range = list(span)
+            self.images[channel] = layer
+            layer.events.contrast_limits.connect(lambda *_a, c=channel: self._limits_from_layer(c))
+            layer.events.contrast_limits_range.connect(lambda *_a, c=channel: self._limits_from_layer(c))
+            layer.events.visible.connect(lambda *_a, c=channel: self._shown_from_layer(c))
+            self._limits_from_layer(channel)
+            for part in (row.show, row.colour, row.limits):
+                part.setEnabled(True)
+        self.image = next(iter(self.images.values()), None)
+
+    def _show_channel(self, channel, on: bool) -> None:
+        layer = self.images.get(channel)
+        if layer is not None:
+            layer.visible = bool(on)
+
+    def _colour_channel(self, channel) -> None:
+        from haemolynx.gui.classifier_training import CHANNEL_COLOURS
+
+        layer = self.images.get(channel)
+        if layer is not None:
+            layer.colormap = CHANNEL_COLOURS[self.display_rows[channel].colour.currentData()]
+
+    def _limit_channel(self, channel, value) -> None:
+        """The Display box's range moved: the channel's layer shows it."""
+        layer = self.images.get(channel)
+        if layer is None:
+            return
+        low, high = float(value[0]), float(value[1])
+        if not high > low:  # both handles at one place: napari wants a range
+            high = low + max(abs(low), 1.0) * 1e-6
+        layer.contrast_limits = (low, high)
+
+    def _limits_from_layer(self, channel) -> None:
+        """The layer's contrast changed (here, or in napari's own layer
+        controls): the Display box's range follows, never fighting it."""
+        from haemolynx.gui.classifier_training import intensity_text
+
+        layer = self.images.get(channel)
+        if layer is None:
+            return
+        limits = self.display_rows[channel].limits
+        span = tuple(float(v) for v in layer.contrast_limits_range)
+        low, high = (float(v) for v in layer.contrast_limits)
+        limits.blockSignals(True)
+        try:
+            if (limits.minimum(), limits.maximum()) != span:
+                limits.setRange(*span)
+            if not limits.isSliderDown() and limits.value() != (low, high):
+                limits.setValue((low, high))
+        finally:
+            limits.blockSignals(False)
+        limits.set_edge_labels(intensity_text(low, span), intensity_text(high, span))
+
+    def _shown_from_layer(self, channel) -> None:
+        layer = self.images.get(channel)
+        if layer is None:
+            return
+        show = self.display_rows[channel].show
+        show.blockSignals(True)
+        try:
+            show.setChecked(bool(layer.visible))
+        finally:
+            show.blockSignals(False)
 
     def _labels_layer(self, data, kind: str, colours, scale, *, name: str | None = None):
         from napari.utils.colormaps import DirectLabelColormap

@@ -10,9 +10,14 @@ import pytest
 
 from haemolynx.classifier.model import FILE_KIND, PURPOSES
 from haemolynx.gui.classifier_training import (
+    CHANNEL_COLOURS,
     LABEL_COLOURS,
     PURPOSE_TITLES,
+    channel_blending,
+    channel_colour,
+    channel_layer_name,
     classifier_filled_rows,
+    intensity_text,
     classifier_vessel_mask_roles,
     remap_strokes,
     result_colours,
@@ -28,6 +33,34 @@ def _record_only(path, purpose):
     with open(path, "wb") as handle:
         np.savez(handle, record=np.array(json.dumps(record)))
     return path
+
+
+def test_a_composites_channels_take_fijis_colours_unless_the_file_gives_its_own():
+    assert [channel_colour(i, 7) for i in range(7)] == [
+        "red", "green", "blue", "grey", "cyan", "magenta", "yellow",
+    ]
+    assert channel_colour(7, 8) == "red"  # round again
+    assert channel_colour(0, 2, "magenta") == "magenta"
+    assert channel_colour(1, 2, "orange") == "green"  # not one the menu has
+    assert channel_colour(0, 1) == channel_colour(0, 1, "red") == "grey"  # an image of one channel
+    assert set(CHANNEL_COLOURS.values()) == {"red", "green", "blue", "gray", "cyan", "magenta", "yellow"}
+
+
+def test_the_lowest_channel_covers_what_is_beneath_and_the_rest_add_their_light():
+    assert channel_blending(0) == "translucent_no_depth"
+    assert channel_blending(1) == channel_blending(3) == "additive"
+
+
+def test_each_channel_has_its_own_layer_and_an_image_of_one_keeps_the_plain_name():
+    assert channel_layer_name("pixel_classifier_path", None) == "Classifier image (vessels)"
+    assert channel_layer_name("pixel_classifier_path", "C2 (claudin-5)") == "Classifier image C2 (claudin-5) (vessels)"
+    assert channel_layer_name("pixel_classifier_pericyte_path", "C1") == "Classifier image C1 (pericytes)"
+
+
+def test_intensities_are_whole_numbers_on_an_integer_images_span():
+    assert intensity_text(1234.56, (0.0, 4095.0)) == "1235"
+    assert intensity_text(0.123456, (0.0, 1.0)) == "0.123"
+    assert intensity_text(12.0, (0.0, 50.0)) == "12"
 
 
 def test_the_job_menu_names_the_vessel_jobs_by_what_they_find():

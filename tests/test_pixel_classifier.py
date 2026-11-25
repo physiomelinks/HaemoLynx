@@ -163,6 +163,20 @@ def test_the_intensity_range_reads_the_same_lattice_every_time():
     assert intensity_range(flat) == (7.0, 8.0)
 
 
+def test_a_channel_is_shown_at_the_classifiers_range_and_may_open_out_to_its_extremes():
+    from haemolynx.classifier.features import display_range
+
+    volume, _ = tube_volume()
+    limits, span = display_range(volume)
+    assert limits == intensity_range(volume)  # the same lattice, exactly
+    assert span == (float(volume.min()), float(volume.max()))  # a small image's lattice is all of it
+    noisy = np.random.default_rng(1).normal(1000, 100, (6, 40, 40)).astype(np.uint16)
+    limits, span = display_range(noisy)
+    assert span[0] < limits[0] < limits[1] < span[1]
+    # A flat image: the span never sits inside the limits.
+    assert display_range(np.full((4, 8, 8), 7, np.uint16)) == ((7.0, 8.0), (7.0, 8.0))
+
+
 # ------------------------------------------------------------------ forest
 
 

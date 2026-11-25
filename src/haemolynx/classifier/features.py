@@ -199,6 +199,16 @@ def intensity_range(volume: np.ndarray) -> tuple[float, float]:
     return _range_of(_lattice_sample(volume))
 
 
+def display_range(volume: np.ndarray) -> tuple[tuple[float, float], tuple[float, float]]:
+    """How a channel is shown at first, from :func:`intensity_range`'s lattice:
+    its contrast limits (that range, exactly) and the span they may be moved
+    over (the lattice's lowest and highest values, never inside the limits).
+    For display only: the classifier scales by :func:`intensity_range`."""
+    sample = _lattice_sample(volume)
+    low, high = _range_of(sample)
+    return (low, high), (min(float(sample.min()), low), max(float(sample.max()), high))
+
+
 def profile_of(sample: np.ndarray, value_range: tuple[float, float]) -> tuple[float, ...]:
     """The :data:`PROFILE_PERCENTILES` of *sample* on *value_range* (0 its
     low end, 1 its high)."""

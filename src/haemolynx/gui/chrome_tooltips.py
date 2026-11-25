@@ -1187,6 +1187,16 @@ CLASSIFIER_TRAINING_TOOLTIPS: dict[str, str] = {
     ),
     "update": "Train on the strokes painted so far and classify the plane in view",
     "channels": "The channels of the raw image the classifier reads",
+    "display": (
+        "How each channel of the raw image is shown. This changes the view only: the "
+        "classifier reads the image as it is"
+    ),
+    "show_channel": "Show or hide this channel of the raw image in the viewer",
+    "channel_colour": "The colour this channel is shown in. Shown together, the channels' colours add up",
+    "channel_range": (
+        "The intensities this channel is shown between: darker than the lower shows black, "
+        "brighter than the upper full colour. The classifier is not affected"
+    ),
     "scales": (
         "How far around each voxel the classifier looks, in microns. Wider scales see "
         "larger vessels, but take longer"

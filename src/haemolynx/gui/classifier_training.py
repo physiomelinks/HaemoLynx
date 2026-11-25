@@ -97,6 +97,22 @@ PREVIEW_LAYER = "Classifier preview"
 SEGMENTATION_LAYER = "Classifier segmentation"
 IMAGE_LAYER = "Classifier image"
 
+#: The colours the window shows a channel in, by the name its menu gives
+#: (``io.channels``' names for a display LUT's colour), and napari's colormap.
+CHANNEL_COLOURS: dict[str, str] = {
+    "red": "red",
+    "green": "green",
+    "blue": "blue",
+    "grey": "gray",
+    "cyan": "cyan",
+    "magenta": "magenta",
+    "yellow": "yellow",
+}
+
+#: The colours Fiji gives a composite's channels that carry none of their own:
+#: C1 red, C2 green, C3 blue, C4 grey, C5 cyan, C6 magenta, C7 yellow.
+FIJI_CHANNEL_COLOURS: tuple[str, ...] = ("red", "green", "blue", "grey", "cyan", "magenta", "yellow")
+
 #: Images with more voxels than this keep their strokes and preview sparse,
 #: never a full-size array (as do all images under the low-RAM option).
 LARGE_IMAGE_VOXELS = 1 << 28
@@ -110,6 +126,36 @@ def purposes_for(row: str) -> tuple[str, ...]:
 def layer_name(kind: str, row: str) -> str:
     """``Classifier strokes (vessels)``: one set of layers per job."""
     return f"{kind} ({JOB_TITLES[row]})"
+
+
+def channel_layer_name(row: str, label: str | None) -> str:
+    """``Classifier image C2 (claudin-5) (vessels)``: one image layer per
+    channel; an image of one channel (*label* None) keeps the plain name."""
+    return layer_name(IMAGE_LAYER if label is None else f"{IMAGE_LAYER} {label}", row)
+
+
+def channel_colour(index: int, count: int, file_colour: str | None = None) -> str:
+    """The colour a channel is first shown in: grey for an image of one
+    channel; else the file's own (its display LUT's), else Fiji's for its place."""
+    if count <= 1:
+        return "grey"
+    if file_colour in CHANNEL_COLOURS:
+        return file_colour
+    return FIJI_CHANNEL_COLOURS[index % len(FIJI_CHANNEL_COLOURS)]
+
+
+def channel_blending(position: int) -> str:
+    """How a channel's layer is blended, as Fiji draws a composite: the lowest
+    covers what is beneath it, each above adds its light to those below."""
+    return "translucent_no_depth" if position == 0 else "additive"
+
+
+def intensity_text(value: float, span: tuple[float, float]) -> str:
+    """An intensity as the Display box writes it: whole numbers on a span
+    wider than 100 (an integer image's), else three significant figures."""
+    if abs(float(span[1]) - float(span[0])) > 100:
+        return f"{float(value):.0f}"
+    return f"{float(value):.3g}"
 
 
 def stroke_colours(purpose: str) -> dict[int, tuple[float, float, float, float]]:
