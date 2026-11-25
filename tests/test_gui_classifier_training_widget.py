@@ -830,3 +830,33 @@ def test_strokes_rubbed_out_are_forgotten_when_it_trains_again(make_napari_viewe
     assert trained == {tuple(p) for p in left.astype(int)}
     assert not trained & {tuple(p) for p in square}
     assert {tuple(p) for p in points} <= trained
+
+
+def test_the_brush_size_box_sizes_what_the_brush_paints_and_follows_napari(panel):
+    viewer, widget, *_ = panel
+    window = widget._haemolynx_open_classifier_training("pixel_classifier_path", synchronous=True)
+    window.live_box.setChecked(False)
+    box, strokes_layer = window.brush_box, window.strokes
+    assert box.value() == strokes_layer.brush_size == 3 and box.toolTip()
+    viewer.dims.ndisplay = 2
+    viewer.dims.order = (0, 1, 2)
+    viewer.dims.set_point(0, 10 * VOXEL[0])
+
+    def painted_by_a_stroke(at):
+        before = np.count_nonzero(np.asarray(strokes_layer.data))
+        with strokes_layer.block_history():
+            strokes_layer.paint((10, *at), 2)
+        return np.count_nonzero(np.asarray(strokes_layer.data)) - before
+
+    box.setValue(1)
+    assert strokes_layer.brush_size == 1 and painted_by_a_stroke((10, 10)) == 1
+    box.setValue(7)
+    assert strokes_layer.brush_size == 7 and painted_by_a_stroke((30, 30)) > 20
+    # The eraser rubs out as wide as the box says.
+    window.label_group.button(window.ERASER).click()
+    assert strokes_layer.brush_size == 7
+    # napari's own slider, or its [ and ] keys: the box follows, its range growing past its end.
+    strokes_layer.brush_size = 12
+    assert box.value() == 12
+    strokes_layer.brush_size = window.BRUSH_MAX + 20
+    assert box.maximum() == box.value() == window.BRUSH_MAX + 20

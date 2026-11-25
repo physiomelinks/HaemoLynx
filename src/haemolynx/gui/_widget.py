@@ -10872,6 +10872,11 @@ class _ClassifierTrainingWindow:
     #: The Paint box's id for the eraser (a label's is its index + 1).
     ERASER = 0
 
+    #: The brush's width at first, and the most the size box offers before
+    #: napari's own controls take it past (voxels).
+    BRUSH_SIZE = 3
+    BRUSH_MAX = 100
+
     def __init__(
         self,
         viewer,
@@ -10894,6 +10899,7 @@ class _ClassifierTrainingWindow:
             QLabel,
             QLineEdit,
             QPushButton,
+            QSpinBox,
             QVBoxLayout,
             QWidget,
         )
@@ -10981,11 +10987,28 @@ class _ClassifierTrainingWindow:
         layout.addWidget(self.job_box)
 
         self.label_box = QGroupBox("Paint")
+        paint_layout = QVBoxLayout(self.label_box)
         # Three to a line: a job of six labels stays as narrow as the window.
-        self.label_layout = QGridLayout(self.label_box)
+        self.label_layout = QGridLayout()
+        paint_layout.addLayout(self.label_layout)
         self.label_group = QButtonGroup(self.window)
         self.label_group.idClicked.connect(self._choose_label)
         self._label_buttons()
+        # The brush's width, painting or erasing: napari's own slider's,
+        # which runs to 40 and grows past it, as this box does.
+        brush_row = QHBoxLayout()
+        brush_label = QLabel("Brush size")
+        brush_label.setToolTip(TIPS["brush_size"])
+        self.brush_box = QSpinBox()
+        self.brush_box.setRange(1, self.BRUSH_MAX)
+        self.brush_box.setValue(self.BRUSH_SIZE)
+        self.brush_box.setSuffix(" voxels")
+        self.brush_box.setToolTip(TIPS["brush_size"])
+        self.brush_box.valueChanged.connect(self._brush_size_changed)
+        brush_row.addWidget(brush_label)
+        brush_row.addWidget(self.brush_box)
+        brush_row.addStretch(1)
+        paint_layout.addLayout(brush_row)
         layout.addWidget(self.label_box)
         self.import_button = QPushButton("Import ilastik labels...")
         self.import_button.setToolTip(TIPS["import"])
@@ -11384,7 +11407,8 @@ class _ClassifierTrainingWindow:
             self.strokes = self._labels_layer(
                 live.painted_labels(sparse=self.sparse), STROKES_LAYER, stroke_colours(self.purpose), scale
             )
-            self.strokes.brush_size = 3
+            self.strokes.brush_size = self.brush_box.value()
+            self.strokes.events.brush_size.connect(lambda *_a: self._brush_size_from_layer())
             self.strokes.mode = "paint"
             # Erasing is painting 0: it trains again too.
             self.strokes.events.paint.connect(lambda *_a: self._changed(retrain=True))
@@ -11545,6 +11569,23 @@ class _ClassifierTrainingWindow:
         else:
             self.strokes.selected_label = int(label)
             self.strokes.mode = "paint"
+
+    def _brush_size_changed(self, size: int) -> None:
+        if self.strokes is not None:
+            self.strokes.brush_size = int(size)
+
+    def _brush_size_from_layer(self) -> None:
+        """napari's own slider, or its [ and ] keys, sized the brush: the box
+        follows, its range growing as napari's slider's does."""
+        size = int(self.strokes.brush_size)
+        box = self.brush_box
+        box.blockSignals(True)
+        try:
+            if size > box.maximum():
+                box.setMaximum(size)
+            box.setValue(size)
+        finally:
+            box.blockSignals(False)
 
     def _brush_from_layer(self) -> None:
         """napari's own tools chose paint or erase: the Paint box follows."""

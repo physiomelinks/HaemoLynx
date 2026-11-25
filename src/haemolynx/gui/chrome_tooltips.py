@@ -1181,6 +1181,10 @@ CLASSIFIER_TRAINING_TOOLTIPS: dict[str, str] = {
         "The label your brush paints. Paint a few strokes of each, in several places: "
         "clear examples teach more than many"
     ),
+    "brush_size": (
+        "How wide the brush paints and erases, in voxels. The [ and ] keys change it "
+        "while you paint"
+    ),
     "eraser": (
         "Rub out strokes painted by mistake, whatever their label. The classifier "
         "forgets them when it next trains"
